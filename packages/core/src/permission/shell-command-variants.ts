@@ -366,8 +366,18 @@ export interface ShellCommandExpansion {
    */
   pipelines: Array<Array<{ program: string; args: string[]; text: string }>>;
   /**
+   * 接收者是解释器、且 stdin 就是代码的 heredoc 正文（`python3 - <<'PY' … PY`）。
+   *
+   * 为什么不并进 `variants` / `scripts`：那两处是「当 shell 命令解析」的口径，供 deny/ask
+   * 规则与危险命令判定使用。解释器脚本不是 shell 命令，混进去会改变 Step 2 的判定面。
+   * 现状是这类正文**已经**被 `isShellLikeProgram` 认成 shell 脚本递归展开（那是对的，
+   * `sh <<EOF` 与 `python <<EOF` 都从 stdin 读代码），但正文里的 `open(...)` 不是 shell
+   * 命令，展开不出写目标。所以这里额外留一份**原样正文**给写目标提取用。
+   */
+  interpreterHeredocs: string[];
+  /**
    * 展开没走完：形态数撞上 MAX_VARIANTS 后还有没处理的子命令，或嵌套深度用完时还有内层脚本。
-   * 上面四个字段只覆盖已展开的部分，拦截方看到 true 必须按「看不全」保守处理——
+   * 上面五个字段只覆盖已展开的部分，拦截方看到 true 必须按「看不全」保守处理——
    * 修前超出部分静默丢弃，`echo 0 && … && echo 199 && rm -rf /` 在 always-allow 下直接放行。
    */
   truncated: boolean;
@@ -384,6 +394,7 @@ const MAX_VARIANTS = 128;
 export function expandShellCommand(cmd: string): ShellCommandExpansion {
   const variants = new Set<string>();
   const scripts = new Set<string>();
+  const interpreterHeredocs: string[] = [];
   const commands: Array<{ program: string; args: string[]; text: string }> = [];
   const pipelines: Array<Array<{ program: string; args: string[]; text: string }>> = [];
   let truncated = false;
@@ -426,11 +437,18 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
         const placeholder = `<<${block.placeholder}`;
         const ownerIdx = parsed.findIndex((p) => p.args.some((a) => a.includes(placeholder)));
         if (ownerIdx < 0) continue;
+        const owner = parsed[ownerIdx];
         const downstreamShell = parsed
           .slice(ownerIdx + 1)
           .some((p) => isShellLikeProgram(p.program));
-        if (isShellLikeProgram(parsed[ownerIdx].program) || downstreamShell) {
+        if (isShellLikeProgram(owner.program) || downstreamShell) {
           nested.push(block.body);
+        }
+        // 解释器从 stdin 读脚本（`python3 - <<'PY'`）：正文是代码，不是 shell 命令。
+        // 与上面的 nested 不互斥——它已按 shell 口径展开过一遍（现状，不动它，
+        // 否则会改 Step 2 的危险命令判定面），这里额外给写目标提取留一份原样正文。
+        if (!downstreamShell && interpreterReadsCodeFromStdin(owner.program, owner.args)) {
+          interpreterHeredocs.push(block.body);
         }
       }
       pipelines.push(parsed);
@@ -443,7 +461,14 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
   };
   visit(cmd, 0);
 
-  return { variants: [...variants], scripts: [...scripts], commands, pipelines, truncated };
+  return {
+    variants: [...variants],
+    scripts: [...scripts],
+    commands,
+    pipelines,
+    interpreterHeredocs,
+    truncated,
+  };
 }
 
 /** 参数即写入目标的命令（全部非选项参数） */
@@ -452,19 +477,23 @@ const ALL_ARGS_WRITE = new Set([
   "touch",
   "mkdir",
   "rm",
+  // `mv` 的**源**同样会消失：`mv .git/hooks/pre-commit /tmp/x` 与 `rm` 同一后果。
+  // 修前它在 LAST_ARG_WRITE 里只取最后一个非选项参数（目标），源路径完全漏掉。
+  "mv",
   "rmdir",
   "unlink",
   "truncate",
   "chmod",
   "chown",
   "chgrp",
-  "sed",
-  "perl",
 ]);
+
+/** 内联脚本程序：`sed -i` / `perl -pi` 的**脚本**参数不是写入目标，单独判 */
+const INLINE_SCRIPT_PROGRAMS = new Set(["sed", "perl"]);
 /** `<` `>` `>>` `2>` `&>` `>|` 等重定向记号（可带紧贴的目标，如 `>f`） */
 const REDIRECT_TOKEN_RE = /^(\d*|&)?(<|>{1,2}\|?|<<<?)/;
-/** 最后一个非选项参数是写入目标 */
-const LAST_ARG_WRITE = new Set(["cp", "mv", "install", "ln", "rsync", "scp"]);
+/** 最后一个非选项参数是写入目标（这些命令不破坏源，只取目标） */
+const LAST_ARG_WRITE = new Set(["cp", "install", "ln", "rsync", "scp"]);
 
 /** git 全局选项里带独立取值的那几个（`git -C dir diff`），取值不是子命令 */
 const GIT_GLOBAL_OPTS_WITH_VALUE = new Set([
@@ -519,15 +548,272 @@ function gitOutputTargets(args: string[]): string[] {
 }
 
 /**
- * 提取 bash 命令可能写入的文件路径（供 safetyCheck 对 `.git/hooks` 等可执行路径做保护）。
+ * 解释器程序名：`-c` / `-e` 之后是代码串，代码里的路径字面量可能是写目标。
+ * 与 `shell-structure.ts` 的 `isShellLikeProgram` 是同一张表，但**用途不同**——
+ * 那边判「stdin 是不是代码」，这边判「有没有 `-c`/`-e` 代码串」，刻意不合并。
+ */
+const INTERPRETER_RE = /^(python[23]?(\.\d+)?|node|nodejs|bun|perl|ruby)$/;
+
+/**
+ * 明确的写 API。判据必须**区分读写**：
+ * 本机 959 会话实测解释器用 `open(path)` 只读的合法操作有 122 条（读审计日志、
+ * 读 settings.json 做统计），把它们当写会直接误伤日常用法。
+ */
+const WRITE_API_RE =
+  /\b(?:writeFileSync|writeFile|write_text|write_bytes|appendFileSync|appendFile|unlinkSync|unlink|rmSync|rmdirSync|rmdir|renameSync|rename|copyFileSync|copyFile|truncateSync|truncate|mkdirSync|mkdir|Bun\.write|shutil\.(?:rmtree|move|copy2?|copyfile)|os\.(?:remove|unlink|rename|rmdir)|fs\.(?:writeFile|appendFile|unlink|rm|rename|mkdir|rmdir))\b/;
+
+/** `open(path, 'w'|'a'|'x'|'+')`：第二个参数含 w/a/x/+ 才算写；`open(path)` / `open(path,'r')` 是读 */
+const OPEN_WRITE_RE = /\bopen\s*\(\s*[^(),]+,\s*(['"])[^'"]*[wax+][^'"]*\1/;
+
+/**
+ * 解释器的「代码串」参数：`-c` / `-e` / `--eval` / `--print` 之后的那一个。
+ *
+ * 组合短选项（`-pe` / `-lc`）按「含 c/e/p 即认」，与 `dangerous-command.ts` 的
+ * `shortOptionValue` 同口径。刻意**不含 `i`**：perl 的 `-i` 是「原地编辑」开关，
+ * 真正的代码在紧邻的 `-e` 里；把 `i` 也算进来会把 `-e` 这个选项字符串当成代码。
+ */
+function interpreterCode(args: string[]): string | null {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") break;
+    if (a.startsWith("--")) {
+      if (a === "--eval" || a === "--print") return args[i + 1] ?? null;
+      continue;
+    }
+    if (!a.startsWith("-") || a === "-") continue;
+    if (/^-[A-Za-z]*[cep][A-Za-z]*$/.test(a)) return args[i + 1] ?? null;
+  }
+  return null;
+}
+
+/**
+ * 解释器是不是把 heredoc 正文当**脚本**（`python3 - <<'PY'`）。
+ * `python3 script.py <<EOF` 的正文是 stdin 数据，不是代码。
+ */
+function interpreterReadsCodeFromStdin(program: string, args: string[]): boolean {
+  if (!INTERPRETER_RE.test(program)) return false;
+  if (interpreterCode(args) !== null) return false; // 已有 -c/-e，stdin 是数据
+  for (const a of args) {
+    if (!a || a.startsWith("<<__SID_HD_")) continue; // heredoc 占位符不是位置参数
+    if (a === "-") return true; // 显式 "-"：从 stdin 读脚本
+    if (a.startsWith("-")) continue; // 解释器选项
+    return false; // 有脚本文件参数
+  }
+  return true; // 没有位置参数：解释器默认从 stdin 读
+}
+
+/** 代码串里的字符串字面量 → 路径候选（与 tool/jit-affected-paths.ts 的 bashWriteTargets 同一套过滤） */
+function literalPathCandidates(code: string): string[] {
+  const out: string[] = [];
+  // 超长代码通常是 heredoc 灌的大段内容，只判前段，避免扫描在极端输入上退化
+  const src = code.length > 4000 ? code.slice(0, 4000) : code;
+  for (let i = 0; i < src.length; i++) {
+    const quote = src[i];
+    if (quote !== "'" && quote !== '"') continue;
+    let j = i + 1;
+    let value = "";
+    let escaped = false;
+    for (; j < src.length; j++) {
+      const ch = src[j];
+      if (ch === "\\" && j + 1 < src.length) {
+        escaped = true;
+        j++;
+        continue;
+      }
+      if (ch === quote) break;
+      value += ch;
+    }
+    i = j;
+    // 转义 / 未闭合：可能是正则或没写完的串，不猜
+    if (escaped || j >= src.length) continue;
+    if (!isPathLikeLiteral(value)) continue;
+    if (!out.includes(value)) out.push(value);
+    if (out.length >= 32) break; // 病态输入上限
+  }
+  return out;
+}
+
+function isPathLikeLiteral(value: string): boolean {
+  if (!value || value.length > 240) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return false; // URL 不是本地路径
+  // 设备 / 临时目录不在受保护面，提出来只会多判一次
+  if (value.startsWith("/dev/") || value.startsWith("/tmp/")) return false;
+  // 连分隔符或扩展名都没有的字符串不是路径（`'w'`、`'utf-8'` 这类写模式 / 编码）
+  return value.includes("/") || value.includes(".");
+}
+
+/**
+ * 解释器代码串里的写目标候选（L3）。
+ *
+ * 两条判据同时满足才提取：① 代码串里有**写 API**（或 `open(...,'w'|'a'|'x'|'+')`）；
+ * ② 代码串里有字面量路径。提到什么不判「该不该拦」——候选统一交给 safetyCheck，
+ * 命中受保护路径才产生确认。
+ *
+ * 已知局限（静态分析的能力上限，不在本方案修）：拼接 / 变量 / `getattr` 反射拼出的
+ * 路径看不出来。这一档由 L4（always-allow 下「写 API 但目标不可判定」落确认）兜底，另开 PR。
+ */
+function interpreterWriteTargets(program: string, args: string[]): string[] {
+  if (!INTERPRETER_RE.test(program)) return [];
+  const code = interpreterCode(args);
+  if (code === null) return [];
+  return writeTargetsFromCode(code);
+}
+
+function writeTargetsFromCode(code: string): string[] {
+  if (!WRITE_API_RE.test(code) && !OPEN_WRITE_RE.test(code)) return [];
+  return literalPathCandidates(code);
+}
+
+/**
+ * `sed -i` / `perl -pi` 的文件参数：跳过内联脚本。
+ *
+ * 为什么必须跳：`sed -i 's/a/b/' f` 里的 `s/a/b/` 是**脚本**，收进来会让 checkpoint
+ * 去快照一个不存在的文件（`/undo` 列表里多一条噪音）。安全侧多一个候选只是多判一次，
+ * 但两侧现在共用同一份提取（`writeTargetsFromExpansion`），所以统一在这里收口。
+ *
+ * 只有「原地编辑」才写文件：`sed -e 's/a/b/' f` / `perl -pe '…' f` 是只读。
+ */
+function scriptProgramTargets(args: string[]): string[] {
+  const inplace = args.some(
+    (a) => a === "--in-place" || a.startsWith("--in-place=") || /^-[A-Za-z]*i/.test(a),
+  );
+  if (!inplace) return [];
+
+  const out: string[] = [];
+  let scriptSeen = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!a) continue;
+    // `-e <脚本>` / `--expression <脚本>` / `-f <脚本文件>`：显式给出的脚本，不是写入目标
+    if (a === "-e" || a === "--expression" || a === "-f" || a === "--file") {
+      i++;
+      scriptSeen = true;
+      continue;
+    }
+    if (a.startsWith("--expression=") || a.startsWith("--file=")) {
+      scriptSeen = true;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      // 组合短选项里的 e（`-pe` / `-pie`）：下一个参数是代码
+      if (/^-[A-Za-z]*e[A-Za-z]*$/.test(a)) {
+        i++;
+        scriptSeen = true;
+      }
+      continue;
+    }
+    if (!scriptSeen) {
+      scriptSeen = true; // 没有 -e/-f 时，第一个非选项参数就是内联脚本
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+/** find 的副作用动作：会真的删 / 写文件，或执行任意命令 */
+const FIND_SIDE_EFFECT_ACTIONS = new Set([
+  "-delete",
+  "-exec",
+  "-execdir",
+  "-ok",
+  "-okdir",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fls",
+]);
+
+/**
+ * `find` 的起点目录（L2）。
+ *
+ * 只取起点，不展开 `-name` / `-path` 过滤器：`find .git/hooks -name x -delete` 的起点
+ * 命中保护目录即够拦；`find . -name '*.ts' -delete` 的起点 `.` 不命中，就不新增确认——
+ * safetyCheck 的语义是保护特定路径，不是「所有删除都确认」。
+ * `-exec rm {} \;` 的参数 `{}` 静态不可知，起点目录已覆盖「在受保护目录内执行任意命令」。
+ */
+function findWriteTargets(args: string[]): string[] {
+  if (!args.some((a) => FIND_SIDE_EFFECT_ACTIONS.has(a))) return [];
+  const start = args.find((a) => a !== "" && !a.startsWith("-"));
+  return [start ?? "."];
+}
+
+/** `git rm` / `git mv` / `git restore` 的位置参数必是路径；`git checkout` 的首个位置参数可能是分支 */
+const GIT_PATH_SUBCOMMANDS = new Set(["rm", "mv", "restore"]);
+/**
+ * git 里带独立取值、且取值**不是路径**的选项：
+ * - `git restore -s HEAD~1 file`：`-s` / `--source` 的取值是 tree-ish；
+ * - `git checkout -b feat/x` / `-t origin/main`：取值是分支名 / 上游。
+ *   不跳过的话 `feat/x` 含 `/`，会被下面的「看起来像路径」启发式收成写目标。
+ */
+const GIT_PATH_OPTS_WITH_VALUE = new Set([
+  "-s",
+  "--source",
+  "--pathspec-from-file",
+  "-b",
+  "-B",
+  "--orphan",
+  "--track",
+  "-t",
+]);
+
+/**
+ * git 的**破坏性**子命令的路径参数（L1）。
+ *
+ * 修前 `git rm .git/hooks/pre-commit` / `git checkout -- <hook>` 在 always-allow 下
+ * 直接放行——同一件事写成 `rm .git/hooks/pre-commit` 会被 Step 6 拦。
+ *
+ * - `git rm` / `git mv` / `git restore`：位置参数必是路径（这三个不接受分支名），
+ *   `--` 前后都收。
+ * - `git checkout`：位置参数可能是分支 / commit，只收**看起来像路径**的（含 `/` 或 `.`）
+ *   与 `--` 之后的。`git checkout main` 不收（切分支），`git checkout foo.ts` 收
+ *   （checkpoint 侧要靠它给 `/undo` 留快照）。判不准的复杂形态不猜（方案 R8）。
+ */
+function gitWritePathTargets(args: string[]): string[] {
+  let k = 0;
+  while (k < args.length && args[k].startsWith("-")) {
+    if (GIT_GLOBAL_OPTS_WITH_VALUE.has(args[k])) k++;
+    k++;
+  }
+  const sub = args[k];
+  if (!sub) return [];
+  const isCheckout = sub === "checkout";
+  if (!isCheckout && !GIT_PATH_SUBCOMMANDS.has(sub)) return [];
+
+  const out: string[] = [];
+  let afterDashes = false;
+  for (let i = k + 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      afterDashes = true;
+      continue;
+    }
+    if (!afterDashes) {
+      if (a.startsWith("-")) {
+        // 选项的取值不是路径：`git restore -s HEAD~1 file`
+        if (GIT_PATH_OPTS_WITH_VALUE.has(a)) i++;
+        continue;
+      }
+      // checkout 的位置参数可能是分支名：只收看起来像路径的（`main` 不是，`foo.ts` 是）
+      if (isCheckout && !a.includes("/") && !a.includes(".")) continue;
+    }
+    if (a) out.push(a);
+  }
+  return out;
+}
+
+/**
+ * 从一次展开结果里提取写目标——safetyCheck 与 checkpoint 的**唯一**事实源。
  *
  * 宁多勿少：多出来的候选只会被 safetyCheck 判一次「是不是受保护路径」，不是就放过；
- * 漏一个则是一条免确认写入 hook 的路径。实测（修前，always-allow）：
- * `cp x .git/hooks/pre-commit` / `tee .git/hooks/pre-commit` / `sed -i … .git/hooks/pre-commit`
- * 全部静默放行——Step 2 的重定向检测只认 `>`，不认这些命令。
+ * 漏一个则是一条免确认写入 hook 的路径。
+ *
+ * 为什么抽成独立函数：checkpoint 侧（`getBashAffectedFiles`）与 safetyCheck 侧
+ * （`extractBashWriteTargets`）原先是两套实现，实测 `perl -pi` 在安全侧能识别、
+ * 在 checkpoint 侧不能，`mv` 源则反过来——修一处不会自动修另一处。
  */
-export function extractBashWriteTargets(cmd: string): string[] {
-  const { commands, scripts } = expandShellCommand(cmd);
+export function writeTargetsFromExpansion(expansion: ShellCommandExpansion): string[] {
+  const { commands, scripts, interpreterHeredocs } = expansion;
   const targets = new Set<string>();
   for (const s of scripts) {
     for (const t of detectRedirections(s).targets) targets.add(t);
@@ -558,9 +844,35 @@ export function extractBashWriteTargets(cmd: string): string[] {
         targets.add(a.slice("--output-document=".length));
       if (!a.startsWith("-")) nonOpt.push(a);
     }
-    if (program === "git") for (const t of gitOutputTargets(args)) targets.add(t);
+    if (program === "git") {
+      for (const t of gitOutputTargets(args)) targets.add(t);
+      for (const t of gitWritePathTargets(args)) targets.add(t);
+    }
+    if (program === "find") for (const t of findWriteTargets(args)) targets.add(t);
+    // `sed -i` / `perl -pi` 的文件参数（脚本 token 已跳过）
+    if (INLINE_SCRIPT_PROGRAMS.has(program)) {
+      for (const t of scriptProgramTargets(args)) targets.add(t);
+    }
+    for (const t of interpreterWriteTargets(program, args)) targets.add(t);
     if (ALL_ARGS_WRITE.has(program)) for (const a of nonOpt) targets.add(a);
     if (LAST_ARG_WRITE.has(program) && nonOpt.length >= 2) targets.add(nonOpt[nonOpt.length - 1]);
   }
+  // 解释器 heredoc：正文是代码，不是 shell 命令，走同一套「写 API + 字面量」判据
+  for (const body of interpreterHeredocs) {
+    for (const t of writeTargetsFromCode(body)) targets.add(t);
+  }
   return [...targets].filter((t) => t !== "" && t !== "-" && !t.startsWith("&"));
+}
+
+/**
+ * 提取 bash 命令可能写入的文件路径（供 safetyCheck 对 `.git/hooks` 等可执行路径做保护）。
+ *
+ * 实测（修前，always-allow）：
+ * `cp x .git/hooks/pre-commit` / `tee .git/hooks/pre-commit` / `sed -i … .git/hooks/pre-commit`
+ * 全部静默放行——Step 2 的重定向检测只认 `>`，不认这些命令。
+ * 同一类失明还有：`mv` 的源路径、`git rm` / `git checkout --` 的路径参数、`find -delete`
+ * 的起点、解释器 `-c`/`-e` 与解释器 heredoc 里的写路径（本次一并补齐）。
+ */
+export function extractBashWriteTargets(cmd: string): string[] {
+  return writeTargetsFromExpansion(expandShellCommand(cmd));
 }

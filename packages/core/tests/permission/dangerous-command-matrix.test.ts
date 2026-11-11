@@ -78,7 +78,14 @@ interface Verdict {
 }
 
 async function verdict(cmd: string, over: Record<string, unknown> = {}): Promise<Verdict> {
-  const r = await checker(over).check({ toolName: "bash", input: { command: cmd } });
+  // cwd 显式指向测试工作区。
+  //
+  // `find . -exec …` / `tee .` 这类命令的写目标起点会按 cwd 解析成绝对路径；不传 cwd 时
+  // 解析到**进程 cwd**。本地在 `.sid-code/worktrees/<slug>` 里跑本文件时，那个路径含
+  // `.sid-code/`，会被 Step 6 的 safetyCheck 判成受保护路径（B8 起 `find` 的起点进候选，
+  // 之前不进，所以这个环境依赖是新暴露出来的）。本文件测的是危险命令判定，
+  // 不该受 runner 路径影响——CI 的 cwd 不含 `.sid-code/`，但那只是碰巧。
+  const r = await checker(over).check({ toolName: "bash", input: { command: cmd, cwd: ws } });
   const dr = r.decisionReason as { pattern?: string; severity?: string } | undefined;
   return {
     allowed: r.allowed,

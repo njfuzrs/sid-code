@@ -15,6 +15,7 @@ import {
   setCurrentWorktreeSession,
 } from "../worktree/manager.ts";
 import { switchCwd, exitWorktreeCwd, notifyWorkspaceChange } from "../worktree/canonical.ts";
+import { exitWorktreePathsNotice } from "../worktree/path-semantics.ts";
 import { clearWorktreeState } from "../worktree/persistence.ts";
 import { killTmuxSession } from "../worktree/tmux.ts";
 import { logWorktreeEvent } from "../worktree/analytics.ts";
@@ -90,7 +91,12 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
       ? `\ntmux session 保留: ${session.tmuxSession}（tmux attach -t ${session.tmuxSession} 接入）`
       : "";
     return {
-      output: `已退出 Worktree（保留在 ${session.worktreePath}，分支 ${session.worktreeBranch}）${tmuxLine}`,
+      output:
+        `已退出 Worktree（保留在 ${session.worktreePath}，分支 ${session.worktreeBranch}）。` +
+        // CG-2（H3）：退出后上下文里还留着 worktree 路径，必须说明它不再是当前工作树，
+        // 否则下一轮写文件会继续用 worktree 路径（内容落到一个不再是"当前工作树"的目录）。
+        exitWorktreePathsNotice(session.worktreePath, session.originalCwd, false) +
+        tmuxLine,
     };
   }
 
@@ -164,6 +170,11 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
       discardedCommits: 0,
     });
     log.info("WORKTREE", `退出并删除 Worktree: ${session.worktreePath}`);
-    return { output: `已退出并删除 Worktree（${session.worktreeName}）` };
+    return {
+      output:
+        `已退出并删除 Worktree（${session.worktreeName}）。` +
+        // CG-2（H3）：删除后这个路径连"留在磁盘上"都不成立，必须说明它已不可用。
+        exitWorktreePathsNotice(session.worktreePath, session.originalCwd, true),
+    };
   }
 }
