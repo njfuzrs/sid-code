@@ -1,0 +1,2 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_x7","name":"web_search","input":{"query":"prompt injection 防御"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"搜索结果已收到。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
