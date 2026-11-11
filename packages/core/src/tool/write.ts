@@ -344,12 +344,18 @@ export class WriteTool implements Tool {
 
       // 结构化 diff 直传 UI(新建 → 全 + 行;覆盖 → 增删对照)。
       // output 仅一句话摘要,不含完整 diff —— 对齐 claude-code 省 token。
+      // CG-2（台账 H3）：worktree 会话里写到主仓路径时，在结果末尾给出可直接执行的替换路径。
+      // 是提示不是拦截 —— 用户确实可能想在 worktree 里顺手改主仓的一份共享配置。
+      // 动态 import：worktree/manager 会带进 fs/git 一整套依赖，不为一句提示让
+      // write 的模块图变重（非 worktree 会话下这里只是命 module cache）。
+      const { mainRepoWriteHint } = await import("../worktree/path-semantics.ts");
       const action = oldContent ? "已写入" : "已创建";
       return {
         output:
           `文件${action}: ${filePath}${lineDropWarning}` +
           (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : "") +
-          conflictNote,
+          conflictNote +
+          mainRepoWriteHint(filePath),
         structuredPatch: buildStructuredPatch(filePath, oldContent, contentToWrite),
       };
     } catch (err: any) {
