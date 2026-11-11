@@ -223,6 +223,19 @@ export class MemoryCommand implements LocalCommandModule {
         const { loadAllCLAUDEmd } = await import("@sid-code/core/config/rules.ts");
         const projectRules = await loadAllCLAUDEmd(process.cwd());
 
+        // 缺口 D / M4（CG-3）：deny 规则约束摘要必须跟着重建一起传。
+        // 启动路径（app.ts:4469、init-helpers.ts:596）都传，只有这条 reload 重建路径此前漏了，
+        // 结果是「刷新记忆」顺手把「哪些操作必被拒绝」的约束块抹掉，模型重新开始撞 deny 规则。
+        // 这里按**当前** checker 重取而不是复用启动时的值：reload 会重读 CLAUDE.md，
+        // 而 CLAUDE.md 可以改写 deny 规则（见 app.ts:4726 同一理由）。
+        let denyRulesSummary: string | undefined;
+        if (
+          ctx.permissionChecker &&
+          typeof (ctx.permissionChecker as any).describeDenyRules === "function"
+        ) {
+          denyRulesSummary = (ctx.permissionChecker as any).describeDenyRules() || undefined;
+        }
+
         const newPrompt = buildSystemPrompt({
           tools: ctx.toolRegistry.all(),
           projectRules: projectRules?.rawContent || undefined,
@@ -233,6 +246,7 @@ export class MemoryCommand implements LocalCommandModule {
           permissionMode: ctx.config.permissionMode,
           gitStatus: true,
           memorySystemPrompt,
+          denyRulesSummary,
           preferredLanguage: ctx.config.language,
           model: ctx.config.model,
           availableModels: ctx.config.availableModels,
