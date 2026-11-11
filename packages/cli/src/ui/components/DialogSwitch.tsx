@@ -90,7 +90,6 @@ export interface DialogSwitchProps {
 
   // /stats 面板展示所需的运行时数据
   usage: Usage;
-  stockInputTokens: number;
   costUSD: number;
   cacheSavingsUSD?: number;
   costLimit: number;
@@ -149,7 +148,6 @@ const DialogSwitchBody = ({
   sessionState,
   callbacks,
   usage,
-  stockInputTokens,
   costUSD,
   cacheSavingsUSD,
   costLimit,
@@ -366,11 +364,16 @@ const DialogSwitchBody = ({
     );
   }
   if (activeDialog === "stats") {
+    // 取价必须按「模型名 + 端点」复合键：同名模型在不同渠道的价不同，
+    // 不传端点会落到「仅模型名」或注册表兜底价 —— 面板显示的单价和实际计费的
+    // 不是同一条（D9）。端点解析与主循环同口径（模型自己的 baseURL > 顶层配置）。
+    const modelBaseURL =
+      callbacks.config?.availableModels?.find((m) => m.name === model)?.baseURL ??
+      callbacks.config?.baseURL;
     return (
       <StatsDialog
         onClose={onDialogClose}
         usage={usage}
-        stockInputTokens={stockInputTokens}
         costUSD={costUSD}
         cacheSavingsUSD={cacheSavingsUSD}
         costLimit={costLimit}
@@ -383,7 +386,7 @@ const DialogSwitchBody = ({
         // 实测 bug：deepseek-v4-pro 注册表里存的是 ¥9/M（currency:"CNY"），
         // StatsDialog 的 fmtPrice 直接按美元印成 "$9.00/M" —— 高估 7.1 倍。
         // 这正是 cost-tracker.ts 里 resolvePricingUSD 的文件注释点名的那个坑。
-        pricing={resolvePricingUSD(model, availableModels) ?? undefined}
+        pricing={resolvePricingUSD(model, availableModels, modelBaseURL) ?? undefined}
       />
     );
   }
