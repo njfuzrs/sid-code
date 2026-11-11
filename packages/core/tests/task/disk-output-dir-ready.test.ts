@@ -81,4 +81,41 @@ describe("DiskTaskOutput 输出目录就绪性", () => {
 
     expect(existsSync(output.filePath)).toBe(true);
   });
+
+  /**
+   * 2026-11-11 CI 回归：drain 是 append() 发起、无人 await 的后台 promise。写入失败时
+   * 若它 reject，生产里会被 CLI 全局 unhandledRejection 兜底 process.exit(1)，测试里则被
+   * bun 记成「Unhandled error between tests」判红当前用例（main 与 PR 在 macOS 上反复红）。
+   *
+   * 复现条件就是 monitor-task.test 的 afterEach 时序：任务还在吐输出时，构造时的输出
+   * 目录被删掉，而 SID_CONFIG_DIR 已切到别处——drain 里的 mkdir 建的是新目录，
+   * appendFile 写的仍是旧路径，于是 ENOENT。
+   */
+  test("落盘失败不产生未处理拒绝，flush 也不抛（输出只是取证日志）", async () => {
+    const taskId = "local_shell_dirtest4";
+    initTaskOutput(taskId);
+    const other = mkdtempSync(join(tmpdir(), "sid-disk-output-other-"));
+    const rejections: unknown[] = [];
+    const onRejection = (r: unknown) => rejections.push(r);
+    process.on("unhandledRejection", onRejection);
+    try {
+      process.env.SID_CONFIG_DIR = other;
+      rmSync(tmpHome, { recursive: true, force: true });
+
+      appendTaskOutput(taskId, "迟到的一行\n");
+      await flushTaskOutput(taskId);
+      // 让可能逃逸的拒绝有机会被派发到 unhandledRejection
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(rejections).toEqual([]);
+      // 失败后实例仍可用：后续 append 不抛、不卡死 flush
+      appendTaskOutput(taskId, "再来一行\n");
+      await flushTaskOutput(taskId);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
 });

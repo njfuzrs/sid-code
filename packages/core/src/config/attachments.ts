@@ -319,7 +319,13 @@ export function generateGitStatusAttachment(workingDir: string): SystemPromptAtt
       // 首行=显式声明这是启动快照,并**引导**模型:工作区文件状态未包含在此,需实时获取。
       "Git snapshot captured when this session started. It is frozen and will not refresh as the session goes on. " +
         "工作区文件状态(哪些文件被修改/新增/删除)未包含在此快照中(会随对话变化);" +
-        "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。",
+        "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。" +
+        // H2（CG-3）：分支同样会变，且变的不只是「本会话的 git 写命令」这一个来源。
+        // 本仓的标准流程是 worktree-xxx 改名成 fix/xxx，外部进程（IDE、另一个会话）也会切分支，
+        // 光靠「快照是启动时拍的」这句话，模型不足以推断出下面那行 Current branch 可能已过期。
+        // CG-6 会在本会话 bash 执行 git 写命令后比对前后分支（外部进程改的分支检测不到，见后续规划 §2.4 边界），
+        // 在那之前这行声明就是唯一的口径来源。
+        "当前分支也可能已经变了,以 `git branch --show-current` 为准,不要直接引用下面的 Current branch。",
       `Current branch: ${branch}`,
     ];
     if (mainBranch) lines.push(`Main branch (default PR target): ${mainBranch}`);

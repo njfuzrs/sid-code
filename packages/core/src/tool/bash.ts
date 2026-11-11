@@ -17,7 +17,7 @@ import type {
 } from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
-import { join, isAbsolute, resolve as resolvePath } from "path";
+import { join, isAbsolute, relative, resolve as resolvePath } from "path";
 import { readFileSync, unlinkSync, existsSync, realpathSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { describeAbortReason } from "../llm/errors.ts";
@@ -39,7 +39,7 @@ import { emitForegroundSleepGuided } from "../query/guidance-events.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
-import { getCwd, setCwd, getOriginalCwd } from "../bootstrap/state.ts";
+import { getCwd, setCwd, getOriginalCwd, getProjectRoot } from "../bootstrap/state.ts";
 import { getAgentRoot } from "../bootstrap/cwd-context.ts";
 import { createAndSaveSnapshot, escapeForShell } from "./bash/shell-snapshot.ts";
 import { z } from "zod/v4";
@@ -487,6 +487,22 @@ function realpathOr(p: string): string {
 }
 
 /**
+ * target 是否在 root 之内（含 root 本身）。
+ *
+ * CG-1 / R4 的门控判据：cwd 通知只在「离开或回到工作区根」时发（D1 裁决 ②）。
+ * 全量 3242 次 cd 里 1738 次落在仓库外，而仓库内部的 cd（`cd packages/core`）
+ * 不会让 enter_worktree 或 git 失败 —— 每次都发只是在花 token。
+ *
+ * ⚠️ 两边都必须 realpath 归一化：`switched` 来自 `pwd -P`（物理路径），
+ * 而 `getProjectRoot()` 是启动时的逻辑路径。macOS 的 `/tmp`→`/private/tmp`、
+ * `/var`→`/private/var` 会让「根内部的 cd」被误判成「跨出根」，通知一去一回刷两条。
+ */
+function isUnderWorkspaceRoot(target: string, root: string): boolean {
+  const rel = relative(realpathOr(root), realpathOr(target));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
  * 从 `git worktree add [<选项>] <path> [<commit-ish>]` 里取出 `<path>`（原样，未解析）。
  * 只认命令里第一处 `git worktree add`；取不到（变量、引号拼接等）返回 undefined —— 宁漏不误。
  */
@@ -543,6 +559,32 @@ function withCwdNotice(
   if (cwd?.switched) return `${output}${cwdChangeNotice(cwd.switched)}`;
   if (cwd?.staleCwd) return `${output}${cwdStaleNotice(cwd.staleCwd)}`;
   return output;
+}
+
+/**
+ * C1：`bun test <path>` 匹配 0 个文件时的提示（追加到 tool_result 末尾）。
+ *
+ * 为什么需要它：bun 在这种情况只输出一行 `Test filter "..." had no matches`。
+ * 模型看到「测试跑完了」就以为测过了，实际一条都没执行 —— 实测同一会话连续 4 次空转
+ * （01 C1，77684ab7 step 157/159/161/165），每次都要重来一遍。
+ *
+ * ⚠️ 实测（bun 1.4.2）这条命令的**退出码是 1**，01 C1 文档里写的「退出码 0」不准。
+ * 所以 isError 本来就是 true —— 本改动**不动判据**，只补一条「为什么失败 + 下一步」，
+ * 因为原报错里除了那行英文短语之外没有任何可执行指引。
+ *
+ * 文案里的路径写法是实测结论：`bun test` 的位置参数是**完整路径子串匹配**，不是目录
+ * ——本仓 `bun test tests/` 搜 692 个文件、`bun test ./tests/` 才是 38 个。
+ */
+function bunTestNoMatchNotice(command: string, output: string): string {
+  if (!/\bbun\s+test\b/.test(command)) return "";
+  if (!/had no matches/.test(output)) return "";
+  return (
+    `\n[没有匹配到测试文件] 这条 \`bun test\` 的路径/过滤器没有匹配到任何测试文件，` +
+    `一条测试都没跑。\n` +
+    `请先核对：① 当前工作目录是否是你以为的那个（bash \`cd\` 之后相对路径基准会变）；` +
+    `② 路径写法——\`bun test\` 的位置参数是**完整路径子串匹配**，不是目录：` +
+    `\`bun test tests/\` 会匹配所有含 \`tests/\` 的路径，\`bun test ./tests/\` 才是该目录。`
+  );
 }
 
 /** 回扫清单在结果里最多列多少个路径（每类各自计数，避免一次大规模格式化灌满上下文） */
@@ -619,6 +661,11 @@ export class BashTool implements Tool {
   private snapshotReady: Promise<void>;
   /** macOS Seatbelt 沙箱管理器（可选，通过 setter 注入） */
   private sandboxManager: import("../permission/sandbox.ts").SandboxManager | null = null;
+  /**
+   * CG-1 / R4：cwd 跨出（或回到）工作区根时的通知回调。
+   * null = 未接线（测试 / 无头路径），此时只有 tool_result 里的一次性尾注。
+   */
+  private cwdSwitchListener: ((newCwd: string) => void) | null = null;
 
   /**
    * F1：与 read/edit/write 共享的 FileReadTracker。前台命令结束后回扫它追踪的文件，
@@ -646,6 +693,40 @@ export class BashTool implements Tool {
     const view = Object.create(this) as BashTool;
     view.tracker = tracker;
     return view;
+  }
+
+  /**
+   * CG-1 / R4：注入「cwd 跨出/回到工作区根」的通知回调（CLI 在 ctxMgr 就绪后接线）。
+   *
+   * 为什么用注入而不是让 bash 直接调 ctxMgr：bash 工具在 core 的工具层，
+   * ContextManager 的持有者是 CLI 的 App；反向依赖会成环，而 core 里已有的
+   * `setSandboxManager` / `withFileReadTracker` 都是同一个方向（外层注入给工具）。
+   */
+  setCwdSwitchListener(fn: ((newCwd: string) => void) | null): void {
+    this.cwdSwitchListener = fn;
+  }
+
+  /**
+   * CG-1 / R4：cwd 跨出（或回到）工作区根时，通知外层排一条**值型**变更通知。
+   *
+   * 为什么只在这一类变更上发（D1 的裁决 ②）：全量 3242 次 cd 里 1738 次落在仓库外，
+   * 而仓库内部的 cd（`cd packages/core`）不会让 enter_worktree 或 git 失败，
+   * 每次都发只是花 token。真正需要「此前说法作废」的，是模型判断「我在哪个项目里」
+   * 这一刻失效的时候。
+   *
+   * 为什么通知要带作废声明而不是只说新值：只播报不撤销的话，历史里那条权威的
+   * 「当前工作目录是 X」仍然在，模型会两个都信 —— 这是 §2.2 采纳附件 B §10.2 的理由。
+   * 文案由外层（CLI）组装：它才知道语言偏好与持久块的消费格式。
+   */
+  private notifyWorkspaceRootCrossing(prevCwd: string, newCwd: string): void {
+    if (!this.cwdSwitchListener) return;
+    try {
+      const root = getProjectRoot();
+      if (isUnderWorkspaceRoot(prevCwd, root) === isUnderWorkspaceRoot(newCwd, root)) return;
+      this.cwdSwitchListener(newCwd);
+    } catch {
+      /* 通知失败绝不影响命令结果本身 */
+    }
   }
 
   /** 注入沙箱管理器（macOS Seatbelt） */
@@ -919,6 +1000,9 @@ export class BashTool implements Tool {
   ): { switched?: string; staleCwd?: string } {
     if (!cwdFile) return {};
     let switched: string | undefined;
+    // CG-1 / R4：变更前的全局 cwd。通知要说明「从哪个目录换到哪个」，
+    // 也用它做「是否跨出/回到工作区根」的判定（D1 裁决 ②）。
+    const prevCwd = getCwd();
     try {
       if (success) {
         // 裸 readFileSync 需自行 NFC 归一化（normalizeToolPath 内部已做，但此处直读文件）
@@ -945,7 +1029,10 @@ export class BashTool implements Tool {
         /* 忽略 */
       }
     }
-    if (switched) return { switched };
+    if (switched) {
+      this.notifyWorkspaceRootCrossing(prevCwd, switched);
+      return { switched };
+    }
     // 没切换成功时才检查失效 —— 切换成功意味着新 cwd 存在（上面 existsSync 已验），
     // 两个告知同时出现只会让模型困惑。
     const cur = getCwd();
@@ -963,11 +1050,17 @@ export class BashTool implements Tool {
     // 窗口（构造期就在建 shell 快照）——那时模型还没读过文件，tracker 是空的，无影响。
     const snapshot = this.beginBashTracking(input);
     const result = await this.executeCommand(input, signal, onProgress);
+    // C1：`bun test` 0 匹配时补一句提示（只追加文案，不动 isError / 退出码）
+    const cmd = (input as { command?: unknown } | null)?.command;
+    const noMatch = typeof cmd === "string" ? bunTestNoMatchNotice(cmd, result.output ?? "") : "";
+    const withNoMatch = noMatch
+      ? { ...result, output: `${result.output ?? ""}${noMatch}` }
+      : result;
     return this.withTrackedFileChanges(
       input,
       this.withForegroundSleepNotice(
         input,
-        this.withSandboxMeta(this.withWaitUntilNotice(input, result)),
+        this.withSandboxMeta(this.withWaitUntilNotice(input, withNoMatch)),
       ),
       snapshot,
     );

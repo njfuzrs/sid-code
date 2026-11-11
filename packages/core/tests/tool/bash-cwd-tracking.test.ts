@@ -14,7 +14,13 @@ import { join } from "path";
 import { BashTool, parseWorktreeAddPath } from "@sid-code/core/tool/bash.ts";
 import { withAgentCwd } from "@sid-code/core/bootstrap/cwd-context.ts";
 import { normalizeToolPath } from "@sid-code/core/tool/path-utils.ts";
-import { getCwd, setCwd, getOriginalCwd } from "@sid-code/core/bootstrap/state.ts";
+import {
+  getCwd,
+  setCwd,
+  getOriginalCwd,
+  getProjectRoot,
+  setProjectRoot,
+} from "@sid-code/core/bootstrap/state.ts";
 
 let tmpRoot: string;
 let originalGlobalCwd: string;
@@ -395,6 +401,148 @@ describe("git worktree add 后提示路径", () => {
     });
     expect(r.isError).toBe(true);
     expect(String(r.output)).not.toContain("[已创建 worktree]");
+  });
+});
+
+/**
+ * CG-1 / R4：cwd 的「值型」变更通知。
+ *
+ * 判据按 D1 裁决 ②：只在「离开或回到工作区根」时发。仓库内部的 cd
+ * （`cd packages/core`）不会让 enter_worktree 或 git 失败，发通知只是烧 token。
+ */
+describe("cwd 跨出/回到工作区根时发值型通知（CG-1 R4）", () => {
+  it("cd 到工作区根之外 → 触发一次，并带上新目录", async () => {
+    if (process.platform === "win32") return;
+    const origRoot = getProjectRoot();
+    const outside = mkdtempSync(join(tmpdir(), "sid-outside-"));
+    try {
+      setProjectRoot(tmpRoot);
+      setCwd(tmpRoot);
+      const calls: string[] = [];
+      const bash = new BashTool();
+      bash.setCwdSwitchListener((d) => calls.push(d));
+
+      const r = await bash.execute({ command: `cd "${outside}"`, description: "cd 出工作区根" });
+
+      expect(r.isError).toBeFalsy();
+      expect(calls).toHaveLength(1);
+      // pwd -P 给物理路径（macOS 的 /var → /private/var），只断言目录名
+      expect(calls[0]).toContain("sid-outside-");
+    } finally {
+      setProjectRoot(origRoot);
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("工作区根内部的 cd 不发通知（D1 裁决 ②）", async () => {
+    if (process.platform === "win32") return;
+    const origRoot = getProjectRoot();
+    const sub = join(tmpRoot, "nested", "deep");
+    mkdirSync(sub, { recursive: true });
+    try {
+      setProjectRoot(tmpRoot);
+      setCwd(tmpRoot);
+      const calls: string[] = [];
+      const bash = new BashTool();
+      bash.setCwdSwitchListener((d) => calls.push(d));
+
+      const r = await bash.execute({
+        command: `cd "${sub}"`,
+        description: "cd 到根内部的子目录",
+      });
+
+      expect(r.isError).toBeFalsy();
+      expect(getCwd().endsWith("/nested/deep")).toBe(true);
+      expect(calls).toHaveLength(0);
+    } finally {
+      setProjectRoot(origRoot);
+    }
+  });
+
+  it("从根外回到工作区根 → 也触发（撤销是双向的）", async () => {
+    if (process.platform === "win32") return;
+    const origRoot = getProjectRoot();
+    const outside = mkdtempSync(join(tmpdir(), "sid-outside-"));
+    try {
+      setProjectRoot(tmpRoot);
+      setCwd(outside);
+      const calls: string[] = [];
+      const bash = new BashTool();
+      bash.setCwdSwitchListener((d) => calls.push(d));
+
+      const r = await bash.execute({ command: `cd "${tmpRoot}"`, description: "回到工作区根" });
+
+      expect(r.isError).toBeFalsy();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("sid-cwd-test-");
+    } finally {
+      setProjectRoot(origRoot);
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("未注入回调时静默（无头 / 测试路径不炸）", async () => {
+    if (process.platform === "win32") return;
+    const outside = mkdtempSync(join(tmpdir(), "sid-outside-"));
+    try {
+      setCwd(tmpRoot);
+      const bash = new BashTool();
+      const r = await bash.execute({ command: `cd "${outside}"`, description: "无监听器时 cd" });
+      expect(r.isError).toBeFalsy();
+      expect(getCwd()).toContain("sid-outside-");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * CG-1 / R6：`bun test <path>` 匹配 0 个文件时补提示。
+ *
+ * bun 的输出是 `Test filter "..." had no matches` + 退出码 0 —— 模型看到「成功」
+ * 就以为测过了，实际一条没跑（01 C1 的 4 次连续空转）。
+ */
+describe("bun test 0 匹配时追加提示（CG-1 R6）", () => {
+  it("输出含 had no matches 时追加提示，且不改 isError", async () => {
+    if (process.platform === "win32") return;
+    setCwd(tmpRoot);
+    const bash = new BashTool();
+    const r = await bash.execute({
+      command: "bun test ./definitely-no-such-test-file-xyz.ts",
+      description: "跑一个不存在的测试文件",
+    });
+    // 实测 bun 1.4.2 的退出码是 1（01 C1 文档写的「退出码 0」不准），所以 isError
+    // 本来就是 true。本改动不动判据，只补「为什么失败 + 下一步」——
+    // 原报错里除了一行英文短语之外没有任何可执行指引。
+    expect(r.isError).toBe(true);
+    expect(String(r.output)).toContain("没有匹配到测试文件");
+  });
+
+  it("真匹配到测试文件时不追加提示（不误报）", async () => {
+    if (process.platform === "win32") return;
+    writeFileSync(
+      join(tmpRoot, "ok.test.ts"),
+      `import { test, expect } from "bun:test";\ntest("ok", () => { expect(1).toBe(1); });\n`,
+      "utf8",
+    );
+    setCwd(tmpRoot);
+    const bash = new BashTool();
+    const r = await bash.execute({
+      command: "bun test ./ok.test.ts",
+      description: "跑一个真实测试文件",
+    });
+    expect(String(r.output)).not.toContain("没有匹配到测试文件");
+  });
+
+  it("非 bun test 命令即使输出里恰有该短语也不提示（只认命令前缀）", async () => {
+    if (process.platform === "win32") return;
+    setCwd(tmpRoot);
+    const bash = new BashTool();
+    const r = await bash.execute({
+      command: `echo "Test filter x had no matches"`,
+      description: "普通 echo",
+    });
+    expect(String(r.output)).not.toContain("没有匹配到测试文件");
   });
 });
 

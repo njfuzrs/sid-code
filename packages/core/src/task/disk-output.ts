@@ -7,6 +7,7 @@ import { appendFile, mkdir, stat, open, unlink } from "fs/promises";
 import { mkdirSync } from "fs";
 import { join } from "path";
 import { sidPaths } from "../config/paths.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** 输出目录 */
 function getOutputDir(): string {
@@ -42,6 +43,8 @@ export class DiskTaskOutput {
    *  让 flush() 在真正的 appendFile 落盘前就返回（读端拿到不存在/空文件）。 */
   #drainPromise: Promise<void> | null = null;
   #filePath: string;
+  /** 落盘失败的 warn 只记一次（见 #drain 注释） */
+  #writeFailureLogged = false;
 
   constructor(taskId: string) {
     // 建目录必须与算路径在同一处、同步完成：调用方拿到 filePath 后随时可能
@@ -76,16 +79,45 @@ export class DiskTaskOutput {
     }
   }
 
+  /**
+   * 排空写入队列。**永不 reject**：`append()` 发起 drain 后不 await 它（fire-and-forget），
+   * 一旦这里抛出，就是一个没人接的 rejected promise。
+   *
+   * 2026-11-11 实测后果（CI macOS 上 main 与两个 PR 反复红）：
+   * - 生产：CLI 的全局 `unhandledRejection` 兜底对非 abort 错误会 `process.exit(1)`，
+   *   于是「`.output` 写不进去」（目录被删 / 磁盘满 / 权限）会把整个会话带走——
+   *   而 `.output` 只是事后取证日志，落盘失败本不该影响主流程（monitor 的 T-M1-12 口径）。
+   * - 测试：bun 把它记成「Unhandled error between tests」算到**当前**用例头上并立即判红，
+   *   被判红用例的 async 体却仍在后台跑，它的 `waitFor` 会抢走下一个用例的通知，
+   *   于是一处 ENOENT 连锁成 2–3 条看起来互不相关的失败（超时 / 收到别人的终态）。
+   *
+   * 失败时丢掉这一批并记一条 warn（同一实例只记一次，避免高频输出刷屏日志）。
+   */
   async #drain(): Promise<void> {
-    // 与构造函数里的 ensureOutputDir() 看似重复，但**两处都要保留**：构造函数保证
-    // 「拿到 filePath 时目录已存在」，这里保证「真正写入时目录仍然存在」。
-    // 任务生命周期可以很长（后台任务跑几十分钟），期间 ~/.sid-code/tasks/ 可能被
-    // 用户清理、被 /clear 之类的命令删掉。两次 mkdir 都是 recursive 幂等的，代价可忽略。
-    await mkdir(getOutputDir(), { recursive: true });
-    while (this.#queue.length > 0) {
-      const chunks = this.#queue.splice(0);
-      const data = chunks.join("");
-      await appendFile(this.#filePath, data);
+    try {
+      // 与构造函数里的 ensureOutputDir() 看似重复，但**两处都要保留**：构造函数保证
+      // 「拿到 filePath 时目录已存在」，这里保证「真正写入时目录仍然存在」。
+      // 任务生命周期可以很长（后台任务跑几十分钟），期间 ~/.sid-code/tasks/ 可能被
+      // 用户清理、被 /clear 之类的命令删掉。两次 mkdir 都是 recursive 幂等的，代价可忽略。
+      await mkdir(getOutputDir(), { recursive: true });
+      while (this.#queue.length > 0) {
+        const chunks = this.#queue.splice(0);
+        const data = chunks.join("");
+        await appendFile(this.#filePath, data);
+      }
+    } catch (err) {
+      this.#queue.length = 0;
+      if (!this.#writeFailureLogged) {
+        this.#writeFailureLogged = true;
+        try {
+          getLogger().warn(
+            "TASK",
+            `任务输出落盘失败，本批丢弃（不影响任务本身）: ${this.#filePath}: ${(err as Error)?.message ?? err}`,
+          );
+        } catch {
+          /* logger 未初始化时不能让日志本身再抛出 */
+        }
+      }
     }
   }
 

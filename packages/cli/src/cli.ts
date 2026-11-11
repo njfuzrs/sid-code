@@ -23,6 +23,9 @@ import { clearFileIntent } from "@sid-code/core/session/file-intent.ts";
 // 下方 `setPolicyLimits(policy.policyLimits)` **之后**执行，读得到已注入的策略。
 import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
+// CG-1 / R1：MemoryStore 按「工作区根」归属（记忆跨 worktree 共享），
+// 用 process.cwd() 表达只是巧合成立——进 worktree 后它就不再是项目身份了。
+import { getProjectRoot } from "@sid-code/core/bootstrap/state.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "@sid-code/core/migrations/runner.ts";
 import { getVersionDisplay } from "@sid-code/shared/version.ts";
@@ -1889,7 +1892,7 @@ export async function main(): Promise<void> {
     } else {
       fileReadTracker.conflictSeverity = (rawSeverity as any) ?? "warn"; // 默认弹框
     }
-    const memoryStore = new MemoryStore(process.cwd());
+    const memoryStore = new MemoryStore(getProjectRoot());
 
     const { BashTool } = await import("@sid-code/core/tool/bash.ts");
     const { GrepTool } = await import("@sid-code/core/tool/grep.ts");

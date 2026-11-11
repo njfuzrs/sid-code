@@ -54,6 +54,7 @@ import { dirname } from "node:path";
 import { isRealUserSidHome, sidPaths } from "../config/paths.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import { getLogger } from "../debug/logger.ts";
+import { PublicFetchTimeoutError, fetchPublicUrl } from "../net/public-fetch.ts";
 // 上下文超限判定的唯一事实源（见 learnFromError 第 3 段的委托说明）
 import { isPromptTooLong } from "../api/errors.ts";
 // 「写哪些键」与「查哪些键」的唯一事实源（互为镜像，对称性由单测锁住）
@@ -1319,40 +1320,10 @@ function voteEntries(candidates: CandidateEntry[]): ModelCapabilityEntry | null 
 const CATALOG_BODY_MAX_BYTES = 32 * 1024 * 1024;
 
 /**
- * 读响应体并强制字节上限。超限即抛（由 fetchCatalog 统一按「该源失败」处理）。
- *
- * 必须流式读 + 边读边计数：先 `arrayBuffer()` 再看长度等于已经把超大 payload 收进内存了，
- * 上限也就白设。`content-length` 也不能单独作为判据 —— 它由对端提供，可以撒谎或缺失。
+ * 读响应体并强制字节上限的实现已下沉到 `net/public-fetch.ts`（`maxBytes` 选项）：
+ * 体积限额与「连接 + 读 body 的整段超时」必须放在同一层，否则 fetch 返回后调用方自己
+ * 读 body 的那段就不受超时信号约束了。这里只保留上限常量本身。
  */
-async function readBodyCapped(resp: Response): Promise<Uint8Array> {
-  const declared = Number(resp.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > CATALOG_BODY_MAX_BYTES) {
-    throw new Error(`响应体声明 ${declared} 字节，超过上限 ${CATALOG_BODY_MAX_BYTES}`);
-  }
-  const reader = resp.body?.getReader();
-  if (!reader) return new Uint8Array(await resp.arrayBuffer());
-
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > CATALOG_BODY_MAX_BYTES) {
-      await reader.cancel().catch(() => {});
-      throw new Error(`响应体超过上限 ${CATALOG_BODY_MAX_BYTES} 字节，已中断`);
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.byteLength;
-  }
-  return out;
-}
 
 /** 单源拉取结果。`notModified` 与 `parsed === null` 是两件事，调用方必须区分。 */
 interface FetchCatalogResult {
@@ -1380,12 +1351,6 @@ async function fetchCatalog(
   timeoutMs: number,
   opts?: { allowConditional?: boolean; validator?: { etag?: string; lastModified?: string } },
 ): Promise<FetchCatalogResult> {
-  const ctl = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    ctl.abort();
-  }, timeoutMs);
   try {
     // zstd 源返回的是 application/octet-stream 一类，别声明只接受 JSON。
     const headers: Record<string, string> = {
@@ -1397,8 +1362,16 @@ async function fetchCatalog(
         headers["if-modified-since"] = opts.validator.lastModified;
       }
     }
-    const resp = await fetch(src.url, { method: "GET", headers, signal: ctl.signal });
-    const validator = readValidator(resp);
+    // 走共享的公共源拉取：域名路径 4s 内拿不到响应头时自动改试 IPv4 直连。
+    // 裸 fetch 在「有 IPv6 地址但上游黑洞」的网络上会一直挂到超时（见 net/public-fetch.ts）。
+    // body 的流式限额也在那一层，所以这里传同一个 32MiB 上限。
+    const resp = await fetchPublicUrl(src.url, {
+      headers,
+      timeoutMs,
+      maxBytes: CATALOG_BODY_MAX_BYTES,
+      onFallback: (info) => log().debug("MODEL-CAP", info.reason, { url: src.url }),
+    });
+    const validator = readValidator(resp.headers);
     if (resp.status === 304) {
       // 本地那份仍有效。不读正文、不解析，也**不算失败** —— 计进退避会让「数据没变」
       // 被当成「源挂了」，几轮之后把 TTL 拖到 24h 封顶。
@@ -1409,7 +1382,7 @@ async function fetchCatalog(
       log().debug("MODEL-CAP", `目录源 HTTP ${resp.status}`, { url: src.url });
       return { parsed: null, notModified: false };
     }
-    const body = await readBodyCapped(resp);
+    const body = resp.bytes;
     // 解压后的体积不再设第二道上限：zstd 源实测 140KB → 4.0MB（约 29 倍），而压缩包本身
     // 已经过 32MiB 门。真要防 zip bomb 需要解压时流式限额，Bun.zstdDecompressSync 做不到；
     // 该源是已知镜像、非用户可控输入，这个残余风险按可接受处理。
@@ -1426,19 +1399,21 @@ async function fetchCatalog(
     };
   } catch (e) {
     // 与 gateway-pricing 同理：这是纯优化项，失败对用户不可行动 → debug 级，不惊扰终端。
-    log().debug("MODEL-CAP", timedOut ? `目录源超时 ${timeoutMs}ms` : `目录源失败: ${String(e)}`, {
-      url: src.url,
-    });
+    log().debug(
+      "MODEL-CAP",
+      e instanceof PublicFetchTimeoutError
+        ? `目录源超时 ${timeoutMs}ms`
+        : `目录源失败: ${String(e)}`,
+      { url: src.url },
+    );
     return { parsed: null, notModified: false };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
 /** 从响应头读 validator（两者都缺则 undefined，代表该源不支持条件请求）。 */
-function readValidator(resp: Response): { etag?: string; lastModified?: string } | undefined {
-  const etag = resp.headers.get("etag") ?? undefined;
-  const lastModified = resp.headers.get("last-modified") ?? undefined;
+function readValidator(headers: Headers): { etag?: string; lastModified?: string } | undefined {
+  const etag = headers.get("etag") ?? undefined;
+  const lastModified = headers.get("last-modified") ?? undefined;
   if (!etag && !lastModified) return undefined;
   const out: { etag?: string; lastModified?: string } = {};
   // 与磁盘侧同一套约束（长度 + 无 CR/LF）：这个值会被写盘、下一轮再塞进请求头。
