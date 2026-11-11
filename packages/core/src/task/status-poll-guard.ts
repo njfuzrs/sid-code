@@ -314,6 +314,21 @@ export function checkStatusQueryPoll(
 }
 
 /**
+ * N8：**没有声明任何等待源**时，同一状态连续第二次没变，就告诉模型「还能怎么等」。
+ *
+ * 判据与拦截**刻意不改**（`checkStatusQueryPoll` 判据 1 没有声明就一次都不拦，T-P1-4）：
+ * 全局按形态拦截的误判率 ≈100%（`.agents/notes/rejected/feature/2026-07-14-工具循环检测默认开启.md`），
+ * 能开的唯一理由是「模型自己声明了在等」。但「不拦」不等于「不说」——
+ * 事故会话 962011a6 在 `gh run rerun` 之后 68 次前台查询、0 个等待原语、20.8M 输入 token，
+ * 期间 harness 没有一句话告诉它还有后台等待这种做法（改动前这里只回「没有等待源，不要反复查询」，
+ * 有否定、没出路）。这条提示只指出路，不改任何执行行为。
+ */
+export const UNWAITED_POLL_HINT =
+  "[重复查询] 结果与上次相同，且当前没有挂任何等待源。要等它变化，" +
+  "用后台 bash + wait_until_seconds（条件满足就退出的循环）或 monitor 挂上等待，" +
+  "然后结束本轮；不要在前台反复查询。";
+
+/**
  * 执行后记录：只有**真的执行了**才调用（被拦的那次不更新 memo）。
  *
  * @returns 需要追加到工具结果末尾的提示（第一次观察到相同时给，其余为空）
@@ -342,7 +357,11 @@ export function recordStatusQueryResult(
     // 只提示一次（sameRun === 2 这一次），之后就走拦截，不必每轮都念一遍。
     // 文案与回执共用 `describeWaitRelation`（D12 第 3 条）：两处过去各写一份，
     // 且都 fallback 到第一个等待源，会拿无关的普通后台 shell 说「正在盯着」（R10 的同款错误）。
+    //
+    // N8：没有声明等待源时不走上面那套（那套的结论是「没人盯着，别问了」，有否定没出路），
+    // 换成指出路的一段。判据与执行行为都不变——这里只决定追加哪段文案。
     if (sameRun === 2) {
+      if (!ctx.hasDeclaredExternalWait()) return UNWAITED_POLL_HINT;
       return `[等待中] 结果与上次相同。${describeWaitRelation(matched.subject, ctx.listWaits())}`;
     }
     return undefined;

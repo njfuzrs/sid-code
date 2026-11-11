@@ -232,6 +232,8 @@ import {
   isTerminalStatus,
   // P1：等待期状态查询守卫拦下的调用，供下面 UnchangedObservationRun 的 intervened 埋点消费
   consumeStatusPollIntervened,
+  // N8：停滞 L1 文案要点名「改用后台等待」，判据复用 P1 的命令表（同一条真实轨迹证据）
+  matchStatusQuery,
 } from "../task/index.ts";
 import { buildInternalMessage, hasInternalOrigin } from "../context/internal-message.ts";
 import {
@@ -7108,6 +7110,8 @@ async function collectStallObservation(
   const bashOutputs: string[] = [];
   let ranMutatingBash = false;
   let deliveryAction = false;
+  let bashCommands = 0;
+  let statusQueryCommands = 0;
   for (const b of toolBlocks) {
     if (b.type !== "tool_use") continue;
     const r = resultMap.get(b.id);
@@ -7122,6 +7126,13 @@ async function collectStallObservation(
       }
     } else if (b.name === "bash") {
       const cmd = b.input?.command;
+      // N8：判「多数 bash 调用是前台查外部状态」——L1 文案据此点名「改用后台等待」。
+      // 只算前台：后台 bash 是合法的等待手段（`wait_until_seconds`），不是轮询。
+      // 失败也算：命令报错后重试同样是轮询形态，而且这条只影响文案、不参与任何停机判据。
+      if (typeof cmd === "string") {
+        bashCommands++;
+        if (b.input?.run_in_background !== true && matchStatusQuery(cmd)) statusQueryCommands++;
+      }
       if (typeof cmd === "string" && !isReadonlyProbeCommand(cmd)) ranMutatingBash = true;
       // 交付 / 验证轮不计入 L2（2026-11-06 抽检：5 条误伤全落在收尾阶段）。失败的不算——
       // commit 被 hook 拦住、门禁没跑起来都不产生新信息，不该把停滞窗口排掉。
@@ -7140,7 +7151,14 @@ async function collectStallObservation(
   const rehashedFiles = ranMutatingBash
     ? [...trackedFiles].map((p) => ({ path: p, content: read(p) }))
     : [];
-  return { mutatedFiles, bashOutputs, rehashedFiles, deliveryAction };
+  return {
+    mutatedFiles,
+    bashOutputs,
+    rehashedFiles,
+    deliveryAction,
+    bashCommands,
+    statusQueryCommands,
+  };
 }
 
 function emitStallEscalationEvent(

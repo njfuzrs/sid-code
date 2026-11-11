@@ -14,6 +14,7 @@ import {
   hashContent,
   workspaceStateHash,
   buildStallL1Message,
+  isPollDominatedStatusQuery,
   isDeliveryActionCommand,
   STALL_WINDOW_TURNS,
   STALL_L2_AFTER_L1_TURNS,
@@ -489,11 +490,65 @@ describe("文案", () => {
       l2Count: 0,
       bgWaitTurns: 0,
       deliveryTurns: 0,
+      bashCommands: 0,
+      statusQueryCommands: 0,
     };
     expect(buildStallL1Message(s, sig)).toContain("还没有观察到一次全绿");
     s.lastGreen = { turn: 7, stateHash: "abcdef0123456789" };
     const msg = buildStallL1Message(s, sig);
     expect(msg).toContain("第 7 个工具轮");
     expect(msg).toContain("abcdef01");
+  });
+});
+
+describe("N8：L1 文案在轮询占多数时点名后台等待", () => {
+  test("多数 bash 调用是外部状态查询 → 追加可执行的出路", () => {
+    const s = createStallState(0);
+    const d = idle(s, STALL_WINDOW_TURNS, {
+      unchangedReports: 1,
+      bashCommands: 1,
+      statusQueryCommands: 1,
+    });
+    expect(d.level).toBe(1);
+    if (d.level !== 1) throw new Error("unreachable");
+    // 文档 §N8 修法 2：点名「改用后台等待并结束本轮」，而不是只劝「停止改动，提交收尾」
+    expect(d.message).toContain("多数 bash 调用是在前台反复查询外部状态");
+    expect(d.message).toContain("wait_until_seconds");
+    expect(d.message).toContain("monitor");
+    expect(d.message).toContain("结束本轮");
+    // 原收敛提示不能被替换掉（N8 是「补一句」，不是「换一套」）
+    expect(d.message).toContain("停止改动，提交收尾");
+  });
+
+  test("查询被其他 bash 稀释 → 不追加（仍是原收敛提示）", () => {
+    const s = createStallState(0);
+    const d = idle(s, STALL_WINDOW_TURNS, {
+      unchangedReports: 1,
+      bashCommands: 3,
+      statusQueryCommands: 1,
+    });
+    expect(d.level).toBe(1);
+    if (d.level !== 1) throw new Error("unreachable");
+    expect(d.message).not.toContain("wait_until_seconds");
+  });
+
+  test("查询次数不足 STALL_L1_POLL_MIN → 不追加（1/1、2/2 的偶然采样不该改变文案）", () => {
+    const s = createStallState(0);
+    s.toolTurns = STALL_WINDOW_TURNS;
+    s.bashCommands = 2;
+    s.statusQueryCommands = 2;
+    expect(isPollDominatedStatusQuery(s)).toBe(false);
+    s.statusQueryCommands = 3;
+    s.bashCommands = 3;
+    expect(isPollDominatedStatusQuery(s)).toBe(true);
+  });
+
+  test("「多数」判据是严格过半：3/6 不算，3/5 才算", () => {
+    const s = createStallState(0);
+    s.statusQueryCommands = 3;
+    s.bashCommands = 6;
+    expect(isPollDominatedStatusQuery(s)).toBe(false);
+    s.bashCommands = 5;
+    expect(isPollDominatedStatusQuery(s)).toBe(true);
   });
 });

@@ -404,3 +404,42 @@ describe("P1 真实轨迹回放（T-P1-11）", () => {
     expect(STATUS_POLL_BLOCK_AFTER_SAME).toBe(2);
   });
 });
+
+describe("N8：没有声明等待源时的重复查询 → 追加后台等待出路", () => {
+  test("无等待源 + 同一状态第 2 次相同 → 追加引导；判据 1 不变（一次都不拦）", () => {
+    const { ctx } = makeCtx({ hasWait: false, waits: [] });
+    // 第 1 次：无历史
+    expect(recordStatusQueryResult(CMD, CHECKS_PENDING, ctx)).toBeUndefined();
+    // 第 2 次：同一状态（只差耗时）→ 追加引导，指出「怎么等」而不是只说「别问」
+    const hint = recordStatusQueryResult(CMD, CHECKS_PENDING_LATER, ctx);
+    expect(hint).toContain("[重复查询]");
+    expect(hint).toContain("wait_until_seconds");
+    expect(hint).toContain("monitor");
+    expect(hint).toContain("结束本轮");
+    // 判据 1 不变：没有声明的等待源就一次都不拦
+    expect(checkStatusQueryPoll("bash", { command: CMD }, ctx).intercept).toBe(false);
+    // 第 3 次起不再追加（同一签名只提示一次）
+    expect(recordStatusQueryResult(CMD, CHECKS_PENDING_LATER, ctx)).toBeUndefined();
+    expect(recordStatusQueryResult(CMD, CHECKS_PENDING_LATER, ctx)).toBeUndefined();
+    expect(checkStatusQueryPoll("bash", { command: CMD }, ctx).intercept).toBe(false);
+  });
+
+  test("有等待源时仍走原文案，N8 引导不出现", () => {
+    const { ctx } = makeCtx();
+    recordStatusQueryResult(CMD, CHECKS_PENDING, ctx);
+    const hint = recordStatusQueryResult(CMD, CHECKS_PENDING_LATER, ctx);
+    expect(hint).toContain("[等待中] 结果与上次相同");
+    expect(hint).not.toContain("[重复查询]");
+    expect(hint).not.toContain("wait_until_seconds");
+  });
+
+  test("状态变化后重新计数：新的稳定状态再次相同时给一次新提示", () => {
+    const { ctx } = makeCtx({ hasWait: false, waits: [] });
+    recordStatusQueryResult(CMD, CHECKS_PENDING, ctx);
+    expect(recordStatusQueryResult(CMD, CHECKS_PENDING_LATER, ctx)).toContain("[重复查询]");
+    // 状态真的变了 → memo 重置（这次是状态变化，不提示）
+    expect(recordStatusQueryResult(CMD, CHECKS_ONE_PASSED, ctx)).toBeUndefined();
+    // 新状态再连续相同一次 → 再提示一次（提示跟着「稳定状态」走，不是整个会话只给一次）
+    expect(recordStatusQueryResult(CMD, CHECKS_ONE_PASSED, ctx)).toContain("[重复查询]");
+  });
+});
