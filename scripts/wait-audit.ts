@@ -42,8 +42,13 @@
  * | --- | --- | --- |
  * | `wait_windows` | 窗口数 | events.jsonl（WaitRegistered / schedule_wakeup） |
  * | `fg_status_polls` | 窗口内**命中 §5.5.2 命令表**的前台 bash 次数 | traj 的 `tool_input.command` |
+ * | `fg_status_polls_any` | 窗口内**宽口径**（含 `gh (pr\|run\|api)` / `glab` / `kubectl` / `curl`）的**前台** bash 次数。不随匹配实现变化，用来比修复前后 | 同上 |
  * | `gh_queries` | 窗口内**命令含 `gh `** 的 bash 次数（§2.3 基线口径） | 同上 |
  * | `polls_per_min` | `gh_queries / 窗口分钟数` | 同上 |
+ * | `unwaited_status_polls` | 会话内**不在任何等待窗口里**的宽口径前台 bash 次数（N8 的分母：无窗口会话算全部，有窗口会话算窗口外） | 同上 |
+ * | `unwaited_longest_run` | `unwaited_status_polls` 里最长连续段的次数（相邻间隔 < 60s 同段）；`_start` / `_end` 给出该段起止 | 同上 |
+ * | `unwaited_longest_run_requests` | 最长连续段内的 `BilledRequest` 条数 | events.jsonl |
+ * | `probe_spin_requests` | 会话内**工具调用全是只读探查**的请求数（只读探查口径复用生产函数，随 N5 一起变）。`null` = 没读 raw | raw.jsonl 的 `response.content` |
  * | `window_requests` | 窗口内 `BilledRequest` 条数（含辅助调用） | events.jsonl |
  * | `window_input_tokens` | 窗口内 `BilledRequest.input_tokens` 之和 | events.jsonl |
  * | `zombie_wakeups` | `ScheduledInject{outcome:injected}` 晚于其前最后一次 `EndTurnShape` 的次数 | events.jsonl |
@@ -62,10 +67,26 @@
  * 7dd98bf5 只有 56 条命中、9e3a681d 95 条）。两个都输出，**验收 §2.3 看 `gh_queries`**，
  * 评估 P1 拦截的真实覆盖看 `fg_status_polls`，不要把两个数字混着用。
  *
+ * ### 为什么再加一个宽口径 `fg_status_polls_any`
+ *
+ * `fg_status_polls` 直接调 `matchStatusQuery`，**匹配面一扩，数字就整体变大**（N3 修完
+ * fbb02831 从 0 变成 13+）。拿它比修复前后，结论一定是「修完轮询变多了」——这是
+ * 北极星铁律 3 说的「分母口径一变曲线就整体平移」。`fg_status_polls_any` 只认命令族
+ * （`gh (pr|run|api)` / `glab` / `kubectl` / `curl`），不含任何匹配逻辑，是**稳定的分母**。
+ * 两个都输出：比修复前后看 `_any`，评估拦截覆盖看 `fg_status_polls`。
+ *
+ * ### 为什么 `unwaited_*` 要绕开 `active` 短路
+ *
+ * 老实现里「没有窗口 → 所有前台查询记 0」。但 N8 的分子恰恰是「**什么都没挂**就前台
+ * 轮询」——用 `active` 短路会把这一整类会话系统性记成 0，指标看起来永远干净。
+ * 所以 `unwaited_*` 对无窗口会话统计**全部**宽口径前台查询，对有窗口会话统计**窗口外**
+ * 的部分（962011a6 的第二段 68 次连查就在窗口外）。相应地 `--all` 不再只列有窗口的会话，
+ * 否则最该被看见的那一类根本不会出现。
+ *
  * ## 用法
  *
  *   bun scripts/wait-audit.ts <session-dir|session-id>
- *   bun scripts/wait-audit.ts --all            # 扫本机全部会话，只列有等待窗口的
+ *   bun scripts/wait-audit.ts --all            # 扫本机全部会话，列有等待窗口**或**有未等待期前台查询的
  *   bun scripts/wait-audit.ts <id> --json      # 机器可读
  *   bun scripts/wait-audit.ts <id> --window-start 2026-11-08T03:51:30.887Z \
  *                                --window-end   2026-11-08T04:04:53.267Z
@@ -76,9 +97,25 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { matchStatusQuery } from "@sid-code/core/task/status-query-commands.ts";
 import { MONITOR_EVENT_NAME } from "@sid-code/core/task/monitor-task.ts";
+import {
+  isReadFamilyTool,
+  isReadonlyProbeCommand,
+} from "@sid-code/core/query/repeated-readonly-guard.ts";
 
 /** 老会话窗口终点的收尾宽限（见文件头「窗口」第 2 条，从两条基线会话标定） */
 const LEGACY_CLOSE_GRACE_MS = 120_000;
+
+/**
+ * 宽口径状态查询：只认命令族，不认任何匹配逻辑。
+ *
+ * 为什么不用 `matchStatusQuery`：那个函数是**拦截判据**，它的匹配面会随修复变大
+ * （N3 修完 fbb02831 从 0 变成 13+），拿它当分母比修复前后，结论必然是「修完轮询变多」。
+ * 这个正则不含实现细节，修复前后可比（北极星铁律 3）。
+ */
+const STATUS_QUERY_ANY_RE = /\b(?:gh\s+(?:pr|run|api)\b|glab\b|kubectl\b|curl\b)/;
+
+/** 「连续空转段」的相邻间隔阈值：两条查询间隔 ≥ 它就算另起一段（文档 N8 的口径） */
+const UNWAITED_RUN_GAP_MS = 60_000;
 
 type Ev = { event?: string; timestamp?: string; data?: Record<string, unknown> };
 
@@ -86,7 +123,11 @@ type TrajRow = {
   message_type?: string;
   timestamp?: string;
   tool_name?: string;
-  tool_input?: { command?: string };
+  /**
+   * 真实轨迹里是完整工具入参：`run_in_background`（后台调用）、`wait_until_seconds`
+   * （声明等待）都在（2026-11-10 用 962011a6 实测）。夹具按需裁剪。
+   */
+  tool_input?: { command?: string; run_in_background?: boolean };
   tool_use_id?: string;
   is_error?: boolean;
   /** 只有 observation 带；夹具的裁剪版只保留「退出码 N」，原始数据是完整正文 */
@@ -100,6 +141,11 @@ export interface WaitAudit {
   session: string;
   wait_windows: number;
   fg_status_polls: number;
+  /**
+   * 窗口内**宽口径**前台状态查询：命令含 `gh (pr|run|api)` / `glab` / `kubectl` / `curl`
+   * 的前台 bash 次数。不随 `matchStatusQuery` 的实现变化，用来比修复前后（见文件头）。
+   */
+  fg_status_polls_any: number;
   gh_queries: number;
   polls_per_min: number;
   window_requests: number;
@@ -107,6 +153,25 @@ export interface WaitAudit {
   zombie_wakeups: number;
   gate_retry_while_waiting: number;
   exit8_errors: number;
+  /**
+   * 会话内**不在任何等待窗口里**的宽口径前台查询次数（N8 的分母）。
+   * 无窗口会话统计全部，有窗口会话统计窗口外的部分 —— 不能用 `active` 短路（见文件头）。
+   */
+  unwaited_status_polls: number;
+  /** `unwaited_status_polls` 里最长连续段的调用次数（相邻间隔 < 60s 同段） */
+  unwaited_longest_run: number;
+  /** 最长连续段的起止（ISO，便于人工复核是哪一段空转）；无段时为 null */
+  unwaited_longest_run_start: string | null;
+  unwaited_longest_run_end: string | null;
+  /** 最长连续段内的 `BilledRequest` 条数（按请求计的浪费，与调用次数分开看） */
+  unwaited_longest_run_requests: number;
+  /**
+   * 会话内**工具调用全是只读探查**的请求数。只读探查口径复用生产函数
+   * `isReadonlyProbeCommand`，因此会随 N5（rev-parse 纳入白名单）一起变 ——
+   * 拿它比 N5 前后会看到口径平移，稳定分母用 `unwaited_status_polls`。
+   * `null` = 没读 raw（`--with-raw` 才算）。
+   */
+  probe_spin_requests: number | null;
   /**
    * 窗口内 monitor 投递的事件数（D5 起主口径）：events.jsonl 里 `MonitorEvent` 条数。
    * 老版本轨迹（D5 合入前）没有该事件，恒为 0 —— 交叉校验会给出 ⚠，以 raw 口径为准。
@@ -248,6 +313,104 @@ function pairObservations(traj: TrajRow[]): Map<string, TrajRow> {
   return out;
 }
 
+/**
+ * 从一组时间戳里找最长连续段：相邻两条间隔 < `UNWAITED_RUN_GAP_MS` 视为同一段。
+ *
+ * 为什么不直接用「查询次数」：一次会话里散落 60 次查询（每次间隔 5 分钟）和
+ * 连查 60 次（间隔 8 秒）是完全不同的空转形态，前者多半是正常节奏。这个函数把
+ * 「连续」这一维度单独量出来，N8 的验收口径就是它。
+ */
+function longestUnwaitedRun(tsList: string[]): {
+  count: number;
+  start: string | null;
+  end: string | null;
+} {
+  if (tsList.length === 0) return { count: 0, start: null, end: null };
+  const sorted = [...tsList].sort();
+  let bestCount = 1;
+  let bestStart = sorted[0]!;
+  let bestEnd = sorted[0]!;
+  let curCount = 1;
+  let curStart = sorted[0]!;
+  let prev = Date.parse(sorted[0]!);
+  for (let i = 1; i < sorted.length; i++) {
+    const ts = sorted[i]!;
+    const t = Date.parse(ts);
+    // NaN（时间戳解析失败）走 else：宁可另起一段，也不要把坏数据并进连续段
+    if (t - prev < UNWAITED_RUN_GAP_MS) {
+      curCount++;
+    } else {
+      curCount = 1;
+      curStart = ts;
+    }
+    prev = t;
+    if (curCount > bestCount) {
+      bestCount = curCount;
+      bestStart = curStart;
+      bestEnd = ts;
+    }
+  }
+  return { count: bestCount, start: bestStart, end: bestEnd };
+}
+
+/** 一段时间内的 `BilledRequest` 条数（最长连续段的「按请求计的浪费」） */
+function countBilledRequests(events: Ev[], start: string, end: string): number {
+  let n = 0;
+  for (const e of events) {
+    if (e.event !== "BilledRequest" || !inWindow(e.timestamp, start, end)) continue;
+    n++;
+  }
+  return n;
+}
+
+/** raw.jsonl 里一次请求的最小形态：只要 `response.content` 里的 tool_use 块 */
+type RawRequestRow = {
+  response?: {
+    content?: Array<{ type?: string; name?: string; input?: { command?: string } }>;
+  };
+};
+
+/**
+ * 会话内「工具调用**全是**只读探查」的请求数（`probe_spin_requests`）。
+ *
+ * 为什么按请求数而不是调用数：模型的浪费是按请求计的 —— 每一轮都要重发整段上下文，
+ * 一次只读探查调用就是一个请求的全部产出。N5 的证据里「这类请求占输入 token 的 48.9%」
+ * 也是按请求归类的。
+ *
+ * ⚠️ 口径复用生产函数 `isReadonlyProbeCommand` + `isReadFamilyTool`，**不要在这里
+ * 复制一份白名单**：N5 把 `git rev-parse` 纳入白名单后，这个指标会自动跟着覆盖它。
+ * 代价是它跨 N5 前后不可比 —— 稳定分母用 `unwaited_status_polls`（北极星铁律 3）。
+ *
+ * `think` 这类工具**不算**只读探查（它不探查任何外部状态），所以「git status + think」
+ * 的请求不计入。这是刻意的保守口径：先观察，不和 N5 的证据口径混着用。
+ */
+function countProbeSpinRequests(raw: string): number {
+  let n = 0;
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    let row: RawRequestRow;
+    try {
+      row = JSON.parse(t) as RawRequestRow;
+    } catch {
+      continue; // raw.jsonl 可能因进程被杀留下半行
+    }
+    const content = row.response?.content;
+    if (!Array.isArray(content)) continue;
+    const tools = content.filter((b) => b && b.type === "tool_use");
+    if (tools.length === 0) continue;
+    const allReadonlyProbe = tools.every(
+      (b) =>
+        isReadFamilyTool(b.name ?? "") ||
+        (b.name === "bash" &&
+          typeof b.input?.command === "string" &&
+          isReadonlyProbeCommand(b.input.command)),
+    );
+    if (allReadonlyProbe) n++;
+  }
+  return n;
+}
+
 // 真实渲染带 untrusted 属性（packages/core/src/task/notification.ts：`<event untrusted="true">`）。
 // D2：原先写死 `b.includes("<event>")`，与真实格式不符，monitor_events 在所有真实轨迹上恒为 0
 // 而手写夹具（无属性形式）全绿。两种形式都认，属性内容不限。
@@ -352,18 +515,31 @@ export function auditEvents(input: AuditInput): WaitAudit {
   const end = window?.end ?? "";
   const active = window !== null && start <= end;
 
-  // ── 前台状态查询：两个口径都算（见文件头「为什么是两个字段」） ──
+  // ── 前台状态查询：三个口径都算（见文件头「为什么是三个字段」） ──
+  //
+  // ⚠️ 旧字段 `fg_status_polls`（命中命令表）与 `gh_queries`（含 `gh `）**保持原口径
+  // 不排除后台调用**：它们是两条基线会话的历史对账数字（96 / 106），口径一动
+  // tests/scripts/wait-audit.test.ts 的夹具回归就整体平移。只想给新字段一个
+  // 「前台」语义，就在新字段上做。
   let fgPolls = 0;
+  let fgPollsAny = 0;
   let ghQueries = 0;
-  if (active) {
-    for (const x of traj) {
-      if (x.message_type !== "action" || x.tool_name !== "bash") continue;
-      if (!inWindow(x.timestamp, start, end)) continue;
-      const cmd = x.tool_input?.command ?? "";
+  const unwaitedTs: string[] = [];
+  for (const x of traj) {
+    if (x.message_type !== "action" || x.tool_name !== "bash") continue;
+    const cmd = x.tool_input?.command ?? "";
+    const background = x.tool_input?.run_in_background === true;
+    if (active && inWindow(x.timestamp, start, end)) {
       if (matchStatusQuery(cmd)) fgPolls++;
       if (cmd.includes("gh ")) ghQueries++;
+      if (!background && STATUS_QUERY_ANY_RE.test(cmd)) fgPollsAny++;
+    } else if (!background && typeof x.timestamp === "string") {
+      // ⚠️ 故意不套 `active`：无窗口会话（basis=none）是 N8 分子的主体，
+      // 用 `active` 短路会把它们整体记 0 —— 那正是修 N7 之前的老行为。
+      if (STATUS_QUERY_ANY_RE.test(cmd)) unwaitedTs.push(x.timestamp);
     }
   }
+  const unwaitedRun = longestUnwaitedRun(unwaitedTs);
   const minutes = active ? (Date.parse(end) - Date.parse(start)) / 60_000 : 0;
   const pollsPerMin = minutes > 0 ? Math.round((ghQueries / minutes) * 100) / 100 : 0;
 
@@ -442,6 +618,7 @@ export function auditEvents(input: AuditInput): WaitAudit {
     session: input.session,
     wait_windows: active ? 1 : 0,
     fg_status_polls: fgPolls,
+    fg_status_polls_any: fgPollsAny,
     gh_queries: ghQueries,
     polls_per_min: pollsPerMin,
     window_requests: requests,
@@ -449,6 +626,15 @@ export function auditEvents(input: AuditInput): WaitAudit {
     zombie_wakeups: zombieWakeups,
     gate_retry_while_waiting: gateRetry,
     exit8_errors: exit8,
+    unwaited_status_polls: unwaitedTs.length,
+    unwaited_longest_run: unwaitedRun.count,
+    unwaited_longest_run_start: unwaitedRun.start,
+    unwaited_longest_run_end: unwaitedRun.end,
+    unwaited_longest_run_requests:
+      unwaitedRun.start && unwaitedRun.end
+        ? countBilledRequests(events, unwaitedRun.start, unwaitedRun.end)
+        : 0,
+    probe_spin_requests: input.raw === undefined ? null : countProbeSpinRequests(input.raw),
     monitor_events: active ? countMonitorEventsFromEvents(events, start, end, monitorIds) : 0,
     monitor_events_raw:
       input.raw === undefined
@@ -497,6 +683,19 @@ interface AuditOptions {
   withRaw: boolean;
 }
 
+/**
+ * `--all` 的收录判据（导出供单测钉住）：
+ *  - 有等待窗口 → 进等待窗口的平均值；
+ *  - 没有窗口但有未等待期的前台查询 → 进 N8 的分母；
+ *  - 两者都没有（纯本地后台任务、没查过外部状态）→ 不进结果，否则会把平均值拉低。
+ *
+ * 第二类是修 N7 之前的盲区：老实现只按 `wait_windows > 0` 过滤，
+ * 「什么都没挂就前台轮询」的会话一条都不会出现在 `--all` 里。
+ */
+export function includedInAll(a: WaitAudit): boolean {
+  return a.wait_windows > 0 || a.unwaited_status_polls > 0;
+}
+
 function auditOne(dir: string, opts: AuditOptions): WaitAudit | null {
   const eventsFile = join(dir, "events.jsonl");
   if (!existsSync(eventsFile)) return null;
@@ -512,8 +711,8 @@ function auditOne(dir: string, opts: AuditOptions): WaitAudit | null {
     windowStart: opts.windowStart,
     windowEnd: opts.windowEnd,
   });
-  // 分母：只统计真的存在等待窗口的会话——没有窗口的会话不该进平均值
-  return audit.wait_windows > 0 ? audit : null;
+  // 收录判据见 includedInAll 的注释：不能用 `wait_windows > 0` 一刀切
+  return includedInAll(audit) ? audit : null;
 }
 
 function main(): void {
@@ -573,27 +772,39 @@ function main(): void {
     r.monitor_events_raw === null ? "" : ` raw=${r.monitor_events_raw}`;
   const mismatch = (r: WaitAudit) =>
     r.monitor_events_raw !== null && r.monitor_events_raw !== r.monitor_events ? " ⚠" : "";
+  // probe_spin 要读 raw（体积大），没读就整段不打印，避免把 null 打成 0
+  const fmtProbeSpin = (r: WaitAudit) =>
+    r.probe_spin_requests === null ? "" : ` probe_spin=${r.probe_spin_requests}`;
   for (const r of results) {
     console.log(
       `${r.session}: windows=${r.wait_windows} basis=${r.window_basis} ` +
         `[${r.window_start ?? "-"} → ${r.window_end ?? "-"}] ` +
-        `fg_polls=${r.fg_status_polls} gh=${r.gh_queries} polls/min=${r.polls_per_min} ` +
+        `fg_polls=${r.fg_status_polls} fg_any=${r.fg_status_polls_any} ` +
+        `gh=${r.gh_queries} polls/min=${r.polls_per_min} ` +
         `req=${r.window_requests} tok=${r.window_input_tokens} ` +
         `zombie=${r.zombie_wakeups} gate_retry=${r.gate_retry_while_waiting} ` +
         `exit8=${r.exit8_errors} monitor_ev=${r.monitor_events}${fmtRaw(r)}${mismatch(r)} ` +
-        `violations=${r.promise_violations}(late_terminal=${r.late_while_terminal})`,
+        `violations=${r.promise_violations}(late_terminal=${r.late_while_terminal}) ` +
+        `unwaited=${r.unwaited_status_polls} ` +
+        `longest_run=${r.unwaited_longest_run}(req=${r.unwaited_longest_run_requests})` +
+        fmtProbeSpin(r),
     );
   }
   if (results.length > 1) {
     const rawTotal = results.some((r) => r.monitor_events_raw !== null)
       ? String(sum("monitor_events_raw"))
       : "n/a";
+    // 两个分母分开报：等待窗口平均值只来自有窗口的会话，unwaited_* 还含「什么都没挂」的会话
+    const withWindows = results.filter((r) => r.wait_windows > 0).length;
     console.log(
-      `合计 ${results.length} 个会话: fg_polls=${sum("fg_status_polls")} gh=${sum("gh_queries")} ` +
+      `合计 ${results.length} 个会话（有等待窗口 ${withWindows}）: ` +
+        `fg_polls=${sum("fg_status_polls")} fg_any=${sum("fg_status_polls_any")} ` +
+        `gh=${sum("gh_queries")} ` +
         `req=${sum("window_requests")} tok=${sum("window_input_tokens")} ` +
         `zombie=${sum("zombie_wakeups")} gate_retry=${sum("gate_retry_while_waiting")} ` +
         `exit8=${sum("exit8_errors")} monitor_ev=${sum("monitor_events")} raw=${rawTotal} ` +
-        `violations=${sum("promise_violations")}(late_terminal=${sum("late_while_terminal")})`,
+        `violations=${sum("promise_violations")}(late_terminal=${sum("late_while_terminal")}) ` +
+        `unwaited=${sum("unwaited_status_polls")} longest_run=${sum("unwaited_longest_run")}`,
     );
   }
 }
