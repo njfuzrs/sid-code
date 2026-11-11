@@ -646,6 +646,11 @@ export class EditTool implements Tool {
       // 「old_string='' 创建/填充」与「常规替换」两条出口，只挡一条等于没挡。
       const { checkPrivateMemSecrets, afterMemoryFileWrite } =
         await import("../memory/write-guard.ts");
+      // CG-2（台账 H3）：worktree 会话里写到主仓路径时，在结果末尾给出可直接执行的替换路径。
+      // 是提示不是拦截 —— 用户确实可能想在 worktree 里顺手改主仓的一份共享配置。
+      // 动态 import：worktree/manager 会带进 fs/git 一整套依赖，不为一句提示让
+      // edit 的模块图变重（非 worktree 会话下这里只是命 module cache）。
+      const { mainRepoWriteHint } = await import("../worktree/path-semantics.ts");
 
       // ── old_string='' 创建新文件或填充空文件 ─────────────────────────────
       if (oldString === "") {
@@ -691,7 +696,8 @@ export class EditTool implements Tool {
         return {
           output:
             `文件已创建: ${filePath}` +
-            (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : ""),
+            (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : "") +
+            mainRepoWriteHint(filePath),
           structuredPatch: buildStructuredPatch(filePath, "", contentToWrite),
         };
       }
@@ -850,7 +856,8 @@ export class EditTool implements Tool {
         output:
           `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）` +
           (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : "") +
-          conflictNote,
+          conflictNote +
+          mainRepoWriteHint(filePath),
         structuredPatch: buildStructuredPatch(filePath, rawContent, finalContent),
       };
     } catch (err: any) {
