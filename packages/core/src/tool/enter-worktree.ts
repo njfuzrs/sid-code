@@ -19,6 +19,7 @@ import { generateTmuxSessionName, createTmuxSessionForWorktree } from "../worktr
 import type { WorktreeSession } from "../worktree/types.ts";
 import { generateWordSlug } from "../plan/slug.ts";
 import { getCwd } from "../bootstrap/state.ts";
+import { enterWorktreePathsNotice } from "../worktree/path-semantics.ts";
 import { formatPathNotFoundError } from "./path-utils.ts";
 import { getLogger } from "../debug/logger.ts";
 import { existsSync, readFileSync } from "fs";
@@ -174,7 +175,12 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
         ? "\n\n" + session.setupWarnings!.map((w) => `⚠️ ${w}`).join("\n")
         : "";
       return {
-        output: `已创建并进入 Worktree。\n路径: ${session.worktreePath}\n分支: ${session.worktreeBranch}${tmuxLine}${warnLines}`,
+        output:
+          `已创建并进入 Worktree。\n路径: ${session.worktreePath}\n分支: ${session.worktreeBranch}` +
+          // CG-2（H3）：进入前读过的路径都指向主仓，必须当场说明它们不是当前工作树，
+          // 否则模型会把历史里的主仓绝对路径当成自己的路径继续写（53 次 / 4 会话）。
+          enterWorktreePathsNotice(session.worktreePath, session.originalCwd) +
+          `${tmuxLine}${warnLines}`,
       };
     } catch (err: any) {
       log.error("WORKTREE", `创建 Worktree 失败: ${err.message}`);
@@ -270,7 +276,11 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
     log.info("WORKTREE", `进入已存在的 Worktree: ${worktreePath}`);
     const tmuxLine = session.tmuxSession ? `\ntmux: ${session.tmuxSession}` : "";
     return {
-      output: `已进入已存在的 Worktree。\n路径: ${worktreePath}\n分支: ${branch}${tmuxLine}`,
+      output:
+        `已进入已存在的 Worktree。\n路径: ${worktreePath}\n分支: ${branch}` +
+        // CG-2（H3）：同新建分支——进入前读过的路径指向主仓，必须当场说明角色。
+        enterWorktreePathsNotice(worktreePath, session.originalCwd) +
+        tmuxLine,
     };
   }
 }

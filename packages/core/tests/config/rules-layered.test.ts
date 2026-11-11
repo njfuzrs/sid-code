@@ -85,11 +85,31 @@ paths: ["src/**"]
 
 describe("loadAllCLAUDEmd 多层级", () => {
   let proj: string;
+  let prevClaudeConfigDir: string | undefined;
+  let prevSidConfigDir: string | undefined;
 
   beforeEach(() => {
     proj = mkdtempSync(join(tmpdir(), "sid-rules-"));
+    // 落盘/配置目录隔离：`loadAllCLAUDEmd` 会**递归**读
+    // `<CLAUDE_CONFIG_DIR>/rules/**/*.md` 与 `<SID_CONFIG_DIR>/rules/**/*.md`
+    // （`loadUserRulesDir` → `loadRulesFromDir` 的 `**/*.md` 扫描）。
+    // 不隔离时，这两个目录是进程级共享的（preload 只把 SID_CONFIG_DIR 设成一个
+    // 全进程共用的 tmpdir），同分片内别的测试留下的 `rules/**/ui/CLAUDE.md`
+    // 会混进 `loadedPaths` —— 2026-11-10 CI macOS 上
+    // 「loadedPaths 只含实际注入的文件」就是这么红的（13.18ms 断言失败，不是超时；
+    // 与 ubuntu 的差别只是同进程相邻的测试文件组合不同）。详见
+    // docs-research/sid-code/bugfixes/todo/20261110-macOS-runner时序敏感度…
+    // 必须存/恢复原值而不是无条件 delete：同一进程里 preload 的兜底值不能丢。
+    prevClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    prevSidConfigDir = process.env.SID_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(proj, ".claude");
+    process.env.SID_CONFIG_DIR = join(proj, ".sid-code");
   });
   afterEach(() => {
+    if (prevClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevClaudeConfigDir;
+    if (prevSidConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevSidConfigDir;
     try {
       rmSync(proj, { recursive: true, force: true });
     } catch {

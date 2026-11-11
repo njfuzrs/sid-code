@@ -3459,6 +3459,10 @@ export class App {
     // /clear 后模型对"已播报过的延迟工具/权限提醒"完全失忆，去重键必须一并归零，
     // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
     this.sessionState.resetReminderDedupKeys();
+    // CG-2（台账 H4）：「本任务实测进展」和「标完成后又返工」只描述当前任务做到哪了。
+    // /clear 后模型对旧任务完全失忆，而这两个状态还记着上一个任务的落盘文件/观测值——
+    // 第一条 work-log 就会说「已落盘改动 N 个文件」，模型把旧成果当成本次进展（4 会话 / 6 条）。
+    this.sessionState.resetTaskProgressKeys();
     clearPromptCache();
     this.resetRecallState();
     this.quotaManager?.resetAlertLevel();
