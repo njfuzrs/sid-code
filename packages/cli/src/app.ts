@@ -43,6 +43,10 @@ import {
   isTransientErrorCode,
 } from "@sid-code/core/llm/error-messages.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
+// CG-1 / R2：`<working-directory>` 与 JIT 相对路径基准都描述「模型此刻在哪」，
+// 必须读 getCwd()（跟随 bash cd 与 worktree 切换）。process.cwd() 不跟 bash cd，
+// 拿它当位置信号会让「提示词说的目录」和「工具实际解析的目录」两套真值发散。
+import { getCwd, getProjectRoot } from "@sid-code/core/bootstrap/state.ts";
 import {
   createSubAgentUsageSink,
   setSubagentCostTraceSink,
@@ -1164,6 +1168,27 @@ export class App {
       maxOutputTokens: estimator.getMaxOutputTokens(opts.config.model, opts.config.availableModels),
     });
     this.ctxMgr.setSessionId(sessionId);
+    // CG-1 / R4：bash 的 `cd` 跨出（或回到）工作区根时，把「旧说法作废」排进持久块。
+    //
+    // 为什么走持久块而不是只靠 bash 结果里的尾注：尾注只活在这一轮的 observation 里，
+    // 压缩或长上下文之后模型就看不见了；而 `persistentReminderParts` 每轮随消息尾部重发，
+    // 这正是「此前那条权威的 `<working-directory>` 已作废」需要长期可见的原因（§2.2）。
+    //
+    // 为什么复用 recordWorkspaceNotice 而不是新造出口：loop.ts 的消费点已经把它包成
+    // `<working-directory-change>…</working-directory-change>`，标签不用新增、缓存前缀不受影响。
+    const bashTool = this.toolRegistry.get("bash") as
+      | { setCwdSwitchListener?: (fn: ((newCwd: string) => void) | null) => void }
+      | undefined;
+    bashTool?.setCwdSwitchListener?.((newCwd: string) => {
+      const en = resolveEffectiveLanguage(this.config.language) === "en";
+      this.ctxMgr.recordWorkspaceNotice(
+        en
+          ? `Working directory is now ${newCwd}. Any earlier statement about the working directory ` +
+              `(including the <working-directory> block in the system prompt) is superseded by this notice.`
+          : `工作目录现在是 ${newCwd}。此前上下文里关于工作目录的说法` +
+              `（包括系统提示里的 <working-directory>）以本条为准。`,
+      );
+    });
     // §3.3：注入 Plan 正文提供方——压缩时把活跃 Plan 正文重注入消息历史。
     // 仅在 plan 执行/规划阶段返回正文，否则返回 null（不注入）。
     this.ctxMgr.setPlanContentProvider(() => this.readActivePlanContent());
@@ -1734,7 +1759,10 @@ export class App {
     this.hookSystem.setSessionId(sessionId);
     this.hookSystem.setCwd(process.cwd());
     // HC14：CLAUDE_PROJECT_DIR = 会话启动时的项目根，之后 bash cd / 进 worktree 都不变（与 CC 一致）
-    this.hookSystem.setProjectDir(process.cwd());
+    // CG-1 / R1：HC14 的语义一直是「会话启动时的项目根」（注释见上一行），
+    // 用 process.cwd() 表达是巧合成立——进 worktree 后它就不再是启动目录了。
+    // getProjectRoot() 把这条语义写死，也让 bash cd / worktree 切换都不会改变它。
+    this.hookSystem.setProjectDir(getProjectRoot());
     // HC11：stdin permission_mode / transcript_path。取值函数而非快照——模式运行时会被改写。
     this.hookSystem.setPermissionModeProvider(() => this.config.permissionMode);
     // resume 时 jsonl 续写的是**被恢复会话**的文件（见 doInit 的 resumeSession），不是本进程新 id。
@@ -1941,7 +1969,7 @@ export class App {
           if (!isMemoryRecallEnabled()) return null;
 
           const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
-          const memStore = new MemoryStore(process.cwd());
+          const memStore = new MemoryStore(getProjectRoot());
           const memoryDir = memStore.getProjectMemoryDir();
           if (!memoryDir) return null;
 
@@ -4223,7 +4251,8 @@ export class App {
       // 的那个 id，否则是本进程新 id）——与 sidechain 持久化同源，这样 `--resume`
       // 拿回的是同一份笔记，而并发的两个会话各写各的，不再互相覆盖。
       const sessionMemorySessionId = this.getLogicalSessionId();
-      const sessionMemoryFile = getSessionMemoryPath(process.cwd(), sessionMemorySessionId);
+      // CG-1 / R1：会话记忆按「工作区根」归属 —— bash cd 或进 worktree 都不该把笔记拆到别处。
+      const sessionMemoryFile = getSessionMemoryPath(getProjectRoot(), sessionMemorySessionId);
       this.sessionMemory = initSessionMemory({
         getMainContext: () => ({
           systemPrompt: this.ctxMgr.getSystemPrompt(),
@@ -4237,7 +4266,8 @@ export class App {
           statefulTools: createStatefulTools(new FileReadTracker()),
         }),
         canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
-        cwd: process.cwd(),
+        // CG-1 / R1：与上面的 sessionMemoryFile 同源，都按工作区根，不随 cd / worktree 漂。
+        cwd: getProjectRoot(),
         sessionId: sessionMemorySessionId,
       });
       // 把 handle 暴露给 queryLoop（经 QueryEngine），用于每轮收尾触发提取 + 记录工具调用。
@@ -4397,7 +4427,7 @@ export class App {
         );
       } else {
         // 加载并解析 CLAUDE.md 规则
-        const projectRules = await loadAllCLAUDEmd(process.cwd());
+        const projectRules = await loadAllCLAUDEmd(getProjectRoot());
         if (projectRules) {
           log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符)`);
           this.applyProjectRules(projectRules, "startup");
@@ -4668,7 +4698,7 @@ export class App {
       }
       // 1. clearPromptCache 已在 watchCLAUDEmd 内部调用
       // 2. 重新加载并应用规则
-      const newRules = await loadAllCLAUDEmd(process.cwd());
+      const newRules = await loadAllCLAUDEmd(getProjectRoot());
       if (newRules) {
         this.applyProjectRules(newRules, "reload");
         // 3. 重建系统提示词
@@ -4679,7 +4709,7 @@ export class App {
         try {
           const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
           const { buildMemorySystemPrompt } = await import("@sid-code/core/memory/prompt.ts");
-          const memStore = new MemoryStore(process.cwd());
+          const memStore = new MemoryStore(getProjectRoot());
           await memStore.load();
           const indexContent = await memStore.getIndexContent();
           let teamIndexContent: string | null = null;
@@ -4687,7 +4717,7 @@ export class App {
             const { isTeamMemoryEnabled } = await import("@sid-code/core/memory/team/paths.ts");
             if (isTeamMemoryEnabled(this.config.teamMemory)) {
               const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
-              teamIndexContent = await getTeamIndexContent(process.cwd());
+              teamIndexContent = await getTeamIndexContent(getProjectRoot());
             }
           } catch {
             /* 团队索引注入失败不阻断 */
@@ -4713,7 +4743,7 @@ export class App {
           projectRulesPaths: newRules.loadedPaths,
           appendPrompt: this.config.appendSystemPrompt || undefined,
           outputStyleContent,
-          workingDir: process.cwd(),
+          workingDir: getCwd(),
           permissionMode: this.config.permissionMode,
           gitStatus: true,
           memorySystemPrompt,
@@ -5261,7 +5291,7 @@ export class App {
             /* 通知失败不阻断同步 */
           }
         });
-        await startTeamMemoryWatcher(this.config.teamMemory, process.cwd());
+        await startTeamMemoryWatcher(this.config.teamMemory, getProjectRoot());
         const { registerCleanup } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
         registerCleanup(() => stopTeamMemoryWatcher());
         log.info("APP", "团队记忆同步已启动（共享目录模型）");
@@ -5301,7 +5331,7 @@ export class App {
         return;
       }
 
-      const memoryDir = ensureAutoMemPath(process.cwd());
+      const memoryDir = ensureAutoMemPath(getProjectRoot());
       this.extractMemories = initExtractMemories({
         getMainContext: () => ({
           systemPrompt: this.ctxMgr.getSystemPrompt(),
@@ -5497,7 +5527,7 @@ export class App {
         } catch {
           /* 忽略 */
         }
-        const newRules = await loadAllCLAUDEmd(process.cwd());
+        const newRules = await loadAllCLAUDEmd(getProjectRoot());
         if (newRules) {
           this.applyProjectRules(newRules, "import");
           // rebuildSystemPrompt 读 this.currentProjectRules（applyProjectRules 刚更新）。
@@ -5998,7 +6028,7 @@ export class App {
       try {
         const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
         const { buildMemorySystemPrompt } = await import("@sid-code/core/memory/prompt.ts");
-        const memStore = new MemoryStore(process.cwd());
+        const memStore = new MemoryStore(getProjectRoot());
         await memStore.load();
         const indexContent = await memStore.getIndexContent();
         let teamIndexContent: string | null = null;
@@ -6006,7 +6036,7 @@ export class App {
           const { isTeamMemoryEnabled } = await import("@sid-code/core/memory/team/paths.ts");
           if (isTeamMemoryEnabled(this.config.teamMemory)) {
             const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
-            teamIndexContent = await getTeamIndexContent(process.cwd());
+            teamIndexContent = await getTeamIndexContent(getProjectRoot());
           }
         } catch {
           /* 团队索引注入失败不阻断 */
@@ -6033,7 +6063,7 @@ export class App {
         projectRulesPaths: rules?.loadedPaths,
         appendPrompt: this.config.appendSystemPrompt || undefined,
         outputStyleContent,
-        workingDir: process.cwd(),
+        workingDir: getCwd(),
         permissionMode: this.config.permissionMode,
         gitStatus: true,
         memorySystemPrompt,
@@ -6310,7 +6340,7 @@ export class App {
     const log = getLogger();
     try {
       const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
-      const memStore = new MemoryStore(process.cwd());
+      const memStore = new MemoryStore(getProjectRoot());
       await memStore.load();
       for (const [key, value] of Object.entries(memory)) {
         await memStore.set(key, value, "project");
@@ -8283,7 +8313,9 @@ export class App {
     // 配置开关（默认开启，见 JIT_CONTEXT_DEFAULT）
     if (!isJitContextEnabled(this.config)) return;
 
-    const paths = collectJitAccessedPaths(toolBlocks, process.cwd(), (name) =>
+    // CG-1 / R3：基准必须是 getCwd()。工具自己解析相对路径用的是 getCwd()，
+    // 这里若取 process.cwd()，bash `cd sub && cat f.ts` 之后 JIT 会去错的目录找规则。
+    const paths = collectJitAccessedPaths(toolBlocks, getCwd(), (name) =>
       resolveJitPathExtractor(this.toolRegistry, name),
     );
     if (paths.length === 0) return;

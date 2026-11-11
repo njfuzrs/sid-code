@@ -629,6 +629,14 @@ ${typeLines}
     try {
       const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
       // 用 canonical root 防嵌套（P0-2/B1）：在 worktree 内再隔离时落到主仓
+      //
+      // CG-1 刻意**保留** process.cwd()，不要改成 getProjectRoot()。这条在文档里是
+      // 「不改：用工作区根是对的」——现状已经是对的：`process.cwd()` 不跟 bash 的 cd
+      // （cd 只写 state.cwd），只在 worktree 切换时变，而 `findGitRootForAgent` 会
+      // canonical 化到主仓，于是它在真实场景与 getProjectRoot() 等价。
+      // 改成 getProjectRoot() 的唯一收益是语义显式，代价是要动 5 条 B14 隔离回归测试
+      // 的模拟基准（它们用 setCwd 表达「会话工作区」，而 getProjectRoot 不跟 setCwd），
+      // 收益与风险不成比例。
       const gitRoot = findGitRootForAgent(process.cwd());
       if (!gitRoot) {
         return { ok: false, error: "错误: isolation=worktree 需要在 Git 仓库中执行" };

@@ -8,6 +8,7 @@ import type { HookSystem } from "../hook/system.ts";
 import type { SessionState } from "../session/state.ts";
 import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
+import { getCwd, getProjectRoot } from "../bootstrap/state.ts";
 
 /** 初始化轨迹采集，返回 collector 实例（供 engine 异常路径持久化） */
 /**
@@ -516,7 +517,7 @@ export async function buildInitialSystemPrompt(
         const { loadAllCLAUDEmd } = await import("../config/rules.ts");
         // activeFiles 不在此处传：loadAllCLAUDEmd 内部按自己算出的 projectRoot 自动采集
         // （见该函数 §2.5）。调用点手传会让 5 个入口各算一次 projectRoot、且新入口必然漏传。
-        return loadAllCLAUDEmd(process.cwd());
+        return loadAllCLAUDEmd(getProjectRoot());
       })();
 
   let filePrompt: string | undefined;
@@ -534,7 +535,7 @@ export async function buildInitialSystemPrompt(
   let memorySystemPrompt: string | undefined;
   try {
     const { MemoryStore } = await import("../memory/store.ts");
-    const memStore = new MemoryStore(process.cwd());
+    const memStore = new MemoryStore(getProjectRoot());
     memorySummary = (await memStore.generateSummary()) || undefined;
     if (memorySummary) {
       log.debug("APP", `加载记忆摘要 (${memorySummary.length} 字符)`);
@@ -552,7 +553,7 @@ export async function buildInitialSystemPrompt(
       const { isTeamMemoryEnabled } = await import("../memory/team/paths.ts");
       if (isTeamMemoryEnabled(config.teamMemory)) {
         const { getTeamIndexContent } = await import("../memory/team/store.ts");
-        teamIndexContent = await getTeamIndexContent(process.cwd());
+        teamIndexContent = await getTeamIndexContent(getProjectRoot());
       }
     } catch (err) {
       log.debug("APP", `团队记忆索引注入跳过: ${(err as Error)?.message}`);
@@ -581,7 +582,9 @@ export async function buildInitialSystemPrompt(
     appendPrompt: config.appendSystemPrompt || undefined,
     filePrompt,
     outputStyleContent,
-    workingDir: process.cwd(),
+    // CG-1 / R2：`<working-directory>` 描述的是「模型此刻在哪」，必须读 getCwd()。
+    // process.cwd() 只在 worktree 切换时变、不跟 bash `cd`，两套真值会发散。
+    workingDir: getCwd(),
     permissionMode: config.permissionMode,
     gitStatus: true,
     memorySummary,
