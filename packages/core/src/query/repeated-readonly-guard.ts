@@ -160,6 +160,11 @@ export function isReadonlyProbeCommand(command: string): boolean {
     /^git\s+log\b/.test(normalized) ||
     /^git\s+branch\b/.test(normalized) ||
     /^git\s+show\b/.test(normalized) ||
+    // N5：`git rev-parse` 是纯只读（关卡 1 已由 AST 确认），却是模型确认
+    // 「当前在哪个分支 / HEAD 是谁」最高频的写法——20261109-160803-fbb02831 的
+    // 88 次分支确认里 69 次以它开头，全会话只有 13 次能进阀、0 次触发。
+    // 不收它，这道阀对「换分支后反复确认」这一类空转完全失明。
+    /^git\s+rev-parse\b/.test(normalized) ||
     /^(ls|pwd|cat|head|tail|stat)\b/.test(normalized)
   );
 }
@@ -167,16 +172,76 @@ export function isReadonlyProbeCommand(command: string): boolean {
 /**
  * 归一化一条 (命令, 输出) 为签名，用于判断"完全相同的探查又跑了一遍"。
  * 命令与输出都 trim + 折叠空白，避免尾随换行/空格造成的伪差异。
+ *
+ * N5：bash 探查还要再做两层标记归一化（`kind === "tool"` 的 read 家族不做）：
+ *  - 命令侧 `normalizeProbeCommand`：拆段、去纯标记 echo、排序；
+ *  - 输出侧 `normalizeProbeOutput`：删掉只由 `=`/`-`/`END` 组成的标记行。
+ * 不做这两层时，模型只需在命令末尾加/删 `echo "===END==="`、把 `&&` 换成 `;`，
+ * 或调换两段顺序，签名就每次都不同，空转计数被反复清零、永远到不了阈值
+ * （fbb02831 的 75 次分支确认用了 28 种写法，正是这样逃过检测的）。
+ *
+ * 为什么 read 家族（kind="tool"）跳过：它的 output 是**文件内容**，内容里的
+ * `---` / `===` 是 markdown 分隔线而非视觉标记，删掉会让不同文件内容映射到同一签名。
  */
-export function makeSignature(command: string, output: string): string {
+export function makeSignature(
+  command: string,
+  output: string,
+  kind: ReadonlyProbe["kind"] = "bash",
+): string {
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-  // 分隔符用**转义写法** `\x1f`（US，单元分隔符）而非裸控制字节：语义比 NUL 更贴切
-  // （它就是为"分隔字段"设计的），且 `\s` 不匹配它，norm 折叠空白时不会被吃掉。
-  // ★为什么必须是转义写法：源码里出现**裸 NUL 字节**会让 `grep` 把整个文件判为二进制而
-  // 静默跳过（exit=1 与"真的没匹配"不可区分），全文件所有符号都搜不到——2026-07-30 审计
-  // 实测本文件正因此对 grep 完全失明，而它是唯一默认开启且能强制收尾的止损阀，最不该被
-  // 搜索工具漏掉。改为转义后运行时行为等价，源码字节不含控制字符。
-  return `${norm(command)}\x1f${norm(output)}`;
+  if (kind === "tool") return `${norm(command)}\x1f${norm(output)}`;
+  return `${norm(normalizeProbeCommand(command))}\x1f${norm(normalizeProbeOutput(output))}`;
+}
+
+/** 纯标记段：`echo ...` 且不含命令替换——只输出 `===END===` 这类视觉分隔，不携带任何信息。 */
+function isPureMarkerSegment(segment: string): boolean {
+  if (!/^echo\b/i.test(segment)) return false;
+  // `echo "$(git status --short)"` 的输出是真信息，剥掉会让签名丢掉内容差异，保留。
+  if (segment.includes("$(")) return false;
+  return true;
+}
+
+/**
+ * 命令侧归一化：把「同一组只读探查换个分隔符 / 换个顺序 / 末尾加个标记 echo」收敛到同一签名。
+ *
+ * 只按 `&&` / `;` 裸切（不对引号内的分隔符做词法分析）：切错不会造成误判——同一条命令
+ * 每次的切法一致，签名仍然稳定；而跨命令的签名碰撞需要切出来的段集合完全相同，极难发生。
+ */
+export function normalizeProbeCommand(command: string): string {
+  const segments = command
+    .split(/&&|;/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (segments.length === 0) return command.trim();
+  const kept = segments.filter((seg) => !isPureMarkerSegment(seg));
+  // 整条命令都是 echo（极少见）时退回原段，避免空签名把任意两条命令判成相同。
+  const ordered = kept.length > 0 ? kept : segments;
+  return ordered.slice().sort().join(" ; ");
+}
+
+/** 输出侧归一化：删除只由 `=` / `-` / `END` 组成的标记行（模型用 echo 打的视觉分隔）。 */
+export function normalizeProbeOutput(output: string): string {
+  const markerLine = /^(?:[=\-]+|[=\-]*\s*END\s*[=\-]*)$/i;
+  return output
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim();
+      return t.length === 0 || !markerLine.test(t);
+    })
+    .join("\n");
+}
+
+/** 一次只读探查动作（processObservation 的输入单元）。 */
+export interface ReadonlyProbe {
+  /** bash 命令原文，或 read 家族经 makeToolProbeCommand 归一化的 `工具名 入参` 文本 */
+  command: string;
+  /** 该次调用的真实输出 */
+  output: string;
+  /**
+   * "bash"（缺省）= 命令/输出走标记段归一化（见 makeSignature）；
+   * "tool" = read 家族，输出是文件内容，跳过标记行剥离，避免把内容里的分隔线当噪声删掉。
+   */
+  kind?: "bash" | "tool";
 }
 
 /** processObservation 的决策结果。 */
@@ -207,7 +272,7 @@ export interface StuckDecision {
  */
 export function processObservation(
   state: RepeatedReadonlyState,
-  probes: Array<{ command: string; output: string }>,
+  probes: ReadonlyProbe[],
   hadOtherActivity: boolean,
 ): StuckDecision {
   // 有其它活动 = 有进展，重置。
@@ -220,7 +285,7 @@ export function processObservation(
   }
 
   // 本轮的复合签名：所有探查命令的签名按顺序拼接（多条命令也要完全一致才算"重复"）。
-  const signature = probes.map((p) => makeSignature(p.command, p.output)).join("\n");
+  const signature = probes.map((p) => makeSignature(p.command, p.output, p.kind)).join("\n");
 
   if (signature === state.lastSignature) {
     state.repeatCount++;
