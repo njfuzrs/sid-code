@@ -110,6 +110,11 @@ export interface BottomRegionSharedProps {
   costFxConverted?: boolean;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD?: number;
+  /**
+   * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
+   * `undefined` = 尚无命中 → Footer 不渲染 ⚡ 列。组件不重算，见 Footer 的 prop 注释。
+   */
+  cacheHitRate?: number;
   /** 会话累计 API 调用次数（状态栏 `⟳ N` 列）。省略 → Footer 不渲染该列。 */
   totalRequests?: number;
   /** 其中作废（重试白烧）的次数，是 totalRequests 的子集。 */
@@ -208,6 +213,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
   costUSD,
   costFxConverted,
   cacheSavingsUSD,
+  cacheHitRate,
   totalRequests,
   discardedRequests,
   costLimit,
@@ -302,7 +308,6 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
           sessionState={sessionState}
           callbacks={callbacks}
           usage={usage}
-          stockInputTokens={stockInputTokens}
           costUSD={costUSD}
           cacheSavingsUSD={cacheSavingsUSD}
           costLimit={costLimit}
@@ -334,6 +339,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
         costUSD={costUSD}
         costFxConverted={costFxConverted}
         cacheSavingsUSD={cacheSavingsUSD}
+        cacheHitRate={cacheHitRate}
         totalRequests={totalRequests}
         discardedRequests={discardedRequests}
         costLimit={costLimit}

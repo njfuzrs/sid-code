@@ -410,6 +410,15 @@ export interface TUIState {
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD: number;
   /**
+   * 会话级缓存命中率（0-100 整数）。`undefined` = 尚无命中（Footer 不渲染 ⚡ 列）。
+   *
+   * 唯一事实源是 `SessionState.getNormalizedCacheUsage()`——按**每个模型自己的 provider**
+   * 归一化后再加总，与 /cost 同一个数。D18 之前 Footer 自己拿「全会话合计 usage + 当前
+   * 模型推断的 provider」重算，多模型或跨协议族会话（主模型 openai + anthropic 子代理）
+   * 会把两种口径混着除，命中率直接算错。
+   */
+  cacheHitRate?: number;
+  /**
    * 会话累计 API 调用次数（`SessionState.getTotalRequests()`）——状态栏 `⟳ N` 列。
    *
    * 口径是「实际发出的 HTTP 请求数」，含重试白烧 / 子代理 / maxTurns 总结轮，
@@ -1658,6 +1667,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               costUSD={state.costUSD}
               costFxConverted={state.costFxConverted}
               cacheSavingsUSD={state.cacheSavingsUSD}
+              cacheHitRate={state.cacheHitRate}
               totalRequests={state.totalRequests}
               discardedRequests={state.discardedRequests}
               costLimit={state.costLimit}
@@ -1725,6 +1735,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               costUSD={state.costUSD}
               costFxConverted={state.costFxConverted}
               cacheSavingsUSD={state.cacheSavingsUSD}
+              cacheHitRate={state.cacheHitRate}
               totalRequests={state.totalRequests}
               discardedRequests={state.discardedRequests}
               costLimit={state.costLimit}

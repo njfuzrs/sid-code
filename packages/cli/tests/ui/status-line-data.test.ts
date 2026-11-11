@@ -19,7 +19,6 @@ import {
   deriveRequests,
 } from "@sid-code/cli/ui/hooks/useStatusLineData.ts";
 import { theme } from "@sid-code/cli/ui/semantic-colors.ts";
-import type { Usage } from "@sid-code/core/llm/types.ts";
 
 describe("LY1 — shortenPath", () => {
   test("home 前缀替换为 ~", () => {
@@ -149,24 +148,27 @@ describe("LY1 — deriveCost", () => {
 });
 
 describe("LY1 — deriveCacheMetrics", () => {
-  test("无缓存命中返回 null（不显示）", () => {
-    const usage: Usage = { inputTokens: 100, outputTokens: 50 };
-    expect(deriveCacheMetrics(usage, "gpt-4")).toBeNull();
+  test("无命中数据（undefined）返回 null（不显示，避免对无缓存模型显示 0% 误导）", () => {
+    expect(deriveCacheMetrics(undefined)).toBeNull();
   });
 
-  test("有缓存命中返回命中率文本", () => {
-    const usage: Usage = {
-      inputTokens: 100,
-      outputTokens: 50,
-      cacheReadInputTokens: 80,
-    };
-    const r = deriveCacheMetrics(usage, "claude-3-5-sonnet");
-    if (r) {
-      expect(r.text.startsWith("⚡")).toBe(true);
-      expect(r.rate).toBeGreaterThan(0);
-    }
-    // 不同 provider 归一化策略不同，至少不抛错
-    expect(true).toBe(true);
+  test("有命中率 → `⚡N%`，≥50% 用绿色点睛", () => {
+    const r = deriveCacheMetrics(78);
+    expect(r).not.toBeNull();
+    expect(r!.rate).toBe(78);
+    expect(r!.text).toBe("⚡78%");
+    expect(r!.color).toBe(theme.status.success);
+  });
+
+  test("命中率 <50% → 暗色（如实呈现但不喊）", () => {
+    const r = deriveCacheMetrics(47);
+    expect(r!.color).toBe(theme.ui.comment);
+  });
+
+  test("0% 是合法值（有 prompt 但几乎没命中），与 `无数据` 区分开", () => {
+    const r = deriveCacheMetrics(0);
+    expect(r).not.toBeNull();
+    expect(r!.text).toBe("⚡0%");
   });
 });
 

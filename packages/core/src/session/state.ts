@@ -141,8 +141,17 @@ export class SessionState {
   totalToolDuration: number = 0;
   /** 按模型分开的用量统计 */
   modelUsage: Record<string, ModelUsageStats> = {};
-  /** 入账观察者，见 setCostChangeListener */
+  /** 入账观察者（兼容旧接口：覆盖式单槽位），见 setCostChangeListener */
   private costChangeListener: ((effectiveCostUSD: number) => void) | null = null;
+  /**
+   * 追加式入账订阅者，见 addCostChangeListener。
+   *
+   * 为什么需要第二个通道：单槽位已被账本落盘占用，UI 想「每笔入账都刷新」就只能
+   * 再调一次 setCostChangeListener —— 那会把账本监听器挤掉，账本静默停止落盘。
+   * 两个消费方必须共存，且一个抛错不能牵连另一个（账本写盘失败不该阻断界面刷新，
+   * 反之亦然），所以各自独立 try/catch。
+   */
+  private costChangeSubscribers = new Set<(effectiveCostUSD: number) => void>();
   /** 入账版本号：每次 updateUsage / addSideCost +1。账本判脏用它而非成本（零成本 provider 也要落行）。 */
   private usageVersion = 0;
   /** 会话级别的临时数据存储（用于命令间共享状态） */
@@ -422,11 +431,33 @@ export class SessionState {
    *
    * 为什么挂在这里而不是 query loop 的 AfterModel：账本要的是「钱已经记进 SessionState」
    * 这个时刻，主循环、子代理 usage-sink、side-call 三条入账路都汇到这两个方法；挂在任一
-   * 消费侧都只覆盖一条路。单观察者够用（只有 app 的账本节流刷新在听），异常一律吞掉 ——
-   * 账本刷新失败绝不能反过来打断入账。
+   * 消费侧都只覆盖一条路。
+   *
+   * ⚠️ 这是**覆盖式单槽位**：第二次调用会挤掉前一个监听器。多消费方共存（账本落盘 + UI
+   * 推送）必须用 {@link addCostChangeListener}，不要再调本方法。
    */
   setCostChangeListener(fn: ((effectiveCostUSD: number) => void) | null): void {
     this.costChangeListener = fn;
+  }
+
+  /**
+   * 追加一个入账订阅者，返回反注册函数（D1）。
+   *
+   * 与覆盖式 {@link setCostChangeListener} 并存而不是取代它：账本落盘那条线已按单槽位
+   * 接线并有源码断言锁着，改语义的收益为零、牵连却按跨层算。新增消费方一律走这里。
+   *
+   * 为什么需要它（D1 根因）：辅助调用（后台记忆 fork / 标题生成 / SessionEnd 前收尾）
+   * 只走 `addSideCost`，而 UI 的费用列此前只在「工具结束 / 一轮结束 / 中断」这五个固定
+   * 时机重新读值。一轮结束之后才入账的辅助费用于是永远推不到 Footer —— 实测一次会话
+   * Footer 少报 43%（$0.0856 vs 真实 $0.1501），且用户不再输入就永不更新。
+   *
+   * 返回的反注册函数是幂等的：重复调用无害，退出路径不必判重。
+   */
+  addCostChangeListener(fn: (effectiveCostUSD: number) => void): () => void {
+    this.costChangeSubscribers.add(fn);
+    return () => {
+      this.costChangeSubscribers.delete(fn);
+    };
   }
 
   /** 入账版本号（单调递增，rotate 不清零也无妨：判脏只比较是否相等）。 */
@@ -436,12 +467,24 @@ export class SessionState {
 
   private notifyCostChanged(): void {
     this.usageVersion++;
+    const cost = this.getEffectiveTotalCostUSD();
     const fn = this.costChangeListener;
-    if (!fn) return;
-    try {
-      fn(this.getEffectiveTotalCostUSD());
-    } catch {
-      /* 观察者异常不影响入账 */
+    if (fn) {
+      try {
+        fn(cost);
+      } catch {
+        /* 观察者异常不影响入账 */
+      }
+    }
+    // 追加订阅者：逐个独立 try/catch —— 账本落盘抛错不该阻断 UI 刷新，反之亦然。
+    // 不允许遍历时增删（回调里反注册自己）：Set 的 delete 在 for...of 中是安全的，
+    // 但为免受回调里 add 影响迭代，先拷一份。
+    for (const sub of [...this.costChangeSubscribers]) {
+      try {
+        sub(cost);
+      } catch {
+        /* 单个订阅者异常不影响其他订阅者与入账 */
+      }
     }
   }
 
@@ -764,6 +807,24 @@ export class SessionState {
       total.promptTotal += n.promptTotal;
     }
     return total;
+  }
+
+  /**
+   * 全会话缓存命中率（0-100 整数），`undefined` = 没有缓存命中可算。
+   *
+   * **状态栏（Footer ⚡）的唯一取数源**。D18 之前 Footer 走的是另一套算法：
+   * 拿全会话合计 `usage` 配「当前模型」推断出的 provider 去 `normalizeCacheUsage`，
+   * 单模型会话看不出来，但只要会话里换过模型、或主模型与子代理协议族不同，
+   * anthropic 的 `inputTokens`（未命中余量）就会被当成 openai 的 `prompt_tokens`（含命中）
+   * 去减，反之亦然——命中率直接算错，而且和 /cost 是两个数。
+   *
+   * `undefined`（而不是 0）用于区分「无缓存数据」和「命中率确实是 0%」：
+   * 前者不渲染 ⚡ 列（避免对无缓存模型显示 0% 误导），后者如实显示。
+   */
+  getCacheHitRate(): number | undefined {
+    const view = this.getNormalizedCacheUsage();
+    if (view.cacheHitTokens <= 0 || view.promptTotal <= 0) return undefined;
+    return Math.round((view.cacheHitTokens / view.promptTotal) * 100);
   }
 
   /** 全会话累计缓存节省金额（美元） */

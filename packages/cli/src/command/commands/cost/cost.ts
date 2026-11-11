@@ -1,7 +1,56 @@
+import { getBackgroundGateStats } from "@sid-code/core/agent/background-task-gate.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
+
+/** 后台闸门状态里 /cost 关心的三个字段（窄接口，便于测试注入假状态）。 */
+export interface PendingTasksView {
+  busy: boolean;
+  busyLabel: string | null;
+  pendingLabels: string[];
+}
+
+/**
+ * 后台任务仍在跑时的一行提示；空闲时返回 null（整段省略，不给正常路径加噪音）。
+ *
+ * ## 为什么需要这一行（D2）
+ *
+ * /cost 的输出交给 `CommandOutputDialog` 后是**静态文本**，打开那一刻的数字不会再变。
+ * 实测同一会话里 /cost 显示 $0.1447、/debug 显示 $0.1501，差额全部来自两次打开之间
+ * 入账的 5 次后台记忆 fork（逐笔对账见方案文档 2.3 节）。两者读的是同一个
+ * `getEffectiveTotalCostUSD()`，但面板当时**没有告诉用户"还有后台调用在跑"**，
+ * 用户只能怀疑两边是两套口径。
+ *
+ * ## 为什么不做实时刷新
+ *
+ * `CommandOutputDialog` 是通用组件，为一个纯展示命令加订阅机制不划算；
+ * 给一行状态提示，用户重开一次就能拿到最新值。
+ *
+ * ## 为什么把 pending（排队）也算进来
+ *
+ * 闸门语义是串行：当前任务跑完后会接着跑排队的那一笔（见 `background-task-gate.ts`）。
+ * 只报「进行中」而漏掉「排队中」，用户会以为当前这一笔结束数字就定了。
+ */
+export function formatPendingTasksNotice(view: PendingTasksView): string | null {
+  const parts: string[] = [];
+  if (view.busy) parts.push(`${view.busyLabel ?? "未知任务"} 进行中`);
+  // 防御性去重：闸门不会让同一 label 同时处于「在跑」和「待补」，但这里不依赖它。
+  const pending = view.pendingLabels.filter((label) => label !== view.busyLabel);
+  if (pending.length > 0) parts.push(`${pending.join("、")} 排队中`);
+  if (parts.length === 0) return null;
+  return `⚠ 后台任务 ${parts.join("、")}；费用可能还会增加，稍后重开 /cost 查看最新数字`;
+}
 
 /** /cost 命令 */
 export class CostCommand implements LocalCommandModule {
+  /**
+   * 后台闸门读取函数**可注入**：闸门是进程级单例，`bun test` 同批多文件跑在同一进程里，
+   * 测试若去占用/重置它会和 `packages/core/tests/agent/background-task-gate.test.ts`
+   * 互相干扰（两个文件并发跑时，一边的 drain 会清掉另一边的待补队列）。
+   * 生产路径用默认值读真实闸门，测试传假状态即可覆盖「进行中 / 排队 / 空闲」三个分支。
+   */
+  constructor(
+    private readonly readGateStats: () => PendingTasksView = () => getBackgroundGateStats(),
+  ) {}
+
   async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {
     const { SessionState } = await import("@sid-code/core/session/state.ts");
     const ss = ctx.sessionState;
@@ -19,13 +68,22 @@ export class CostCommand implements LocalCommandModule {
       ...(ss.sideCostUSD > 0
         ? [`  其中辅助调用: ${cur}${ss.sideCostUSD.toFixed(4)}（标题/记忆/分类/摘要等）`]
         : []),
+    ];
+
+    // D2：费用几乎都是辅助调用在涨，所以提示紧跟在费用行之后。
+    // 无头模式（`/cost` 是 headless: true）也照样输出：脚本拿到的是同一份文本，
+    // 多一行提示不影响解析，反而能解释「为什么和上一次跑的数字不一样」。
+    const pendingNotice = formatPendingTasksNotice(this.readGateStats());
+    if (pendingNotice) lines.push(pendingNotice);
+
+    lines.push(
       `API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
       "",
       "Token 用量（汇总）:",
       `  输入: ${totalUsage.inputTokens}`,
       `  输出: ${totalUsage.outputTokens}`,
-    ];
+    );
 
     if (totalUsage.cacheCreationInputTokens) {
       lines.push(`  缓存创建: ${totalUsage.cacheCreationInputTokens}`);
