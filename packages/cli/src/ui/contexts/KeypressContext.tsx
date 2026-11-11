@@ -14,7 +14,15 @@
  * 参考 gemini-cli/packages/cli/src/ui/contexts/KeypressContext.tsx
  */
 
-import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef } from "react";
+import React, {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from "react";
 import { useStdin } from "../render-port/hooks.ts";
 import { MultiMap } from "mnemonist";
 import { ESC } from "../utils/input.ts";
@@ -775,7 +783,13 @@ export function useKeypress(priority: KeypressPriority, handler: KeypressHandler
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
 
-  useEffect(() => {
+  // 必须是 layout effect，不能是 useEffect：渲染器在 commit 阶段就把帧写到终端，
+  // passive effect 则被推迟到之后的宏任务。用 useEffect 时存在一个「画面已经出现、
+  // handler 还没订阅」的窗口，这个窗口里按下的键会被 broadcast 发给空订阅表，静默丢失。
+  // 2026-11-11 CI macOS 实测：PluginsDialog 测试看到列表帧后立刻按 Enter，帧一直停在列表
+  // （本机把首帧等待改成 setImmediate 轮询可 100% 复现；改 layout effect 后通过）。
+  // 用户侧同理：对话框刚弹出时的预输入（type-ahead）会被吃掉。
+  useLayoutEffect(() => {
     const wrappedHandler: KeypressHandler = (key) => handlerRef.current(key);
     ctx.subscribe(wrappedHandler, priority);
     return () => ctx.unsubscribe(wrappedHandler);
