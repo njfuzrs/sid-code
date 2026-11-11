@@ -4,6 +4,8 @@
  * 对于无法解析的复杂命令，回退到正则匹配
  */
 
+import { extractHeredocBlocks } from "./heredoc.ts";
+
 /**
  * 重定向操作符。
  *
@@ -77,19 +79,92 @@ const WRAPPER_COMMANDS = new Set([
 
 /**
  * 解析 Bash 命令为 AST
+ *
+ * ## 入口必须先做两步归一化（顺序不能反）
+ *
+ * 1. **剥离 heredoc 正文**：正文是数据，里面的换行不是命令分隔符。不剥离就把 `\n` 加进
+ *    分隔符，`cat > f <<'EOF'`⏎`rm -rf /`⏎`EOF` 会把正文拆成独立命令段，撞上危险命令检测
+ *    ——最普通的写文件白弹/白拦（实测，见 2026-11-11 的修复方案）。
+ * 2. **折叠 `\<newline>` 续行**：bash 语义是反斜杠与换行两个字符都删除、命令继续。
+ *    必须在剥离之后做，否则 heredoc 正文里的 `\<newline>` 会被当成续行（正文是数据）。
+ *
+ * 归一化之后，**引号外的换行一律等价于 `;`**（见第 1 步的分隔符正则）。这与
+ * `permission/shell-structure.ts` 的 `splitCommandStructure`（`if (ch === "\n") emit("break")`）
+ * 和 `permission/bash-security.ts` 的 `validateNewlines` 口径一致。
  */
 export function parseBashCommand(command: string): BashASTNode {
-  const trimmed = command.trim();
+  return parseNormalized(normalizeCommandText(command));
+}
+
+/**
+ * 把命令文本归一化成「可以按 `;` 拆」的形态：heredoc 正文剥离 + `\<newline>` 续行折叠。
+ *
+ * 注意**不要**在这一步动 `\r\n`：CRLF 的折叠与拆分由下游的 `\r?\n` 正则负责，
+ * 这里删掉 `\r` 会让 `"echo hi\r\nrm b"` 在 tokenize 阶段就粘在一起（`\r` 是 `\s`）。
+ */
+function normalizeCommandText(command: string): string {
+  return foldLineContinuations(extractHeredocBlocks(command).stripped);
+}
+
+/**
+ * 删除 `\<newline>`（含 CRLF 形态）这两个字符，命令继续。
+ *
+ * 单引号内不处理：那里 `\` 是字面量，`'a\<newline>b'` 在 bash 里就是一个带反斜杠和换行的串。
+ * 双引号内按 bash 语义处理（`"a\<newline>b"` → `ab`）。
+ */
+function foldLineContinuations(s: string): string {
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "\\" && !inSingle) {
+      if (s[i + 1] === "\n") {
+        i += 2;
+        continue;
+      }
+      if (s[i + 1] === "\r" && s[i + 2] === "\n") {
+        i += 3;
+        continue;
+      }
+      out += ch + (s[i + 1] ?? "");
+      i += 2;
+      continue;
+    }
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * 序列分隔符归一化：换行在 bash 里等价于 `;`。
+ *
+ * `splitOutsideQuotes` 把捕获到的分隔符原样塞进 `separators`，而 `BashASTNode` 的
+ * `operator` 类型只有 `"&&" | "||" | ";"`。不归一化就是一个运行时能观测到的谎
+ * （`operator === "\n"` 但类型说不可能），而它是公开契约。
+ */
+function toSequenceOperator(sep: string | undefined): "&&" | "||" | ";" {
+  if (sep === "\n" || sep === "\r\n") return ";";
+  return (sep || "&&") as "&&" | "||" | ";";
+}
+
+/** 递归走的内部实现：入口只归一化一次，避免每层递归重复剥离 heredoc。 */
+function parseNormalized(source: string): BashASTNode {
+  const trimmed = source.trim();
   if (!trimmed) return { type: "simple", command: "", args: [] };
 
   try {
-    // 1. 处理复合命令（&&、||、;）— 在引号外拆分
-    const seqParts = splitOutsideQuotes(trimmed, /\s*(&&|\|\||;)\s*/);
+    // 1. 处理复合命令（&&、||、;、引号外换行）— 在引号外拆分
+    const seqParts = splitOutsideQuotes(trimmed, /\s*(&&|\|\||;|\r?\n)\s*/);
     if (seqParts.parts.length > 1) {
-      const commands = seqParts.parts.map((p) => parseBashCommand(p));
+      const commands = seqParts.parts.map((p) => parseNormalized(p));
       return {
         type: "sequence",
-        operator: (seqParts.separators[0] || "&&") as "&&" | "||" | ";",
+        operator: toSequenceOperator(seqParts.separators[0]),
         commands,
       };
     }
@@ -106,7 +181,7 @@ export function parseBashCommand(command: string): BashASTNode {
     // （见该函数内注释）；若改回 `slice(i).match()`，断言会在切片首位恒真而静默失效。
     const pipeParts = splitOutsideQuotes(trimmed, /\s*(?<!>)\|\s*(?!\|)/);
     if (pipeParts.parts.length > 1) {
-      return { type: "pipeline", commands: pipeParts.parts.map((p) => parseBashCommand(p)) };
+      return { type: "pipeline", commands: pipeParts.parts.map((p) => parseNormalized(p)) };
     }
 
     // 3. 处理重定向
@@ -122,7 +197,7 @@ export function parseBashCommand(command: string): BashASTNode {
     if (scanned.redirects.length > 0) {
       // 由内向外套 redirect 节点：最外层是最后一个重定向，target 链最终落到剥离后的命令体。
       // 命令体可能为空（如 `> f` 这种纯重定向），交给 parseSimpleCommand 得到空 command。
-      let node: BashASTNode = parseBashCommand(scanned.command);
+      let node: BashASTNode = parseNormalized(scanned.command);
       for (const r of scanned.redirects) {
         node = {
           type: "redirect",
@@ -634,9 +709,17 @@ function splitOutsideQuotes(
  */
 export function splitShellSubcommands(command: string): string[] {
   const out: string[] = [];
-  // 先按序列操作符（&& / || / ; / 单个 &）拆，再按管道拆——两级顺序不能反：
+  // ⚠️ 引号外的换行在 bash 里等价于 `;`，口径必须与 parseBashCommand 一致。
+  // 这是 D3（flag 混淆检测漏扫多行命令第二段）的**唯一出口**：
+  // `permission/bash-security.ts` 逐段调本函数，而它走的是**另一条正则**——
+  // 只改 parseBashCommand 修不到这里（2026-11-11 的修复方案里 D3 单列就是这个原因）。
+  //
+  // 先做入口归一化：剥离 heredoc 正文（正文是数据，里面的 `rm -rf` 不该被扫成命令段），
+  // 再折叠 `\<newline>` 续行（bash 语义是一条命令，不拆）。
+  const normalized = normalizeCommandText(command);
+  // 先按序列操作符（&& / || / ; / 单个 & / 换行）拆，再按管道拆——两级顺序不能反：
   // `a | b && c` 按序列先切成 [`a | b`, `c`]，管道再切第一段，与 bash 的求值结构一致。
-  const sequences = splitOutsideQuotes(command, /\s*(&&|\|\||;|(?<!>)&)\s*/);
+  const sequences = splitOutsideQuotes(normalized, /\s*(&&|\|\||;|(?<!>)&|\r?\n)\s*/);
   for (const sequence of sequences.parts) {
     const pipelines = splitOutsideQuotes(sequence, /\s*(?<!>)\|\s*(?!\|)\s*/);
     for (const part of pipelines.parts) {

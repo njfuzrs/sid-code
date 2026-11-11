@@ -308,8 +308,12 @@ export function validateObfuscatedFlags(
   command: string,
   baseCommand: string,
 ): InjectionFinding | null {
-  // 简单 echo（无管道/分号/&）对混淆 flag 安全
-  const hasShellOperators = /[|&;]/.test(command);
+  // 简单 echo（无管道/分号/&）对混淆 flag 安全。
+  //
+  // ⚠️ 换行也算 shell 操作符（bash 里等价于 `;`）：不算的话 `echo hi`⏎`grep "-"exec .`
+  // 会因 baseCommand 是 echo 被整体豁免，第二条命令的混淆 flag 直接漏扫——
+  // 这是 D3（`splitShellSubcommands` 不认换行）暴露在豁免分支上的同一处缺口。
+  const hasShellOperators = /[|&;\r\n]/.test(command);
   if (baseCommand === "echo" && !hasShellOperators) {
     return null;
   }

@@ -18,7 +18,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
-import { parseBashCommand, extractSimpleCommands } from "../tool/bash/parser.ts";
 import {
   expandShellCommand,
   writeTargetsFromExpansion,
@@ -101,8 +100,15 @@ async function getGitCleanTargets(command: string, cwd: string): Promise<string[
   // 从原命令里取出 clean 的参数（去掉 -f/--force，加 -n 预演）
   let cleanArgs: string[];
   try {
-    const simples = extractSimpleCommands(parseBashCommand(command));
-    const gitClean = simples.find((s) => s.command === "git" && s.args.some((a) => a === "clean"));
+    // 口径与主路径（`extractExplicitPaths`）一致：复用 `expandShellCommand`。它已正确处理
+    // 换行分隔、heredoc 剥离与 `sh -c` 递归展开，也认得 `sudo` / `timeout` 这类包装命令。
+    //
+    // 修前这里是**第二套提取器**（`parseBashCommand` + `extractSimpleCommands`）：多行命令下
+    // 后一条命令的参数会被并进 `git clean` 的参数里（2026-11-11 的 D4），
+    // 比如 `git clean -fd`⏎`rm -rf /tmp/x` 会把 `rm`/`-rf`/`/tmp/x` 当成 clean 的 pathspec。
+    const gitClean = expandShellCommand(command).commands.find(
+      (c) => c.program === "git" && c.args.includes("clean"),
+    );
     if (!gitClean) return [];
     const idx = gitClean.args.indexOf("clean");
     const rest = gitClean.args
