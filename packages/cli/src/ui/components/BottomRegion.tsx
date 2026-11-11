@@ -299,7 +299,6 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
           sessionState={sessionState}
           callbacks={callbacks}
           usage={usage}
-          stockInputTokens={stockInputTokens}
           costUSD={costUSD}
           cacheSavingsUSD={cacheSavingsUSD}
           costLimit={costLimit}
