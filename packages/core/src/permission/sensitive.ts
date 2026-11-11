@@ -1,7 +1,20 @@
 /**
  * 敏感数据检测与遮盖
- * 20 种敏感数据模式：云服务密钥、AI 密钥、代码托管 Token、通用模式等
+ *
+ * 规则本体在 `permission/secret-rules.ts`（B15 统一），本文件只负责 **wide 档**的呈现：
+ *
+ *   - 保形遮盖（`AKIA****1234`）—— 读者是排查的人，保留头尾能看出「这一步用了哪个 key」；
+ *   - 结构化 JSON 词法扫描（`maskSensitiveJson`）—— 落盘路径专用，绝不触碰 number。
+ *
+ * 为什么不把规则写在这里：同一形态此前在三处各写一条正则，`github_pat_` 在 R1 是 `{22,}`、
+ * 在 R2 缺失、在 R3 是 `{82}` —— 私有记忆可以写进 fine-grained PAT 就是这么漏的。
+ * 档位划分与「为什么 fixture 守护不在这里」见 `secret-rules.ts` 的文件头。
+ *
+ * strict 档（记忆闸门、团队同步）的呈现是占位替换，在 `llm/hooks/secret-redact.ts`；
+ * R3 的 label-only 在 `memory/team/secret-scanner.ts`。同一命中三种输出，读者不同，都对。
  */
+
+import { SECRET_RULES, compileSecretRule, maskValue } from "./secret-rules.ts";
 
 /** 敏感数据匹配结果 */
 export interface SensitiveMatch {
@@ -10,298 +23,38 @@ export interface SensitiveMatch {
   index: number;
 }
 
-/** 敏感数据模式定义 */
-interface SensitivePattern {
+/** 内部使用的已编译规则（呈现参数从规则表来，正则复制一份带 g 的实例） */
+interface CompiledWidePattern {
   type: string;
   pattern: RegExp;
-  /** 遮盖时保留头部字符数 */
   keepHead: number;
-  /** 遮盖时保留尾部字符数 */
   keepTail: number;
-  /**
-   * 二次校验（可选）。正则命中后再跑一遍，返回 false 则视为误报、不脱敏。
-   *
-   * 存在理由：纯字符类正则无法表达「这串数字在上下文里是不是一个独立的卡号」。
-   * `\b` 只判断词/非词边界，而 `.` 是非词字符——所以 `0.4428123456780257`
-   * 里的尾数 16 位会被信用卡号规则命中（真实事故，见 isolatedNumber 注释）。
-   */
   validate?: (value: string, index: number, text: string) => boolean;
-  /**
-   * 自定义遮盖（可选）。缺省用 keepHead / keepTail 的头尾保留式遮盖。
-   *
-   * 两类规则需要它：PEM 整块要换成「类型 + 长度量级」占位（头尾保留对多行密钥无意义）；
-   * `KEY=value` 赋值写法要**保留键名、只遮值**（键名是排查时最有用的线索，且不敏感）。
-   */
-  mask?: (match: RegExpExecArray) => string;
+  mask?: (m: RegExpExecArray) => string;
 }
 
-/**
- * 已知凭证前缀：值以这些开头时，赋值类规则不再要求「字母 + 数字混合」的多样性。
- * 只用于放宽二次校验，不单独构成命中条件。
- */
-const KNOWN_SECRET_PREFIXES = [
-  "sk-",
-  "ghp_",
-  "gho_",
-  "ghs_",
-  "github_pat_",
-  "glpat-",
-  "xox",
-  "AKIA",
-  "npm_",
-  "eyJ",
-];
+let compiled: CompiledWidePattern[] | null = null;
 
 /**
- * 赋值类规则（`*_API_KEY=` / `x-api-key:`）的值二次校验：只遮「像字面量凭证」的值。
+ * wide 档规则的编译结果（模块级缓存）。
  *
- * 朴素规则的误伤是实测出来的（PR-B 方案 §8.3）：`API_KEY = process.env.<某个变量>`（形如读环境变量的表达式）
- * 会被命中，而这类表达式恰恰出现在被测代码 / diff 里，遮掉会改写 tool_input，
- * 让评测的分歧分析失真。所以：
- *   - 含 `.` `(` `)` `$` `{` `}` 的是表达式 / 模板，不遮；含 `/` `\` 的是路径，不遮；
- *   - 长度 < 16 的不遮（真凭证几乎都更长，短值多是开关、枚举）；
- *   - 明显占位（xxxx、your-…、<…>、__…__、changeme、placeholder）不遮；
- *   - 不带已知前缀时要求同时含字母和数字——长常量名、驼峰变量名通常不含数字。
+ * 每次调用不重新编译：`maskSensitiveData` 会被落盘路径高频调用，而 `new RegExp`
+ * 在大文件上是实打实的开销。缓存的 RegExp 实例由本模块独享 —— R2 会另建一份自己的缓存，
+ * 两边不共享 `lastIndex`（它是可变状态，共享会让 exec 循环互相干扰）。
  */
-function literalSecretValue(value: string): boolean {
-  if (value.length < 16) return false;
-  if (/[.(){}$/\\<>`]/.test(value)) return false;
-  const lower = value.toLowerCase();
-  if (
-    lower.includes("xxxx") ||
-    lower.startsWith("your-") ||
-    lower.startsWith("your_") ||
-    /^__.*__$/.test(value) ||
-    lower.includes("changeme") ||
-    lower.includes("placeholder") ||
-    lower.includes("replace_me") ||
-    lower.includes("replace-me")
-  ) {
-    return false;
+function widePatterns(): CompiledWidePattern[] {
+  if (compiled === null) {
+    compiled = SECRET_RULES.filter((r) => r.tiers.includes("wide")).map((r) => ({
+      type: r.label,
+      pattern: compileSecretRule(r),
+      keepHead: r.keepHead ?? 0,
+      keepTail: r.keepTail ?? 0,
+      validate: r.validate,
+      mask: r.mask,
+    }));
   }
-  if (KNOWN_SECRET_PREFIXES.some((p) => value.startsWith(p))) return true;
-  return /[A-Za-z]/.test(value) && /[0-9]/.test(value);
+  return compiled;
 }
-
-/** 赋值类规则的统一遮盖：键名与分隔符原样保留，只遮值。约定第 1 组是「键 + 分隔符」，第 2 组是值。 */
-function maskAssignment(m: RegExpExecArray): string {
-  const prefix = m[1] ?? "";
-  const value = m[2] ?? "";
-  const rest = m[0].slice(prefix.length + value.length);
-  return prefix + maskValue(value, 3, 4) + rest;
-}
-
-/** PEM 占位：保留密钥类型与字节量级（分歧分析仍能看出「这一步写了一个密钥」），正文全部抹掉。 */
-function maskPem(m: RegExpExecArray): string {
-  const kind = (m[1] ?? "").trim();
-  const label = kind ? `${kind} PRIVATE KEY` : "PRIVATE KEY";
-  return `<PEM ${label}:${m[0].length}B>`;
-}
-
-/**
- * 赋值类规则的二次校验：从命中串里取出值部分再判断。
- * 正则只负责「键名 + 分隔符 + 一段非空白」的形态，是否是字面量凭证交给 literalSecretValue。
- */
-function assignmentValueOk(pattern: RegExp): (value: string) => boolean {
-  // 用一个不带 g 标志的副本解析分组，避免与外层 exec 循环共享 lastIndex
-  const single = new RegExp(pattern.source, pattern.flags.replace("g", ""));
-  return (value: string) => {
-    const m = single.exec(value);
-    return m !== null && literalSecretValue(m[2] ?? "");
-  };
-}
-
-/**
- * `*_API_KEY=` / `*_TOKEN=` / `*_SECRET=` 赋值写法（含 JSON 的 `"KEY": "value"` 形态）。
- * 键名前缀任意（`OPENAI_`、`MY_APP_`…），也接受裸 `API_KEY=`。
- * 第 1 组 = 键 + 引号 + 分隔符 + 可选开引号，第 2 组 = 值。
- */
-const ENV_ASSIGNMENT_PATTERN =
-  /\b((?:[A-Za-z0-9]+_)*(?:API_?KEY|TOKEN|SECRET(?:_KEY)?|ACCESS_KEY)["']?\s*[=:]\s*["']?)([^\s'",;]+)/gi;
-
-/** 文本形态的鉴权请求头：`x-api-key: <value>`、`api-key=<value>`、`x-auth-token: <value>`。分组约定同上。 */
-const HEADER_ASSIGNMENT_PATTERN =
-  /(?<![A-Za-z0-9_-])((?:x-api-key|api-key|x-auth-token)["']?\s*[:=]\s*["']?)([^\s'",;]+)/gi;
-
-/**
- * Luhn 校验（信用卡号的行业标准校验位算法）。
- * 真实卡号必然通过；随机 16 位数字通过的概率仅 1/10。
- */
-function luhnValid(digits: string): boolean {
-  let sum = 0;
-  let double = false;
-  for (let i = digits.length - 1; i >= 0; i--) {
-    const code = digits.charCodeAt(i) - 48;
-    if (code < 0 || code > 9) return false;
-    let d = code;
-    if (double) {
-      d *= 2;
-      if (d > 9) d -= 9;
-    }
-    sum += d;
-    double = !double;
-  }
-  return sum % 10 === 0;
-}
-
-/**
- * 判断命中的数字串是否「独立」——两侧都不是数字、也不是小数点/科学计数法的一部分。
- *
- * 事故背景（2026-08-07 实测）：轨迹落盘全部经 maskSensitiveData 收口，而
- * `session.traj` 里的 `"total_cost_usd": 0.4428123456780257` 的尾数
- * `4428123456780257` 恰好长 16 位、前缀 4 —— 被信用卡号规则命中并改写成
- * `0.4428********0257`。`*` 是真实字节，落盘后**整个文件 JSON.parse 失败**，
- * 直接把 `/trace` 与 `bun scripts/trace-digest.ts` 打死（单文件损坏即 rc=1）。
- *
- * 所以卡号两侧必须排除 `.` 与数字：小数尾数、时间戳、token 计数都不是卡号。
- */
-function isolatedNumber(value: string, index: number, text: string): boolean {
-  const before = index > 0 ? text[index - 1]! : "";
-  const after = index + value.length < text.length ? text[index + value.length]! : "";
-  // 前后紧邻小数点或数字 → 是更长数字/小数的一部分，不是独立卡号
-  if (before === "." || after === ".") return false;
-  if (before >= "0" && before <= "9") return false;
-  if (after >= "0" && after <= "9") return false;
-  return true;
-}
-
-const SENSITIVE_PATTERNS: SensitivePattern[] = [
-  // 云服务密钥
-  { type: "AWS Access Key", pattern: /AKIA[0-9A-Z]{16}/g, keepHead: 4, keepTail: 4 },
-  { type: "阿里云 AccessKey", pattern: /LTAI[A-Za-z0-9]{12,20}/g, keepHead: 4, keepTail: 4 },
-  { type: "腾讯云 SecretId", pattern: /AKID[A-Za-z0-9]{13,40}/g, keepHead: 4, keepTail: 4 },
-
-  // AI 服务密钥
-  { type: "Anthropic API Key", pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g, keepHead: 7, keepTail: 4 },
-  // ⚠️ `sk-` 系列**不放宽通用规则的字符类**（加 `-_`）。实测放宽后会命中
-  // `cd tasks/task-qemu-alpine-ssh-key-setup` 里的 `sk-qemu-alpine-ssh-key-setup`、
-  // `disk-usage-monitor-service_v2`、`fix/task-panel-dismiss-manual-exit`——`task-` / `disk-` /
-  // `mask-` 前缀在路径与命令里极常见，改写的正是评测分歧分析依赖的 command / file_path。
-  // 所以：带连字符的新格式一律走**显式前缀**，通用规则只补左边界。新增前缀类密钥照此办理。
-  {
-    type: "OpenAI Project Key",
-    pattern: /(?<![A-Za-z0-9_-])sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}/g,
-    keepHead: 8,
-    keepTail: 4,
-  },
-  {
-    type: "OpenAI API Key",
-    pattern: /(?<![A-Za-z0-9_-])sk-[A-Za-z0-9]{20,}/g,
-    keepHead: 3,
-    keepTail: 4,
-  },
-
-  // 代码托管 Token
-  { type: "GitHub Token", pattern: /gh[ps]_[A-Za-z0-9]{36,}/g, keepHead: 4, keepTail: 4 },
-  {
-    type: "GitHub Fine-grained Token",
-    pattern: /github_pat_[A-Za-z0-9_]{22,}/g,
-    keepHead: 11,
-    keepTail: 4,
-  },
-  { type: "GitHub OAuth Token", pattern: /gho_[A-Za-z0-9]{36,}/g, keepHead: 4, keepTail: 4 },
-  { type: "GitLab Token", pattern: /glpat-[A-Za-z0-9_-]{20,}/g, keepHead: 6, keepTail: 4 },
-
-  // 通用 Token
-  { type: "Bearer Token", pattern: /Bearer\s+[A-Za-z0-9_\-.]{20,}/g, keepHead: 10, keepTail: 4 },
-  { type: "Basic Auth", pattern: /Basic\s+[A-Za-z0-9+/=]{20,}/g, keepHead: 9, keepTail: 4 },
-  {
-    type: "JWT",
-    pattern: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-    keepHead: 10,
-    keepTail: 4,
-  },
-
-  // 数据库连接串
-  {
-    type: "DB 连接串",
-    pattern: /(?:mysql|postgres|postgresql|mongodb|redis):\/\/[^\s'"]{10,}/gi,
-    keepHead: 10,
-    keepTail: 4,
-  },
-
-  // 密码赋值（key=value 或 key: value 形式）
-  {
-    type: "密码赋值",
-    pattern: /(?:password|passwd|pwd|secret)[\s]*[=:]\s*['"]?[^\s'"]{8,}['"]?/gi,
-    keepHead: 10,
-    keepTail: 0,
-  },
-
-  // 环境变量 / 配置赋值写法：`OPENAI_API_KEY=…`、`GITHUB_TOKEN: …`、`MY_SECRET=…`
-  // 只遮值、保留键名；值必须像字面量凭证（见 literalSecretValue 的误伤约束）。
-  {
-    type: "凭证赋值",
-    pattern: ENV_ASSIGNMENT_PATTERN,
-    keepHead: 0,
-    keepTail: 0,
-    validate: assignmentValueOk(ENV_ASSIGNMENT_PATTERN),
-    mask: maskAssignment,
-  },
-  // 文本形态的鉴权请求头（curl -H 'x-api-key: …'、日志里的头部打印）
-  {
-    type: "鉴权请求头",
-    pattern: HEADER_ASSIGNMENT_PATTERN,
-    keepHead: 0,
-    keepTail: 0,
-    validate: assignmentValueOk(HEADER_ASSIGNMENT_PATTERN),
-    mask: maskAssignment,
-  },
-
-  // 私钥（PEM 整块）。旧规则只认 BEGIN 行：遮掉头一行，base64 正文与 END 行原样落盘，
-  // 等于没遮；`ENCRYPTED PRIVATE KEY` 头也不认。现在：
-  //   - 类型前缀任意（RSA / EC / DSA / OPENSSH / ENCRYPTED / 无），第 1 组捕获类型供占位用；
-  //   - 有 END 行时遮到 END 行；**没有 END 行**（工具输出被截断时很常见）时遮到正文结束；
-  //   - 正文字符类含 `\`，兼容 `JSON.stringify` 文本里的字面 `\n`（warn.log 就是这种）；
-  //   - 有限量词 {0,16384}：真实私钥 < 4KB，上限防大文件上的回溯。
-  {
-    // type 名沿用旧值「SSH 私钥」：检测结果按 type 聚合告警（tool-executor），改名会断口径
-    type: "SSH 私钥",
-    pattern:
-      /-----BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY-----(?:[\s\S]{0,16384}?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|[A-Za-z0-9+/=\s\\:,-]{0,16384})/g,
-    keepHead: 0,
-    keepTail: 0,
-    mask: maskPem,
-  },
-
-  // Slack Token
-  { type: "Slack Token", pattern: /xox[bpors]-[A-Za-z0-9-]{10,}/g, keepHead: 5, keepTail: 4 },
-
-  // npm Token
-  { type: "npm Token", pattern: /npm_[A-Za-z0-9]{36,}/g, keepHead: 4, keepTail: 4 },
-
-  // 信用卡号（简化：16 位数字，可含空格/横线分隔）
-  // 两道二次校验，缺一不可：
-  //   - isolatedNumber：排除小数尾数/长数字的一部分（`\b` 挡不住 `0.4428…` 里的 `.`）
-  //   - luhnValid：真实卡号必过校验位；随机 16 位数字仅 1/10 概率误过
-  {
-    type: "信用卡号",
-    pattern:
-      /\b(?:4[0-9]{3}|5[1-5][0-9]{2}|3[47][0-9]{2}|6(?:011|5[0-9]{2}))[- ]?[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{4}\b/g,
-    keepHead: 4,
-    keepTail: 4,
-    validate: (value, index, text) =>
-      isolatedNumber(value, index, text) && luhnValid(value.replace(/[- ]/g, "")),
-  },
-
-  // AWS Secret Key（40 位 base64 字符，前面有关键词）
-  {
-    type: "AWS Secret Key",
-    pattern:
-      /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)[\s]*[=:]\s*['"]?[A-Za-z0-9/+=]{40}['"]?/gi,
-    keepHead: 25,
-    keepTail: 4,
-  },
-
-  // 私有 Token（通用 private_token / access_token 赋值）
-  {
-    type: "Private Token",
-    pattern:
-      /(?:private_token|access_token|api_token|auth_token)[\s]*[=:]\s*['"]?[A-Za-z0-9_\-.]{16,}['"]?/gi,
-    keepHead: 15,
-    keepTail: 4,
-  },
-];
 
 /**
  * 检测文本中的敏感数据
@@ -309,7 +62,7 @@ const SENSITIVE_PATTERNS: SensitivePattern[] = [
 export function detectSensitiveData(text: string): SensitiveMatch[] {
   const matches: SensitiveMatch[] = [];
 
-  for (const sp of SENSITIVE_PATTERNS) {
+  for (const sp of widePatterns()) {
     // 重置 lastIndex（全局正则需要）
     sp.pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -336,7 +89,7 @@ export function maskSensitiveData(text: string): string {
   // 按匹配位置从后往前替换，避免偏移问题
   const allMatches: { index: number; length: number; masked: string }[] = [];
 
-  for (const sp of SENSITIVE_PATTERNS) {
+  for (const sp of widePatterns()) {
     sp.pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = sp.pattern.exec(text)) !== null) {
@@ -509,17 +262,4 @@ export function maskJsonByWalk(
     return v;
   };
   return JSON.stringify(walk(JSON.parse(text)), null, indent || undefined);
-}
-
-/** 遮盖单个值 */
-function maskValue(value: string, keepHead: number, keepTail: number): string {
-  if (value.length <= keepHead + keepTail + 2) {
-    // 太短，全部遮盖
-    return value.slice(0, Math.min(2, value.length)) + "****";
-  }
-
-  const head = value.slice(0, keepHead);
-  const tail = keepTail > 0 ? value.slice(-keepTail) : "";
-  const maskLen = Math.min(value.length - keepHead - keepTail, 8);
-  return head + "*".repeat(maskLen) + tail;
 }

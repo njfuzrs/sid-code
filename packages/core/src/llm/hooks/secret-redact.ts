@@ -3,22 +3,36 @@
  *
  * 实现: ADR-026 §3 接口设计 + §4 实施方案
  *
- * 7 类 pattern (§3.1):
- *   1. GitHub Token   ghp_/gho_/ghu_/ghs_/ghr_
+ * ── B15：规则本体已迁到 `permission/secret-rules.ts` ──
+ *
+ * 本文件现在只做 **strict 档**的呈现：`<REDACTED:category>` 占位。规则表按「误报代价」
+ * 分档（strict = 命中即拒场景，wide = 脱敏场景），消费方只声明自己要哪一档，
+ * 不再各自维护一份正则 —— 2026-11-10 实测 `github_pat_` 在 R1 是 `{22,}`、在 R2 完全缺失，
+ * 「私有记忆可以写进 fine-grained PAT」就是这么漏的。
+ *
+ * 与规则表的分工：
+ *   - 规则（正则 + 二次校验）：`secret-rules.ts`
+ *   - **fixture 守护**：留在这里。它是「命中之后要不要当成真凭证」的判断，依赖上下文
+ *     （命中前后 80 字符），规则层只看命中本身。下沉进规则表会让 R1 也开始放过
+ *     `AKIA…EXAMPLE`，与「落盘宁可多遮」的准则相反。
+ *   - 呈现：占位替换 + 赋值类保留键名 + db 连接串只遮 password。
+ *
+ * 历史 7 类 pattern (§3.1) 现在全部来自规则表的 strict 档：
+ *   1. GitHub Token   gh[poushr]_（含 fine-grained，B15 补）
  *   2. LLM API Key    sk-* / sk-proj-* / sk-ant-*
- *   3. AWS Access Key AKIA[A-Z0-9]{16}
- *   4. Generic API Key  api_key/access_token/secret_key = "..."
+ *   3. AWS Access Key AKIA/ASIA/ABIA/ACCA/A3T
+ *   4. Generic API Key  api_key/access_token/secret_key = "..." + x-api-key:
+ *                       （B15 补齐 `SECRET=` / `AWS_SECRET_ACCESS_KEY=`）
  *   5. Bearer Token   Authorization: Bearer xxx
  *   6. Private Key    -----BEGIN ... PRIVATE KEY-----
  *   7. DB Conn String postgres://user:pwd@host
- *
- * 误报守护 (§3.3): 测试 fixture / 代码标识符 / markdown 占位说明
  */
 
 import type { DetectMatch, RedactInput, RedactPattern, RedactResult, SecretHit } from "./types.ts";
+import { SECRET_RULES, compileSecretRule, type SecretRule } from "../../permission/secret-rules.ts";
 
 // ============================================================================
-// 内置 patterns (按 ADR-026 §3.1 顺序)
+// 误报守护（留在消费侧，见文件头）
 // ============================================================================
 
 /** 测试 fixture 标记: EXAMPLE / FAKE / TEST_ / DUMMY / PLACEHOLDER (大小写不敏感) */
@@ -43,114 +57,108 @@ function fixtureGuard(match: string, context: string): boolean {
   return false;
 }
 
-/** GitHub Token: ghp_ / gho_ / ghu_ / ghs_ / ghr_ + 36 chars */
-const GITHUB_TOKEN: RedactPattern = {
-  category: "github_token",
-  pattern: /\bgh[poushr]_[A-Za-z0-9]{36}\b/g,
-  replacer: () => "<REDACTED:github_token>",
-  falsePositiveGuard: fixtureGuard,
-};
+/**
+ * 每条规则用哪种 fixture 守护。
+ *
+ * 两条规则**不**用通用守护，都是实测踩出来的：
+ *   - PEM：正文是随机 base64，上下文里出现 "example"/"示例" 不代表它是假密钥。
+ *     通用守护会让真实的私钥因为附近一句「下面是示例」而整块放过。
+ *   - DB 连接串：只对 password 段判断。host 含 `example.com` 是无害域名，
+ *     误把真 conn string 放过去比让 example.com host 误报更危险。
+ */
+function guardFor(rule: SecretRule): RedactPattern["falsePositiveGuard"] {
+  if (rule.id === "private-key") return undefined;
+  if (rule.id === "db-conn-string-auth") {
+    return (match: string) => {
+      const pwd = match.match(/:\/\/[^\s'":@]+:([^@\s'"]+)@/)?.[1] ?? "";
+      return FIXTURE_MARKERS.test(pwd);
+    };
+  }
+  return fixtureGuard;
+}
 
-/** OpenAI / Anthropic / 类 LLM API Key */
-const LLM_API_KEY: RedactPattern = {
-  category: "llm_api_key",
-  // sk- 后跟 20+ 安全字符; 排除路径分隔以避免误命中如 sk-foo/bar
-  pattern: /\bsk(?:-proj|-ant)?-[A-Za-z0-9_\-]{20,}\b/g,
-  replacer: () => "<REDACTED:llm_api_key>",
-  falsePositiveGuard: fixtureGuard,
-};
+// ============================================================================
+// 呈现（strict 档的占位形态）
+// ============================================================================
 
-/** AWS Access Key */
-const AWS_ACCESS_KEY: RedactPattern = {
-  category: "aws_access_key",
-  pattern: /\bAKIA[0-9A-Z]{16}\b/g,
-  replacer: () => "<REDACTED:aws_access_key>",
-  // 注意: AKIAIOSFODNN7EXAMPLE 是 AWS 官方文档 placeholder, 测试 fixture 内常见
-  falsePositiveGuard: fixtureGuard,
-};
+/** 内置规则：比对外接口多一个 validate（规则表的二次校验，true = 命中有效）与 render（需要捕获组） */
+interface BuiltinPattern extends RedactPattern {
+  validate?: (value: string, index: number, text: string) => boolean;
+  /** 需要捕获组的呈现，优先于 replacer */
+  render?: (match: string, groups: string[], category: string) => string;
+}
+
+/** R2 的占位名：规则表声明了 category 就用它，否则由 kebab-case id 派生 */
+function categoryOf(rule: SecretRule): string {
+  return rule.category ?? rule.id.replace(/-/g, "_");
+}
+
+/** db 连接串的呈现：保留 schema / user / host，只遮 password（读者要能看出连的是哪个库） */
+function renderDbConn(match: string): string {
+  return match.replace(/(:\/\/[^\s'":@]+:)([^@\s'"]+)(@)/, "$1<REDACTED:db_password>$3");
+}
 
 /**
- * Generic API Key — `api_key = "..."` / `access_token: "..."` 等
- * 保留 key 名, 只 redact value
+ * 鉴权方案名的呈现：保留 `Bearer` / `Basic` 前缀，只遮 token 本体。
+ *
+ * 读者要能看出「这是哪种鉴权」—— 全遮成 `<REDACTED:bearer_token>` 会让
+ * 「Authorization: Bearer …」变成「Authorization: <REDACTED:…>」，方案名丢了。
  */
-const GENERIC_API_KEY: RedactPattern = {
-  category: "api_key",
-  pattern:
-    /\b(api[_-]?key|access[_-]?token|secret[_-]?key)\s*[:=]\s*["']?([A-Za-z0-9_\-]{16,})\b["']?/gi,
-  replacer: (match) => {
-    // 保留 key 名 + 分隔符, 只替换 value
-    const keep = match.match(/^([^"':=]+[:=]\s*["']?)/);
-    const prefix = keep ? keep[1] : "";
-    // 末尾若有引号也保留
-    const suffix = /["']$/.test(match) ? match.slice(-1) : "";
-    return `${prefix}<REDACTED:api_key>${suffix}`;
-  },
-  falsePositiveGuard: (match, context) => {
-    // 代码标识符: 全大写变量名作为类型/常量声明 (`const SECRET_KEY = process.env...`)
-    // 仅当 value 是 process.env / require / 函数调用 时跳过 (那不是真 secret)
-    const valuePart = match.replace(/^[^"':=]+[:=]\s*["']?/, "").replace(/["']$/, "");
-    if (/^(process\.env|require|import|getenv|os\.environ)/.test(valuePart)) return true;
-    if (fixtureGuard(valuePart, context)) return true;
-    return false;
-  },
+const SCHEME_PREFIX: Record<string, string> = {
+  "bearer-token": "Bearer",
+  "basic-auth": "Basic",
 };
 
-/** Bearer Token */
-const BEARER_TOKEN: RedactPattern = {
-  category: "bearer_token",
-  pattern: /\bBearer\s+([A-Za-z0-9_\-\.=]{20,})\b/g,
-  replacer: () => "Bearer <REDACTED:bearer_token>",
-  falsePositiveGuard: (match, context) => {
-    const tokenPart = match.replace(/^Bearer\s+/, "");
-    return fixtureGuard(tokenPart, context);
-  },
-};
+function renderFor(rule: SecretRule, category: string): BuiltinPattern["render"] {
+  if (rule.id === "db-conn-string-auth") {
+    return (match) => renderDbConn(match);
+  }
+  const scheme = SCHEME_PREFIX[rule.id];
+  if (scheme) {
+    return (_match, _groups, cat) => `${scheme} <REDACTED:${cat}>`;
+  }
+  if (rule.keepKeyName) {
+    // 第 1 组 = 键名 + 分隔符 + 可选开引号；只把值换成占位（键名是排查时最有用的线索）
+    return (_match, groups) => `${groups[0] ?? ""}<REDACTED:${category}>`;
+  }
+  return undefined;
+}
 
-/** Private Key — 整段 (BEGIN ... END) 替换 */
-const PRIVATE_KEY: RedactPattern = {
-  category: "private_key",
-  // 跨行匹配 BEGIN…END
-  pattern:
-    /-----BEGIN (?:RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED)? ?PRIVATE KEY-----[\s\S]*?-----END (?:RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED)? ?PRIVATE KEY-----/g,
-  replacer: () => "<REDACTED:private_key>",
-};
+/**
+ * 从规则表构建 strict 档的内置 pattern。
+ *
+ * 模块级缓存：`getSharedSecretRedactHook` 每个进程只建一次，
+ * 但测试会 `new SecretRedactHook()` 多次 —— 缓存的是**未编译的规则清单**，
+ * 每次构造仍复制新的 RegExp（`compileSecretRule`），因为 `detect`/`redact`
+ * 会各自复用 `lastIndex`，共享实例会让两条路径互相干扰。
+ */
+function strictRules(): SecretRule[] {
+  return SECRET_RULES.filter((r) => r.tiers.includes("strict"));
+}
 
-/** DB Connection String — 保留 schema/host, redact password */
-const DB_CONN_STRING: RedactPattern = {
-  category: "db_conn_string",
-  // 形如 postgres://user:pwd@host[:port]/db
-  pattern: /\b(postgres|postgresql|mysql|mongodb(?:\+srv)?|redis):\/\/([^\s'":@]+):([^@\s'"]+)@/g,
-  replacer: (match) => {
-    return match.replace(/(:\/\/[^\s'":@]+:)([^@\s'"]+)(@)/, "$1<REDACTED:db_password>$3");
-  },
-  // 仅当 password 部分本身是 fixture 标记 (FAKE/EXAMPLE/PLACEHOLDER) 时才跳过.
-  // 不使用 context 范围扫描——host 可能含 example.com 这类无害域名,
-  // 误把真 conn string 放过去比让 example.com host 误报 redact 更危险.
-  falsePositiveGuard: (match, _context) => {
-    const pwd = match.match(/:\/\/[^\s'":@]+:([^@\s'"]+)@/)?.[1] ?? "";
-    return FIXTURE_MARKERS.test(pwd);
-  },
-};
-
-const BUILTIN_PATTERNS: RedactPattern[] = [
-  PRIVATE_KEY, // 优先, 整段匹配
-  GITHUB_TOKEN,
-  LLM_API_KEY,
-  AWS_ACCESS_KEY,
-  BEARER_TOKEN,
-  GENERIC_API_KEY,
-  DB_CONN_STRING,
-];
+function buildBuiltinPatterns(): BuiltinPattern[] {
+  return strictRules().map((rule) => {
+    const category = categoryOf(rule);
+    return {
+      category,
+      pattern: compileSecretRule(rule),
+      replacer: () => `<REDACTED:${category}>`,
+      falsePositiveGuard: guardFor(rule),
+      validate: rule.validate,
+      render: renderFor(rule, category),
+    };
+  });
+}
 
 // ============================================================================
 // SecretRedactHook
 // ============================================================================
 
 export class SecretRedactHook {
-  private patterns: RedactPattern[];
+  private patterns: BuiltinPattern[];
 
   constructor(patterns?: RedactPattern[]) {
-    this.patterns = patterns ?? [...BUILTIN_PATTERNS];
+    this.patterns = patterns ?? buildBuiltinPatterns();
   }
 
   /** 注册自定义 pattern (企业 SDK key 等) */
@@ -172,6 +180,8 @@ export class SecretRedactHook {
       while ((m = re.exec(text)) !== null) {
         const start = m.index;
         const end = start + m[0].length;
+        // 规则表的二次校验（如赋值写法要求值像字面量凭证），语义是 true = 命中有效
+        if (p.validate && !p.validate(m[0], start, text)) continue;
         if (p.falsePositiveGuard) {
           const ctx = getContext(text, start, end);
           if (p.falsePositiveGuard(m[0], ctx)) continue;
@@ -189,13 +199,19 @@ export class SecretRedactHook {
 
     for (const p of this.patterns) {
       const re = new RegExp(p.pattern.source, p.pattern.flags);
-      text = text.replace(re, (matchStr, ..._args) => {
+      text = text.replace(re, (matchStr: string, ...args: unknown[]) => {
+        // replace 回调参数尾部固定是 (offset, wholeString)，其余是捕获组。
+        // render 需要捕获组（赋值类保留键名、db 连接串保留 host），所以这里要解出来。
+        const groupCount = Math.max(args.length - 2, 0);
+        const groups = args.slice(0, groupCount).map((g) => (typeof g === "string" ? g : ""));
+        const offset = typeof args[groupCount] === "number" ? (args[groupCount] as number) : 0;
+        if (p.validate && !p.validate(matchStr, offset, input.text)) return matchStr;
         if (p.falsePositiveGuard) {
           // 用原始 input 作为 context (替换链中无法稳定取窗口)
-          const ctx = input.text;
-          if (p.falsePositiveGuard(matchStr, ctx)) return matchStr;
+          if (p.falsePositiveGuard(matchStr, input.text)) return matchStr;
         }
         counter.set(p.category, (counter.get(p.category) ?? 0) + 1);
+        if (p.render) return p.render(matchStr, groups, p.category);
         return p.replacer(matchStr);
       });
     }

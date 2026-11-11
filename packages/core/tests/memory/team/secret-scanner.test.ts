@@ -37,9 +37,20 @@ describe("secret-scanner — 命中检测", () => {
   });
 
   test("Slack bot token 命中", () => {
-    const content = "xoxb-1234567890-0987654321-abcdefghijklmnop";
+    // 拼接构造，不写完整字面量：`xoxb-<数字>-<数字>-<字母数字>` 是真实 token 的格式，
+    // GitHub secret scanning 会按前缀模式判成真凭证并拦掉 push（合成假值也一样）。
+    const content = ["xoxb", "1234567890", "0987654321", "abcdefghijklmnop"].join("-");
     const hits = scanForSecrets(content);
-    expect(hits.some((h) => h.ruleId === "slack-bot-token")).toBe(true);
+    // B15：原 slack-bot-token / slack-user-token 两条合并为规则表的 slack-token，
+    // 覆盖 xox[bpors]- 全部前缀（前缀独特、误报近零）
+    expect(hits.some((h) => h.ruleId === "slack-token")).toBe(true);
+  });
+
+  test("Slack user token（xoxp）也命中合并后的 slack-token", () => {
+    const seg = "1234567890";
+    const content = ["xoxp", seg, seg, seg, "a".repeat(32)].join("-");
+    const hits = scanForSecrets(content);
+    expect(hits.some((h) => h.ruleId === "slack-token")).toBe(true);
   });
 
   test("DeepSeek/通用 sk-32hex key 命中（国产模型补充规则）", () => {
