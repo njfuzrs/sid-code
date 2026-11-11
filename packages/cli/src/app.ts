@@ -183,6 +183,7 @@ import {
 import {
   addBillingObserver,
   shouldChargeBilledRequest,
+  sideCallLabelOf,
   type BilledRequest,
 } from "@sid-code/core/llm/billing-sink.ts";
 import { sendNonStreamingSideCall } from "@sid-code/core/llm/side-call-nonstreaming.ts";
@@ -1364,7 +1365,10 @@ export class App {
         // （本文件此前的一版正是这个 bug）。这里只走 recordSideCall 一条路，
         // costUSD 显式传入（已按 (model, endpoint) 算过），避免 sink 再算一遍。
         recordSideCall({
-          label: req.callerLabel ?? (req.agentId ? `agent:${req.agentId}` : "provider-billed"),
+          // D10：fork 的 querySource 恒为 `agent:fork`，任务身份只在 `agentId` 里
+          // （`fork:memory-extract` 等）。原先优先取 callerLabel，byLabel 里只剩一个
+          // `agent:fork` 桶，辅助调用费用归因不出来。判据收在 sideCallLabelOf 一处。
+          label: sideCallLabelOf(req),
           model: req.model,
           inputTokens: req.usage.inputTokens ?? 0,
           outputTokens: req.usage.outputTokens ?? 0,
