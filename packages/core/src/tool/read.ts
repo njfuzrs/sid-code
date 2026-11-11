@@ -20,6 +20,7 @@ import type {
 } from "./types.ts";
 import type { FileStateCache } from "./file-state-cache.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
+import { contentFingerprint } from "./file-read-tracker.ts";
 import { statSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
@@ -780,6 +781,9 @@ export class ReadTool implements Tool {
         this.tracker.markAsRead(filePath, mtime, {
           isPartialView,
           content: isPartialView ? null : text,
+          // CG-4：部分读取必须留内容指纹，否则 bash 回扫只能按 mtime 判"变了"（touch 也算）。
+          // 用 BOM 剥离前的 `content` 算，与回扫读磁盘原文的口径一致。
+          contentHash: contentFingerprint(content),
         });
 
         // 声明文件读取意图（并发冲突检测）
