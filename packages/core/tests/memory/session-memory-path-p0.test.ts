@@ -107,9 +107,11 @@ describe("接线层：app.ts 必须把会话 id 传进 getSessionMemoryPath", ()
     // 真正有用的那一行信息反而被埋掉。
     const has = (needle: string) => src.includes(needle);
 
-    // 调用点必须是两参形式（cwd + 会话 id），不能退回裸 getSessionMemoryPath(process.cwd())
-    expect(has("getSessionMemoryPath(process.cwd(), sessionMemorySessionId)")).toBe(true);
-    expect(has("getSessionMemoryPath(process.cwd())")).toBe(false);
+    // 调用点必须是两参形式（cwd + 会话 id），不能退回裸 getSessionMemoryPath(process.cwd())。
+    // CG-1 把这里的第一参从 process.cwd() 换成了 getProjectRoot()：会话记忆按「工作区根」
+    // 归属，进 worktree 或 bash cd 都不该把笔记拆到别处。断言跟着契约一起改（不是放宽）。
+    expect(has("getSessionMemoryPath(getProjectRoot(), sessionMemorySessionId)")).toBe(true);
+    expect(has("getSessionMemoryPath(process.cwd()")).toBe(false);
 
     // 且 handle 也要拿到同一个 id（否则 session-memory.ts 内部仍走回退路径并 warn）
     expect(has("sessionId: sessionMemorySessionId")).toBe(true);
