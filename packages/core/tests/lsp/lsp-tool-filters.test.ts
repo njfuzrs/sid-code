@@ -88,6 +88,17 @@ describe("G9：filterGitignored", () => {
   });
 });
 
+/**
+ * G10 两条「onProgress 接线」用例的显式超时。
+ *
+ * 为什么不能靠 bun 默认的 5s：这两条会走 `openFile` → `ensureStarted`，在 mock 服务器
+ * 起不来时要等一次 initialize 往返（`client.sendRequest` 默认 30s）。慢 runner 上这段
+ * 等待会**越过 5s**，于是用例被 bun 的超时杀掉、报成 `5000.67ms` 之类的耗时 ——
+ * 看起来像"用例真的卡了 5 秒"，实际是被计时器中断。显式给 30s 之后最坏情况也只是
+ * 慢一点，不会变红；配合 fixture 里压到 500ms 的 `startupTimeout`，正常只有几百毫秒。
+ */
+const STARTUP_PROBE_TIMEOUT_MS = 30_000;
+
 describe("G10：文件大小保护", () => {
   let dir: string;
 
@@ -102,6 +113,14 @@ describe("G10：文件大小保护", () => {
         "mock-g10": {
           command: "true",
           extensionToLanguage: { ".g10x": "g10lang" },
+          // ⚠️ 必须显式压小，别退回默认 30000ms。
+          // 下方两条「onProgress 接线」用例会在 openFile 里走 ensureStarted →
+          // client.sendRequest("initialize", …, startupTimeout)：mock 的 command 是
+          // `true`（起不来），慢 runner 上这条 initialize 会**等到超时才返回**。
+          // 2026-11-10 CI macOS 实测这两条各跑 5000.67 / 5001.13 / 5000.78 / 5000.76ms
+          // —— 精确等于 bun 默认 5s 单测超时，于是用例被计时器杀掉而不是断言失败。
+          // 压到 500ms 后最坏等待有界，用例仍能跑完并断言三个阶段的 onProgress 都发生了。
+          startupTimeout: 500,
         },
       }),
     );
@@ -165,45 +184,53 @@ describe("G10：文件大小保护", () => {
    * 立即退出 → 请求失败），所以走不到真实结果，但**就绪 / 打开 / 查询三个阶段的上报
    * 已经发生**，正好覆盖本次接线。
    */
-  test("execute 接受 onProgress 并按阶段上报（就绪 → 打开 → 查询）", async () => {
-    const file = join(dir, "progress.g10x");
-    writeFileSync(file, "hello\n");
+  test(
+    "execute 接受 onProgress 并按阶段上报（就绪 → 打开 → 查询）",
+    async () => {
+      const file = join(dir, "progress.g10x");
+      writeFileSync(file, "hello\n");
 
-    const events: string[] = [];
-    const tool = new LSPTool();
-    await tool.execute(
-      { operation: "hover", file_path: file, line: 1, character: 1 },
-      undefined,
-      (e) => {
-        // 只收集带文本的进度（就是会显示到卡片上的那些）
-        if (typeof (e as any).text === "string") events.push((e as any).text);
-      },
-    );
+      const events: string[] = [];
+      const tool = new LSPTool();
+      await tool.execute(
+        { operation: "hover", file_path: file, line: 1, character: 1 },
+        undefined,
+        (e) => {
+          // 只收集带文本的进度（就是会显示到卡片上的那些）
+          if (typeof (e as any).text === "string") events.push((e as any).text);
+        },
+      );
 
-    // 关键断言：**有**进度（此前恒为 0 条——参数都没声明，回调永远不会被调用）
-    expect(events.length).toBeGreaterThan(0);
-    // 三个阶段各自可辨识，且顺序符合执行流
-    expect(events.some((t) => t.includes("语言服务器"))).toBe(true);
-    expect(events.some((t) => t.includes("progress.g10x"))).toBe(true);
-    expect(events.some((t) => t.includes("hover"))).toBe(true);
-    const openIdx = events.findIndex((t) => t.includes("progress.g10x"));
-    const queryIdx = events.findIndex((t) => t.includes("hover"));
-    expect(openIdx).toBeLessThan(queryIdx);
-  });
+      // 关键断言：**有**进度（此前恒为 0 条——参数都没声明，回调永远不会被调用）
+      expect(events.length).toBeGreaterThan(0);
+      // 三个阶段各自可辨识，且顺序符合执行流
+      expect(events.some((t) => t.includes("语言服务器"))).toBe(true);
+      expect(events.some((t) => t.includes("progress.g10x"))).toBe(true);
+      expect(events.some((t) => t.includes("hover"))).toBe(true);
+      const openIdx = events.findIndex((t) => t.includes("progress.g10x"));
+      const queryIdx = events.findIndex((t) => t.includes("hover"));
+      expect(openIdx).toBeLessThan(queryIdx);
+    },
+    STARTUP_PROBE_TIMEOUT_MS,
+  );
 
-  test("不传 onProgress 时不炸（无头模式 / 旧调用方）", async () => {
-    const file = join(dir, "noprogress.g10x");
-    writeFileSync(file, "hello\n");
-    const tool = new LSPTool();
-    // 只要不抛就算过（结果本身必然是失败——mock 服务器起不来）
-    const result = await tool.execute({
-      operation: "hover",
-      file_path: file,
-      line: 1,
-      character: 1,
-    });
-    expect(result).toBeDefined();
-  });
+  test(
+    "不传 onProgress 时不炸（无头模式 / 旧调用方）",
+    async () => {
+      const file = join(dir, "noprogress.g10x");
+      writeFileSync(file, "hello\n");
+      const tool = new LSPTool();
+      // 只要不抛就算过（结果本身必然是失败——mock 服务器起不来）
+      const result = await tool.execute({
+        operation: "hover",
+        file_path: file,
+        line: 1,
+        character: 1,
+      });
+      expect(result).toBeDefined();
+    },
+    STARTUP_PROBE_TIMEOUT_MS,
+  );
 });
 
 describe("documentEnd（codeAction 整文件范围的真实末尾）", () => {
