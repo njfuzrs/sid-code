@@ -133,12 +133,23 @@ function mockReasoningStream(chunkCount: number, gapMs: number) {
 
 describe("常驻回归 — 健康的慢流不被任何一层杀掉", () => {
   test("持续吐 reasoning_content 的长流：总时长远超单层阈值，仍完整读完", async () => {
-    // 关键设置：每个 chunk 间隔 10ms（远小于 idle 60ms），但**总时长 300ms
-    // 远超 content-progress 的 80ms** —— 若某层退回"绝对计时"，它必然开枪。
-    const CHUNKS = 30;
+    // 关键设置：每个 chunk 间隔 10ms，但**总时长 600ms 是 content-progress 阈值
+    // 120ms 的 5 倍** —— 若某层退回"绝对计时"，它必然开枪。
+    //
+    // ⚠️ 两个余量都要留够，但**不能靠把阈值放大到"整条流跑完都不超时"来求稳**：
+    // 那样这条用例会从「验证不误杀」退化成「什么都不会红」，验证力归零
+    // （done/20261107 §3.5 记过同样的教训：直接放宽阈值已这么改过三次，
+    // 每次只是把下一次失败推后）。所以这里的做法是**两边同时涨**：
+    //   · 间隔余量：10ms → 阈值 120ms = 12x（原 8x，idle 侧原为 6x）
+    //   · 总时长余量：600ms → 阈值 120ms = 5x（原 300ms / 80ms = 3.75x）
+    // 2026-11-10 CI macOS 上 PR #725 实测这条失败于
+    // 「SSE 内容进展超时：0.08s 无有效内容」—— 就是 80ms 阈值被一次 event loop
+    // 抢占吃掉（间隔 10ms 时余量只有 8x）。
+    const CHUNKS = 60;
     const GAP_MS = 10;
-    setEnv("SID_CODE_IDLE_TIMEOUT_MS", "60");
-    setEnv("SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS", "80");
+    const CONTENT_PROGRESS_MS = 120;
+    setEnv("SID_CODE_IDLE_TIMEOUT_MS", "120");
+    setEnv("SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS", String(CONTENT_PROGRESS_MS));
     setEnv("SID_CODE_OPENAI_OVERALL_TIMEOUT_MS", "5000");
     mockReasoningStream(CHUNKS, GAP_MS);
 

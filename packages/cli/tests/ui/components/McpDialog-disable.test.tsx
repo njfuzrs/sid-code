@@ -20,6 +20,7 @@ import { renderSync } from "@sid-code/cli/ui/render-port/testing.ts";
 import { KeypressProvider, ESC_TIMEOUT } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 import { McpDialog } from "@sid-code/cli/ui/components/McpDialog.tsx";
 import { McpApprovalQueue } from "@sid-code/cli/ui/components/McpApprovalDialog.tsx";
+import { ARROW_PROMPT } from "@sid-code/cli/ui/constants/figures.ts";
 import { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import { MCPConnectionStatus } from "@sid-code/core/mcp/types.ts";
 import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
@@ -72,6 +73,25 @@ function renderWithKeys(node: React.ReactElement) {
 
 const KEY = { down: "\x1b[B", enter: "\r" } as const;
 
+/**
+ * 轮询到条件成立 / 超时。
+ *
+ * 为什么不能「press 完固定 sleep 再断言」：`press` 的默认等待是 `ESC_TIMEOUT * 2` = 100ms
+ * （`KeypressContext` 判定裸 ESC 的窗口），而 macOS 共享 runner 上一次 event loop 抢占
+ * 就能吃掉这个量级。2026-11-10 PR #725 实测到的形态正是如此 —— `KEY.down` 没被处理完，
+ * 紧随的 `KEY.enter` 命中了第一项「重新连接」，失败帧里多出一行「重连成功，注册 1 个工具」。
+ * 判据从「等多久」改成「等到什么」，与 done/20261107 对 PluginsDialog /
+ * layout-bottom-region-snapshot 的改法同源。
+ */
+async function waitFor(cond: () => boolean, ms = 3000): Promise<boolean> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > ms) return false;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return true;
+}
+
 let ROOT: string;
 let prevConfigDir: string | undefined;
 
@@ -112,8 +132,23 @@ describe("M2 /mcp 面板禁用当场生效", () => {
     await r.press(KEY.enter); // 进入 server 菜单
     expect(r.frame()).toContain("禁用");
     // 菜单：重新连接 / 禁用（toolCount 0 时无「查看工具」）
+    //
+    // ⚠️ 不要改回「down 之后固定 sleep 再 enter」：down 与 enter 之间存在竞态 ——
+    // down 没被消费完时，紧随的 enter 会命中**第一项「重新连接」**，于是失败帧里
+    // 多出一行「重连成功，注册 1 个工具」（2026-11-10 PR #725 在 macOS 上实测）。
+    // 判据从「等够多久」换成「等到光标真的落在禁用项上」：选中标记 ARROW_PROMPT
+    // 只在焦点项前渲染，未选中项是等宽空白。
     await r.press(KEY.down);
-    await r.press(KEY.enter, 400);
+    const focusedDisable = await waitFor(() =>
+      new RegExp(`${ARROW_PROMPT}\\s*禁用`).test(r.frame()),
+    );
+    expect(
+      focusedDisable,
+      `按下 down 后光标应停在「禁用」项（选中标记 ${ARROW_PROMPT}）；实际帧：\n${r.frame()}`,
+    ).toBe(true);
+    await r.press(KEY.enter, 0);
+    const menuFlipped = await waitFor(() => r.frame().includes("启用"));
+    expect(menuFlipped, `选中「禁用」后菜单应翻成「启用」；实际帧：\n${r.frame()}`).toBe(true);
 
     const frame = r.frame();
     expect(frame).toContain("启用");
