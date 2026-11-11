@@ -27,6 +27,8 @@ export const CREDENTIAL_IN_CONTEXT_EVENT_NAME = "CredentialInContext";
 export const WEB_FETCH_MODEL_URL_EVENT_NAME = "WebFetchModelUrl";
 /** B18：记忆写入闸门命中（拒写 secret、scope 越权、索引满等），此前只进 analytics */
 export const MEMORY_GUARD_EVENT_NAME = "MemoryGuard";
+/** N6 A 档：前台 `sleep N` 阻塞等待已追加引导（只追加提示，不拦、不改退出码） */
+export const FOREGROUND_SLEEP_GUIDED_EVENT_NAME = "ForegroundSleepGuided";
 
 // ─────────────────────────── sink ───────────────────────────
 
@@ -35,7 +37,8 @@ export type GuidanceEventName =
   | typeof TOOL_RESULT_CLEARED_EVENT_NAME
   | typeof CREDENTIAL_IN_CONTEXT_EVENT_NAME
   | typeof WEB_FETCH_MODEL_URL_EVENT_NAME
-  | typeof MEMORY_GUARD_EVENT_NAME;
+  | typeof MEMORY_GUARD_EVENT_NAME
+  | typeof FOREGROUND_SLEEP_GUIDED_EVENT_NAME;
 
 type GuidanceSink = (event: GuidanceEventName, data: Record<string, unknown>) => void;
 let sink: GuidanceSink | null = null;
@@ -119,4 +122,20 @@ export function emitMemoryGuard(data: { kind: string; via: string; scope?: strin
     guard_via: data.via,
     ...(data.scope !== undefined ? { memory_scope: data.scope } : {}),
   });
+}
+
+/**
+ * N6 A 档。前台 `sleep N` 阻塞本轮时追加的引导（只追加提示，命令照常执行）。
+ *
+ * `reason` 是闭集标签：`declared_wait` = 模型自己挂了等待源（唤醒 / monitor / wait_until），
+ * 前台 sleep 正在推迟它；`long_sleep` = 没有等待源，但 N 已过 30s 阈值。
+ * 上线后回看的取数口径：本事件数 ÷ 前台 sleep 命中数 = 引导覆盖率；
+ * 后效看 `unwaited_longest_run`（N7 的字段）有没有下降。
+ */
+export function emitForegroundSleepGuided(data: {
+  seconds: number;
+  has_declared_wait: boolean;
+  reason: "declared_wait" | "long_sleep";
+}): void {
+  emit(FOREGROUND_SLEEP_GUIDED_EVENT_NAME, data);
 }
