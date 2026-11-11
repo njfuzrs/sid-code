@@ -6085,7 +6085,7 @@ async function* queryLoopBody(
           //     不再被交替的 read 当"有进展"清零(历史死循环的关键缺口);
           //   - 其它一切(写操作、编辑、其它 bash 命令、task_*/todo_write 等有产出工具、文本产出)
           //     = 真进展,置 hadOtherActivity=true 触发清零。
-          const probes: Array<{ command: string; output: string }> = [];
+          const probes: Array<{ command: string; output: string; kind?: "bash" | "tool" }> = [];
           const measuredProgress = getMeasuredProgress(sessionState);
           let hadOtherActivity = responseText.trim().length > 0;
           for (const b of toolBlocks) {
@@ -6136,7 +6136,13 @@ async function* queryLoopBody(
             } else if (isReadFamilyTool(b.name)) {
               // 纯只读检查工具:用"工具名 + 稳定序列化入参"作为签名命令,
               // 读同一区域(入参相同)且返回相同 → 与 git status 一起构成稳定签名。
-              probes.push({ command: makeToolProbeCommand(b.name, b.input), output: readOutput() });
+              // kind="tool"：输出是文件内容，不做 `===`/`---` 标记行剥离（那是 bash 探查的归一化，
+              // 见 repeated-readonly-guard.makeSignature 的注释）。
+              probes.push({
+                command: makeToolProbeCommand(b.name, b.input),
+                output: readOutput(),
+                kind: "tool",
+              });
             } else {
               // 写操作、编辑、其它 bash、有产出工具 = 有进展。
               hadOtherActivity = true;
