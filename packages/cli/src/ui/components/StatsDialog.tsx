@@ -35,7 +35,6 @@ const GIT_KIND_LABELS: Record<string, string> = {
 interface StatsDialogProps {
   onClose: () => void;
   usage: Usage;
-  stockInputTokens: number;
   costUSD: number;
   cacheSavingsUSD?: number;
   costLimit: number;
@@ -96,7 +95,6 @@ const SectionTitle: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 export const StatsDialog: React.FC<StatsDialogProps> = ({
   onClose,
   usage,
-  stockInputTokens,
   costUSD,
   cacheSavingsUSD,
   costLimit,
@@ -129,8 +127,19 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
     };
   }, []);
 
-  // 缓存命中率：stockInputTokens 为末次完整输入 tokens，作为缓存命中量近似
-  const cacheHitRate = inputTokens > 0 ? Math.round((stockInputTokens / inputTokens) * 100) : 0;
+  // 缓存命中量与命中率必须与 /cost、Footer 同源：走 getNormalizedCacheUsage()，
+  // 它按每个模型自己的 provider 归一化后再加总（anthropic 的 input 是未命中余量，
+  // openai 族的 input 含命中，两族不能混着算）。
+  //
+  // ⚠️ 别改回 `stockInputTokens / inputTokens`：分子是「末次请求的完整 prompt」
+  // （stock 快照），分母是「累计发送的 prompt」（flow 累加），两个口径相除不是命中率。
+  // 实测本会话算成 4%，真实值 91.7%。stockInputTokens 的语义是「当前上下文大小」，
+  // 只该出现在上下文占用那一行，不是命中量。
+  const cacheUsage = sessionState?.getNormalizedCacheUsage();
+  const cacheHitRate =
+    cacheUsage && cacheUsage.promptTotal > 0
+      ? ((cacheUsage.cacheHitTokens / cacheUsage.promptTotal) * 100).toFixed(1)
+      : undefined;
 
   // 成本着色：超预算红、接近(≥80%)黄、否则默认
   const budgetRatio = costLimit > 0 ? costUSD / costLimit : 0;
@@ -167,9 +176,9 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
       <StatRow label="输出 (output)">
         <Text color={theme.text.primary}>{fmtNum(outputTokens)} tokens</Text>
       </StatRow>
-      {stockInputTokens > 0 && (
+      {cacheUsage && cacheUsage.cacheHitTokens > 0 && (
         <StatRow label="缓存命中">
-          <Text color={theme.text.primary}>{fmtNum(stockInputTokens)} tokens </Text>
+          <Text color={theme.text.primary}>{fmtNum(cacheUsage.cacheHitTokens)} tokens </Text>
           <Text color={theme.text.secondary}>({cacheHitRate}%)</Text>
         </StatRow>
       )}
