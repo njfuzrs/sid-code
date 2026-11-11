@@ -27,7 +27,7 @@
       "date": "2026-11-11",
       "highlight": "新增 monitor 工具：按行盯日志或 CI，出事件就叫醒你，不用反复轮询",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
