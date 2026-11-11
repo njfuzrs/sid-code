@@ -240,6 +240,39 @@ export function shouldChargeBilledRequest(req: BilledRequest): boolean {
   return true;
 }
 
+/**
+ * 泛化调用方标签：只表示「走了哪条通道」，不表示「哪个任务在花钱」。
+ *
+ * `runForkedAgent` 把 `querySource` 写死成 `agent:fork`（`agent/forked-agent.ts`），
+ * 任务身份只放在 `agentId` 里（`fork:<任务名>`，如 `fork:memory-extract`）。
+ * 拿 `callerLabel` 当 `recordSideCall` 的 label，记忆抽取 / 会话记忆 / 记忆巩固 /
+ * 旁路问答就全塌进同一个 `agent:fork` 桶——而它们恰恰是辅助调用费用的大头，
+ * 塌了就看不出「钱是哪个任务花的」（现实后果：一次会话里 43% 的费用归因不出来）。
+ *
+ * 只登记 `agent:fork`：其余 `agent:*`（`agent:builtin` / `agent:custom` /
+ * `agent:summary`）是稳定的分类标签，它们的 `agentId` 不比标签本身更好读，
+ * 换掉只会平移 digest / byLabel 的分组口径。将来出现新的泛化标签再往这里加。
+ */
+const GENERIC_CALLER_LABELS: ReadonlySet<string> = new Set(["agent:fork"]);
+
+/**
+ * 计费事件 → `recordSideCall` 的归因标签。判据只有这一份实现。
+ *
+ * 优先级：
+ * 1. `callerLabel` 是泛化值且有 `agentId` → 用 `agentId`（`fork:memory-extract`）
+ * 2. `callerLabel` 本身具体 → 用它（`title_generation` 等）
+ * 3. 只有 `agentId` → `agent:<agentId>`
+ * 4. 都没有 → `provider-billed`
+ *
+ * **不改 `querySource` 本身**：`BILLING_SELF_REPORTED_LABELS` 与重试漏斗都按它判断，
+ * 改了会影响计费去重与归属（见 D10 的「不做」）。
+ */
+export function sideCallLabelOf(req: Pick<BilledRequest, "callerLabel" | "agentId">): string {
+  const { callerLabel, agentId } = req;
+  if (callerLabel && GENERIC_CALLER_LABELS.has(callerLabel) && agentId) return agentId;
+  return callerLabel ?? (agentId ? `agent:${agentId}` : "provider-billed");
+}
+
 const observers = new Set<BillingObserver>();
 /**
  * 已见过的 fetchId（去重），**双桶轮换**：`seen` 是当前桶，`seenPrev` 是上一桶。
