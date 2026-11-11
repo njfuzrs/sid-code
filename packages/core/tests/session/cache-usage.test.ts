@@ -473,3 +473,47 @@ describe("辅助调用费用（sideCostUSD）", () => {
     expect(ss.getEffectiveTotalCostUSD()).toBe(0);
   });
 });
+
+/**
+ * D18：状态栏 ⚡ 命中率的取数源。
+ *
+ * 修复前 Footer 自己拿「全会话合计 usage + 当前模型推断的 provider」去 normalize，
+ * 多模型 / 跨协议族会话会算错；`getCacheHitRate()` 按每个模型**自己记账时的 provider**
+ * 逐条归一化后加总，是 Footer 与 /cost 的唯一口径。
+ */
+describe("SessionState.getCacheHitRate — 状态栏命中率单一事实源", () => {
+  test("跨协议族会话：按各自 provider 归一化后加总（不是合计 usage 配当前模型）", () => {
+    const ss = new SessionState("test-hit-rate-mixed");
+    // anthropic 子代理：input 是**未命中余量**，promptTotal = 1000 + 9000 = 10000
+    ss.updateUsage(
+      "claude-3-5-sonnet",
+      { inputTokens: 1000, outputTokens: 0, cacheReadInputTokens: 9000 },
+      1,
+      "anthropic",
+    );
+    // openai 主模型：input 是**含命中全量**，promptTotal = 10000
+    ss.updateUsage(
+      "gpt-4o",
+      { inputTokens: 10000, outputTokens: 0, cacheReadInputTokens: 6500 },
+      1,
+      "openai",
+    );
+
+    // (9000 + 6500) / (10000 + 10000) = 77.5% → 78%
+    expect(ss.getCacheHitRate()).toBe(78);
+    // 反例锚点：若把合计 usage 喂给 openai 归一化，(15500 命中) / (11000 prompt) 会算出 141%
+    expect(ss.getNormalizedCacheUsage().promptTotal).toBe(20000);
+  });
+
+  test("没有任何入账 → undefined（不渲染 ⚡ 列，不是 0）", () => {
+    expect(new SessionState("test-hit-rate-empty").getCacheHitRate()).toBeUndefined();
+  });
+
+  test("有 prompt 但零命中 → undefined（不显示 ⚡0% 噪音，与修复前的显示条件一致）", () => {
+    const ss = new SessionState("test-hit-rate-zero");
+    ss.updateUsage("gpt-4o", { inputTokens: 5000, outputTokens: 100 }, 1, "openai");
+    expect(ss.getCacheHitRate()).toBeUndefined();
+    // 但归一化视图本身是完整的（命中 0 / promptTotal 5000），只是 UI 不渲染该列
+    expect(ss.getNormalizedCacheUsage().promptTotal).toBe(5000);
+  });
+});

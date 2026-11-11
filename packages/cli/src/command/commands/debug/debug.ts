@@ -71,8 +71,11 @@ const mod: LocalCommandModule = {
     lines.push(
       `Token 用量 : 入 ${fmtNum(usage.inputTokens)} / 出 ${fmtNum(usage.outputTokens)}${cacheRead > 0 ? ` (缓存命中 ${fmtNum(cacheRead)})` : ""}`,
     );
+    // D7：与 Footer / /cost 同一判据 —— 金额是否按汇率折算过，而不是看模型名。
+    // 三处写法必须一致，否则同一笔钱在三个入口长得不一样。
+    const cur = ctx.sessionState.isCostFxConverted() ? "≈$" : "$";
     lines.push(
-      `累计费用   : $${totalCost.toFixed(4)}${sideCost > 0 ? ` (主循环 $${mainCost.toFixed(4)} + 辅助 $${sideCost.toFixed(4)})` : ""}`,
+      `累计费用   : ${cur}${totalCost.toFixed(4)}${sideCost > 0 ? ` (主循环 ${cur}${mainCost.toFixed(4)} + 辅助 ${cur}${sideCost.toFixed(4)})` : ""}`,
     );
     if (compactCount > 0) {
       lines.push(
