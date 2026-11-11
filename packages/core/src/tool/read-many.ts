@@ -11,6 +11,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
+import { contentFingerprint } from "./file-read-tracker.ts";
 import type { FileStateCache } from "./file-state-cache.ts";
 import { statSync } from "fs";
 import { extname } from "path";
@@ -333,6 +334,9 @@ export class ReadManyTool implements Tool {
               this.tracker.markAsRead(filePath, mtime, {
                 isPartialView: truncated,
                 content: truncated ? null : text,
+                // CG-4：截断视图没有全文可比，必须留指纹；用 BOM 剥离前的原始内容算，
+                // 与 bash 回扫读磁盘原文的口径一致。
+                contentHash: contentFingerprint(content),
               });
             }
           } catch {
