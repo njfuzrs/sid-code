@@ -14,6 +14,7 @@ import {
   resolveAgent,
 } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
+import { getProjectRoot } from "../bootstrap/state.ts";
 import { UsageSinkTicket, hasNonZeroUsage } from "../llm/billing-sink.ts";
 import { createAgentTask, failAgentTask } from "../task/index.ts";
 import { BACKGROUND_RECEIPT_NOTICE } from "../task/background-receipt.ts";
@@ -629,7 +630,12 @@ ${typeLines}
     try {
       const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
       // 用 canonical root 防嵌套（P0-2/B1）：在 worktree 内再隔离时落到主仓
-      const gitRoot = findGitRootForAgent(process.cwd());
+      //
+      // CG-1 / R1：这里取的是「工作区根」而不是 `getCwd()`。隔离子代理应该建在
+      // **当前会话的项目**里，而不是模型随手 `cd` 到的那个仓库；git worktree 是该项目的
+      // 附属产物，建在别的仓库里没有意义。genuinely 想在别的仓库开隔离，应该先
+      // `enter_worktree {path}` 把会话工作目录切过去。
+      const gitRoot = findGitRootForAgent(getProjectRoot());
       if (!gitRoot) {
         return { ok: false, error: "错误: isolation=worktree 需要在 Git 仓库中执行" };
       }

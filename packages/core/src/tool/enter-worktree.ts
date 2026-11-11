@@ -111,7 +111,21 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
     // 2. 检测 Git 仓库（用 canonical root 防嵌套，B1/P0-2）
     const gitRoot = findCanonicalGitRoot(getCwd()) ?? findGitRoot(getCwd());
     if (!gitRoot) {
-      return { output: "当前目录不在 Git 仓库中，无法创建 Worktree", isError: true };
+      // CG-1 / R5：报错必须带上「检查的是哪个目录」+ 可执行的下一步。
+      // 原实现只说「不在 Git 仓库中」，模型无法判断自己是 cd 漂了、还是路径写错了、
+      // 还是这个目录确实不是仓库——实测同一会话连续 27 次撞同一句话（基线 01 §5.2）。
+      // 这里用 getCwd()：它与工具实际执行目录同源，正是模型需要核对的那个值。
+      const checkedDir = getCwd();
+      return {
+        output:
+          `当前目录不在 Git 仓库中，无法创建 Worktree。\n` +
+          `检查过的目录: ${checkedDir}\n` +
+          `下一步（三选一）：\n` +
+          `1) 先确认自己站在哪：bash 执行 \`pwd\` 与 \`git rev-parse --show-toplevel\`；\n` +
+          `2) 想回项目里建：先 \`cd\` 到项目根（或工作区根），再重试；\n` +
+          `3) 想用已有 worktree：改用 enter_worktree { path: "<worktree 绝对路径>" }，不需要在 Git 仓库内。`,
+        isError: true,
+      };
     }
 
     // 3. slug 校验（用户传入的 name 必须校验，P0-4/B5）

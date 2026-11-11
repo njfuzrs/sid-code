@@ -1,6 +1,9 @@
 import { errorText } from "../../result.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
+// CG-1：cwd 的两种语义分开取。`getCwd()` = 模型此刻在哪（跟随 bash cd）；
+// `getProjectRoot()` = 工作区根（项目身份，不随 cd / worktree 切换漂移）。
+import { getCwd, getProjectRoot } from "@sid-code/core/bootstrap/state.ts";
 
 /** /memory 命令 */
 export class MemoryCommand implements LocalCommandModule {
@@ -11,7 +14,9 @@ export class MemoryCommand implements LocalCommandModule {
     }
 
     const { MemoryStore, formatEvictionNotice } = await import("@sid-code/core/memory/store.ts");
-    const store = new MemoryStore(process.cwd());
+    // CG-1 / R1：记忆按「工作区根」归属。用 process.cwd() 时 bash `cd` 不漂、但进 worktree 会漂，
+    // 同一个项目的记忆被拆成两处；getProjectRoot() 在两种场景下都稳定指向项目身份。
+    const store = new MemoryStore(getProjectRoot());
     await store.load();
 
     const parts = args.trim().split(/\s+/);
@@ -196,7 +201,7 @@ export class MemoryCommand implements LocalCommandModule {
         // M11：重新加载记忆并刷新系统提示词。
         // 走 memorySystemPrompt 索引指针路径（与启动 init-helpers 一致），
         // 不再用 memorySummary 全文摘要（已下线双轨注入）。
-        const freshStore = new MemoryStore(process.cwd());
+        const freshStore = new MemoryStore(getProjectRoot());
         await freshStore.load();
         const { buildMemorySystemPrompt } = await import("@sid-code/core/memory/prompt.ts");
         const indexContent = await freshStore.getIndexContent();
@@ -207,7 +212,7 @@ export class MemoryCommand implements LocalCommandModule {
           const { isTeamMemoryEnabled } = await import("@sid-code/core/memory/team/paths.ts");
           if (isTeamMemoryEnabled(ctx.config.teamMemory)) {
             const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
-            teamIndexContent = await getTeamIndexContent(process.cwd());
+            teamIndexContent = await getTeamIndexContent(getProjectRoot());
           }
         } catch {
           /* 团队记忆索引注入失败不阻断 reload */
@@ -221,7 +226,7 @@ export class MemoryCommand implements LocalCommandModule {
         // 重建系统提示词（索引指针进 core 区）
         const { buildSystemPrompt } = await import("@sid-code/core/config/system-prompt.ts");
         const { loadAllCLAUDEmd } = await import("@sid-code/core/config/rules.ts");
-        const projectRules = await loadAllCLAUDEmd(process.cwd());
+        const projectRules = await loadAllCLAUDEmd(getProjectRoot());
 
         const newPrompt = buildSystemPrompt({
           tools: ctx.toolRegistry.all(),
@@ -229,7 +234,8 @@ export class MemoryCommand implements LocalCommandModule {
           projectRulesPath: projectRules?.sourcePath,
           projectRulesPaths: projectRules?.loadedPaths,
           appendPrompt: ctx.config.appendSystemPrompt || undefined,
-          workingDir: process.cwd(),
+          // CG-1 / R2：这里重建系统提示词，`<working-directory>` 取的是「模型此刻在哪」。
+          workingDir: getCwd(),
           permissionMode: ctx.config.permissionMode,
           gitStatus: true,
           memorySystemPrompt,
