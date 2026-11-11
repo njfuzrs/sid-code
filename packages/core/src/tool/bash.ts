@@ -29,6 +29,13 @@ import { looksLikeQuotingBreakage, quotingBreakageHint } from "./bash/quoting-di
 import { detectMergeConflictHint } from "./bash/merge-conflict.ts";
 import { stripTerminalControl } from "./bash/terminal-control.ts";
 import { buildTimeoutGuidance } from "./bash/timeout-diagnostics.ts";
+import {
+  buildForegroundSleepNotice,
+  detectForegroundSleep,
+  FOREGROUND_SLEEP_LONG_SECONDS,
+  type ForegroundSleepReason,
+} from "./bash/foreground-sleep.ts";
+import { emitForegroundSleepGuided } from "../query/guidance-events.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
@@ -916,8 +923,65 @@ export class BashTool implements Tool {
     const result = await this.executeCommand(input, signal, onProgress);
     return this.withTrackedFileChanges(
       input,
-      this.withSandboxMeta(this.withWaitUntilNotice(input, result)),
+      this.withForegroundSleepNotice(
+        input,
+        this.withSandboxMeta(this.withWaitUntilNotice(input, result)),
+      ),
     );
+  }
+
+  /**
+   * N6 A 档：前台 `sleep N` 阻塞本轮时追加一行出口引导（**只追加提示，不拦、不改退出码**）。
+   *
+   * 为什么要引导：`schedule_wakeup` / 后台通知只在会话空闲时送达，本轮 sleep 会把它们
+   * 全部挡在外面排队。fbb02831 排了唤醒之后又在本轮 `sleep 150/180`，第二个唤醒
+   * lag 383 秒才注入。N2 已经把「排完该结束本轮」写进唤醒的文案，但模型仍可能
+   * 用 sleep 在本轮里「等一会儿」——那是行为面的缺口，只能在调用点上给出口。
+   *
+   * 为什么落在 tool_result 而不是系统提示：见 `bash/foreground-sleep.ts` 文件头。
+   * 为什么不拦：这个形态离合法用法很近（`sleep 2 && curl …`），B 档等 A 上线两周后
+   * 的数据再决定（`.agents/notes/rejected/feature/2026-11-11-前台sleep改为拒绝执行.md`）。
+   *
+   * 引发放置与 `withWaitUntilNotice` 同款：埋点/引导失败不能影响命令结果本身。
+   */
+  private withForegroundSleepNotice(input: unknown, result: ToolResult): ToolResult {
+    const params = input as {
+      command?: unknown;
+      run_in_background?: unknown;
+      is_background?: unknown;
+    };
+    // 后台命令正是引导要去的方向，不提示
+    if (params?.run_in_background || params?.is_background) return result;
+    const command = typeof params?.command === "string" ? params.command : "";
+    if (!command) return result;
+    const matched = detectForegroundSleep(command);
+    if (!matched) return result;
+
+    let hasDeclaredWait = false;
+    try {
+      const wait = require("../task/wait-registry.ts") as typeof import("../task/wait-registry.ts");
+      hasDeclaredWait = wait.hasDeclaredExternalWait();
+    } catch {
+      // 等待注册表不可用时不阻断：当作「没有声明的等待」，仍按 N 阈值判
+      hasDeclaredWait = false;
+    }
+
+    const reason: ForegroundSleepReason | undefined = hasDeclaredWait
+      ? "declared_wait"
+      : matched.seconds >= FOREGROUND_SLEEP_LONG_SECONDS
+        ? "long_sleep"
+        : undefined;
+    if (!reason) return result;
+
+    emitForegroundSleepGuided({
+      seconds: matched.seconds,
+      has_declared_wait: hasDeclaredWait,
+      reason,
+    });
+    return {
+      ...result,
+      output: `${result.output}${buildForegroundSleepNotice(matched, reason)}`,
+    };
   }
 
   /**

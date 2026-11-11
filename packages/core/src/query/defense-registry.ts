@@ -599,6 +599,10 @@ export const EVENT_ANCHORS: Record<string, DefenseAnchor> = {
     notDefenseReason:
       "B18 边界侧观测：记忆写入闸门（拒写 secret / scope 越权）是边界规则，不补模型短板",
   },
+  ForegroundSleepGuided: {
+    notDefenseReason:
+      "N6 A 档的出口引导：只往 tool_result 追加一行提示，不拦、不改退出码、不进闸门链；被引导的语义（唤醒只在空闲时送达）由 schedule_wakeup / wait_until 的既有文案定义，这里只是把它落到 sleep 这一次调用上",
+  },
 };
 
 /** `ContinueReason["type"]` 全集（报告列顺序 = 锚点表声明顺序） */
