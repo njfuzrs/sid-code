@@ -129,4 +129,38 @@ describe("D1 · 入账 → 状态栏接线", () => {
     off();
     bridge.detach();
   });
+
+  /**
+   * D18（P1）：Footer ⚡ 命中率必须按**每个模型自己的 provider** 归一化后加总，
+   * 不能用「全会话合计 usage + 当前模型推断的 provider」。
+   *
+   * 变异自证：把 cost-bridge 改回「合计 usage + 当前模型 provider」→ 本用例红
+   * （11000 被当成 openai 的 prompt_tokens、命中 15500 比它还大 → 141%，不是 78%）。
+   */
+  test("D18：命中率按每个模型自己的协议族归一化（跨族会话算对）", async () => {
+    const { sessionState, bridge, off } = wire();
+
+    // 主模型 openai（input 含命中）+ 子代理 anthropic（input 是未命中余量）
+    sessionState.updateUsage(
+      "claude-3-5-sonnet",
+      { inputTokens: 1000, outputTokens: 0, cacheReadInputTokens: 9000 },
+      1,
+      "anthropic",
+    );
+    sessionState.updateUsage(
+      "gpt-4o",
+      { inputTokens: 10000, outputTokens: 0, cacheReadInputTokens: 6500 },
+      1,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+
+    // anthropic: promptTotal = 1000(未命中) + 9000(命中) = 10000，命中 9000
+    // openai:    promptTotal = 10000(含命中)，命中 6500
+    // 合计: 命中 15500 / promptTotal 20000 = 77.5% → 78%
+    expect(sessionState.getCacheHitRate()).toBe(78);
+    expect(bridge.current.cacheHitRate).toBe(78);
+    off();
+    bridge.detach();
+  });
 });
