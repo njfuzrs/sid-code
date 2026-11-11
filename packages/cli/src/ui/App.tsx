@@ -401,6 +401,12 @@ export interface TUIState {
   /** 末次输入 token（stock 口径），用于状态栏展示当前上下文大小。避免与 usage.inputTokens（flow 累计）混淆。 */
   stockInputTokens: number;
   costUSD: number;
+  /**
+   * 本会话入账价是否发生过汇率折算（`SessionState.isCostFxConverted()`）。
+   * Footer 费用列的 `≈$` / `$` 判据；旧实现按模型名判（`/deepseek/i`），
+   * 同名模型走美元网关价时会错标 ≈（D7）。
+   */
+  costFxConverted: boolean;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD: number;
   /**
@@ -1659,6 +1665,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               usage={state.usage}
               stockInputTokens={state.stockInputTokens}
               costUSD={state.costUSD}
+              costFxConverted={state.costFxConverted}
               cacheSavingsUSD={state.cacheSavingsUSD}
               cacheHitRate={state.cacheHitRate}
               totalRequests={state.totalRequests}
@@ -1726,6 +1733,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               usage={state.usage}
               stockInputTokens={state.stockInputTokens}
               costUSD={state.costUSD}
+              costFxConverted={state.costFxConverted}
               cacheSavingsUSD={state.cacheSavingsUSD}
               cacheHitRate={state.cacheHitRate}
               totalRequests={state.totalRequests}

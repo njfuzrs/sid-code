@@ -176,14 +176,23 @@ export function deriveContext(input: {
   return { text, color: deriveContextColor(contextPercent, defaultColor, contextLevel) };
 }
 
-/** 费用 → 文本 + 语义色（≥95% 红 / ≥80% 黄）。DeepSeek 用 ≈$ 标注估算。 */
+/**
+ * 费用 → 文本 + 语义色（≥95% 红 / ≥80% 黄）。
+ *
+ * `fxConverted` = 本会话入账价是否发生过汇率折算（`SessionState.isCostFxConverted()`），
+ * 为真时金额前加 `≈`（表示「人民币按固定汇率换算成 USD 的估算值」）。
+ *
+ * 判据由调用方传入、**不再按模型名判**：旧实现是 `/deepseek/i.test(model)`，它把
+ * 「是不是 DeepSeek」当成了「价格有没有换过汇」，两件事只在一种渠道组合下恰好一致：
+ * DeepSeek 走网关 `billing_expr`（系数已是 USD/1M）时不该加 ≈ 却加了，
+ * 非 deepseek 的 CNY 计价模型（别名）该加却没加 —— 同一笔钱在 Footer 与 /cost 写法相反（D7）。
+ */
 export function deriveCost(
   costUSD: number,
   costLimit: number,
-  model: string,
+  fxConverted: boolean,
 ): { text: string; color: Color | undefined } {
-  const isExchangeRateConverted = /deepseek/i.test(model);
-  const prefix = isExchangeRateConverted ? "≈$" : "$";
+  const prefix = fxConverted ? "≈$" : "$";
   const text = costUSD > 0 ? `${prefix}${costUSD.toFixed(4)}` : `${prefix}0`;
   const color = (() => {
     if (costLimit <= 0 || costUSD <= 0) return undefined;
@@ -433,6 +442,13 @@ export interface StatusLineInput {
   stockInputTokens: number;
   costUSD: number;
   costLimit: number;
+  /**
+   * 本会话入账价是否发生过汇率折算（`SessionState.isCostFxConverted()`）。
+   *
+   * 由上游推送而不是在 UI 里按模型名推断：旧实现用 `/deepseek/i.test(model)`，
+   * 同名模型走美元网关价时会错误地加 `≈`（D7）。省略视为 false（无折算）。
+   */
+  costFxConverted?: boolean;
   contextPercent: number;
   /**
    * P1-2：压缩触发点对应的满窗口百分比（如 1M 窗口 ≈82）。
@@ -492,6 +508,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     cacheHitRate,
     totalRequests,
     discardedRequests,
+    costFxConverted,
   } = input;
 
   return useMemo<StatusLineData>(() => {
@@ -518,7 +535,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
             },
       cache: deriveCacheMetrics(cacheHitRate),
       cacheSavings: deriveCacheSavings(cacheSavingsUSD ?? 0),
-      cost: deriveCost(costUSD, costLimit, model),
+      cost: deriveCost(costUSD, costLimit, costFxConverted ?? false),
       // 显示条件与 usage 解耦（deriveContext）：估算有值即显示——打开 TUI / 刚 /clear 时
       // usage 全零但常驻开销（system prompt + 工具 schema）已在，那正是用户要看的初始占用。
       context: deriveContext({
@@ -560,5 +577,6 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     cacheHitRate,
     totalRequests,
     discardedRequests,
+    costFxConverted,
   ]);
 }

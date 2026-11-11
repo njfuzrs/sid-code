@@ -204,6 +204,9 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     usage: { inputTokens: 0, outputTokens: 0 },
     stockInputTokens: 0,
     costUSD: 0,
+    // /clear 清空 modelUsage（resetCounters），折算判据随之归零 —— 不置 false 的话
+    // 新会话会沿用上一段的 `≈$` 前缀，而它已经没有任何 CNY 计价模型在记账了。
+    costFxConverted: false,
     cacheSavingsUSD: 0,
     // D18：命中率与 token/cost 同一生命周期——/clear 清空 modelUsage 后必须一起归零，
     // 否则状态栏会继续显示上一会话的 ⚡N%（`undefined` = 无命中数据，Footer 不渲染该列）。
