@@ -13,6 +13,10 @@ import { normalizeCacheUsage } from "../llm/types.ts";
 import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { getLogger } from "../debug/logger.ts";
 import { resolvePricing, effectivePricing, type PricingModelEntry } from "../api/cost-tracker.ts";
+// CG-2：/clear 要清的「本任务进展」键由 loop 侧定义，这里只消费常量（不复制字面量——
+// 复制会在改名时静默漏清）。两个模块都是纯数据/纯类型，不反向 import 本文件，无循环依赖。
+import { MEASURED_PROGRESS_KEY } from "../query/measured-progress.ts";
+import { TODO_REWORK_KEY } from "../query/todo-rework.ts";
 
 /** 单个模型的用量统计 */
 export interface ModelUsageStats {
@@ -352,6 +356,26 @@ export class SessionState {
     this.sessionData.delete("announcedDeferredTools");
     this.sessionData.delete("lastSeenPermissionMode");
     this.sessionData.delete("lastSeenContextPressureLevel");
+  }
+
+  /**
+   * /clear：清「本任务进展」类状态（CG-2 / 台账 H4）。
+   *
+   * 与 `resetReminderDedupKeys` 分开命名，因为清的语义不同：
+   * 那三个键是「已经告诉过模型什么」（播报/去重基线），这两个是「这个任务做到哪了」。
+   * 共同点同样成立——都必须跨用户消息存活（挂 LoopState 会每条消息归零），
+   * 但都**不能跨 /clear**：新的对话对旧任务完全失忆，旧进展留着只是假信号。
+   *
+   * 为什么必须清：`filesChanged` / `metrics` 记的是**上一个任务**的落盘事实。
+   * /clear 之后模型看到的第一条 work-log 就是「已落盘改动 N 个文件（…）」
+   * → 把旧任务的成果当成本次进展，于是不再动手。台账实测 4 会话 / 6 条。
+   *
+   * 键名只消费 query 侧的常量、不复制字面量：复制会在常量改名时静默漏清
+   * （CG-5 把 /clear 重置改成从登记表派生时，这两个键会一并收编）。
+   */
+  resetTaskProgressKeys(): void {
+    this.sessionData.delete(MEASURED_PROGRESS_KEY);
+    this.sessionData.delete(TODO_REWORK_KEY);
   }
 
   /**
