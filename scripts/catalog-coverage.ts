@@ -53,6 +53,7 @@ import {
 } from "@sid-code/core/llm/model-capabilities.ts";
 import { normalizeCandidates } from "@sid-code/core/llm/model-name-normalize.ts";
 import { getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
+import { fetchPublicUrl } from "@sid-code/core/net/public-fetch.ts";
 
 /**
  * 非对话模型的名字判据（启发式，仅用于分母口径）。
@@ -105,12 +106,14 @@ async function loadSource(src: (typeof SOURCES)[number], offline: boolean): Prom
     }
     return src.parse(JSON.parse(readFileSync(src.cache, "utf8")));
   }
-  const resp = await fetch(src.url);
+  // 走共享的公共源拉取：域名路径拿不到响应头时会自动改试 IPv4 直连
+  // （裸 fetch 在「有 IPv6 地址但上游黑洞」的网络上会挂到超时，见 net/public-fetch.ts）。
+  const resp = await fetchPublicUrl(src.url, { timeoutMs: 30_000 });
   if (!resp.ok) {
     console.error(`⚠ ${src.name} HTTP ${resp.status}，跳过`);
     return {};
   }
-  const text = await resp.text();
+  const text = new TextDecoder().decode(resp.bytes);
   await Bun.write(src.cache, text); // 落一份快照，供 --offline 复算同一批数据
   return src.parse(JSON.parse(text));
 }

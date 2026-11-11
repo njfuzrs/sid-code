@@ -40,6 +40,10 @@ import {
   __voteEntriesForTest,
   type ModelCapabilityEntry,
 } from "../packages/core/src/llm/model-capabilities.ts";
+import {
+  PublicFetchBodyTooLargeError,
+  fetchPublicUrl,
+} from "../packages/core/src/net/public-fetch.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
@@ -86,26 +90,26 @@ function trim(entry: ModelCapabilityEntry): TrimmedEntry {
 }
 
 async function fetchBody(url: string, timeoutMs: number): Promise<string | null> {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { signal: ctl.signal });
-    if (!resp.ok) {
-      console.warn(`  ⚠ 快照源 HTTP ${resp.status}：${url}`);
+    // 走共享的公共源拉取而不是裸 fetch：域名路径 4s 内拿不到响应头时会自动改试 IPv4
+    // 直连。裸 fetch 在「有 IPv6 地址但上游黑洞」的网络上会一直挂到超时（见该模块头注释）。
+    const result = await fetchPublicUrl(url, {
+      timeoutMs,
+      maxBytes: MAX_BYTES,
+      onFallback: (info) => console.warn(`  ⚠ ${info.reason}`),
+    });
+    if (!result.ok) {
+      console.warn(`  ⚠ 快照源 HTTP ${result.status}：${url}`);
       return null;
     }
-    // 与运行时同一套上限：这是构建机上的一次性拉取，同样不该无限信任响应体积。
-    const buf = await resp.arrayBuffer();
-    if (buf.byteLength > MAX_BYTES) {
+    return new TextDecoder().decode(result.bytes);
+  } catch (e) {
+    if (e instanceof PublicFetchBodyTooLargeError) {
       console.warn(`  ⚠ 快照源响应超过 ${MAX_BYTES} 字节，丢弃：${url}`);
       return null;
     }
-    return new TextDecoder().decode(buf);
-  } catch (e) {
     console.warn(`  ⚠ 快照源拉取失败: ${String(e)}`);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

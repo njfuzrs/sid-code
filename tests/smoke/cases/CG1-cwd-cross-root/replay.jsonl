@@ -1,0 +1,3 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_cg1_1","name":"bash","input":{"command":"cd /tmp && pwd","description":"切到 /tmp 并打印当前目录"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_cg1_2","name":"enter_worktree","input":{"name":"cg1-smoke-demo"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":200,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"text","text":"已确认工作目录切换；enter_worktree 因为不在 Git 仓库而失败。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":300,"output_tokens":10}}

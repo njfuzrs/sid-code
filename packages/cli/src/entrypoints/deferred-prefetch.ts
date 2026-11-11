@@ -9,6 +9,8 @@
  */
 
 import { profileCheckpoint } from "@sid-code/shared/utils/startup-profiler.ts";
+// CG-1 / R1：记忆按「工作区根」归属，与 MemoryStore 的全部生产调用点同口径。
+import { getProjectRoot } from "@sid-code/core/bootstrap/state.ts";
 import { preconnectApi } from "./preconnect.ts";
 
 /**
@@ -44,7 +46,7 @@ async function prefetchMemory(): Promise<void> {
   try {
     // 走真实的 MemoryStore 路径，结果写入模块级缓存
     const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
-    const memStore = new MemoryStore(process.cwd());
+    const memStore = new MemoryStore(getProjectRoot());
     await memStore.generateSummary();
   } catch {
     // 静默失败
