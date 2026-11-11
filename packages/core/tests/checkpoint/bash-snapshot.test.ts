@@ -85,10 +85,13 @@ describe("P2-1 getBashAffectedFiles 提取", () => {
 
   // ── P0-B1：非破坏性但改文件的命令（此前是 checkpoint 盲区） ──
 
-  test("cp 源与目标都收", async () => {
+  test("cp 只收目标（源不被 cp 破坏，多快照只是噪音）", async () => {
+    // B8/L5 起 checkpoint 与 safetyCheck 共用同一份提取（`writeTargetsFromExpansion`），
+    // 而安全侧对 cp 只取目标：`cp .git/hooks/x /tmp/y` 的**源是读**，把源当写目标会让
+    // 「读一个 hook」也变成确认。checkpoint 跟着同一口径——cp 不改源，不需要给源建快照。
     const files = await getBashAffectedFiles("cp a.ts b.ts", dir);
-    expect(files).toContain(join(dir, "a.ts"));
     expect(files).toContain(join(dir, "b.ts"));
+    expect(files).not.toContain(join(dir, "a.ts"));
   });
 
   test("> 重定向目标进快照", async () => {
@@ -120,6 +123,37 @@ describe("P2-1 getBashAffectedFiles 提取", () => {
   test("动态路径（变量/命令替换）跳过，不写坏 index", async () => {
     const files = await getBashAffectedFiles("f=$(mktemp); echo x > $f", dir);
     expect(files).toEqual([]);
+  });
+
+  // ── B8/L5：与 safetyCheck 共用同一份提取后新覆盖的形态 ──
+
+  test("perl -pi 提取文件、跳过内联脚本", async () => {
+    const files = await getBashAffectedFiles(`perl -pi -e "s/a/b/" src/a.ts`, dir);
+    expect(files).toContain(join(dir, "src/a.ts"));
+    // 脚本 token `s/a/b/` 不应被当成文件
+    expect(files).not.toContain(join(dir, "s/a/b"));
+  });
+
+  test("解释器代码串里的字面量写路径进快照", async () => {
+    const files = await getBashAffectedFiles(`python3 -c "open('src/b.ts','w').write('x')"`, dir);
+    expect(files).toContain(join(dir, "src/b.ts"));
+  });
+
+  test("find -delete 的起点目录进快照", async () => {
+    const files = await getBashAffectedFiles("find src -name '*.ts' -delete", dir);
+    expect(files).toContain(join(dir, "src"));
+  });
+
+  test("git rm 的路径参数进快照", async () => {
+    const files = await getBashAffectedFiles("git rm src/c.ts", dir);
+    expect(files).toContain(join(dir, "src/c.ts"));
+  });
+
+  test("只读解释器 / 无副作用 find 仍返回空（不建无谓快照）", async () => {
+    expect(await getBashAffectedFiles(`python3 -c "print(open('src/a.ts').read())"`, dir)).toEqual(
+      [],
+    );
+    expect(await getBashAffectedFiles("find . -name '*.ts'", dir)).toEqual([]);
   });
 });
 
