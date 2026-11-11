@@ -36,6 +36,7 @@ import { getLogger } from "../debug/logger.ts";
 import { isAbortError, errorMessageOf } from "../llm/errors.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import { processToolResult } from "../tool/result-storage.ts";
+import { resolveContentProvenance, wrapExternalContent } from "../tool/content-provenance.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
 import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import { getCwd } from "../bootstrap/state.ts";
@@ -293,13 +294,28 @@ export async function runToolUse(
       });
     }
 
+    // B14（HB-13a）：外部来源结果的不可信包裹。**排在 hook 收尾之后** ——
+    // runPostToolHooks 可能整段替换输出，标签写在它之前会被冲掉且不会有测试变红。
+    // 空内容不包（工具无输出且 hook 也没追加）：包一对空标签只会给模型一个错误的来源暗示。
+    const baseContent = hookModifiedNotice
+      ? hookModifiedNotice + "\n\n" + withHookFeedback
+      : withHookFeedback;
+    const provenance =
+      baseContent.trim().length === 0
+        ? undefined
+        : resolveContentProvenance(
+            block.name,
+            effectiveInput,
+            // 与主循环同口径：拿不到 checker 时保守视为工作区内（不包）。
+            (p) =>
+              deps.permissionChecker?.getPathValidator?.()?.isWithinWorkingDirectories(p) ?? true,
+          );
+
     return {
       type: "tool_result",
       tool_use_id: block.id,
       // 改参告知前置（与主循环同序：先看到「参数被改过」，再读结果与 hook 反馈）
-      content: hookModifiedNotice
-        ? hookModifiedNotice + "\n\n" + withHookFeedback
-        : withHookFeedback,
+      content: provenance ? wrapExternalContent(baseContent, provenance) : baseContent,
       is_error: result.isError,
       ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
       // TUI 呈现档位：错误结果不带（错误照常显示，见 tool/types.ts 的硬约束 ②）。

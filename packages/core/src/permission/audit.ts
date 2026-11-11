@@ -25,11 +25,22 @@
  *
  * 每行写入时盖上本进程会话 id（`session_id`）。调用点不必各自记得传：审计调用点有十几个，
  * 逐个补等于下一个新分支一定漏。
+ *
+ * ── B16：落盘前脱敏（2026-11-11）──
+ *
+ * 审计的唯一自由文本出口是 `resource`（bash 没有 file_path，放的是**完整命令原文**，
+ * 实测最长 1,909 字符）与 `reason` / `decisionReason.reason`。此前它们原样落盘：
+ * 一条 `export OPENAI_API_KEY=…` 被拒或被批准，密钥就以原文进审计，留到轮转
+ * （B21 之后 deny 行还会进保留日志，窗口约三个月）。
+ *
+ * 落点选在 `log()` 入口而不是各调用点，理由与 B19 同源：调用点有十几个，逐个补必漏。
+ * 主日志与保留日志复用同一个 `line` 变量，入口一处收口两处同时生效。
  */
 
 import { appendFileSync, existsSync, statSync, renameSync, mkdirSync, unlinkSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
 import { getSessionId } from "../bootstrap/state.ts";
+import { maskSensitiveJson, REDACTION_FAILED_PLACEHOLDER } from "./sensitive.ts";
 import type { AuditEntry } from "./types.ts";
 
 /** B21：这条审计行是否进保留日志——拒绝，或确认弹窗的终局（含人工批准） */
@@ -78,7 +89,9 @@ export class AuditLogger {
       }
       const stamped: AuditEntry =
         entry.session_id || !sessionId ? entry : { ...entry, session_id: sessionId };
-      const line = JSON.stringify(stamped) + "\n";
+      // B16：落盘前脱敏。主日志与保留日志复用同一个 line 变量 —— 落点选在入口，
+      // 主日志与 -retained.log 一次收口，不需要第二处改动。
+      const line = this.redactLine(JSON.stringify(stamped)) + "\n";
       appendFileSync(this.logPath, line);
       this.rotateIfNeeded(this.logPath, this.maxSize);
 
@@ -86,8 +99,63 @@ export class AuditLogger {
         appendFileSync(this.retainedPath, line);
         this.rotateIfNeeded(this.retainedPath, this.retainedMaxSize);
       }
+    } catch (err) {
+      // 审计日志写入失败不应影响主流程，但**不能静默** ——
+      // 静默的失败形态是「某类命令的审计行凭空消失」，比报错更难归因。
+      // 脱敏异常不会落到这里：redactLine 自带降级（见该方法），本 catch 只管真正的 IO 失败。
+      console.warn(`[audit] 审计日志写入失败: ${String(err)}`);
+    }
+  }
+
+  /**
+   * B16：审计行落盘前脱敏。整行词法扫描，只改字符串字面量，数字与结构不动。
+   *
+   * 为什么是整行 `maskSensitiveJson` 而不是逐字段 `maskSensitiveData`：
+   *   - 逐字段要维护字段清单（`resource` / `reason` / `decisionReason.reason` …），
+   *     **下一个新增自由文本字段一定漏** —— 这正是本文件开头记的 B19 教训
+   *     （审计调用点有十几个，逐个补必漏）。
+   *   - 整行扫描自动覆盖所有字符串字面量，且**数字绝不触碰**（`maskSensitiveJson`
+   *     走词法扫描而非 parse→stringify，成本 / token 计数不会被 IEEE754 改写）。
+   *
+   * 为什么不用 `maskJsonSafe`：它依赖 `getLogger()` 告警（`trace/writer.ts`），
+   * 而 `logger.ts` 已 import `sensitive.ts` → 直接搬会造成循环依赖。审计侧的降级自带。
+   */
+  private redactLine(json: string): string {
+    try {
+      // 字段级 fail-closed：某个字段脱敏出错时只把该字段换成占位，其余照常落盘
+      const masked = maskSensitiveJson(json, 0, () => {});
+      // 自校验：脱敏产物必须仍是合法 JSON。词法扫描理论上保证这一点，
+      // 但审计行一旦损坏，读者侧（policy-trigger-rate / harbor 脚本）会整行丢弃 —— 宁可多校验一次。
+      JSON.parse(masked);
+      return masked;
     } catch {
-      // 审计日志写入失败不应影响主流程
+      return this.redactFallback(json);
+    }
+  }
+
+  /**
+   * 整行脱敏失败时的兜底：手工构造只含枚举字段的行，自由文本字段全部换占位。
+   *
+   * 审计与 trace 的可用性要求不同：trace 丢一条会话还能重跑，**审计丢一行就是
+   * 「这次决策没发生过」**。所以这里既不落原文，也不丢行：
+   *   - `resource` / `reason` / `decisionReason.reason` → 占位
+   *   - `tool` / `decision` / `session_id` / `tool_use_id` / `timestamp` 等
+   *     枚举字段原样保留（不含自由文本，且是 join 与统计的键）
+   */
+  private redactFallback(json: string): string {
+    try {
+      const o = JSON.parse(json) as Record<string, unknown>;
+      for (const k of ["resource", "reason"]) {
+        if (typeof o[k] === "string") o[k] = REDACTION_FAILED_PLACEHOLDER;
+      }
+      if (o.decisionReason && typeof o.decisionReason === "object") {
+        (o.decisionReason as Record<string, unknown>).reason = REDACTION_FAILED_PLACEHOLDER;
+      }
+      return JSON.stringify(o);
+    } catch {
+      // 连解析都失败（理论上只有 JSON.stringify 产出非法文本才会走到）→ 写占位行。
+      // 绝不落原文，也绝不静默丢行。
+      return JSON.stringify({ redaction_failed: true, ts: new Date().toISOString() });
     }
   }
 

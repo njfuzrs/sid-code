@@ -16,6 +16,7 @@ import { getLogger } from "../debug/index.ts";
 import { isAbortError, abortReasonOf, errorMessageOf } from "../llm/errors.ts";
 import { isReadOnlyIgnoringCd } from "../tool/bash/read-only-validation.ts";
 import { processToolResult } from "../tool/result-storage.ts";
+import { resolveContentProvenance, wrapExternalContent } from "../tool/content-provenance.ts";
 import { validateToolInput, buildSchemaNotSentHint } from "../tool/input-validator.ts";
 import {
   yieldMissingToolResults,
@@ -1681,10 +1682,11 @@ export async function executeSingleTool(
     // P2-1（占位消息治理，根因 5.1）：工具成功但输出为空时，给出**有语义的"无输出"描述**，
     // 而不是把空串交给协议层兜底成无信息的 "(empty)"。这样模型能区分"命令成功但无输出"
     // 与"命令未执行/出错"，也避免空 tool_result 触发后续占位插入污染上下文。
-    const normalizedOutput =
-      !result.isError && (!truncatedOutput || truncatedOutput.trim().length === 0)
-        ? describeEmptyOutput(block.name)
-        : truncatedOutput;
+    // B14：这个判据同时被出口的不可信包裹复用 —— 空输出的占位说明是「工具没产出内容」，
+    // 不是外部数据，包成 untrusted 会给模型一个错误的来源暗示。
+    const isEmptyOutput =
+      !result.isError && (!truncatedOutput || truncatedOutput.trim().length === 0);
+    const normalizedOutput = isEmptyOutput ? describeEmptyOutput(block.name) : truncatedOutput;
 
     // GAP-15：结构化遥测元数据（在 duration_ms 之外补充 input/output 规模、是否 MCP、
     // 是否 hook 改参）。经 firePostToolUseEvent 的 harness_context 透传给 TelemetryHookProbe，
@@ -1848,11 +1850,30 @@ export async function executeSingleTool(
     // hook 改参后的实际入参才是本次执行的真相，与鉴权 / PostToolUse 上报同口径。
     const displayMode = resolveResultDisplayMode(tool, effectiveInput);
 
+    // B14（HB-13a）：外部来源结果的不可信包裹。**必须排在所有 finalOutput 改写之后** ——
+    // 上面的 `replaced` 分支是 hook 整段替换（还会再过一次 processToolResult），标签写在它
+    // 之前会被冲掉，而且现有 hook 测试只断言替换生效、不会发现标签丢了。
+    // 空输出不包：describeEmptyOutput 的占位说明是「工具没产出内容」，不是外部数据；
+    // 但 hook 替换出内容时按有内容处理（那是内容，不是空）。
+    const provenance =
+      (isEmptyOutput && replaced === undefined) || finalOutput.trim().length === 0
+        ? undefined
+        : resolveContentProvenance(
+            block.name,
+            executedInput as Record<string, unknown>,
+            // PR-1 的三档不读这个回调；PR-2 的 file 档要用。checker 缺席时保守返回 true
+            // （= 视为工作区内 = 不包），与 isPathHidden「未注入时原样返回」同口径：
+            // 宁可少包，也不要因为拿不到 checker 就把用户自己的代码全标成不可信。
+            (p) =>
+              deps.permissionChecker?.getPathValidator?.()?.isWithinWorkingDirectories(p) ?? true,
+          );
+    const renderedOutput = provenance ? wrapExternalContent(finalOutput, provenance) : finalOutput;
+
     return {
       block: {
         type: "tool_result",
         tool_use_id: block.id,
-        content: finalOutput,
+        content: renderedOutput,
         is_error: result.isError,
         // 结构化 diff 透传(仅 edit/write 填充)。其它工具为 undefined → 字段不出现,零破坏。
         // provider 序列化逐字段读取,不会泄漏给 LLM;随 Message 持久化可重放回 UI。
