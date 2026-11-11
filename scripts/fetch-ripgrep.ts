@@ -38,6 +38,7 @@ import { mkdir, writeFile, copyFile, chmod } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchPublicUrl } from "../packages/core/src/net/public-fetch.ts";
 
 // ⚠️ 必须走 fileURLToPath：`new URL(...).pathname` 是 percent-encoded 的，
 // 仓库路径含空格 / 非 ASCII 时 ROOT 指向不存在的目录，下载产物会落到错误路径或直接失败（X3-09）。
@@ -129,23 +130,26 @@ async function fetchOne(platform: Platform, version: string, baseUrl: string): P
 
   let expectedSha: string | null = null;
   try {
-    const shaResp = await fetch(shaUrl);
+    // 走共享的公共源拉取：域名路径拿不到响应头时自动改试 IPv4 直连
+    // （裸 fetch 在「有 IPv6 地址但上游黑洞」的网络上会挂到超时，见 net/public-fetch.ts）。
+    const shaResp = await fetchPublicUrl(shaUrl, { timeoutMs: 15_000 });
     if (shaResp.ok) {
-      expectedSha = (await shaResp.text()).trim().split(/\s+/)[0]?.toLowerCase() ?? null;
+      expectedSha =
+        new TextDecoder().decode(shaResp.bytes).trim().split(/\s+/)[0]?.toLowerCase() ?? null;
     }
   } catch {
     // .sha256 拉取失败不致命，下面按无校验处理
   }
 
   console.log(`  ↓ 下载 ${binUrl} ...`);
-  const resp = await fetch(binUrl);
+  const resp = await fetchPublicUrl(binUrl, { timeoutMs: 60_000 });
   if (!resp.ok) {
     throw new Error(
       `下载失败 ${binUrl}: HTTP ${resp.status}。` +
         `请确认服务器上已上传该平台/版本的 rg（用 release.sh --upload-ripgrep 上传）。`,
     );
   }
-  const bytes = new Uint8Array(await resp.arrayBuffer());
+  const bytes = resp.bytes;
 
   if (bytes.byteLength === 0) {
     throw new Error(`下载到空文件 ${binUrl}`);
