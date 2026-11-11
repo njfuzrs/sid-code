@@ -53,6 +53,34 @@ describe("getCompactPrompt", () => {
     const prompt = getCompactPrompt("   ");
     expect(prompt).not.toContain("额外指令");
   });
+
+  // S3 / §2.6（CG-3）：摘要 prompt 必须禁止把环境事实写进摘要。
+  //
+  // 修复前：摘要会照抄「当前工作目录 / 当前分支 / 在哪个 worktree」这类值。这些值
+  // 每轮都由系统从环境重新获取并注入，写进摘要就等于在历史里留一份**会过期的副本**，
+  // 而模型会把摘要当权威——压缩后按旧路径写文件、按旧分支判断「我在哪个 PR 上」。
+  // CG-6 之前这条禁令是生成侧唯一的口径来源，所以锁死措辞的存在性。
+  it("★环境事实禁令：cwd / 分支 / worktree 不得写进摘要（S3）", () => {
+    const prompt = getCompactPrompt();
+    expect(prompt).toContain("环境事实");
+    expect(prompt).toContain("当前工作目录");
+    expect(prompt).toContain("当前 git 分支");
+    expect(prompt).toContain("worktree");
+    expect(prompt).toContain("不要写进摘要");
+    // 必须说明理由：每轮会从环境重新获取——否则模型会以为这是「不重要」而不是「会重复注入」。
+    expect(prompt).toContain("从环境重新获取");
+  });
+
+  // M5（台账：不改，只登记）：摘要里的「当前等待」**有意保留**（T-W1-7）。
+  // 它与环境事实不是一类：等待源在压缩后需要靠它续接，进程内登记表补不回模型认知。
+  // 这条守卫防的是「看到上面那条禁令就把等待行一起删掉」。
+  it("★当前等待不在禁令范围内（M5 有意保留）", () => {
+    const prompt = getCompactPrompt();
+    const idxEnvFact = prompt.indexOf("环境事实");
+    expect(idxEnvFact).toBeGreaterThan(-1);
+    // 禁令段内必须给等待留出显式例外，否则执行者是「宁可少写」的方向删掉等待行。
+    expect(prompt).toContain("当前在等待什么");
+  });
 });
 
 describe("renderMessageForSummary（差异化截断）", () => {

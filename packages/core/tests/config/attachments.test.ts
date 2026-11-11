@@ -86,6 +86,24 @@ describe("generateGitStatusAttachment", () => {
     expect(attachment!.content).toContain("will not refresh as the session goes on");
   });
 
+  // H2（CG-3）：分支**也会**变，且来源不止本会话的 git 写命令。
+  //
+  // 修复前只有"快照不会刷新"这一句，它说的是文件状态；下面那行 `Current branch: X`
+  // 没有任何"可能已过期"的标注。本仓的标准流程恰好是 worktree-xxx 改名成 fix/xxx，
+  // 于是模型会拿一个启动时的分支名去做「我在哪个 PR 上」的判断。
+  // CG-6 之前（分支变更通知），这行声明是唯一的口径来源，改成措辞就没人拦得住它悄悄消失。
+  test("★分支也标明可能已变，并给出实时获取口径（H2）", () => {
+    const attachment = generateGitStatusAttachment(process.cwd());
+    expect(attachment).not.toBeNull();
+    const content = attachment!.content;
+    // 必须点明「分支也可能已经变了」——不能只说文件状态会变。
+    expect(content).toContain("当前分支也可能已经变了");
+    // 必须给出可执行的实时口径，否则模型知道它过期也不知道怎么取。
+    expect(content).toContain("git branch --show-current");
+    // 且明确不要直接引用快照里那行。
+    expect(content).toContain("不要直接引用");
+  });
+
   // ★第一层·预防 防死锁哨兵（根治-git快照冻结死循环）：
   // 冻结快照里唯一会过期、唯一制造"净/脏"矛盾的就是 `Status:` 文件状态列表。
   // 它必须被**物理移除**——上下文里不再有一个"权威"的 clean/dirty 状态去和实时
