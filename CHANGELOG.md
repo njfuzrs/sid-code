@@ -2,6 +2,179 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.615 (2026-11-11)
+
+### 新功能
+- **scripts** · 按会话追溯权限决策（trace × 审计 join + 覆盖度自检） (#742) `926e1c84`
+- **tool** · MCP 与 web_search 结果加不可信包裹 (#738) `a1575d48`
+- **task** · 没有声明等待时的前台轮询改为引导后台等待 (#735) `a2302d01`
+- **task** · 前台 sleep 阻塞本轮时追加后台等待引导 (#736) `6ecfbad4`
+- **task** · monitor 事件落独立轨迹事件 MonitorEvent（FIX-4 D5） (#729) `a529e8f4`
+- **tool** · 延迟工具 guidance 注册表与速查段门禁（FIX-5 D6） (#728) `a3fe9ffe`
+- **scripts** · 新增 tool-selection-audit 工具选择正确率度量（FIX-6 D7） (#725) `c32c78a7`
+- **scripts** · 引导规则后效报告（nag 后首工具 / ReadHint 后读法 / 清理后重跑） (#727) `4da4e8bf`
+- **trace** · 注册表外引导规则与边界检查补触发事件 (#726) `10e0a6d6`
+- **query** · 压缩摘要补「当前等待」行 (#704) `168f271f`
+- **tool** · settings.monitor 企业开关与阈值收紧 (#705) `a13e5d0c`
+- **trace** · 新增 scripts/wait-audit.ts 等待窗口轨迹回放判据 (#691) `ed925fef`
+- **ui** · 状态栏初始上下文占用常驻显示 (#689) `049c4414`
+- **task** · 等待期外部状态查询拦截与退出码语义 (#684) `7dbb1a7e`
+- **tool** · monitor 工具按行事件监控外部状态 (#683) `8592d9dd`
+- **permission** · 权限审计与轨迹补共同键，确认终局落审计 (#681) `1cfbbd2a`
+- **ui** · 等待源进后台面板，面板与消息流去重 (#677) `6402117a`
+- **task** · 等待登记表与等待态判据统一 (#674) `283f1977`
+- **trace** · 新增跨 provider 归一化的 prompt_total 字段（计量与成本 T1） (#660) `6afb9954`
+- **plan** · 重入规划态提示旧计划是否还作数 (#659) `a45b0829`
+- **eval** · L2 发版闸入口 release-gate.sh 与尺子桥（T20） (#653) `7d438e51`
+- **trace** · 新增 trace-integrity 结构完整性判据脚本（X1H2 T4） (#650) `904a70b1`
+- **cli** · 无头三形态放行 /btw 旁路提问（T8） (#649) `b65bd621`
+- **memory** · Read 记忆文件时前置年龄提醒 (#647) `78d56157`
+- **agent** · 子代理轨迹补委派形态与结束状态（06H1 T3） (#646) `dad3fb9c`
+- **memory** · 记忆漂移影子统计脚本与四档年龄/锚点口径 (#645) `2d1b026c`
+- **command** · 无头按形态放行 compact 与 loop 并补定时注入通道 (#639) `21d2a77e`
+- **tool** · 参数归一两层发 ToolInputCoerced 事件 (#633) `4c69cf37`
+- **command** · 无头模式补注 B 档 6 个命令并放行 (#632) `3f5e2073`
+- **trace** · 清单计数口径改名并区分 -1 的两种来源（T4） (#634) `0c9e8521`
+- **smoke** · G2 无头回放冒烟骨架（真二进制 -p + 回放 + 轨迹断言） (#628) `9ca79fb2`
+- **tool** · edit 宽进命中发 EditLenientMatch 事件并区分归一化策略 (#626) `586fa012`
+- **command** · 无头放行扩到形态与子命令两个维度并放行 A2 档只读子命令 (#625) `4224d600`
+- **command** · 无头模式放行 A 档 22 个只读命令并补反漂移门禁 (#624) `0cc9f8a8`
+- **trace** · hook 执行、回滚、定时触发进轨迹 (#600) `f263353e`
+- **eval** · 运行指纹纳入墙钟预算 max_duration_ms（T15 前置） (#603) `e71b7b00`
+- **trace** · 远程接管进轨迹（Bridge 三事件 + confirm_via） (#599) `7dc5163d`
+- **trace** · digest 识别幽灵超时与泄漏流，修正 eval-session 路径与对照方法 (#597) `af597061`
+- **eval** · 新增 L2 判定器与双向题集检查（T12） (#596) `8b114bd5`
+- **eval** · 新增墙钟总预算 --max-duration-ms 与 error_max_duration 终态（T10b） (#594) `a661f8dd`
+- **eval** · 新增评测预算账本与硬熔断（T19） (#592) `d0d49a0e`
+- **eval** · 新增 run 级配置指纹采集与比对，不一致即 INVALID 并点名到字段 (#590) `cf275160`
+- **eval** · 新增轮数与预算口径诊断脚本（T10a） (#586) `7a72fa4f`
+
+### 修复
+- **tool** · bash 解析器把引号外换行当命令分隔符（等价于 ;） (#750) `2f986e41`
+- **tool** · bash 改动归因补内容指纹与执行前快照 (#745) `88d76f39`
+- **task** · 修复 macOS CI 反复红的两个根因（落盘未处理拒绝/按键订阅时序） (#748) `b03d1990`
+- **net** · 内置公共源拉取改为域名首试 + IPv4 兜底 (#747) `547fb052`
+- **cwd** · cwd 真值源分层与值型撤销通知 (CG-1) (#746) `81384200`
+- **tool** · worktree 路径语义提示与 /clear 任务进展重置 (#744) `d4c6a349`
+- **context** · CG-3 三件小修（deny 摘要补传 / 分支过期声明 / 摘要禁写环境事实） (#743) `b7a7a55a`
+- **permission** · bash 写目标提取补齐 mv 源、git 路径、find 与解释器字面量 (#741) `51489e3a`
+- **permission** · 密钥识别规则统一与审计脱敏 (#740) `303046a9`
+- **task** · 声明等待的后台命令不再收到静默通知 (#737) `e424f97e`
+- **query** · 只读探查止损阀识别 git rev-parse 并归一化标记段 (#734) `2861c6db`
+- **scripts** · wait-audit 补宽口径与未等待期统计，让空转可见 (#730) `582d9622`
+- **task** · 唤醒排完后告知模型「本轮结束才触发、排完该收尾」 (#732) `b736fc6f`
+- **config** · 等 CI 的外部状态只映射到等待原语，消除提示互斥 (#733) `eced3bfd`
+- **task** · 等待期状态查询拦截识别循环、过滤管道与 gh api (#731) `f2331dd9`
+- **config** · 系统提示新增 waiting-capability 引导 monitor（FIX-3 D4） (#722) `a243983c`
+- **scripts** · wait-audit 的 monitor 事件计数恒为 0 与窗口漏收尾事件 (#718) `3bfb0439`
+- **config** · 用户级 CLAUDE.md 读取链路修正（白名单生效 + 尊重配置目录重定向） (#713) `aaef2c27`
+- **task** · 退出与宿主被杀后清理 monitor 子进程（FIX-1 D1+D1-b） (#717) `dc99d18e`
+- **tui** · 启动期间按下的回车不再回填成空行 (#716) `e1afe429`
+- **permission** · 异步决策兜底改用路径可达性判据 (#712) `8ac688ba`
+- **agent** · 子代理诊断与 todo 回注改走 transient reminder 通道 (#715) `d59bc5d4`
+- **permission** · swarm escalate 包装器透传权限选项并落审计 (#711) `4e262a04`
+- **sdk** · resume 后 stream-json 的 session_id 改用逻辑会话 id (#709) `b74c1765`
+- **compact** · 手动 /compact 落盘会话记录与会话摘要 (#707) `c52dfde9`
+- **sdk** · stream-json 连发时斜杠命令不参与合并 (#706) `b997dcb9`
+- **tui** · 窄终端摘要全量统计、事件合并显示，补齐 monitor 工具展示与描述 (#701) `71082bcc`
+- **task** · 状态查询拦截只认声明的等待，回执不再谎报 (#700) `31585025`
+- **task** · 唤醒撤销链路——S2 接线、撤销提示常驻 (#699) `67cbe12a`
+- **task** · todo_write 唤醒撤销改为主会话专属，blocked 不再算清单清零 (#698) `07bf6ba6`
+- **test** · monitor 突发阀用例改断言时序无关不变量 (#697) `1fed53fa`
+- **task** · 无头等待判据统一到 hasPromisedWait，补齐 T2 闸门用例 (#696) `d90e3d0a`
+- **context** · 上下文占用估算三处口径错配 (#694) `ec31a4c6`
+- **task** · 唤醒已触发、等注入时仍算等待源 (#693) `030fa15e`
+- **task** · monitor 父进程退出即终态，通知文案带单位 (#692) `c885baa4`
+- **task** · monitor 暂存行按窗口冲刷，四个终态出口统一先冲刷 (#690) `4c669667`
+- **task** · 等待登记在终态释放，期限型等待源不再误报承诺违背 (#687) `cc3bad76`
+- **task** · monitor 退出时冲刷最后一批事件不丢 (#688) `a8d2633e`
+- **permission** · monitor 不享受沙箱自动放行 (#685) `e88c5655`
+- **task** · task_stop 能停 monitor，未识别类型不再假成功 (#686) `ad246c0a`
+- **permission** · 项目 CLAUDE.md 不再能设权限档与追加工具白名单 (#680) `593f36eb`
+- **tool** · web_fetch 使用说明的字符上限改为引用真实常量 (#679) `9ce7d68a`
+- **tool** · write 截断检测不再把注释和撇号当未闭合字符串 (#678) `5d703af5`
+- **scripts** · wakeup-audit 判据纳入 ScheduledReplace (#676) `44e6bda2`
+- **command** · 放行命令的失败分支收口到 errorText，无头退非 0 (#675) `3afe5a8d`
+- **tool** · grep 数字入参不再被归一层放宽（区间保留负号、去掉 coerce） (#673) `62bdb8df`
+- **trace** · PermissionDecision 的 confirm_via 补进 events.jsonl (#668) `1cd29763`
+- **cli** · resume 后 json 输出的 session_id 与轨迹路径改用逻辑 id (#666) `61107240`
+- **ci** · CI 洁净门禁改看未忽略新文件 + hook 安装器改装 shim（X3-10/X3-11） (#663) `666b905b`
+- **gates** · 三处门禁假绿改行为断言，防线触发率分母收窄到审计类 (#662) `2bdcf309`
+- **release** · 站点构建与 NUL 门禁补 CI 兜底，指针写入加回读自证 (#661) `3b9b5a88`
+- **release** · 促升与回滚的未验证判据改为拒绝，平台清单收敛为单一事实源 (#657) `5d3de464`
+- **release** · 缺 curated 非交互放行与 Agent Note 门禁路径未解码 (#656) `4de56697`
+- **release** · 发布路径不再把「没量到」当通过 (#655) `6533efd6`
+- **tooling** · 选测兜底翻转为全量 + pre-push 读 stdin 推送区间（X3-01/X3-02） (#654) `889fb5dd`
+- **trace** · 增量游标只在 pair 落盘后推进，重试不再丢 tool_result (#652) `34462d26`
+- **trace** · digest 孤儿与计费缺口按数据来源分流 (#651) `042e0568`
+- **agent** · fork 拿不到继承时改为明确报错（06H1 T1/T2） (#648) `643dfb87`
+- **cron** · schedule_wakeup 改单链替换并给定时 prompt 打来源标记 (#642) `f0f2e035`
+- **query** · 停滞 L2 判据排除交付验证轮 (#627) `446a6926`
+- **memory** · 「记住」判据区分跨会话持久与本会话临时 (#623) `40969055`
+- **command** · LocalCommandResult 加回 error 分支，命令失败退非 0 (#622) `d4248133`
+- **permission** · git stash/branch/tag/remote/reflog 写形态不再判只读 (#621) `7c668f00`
+- **memory** · 满额淘汰按价值选择并对模型可见，删除时回填被挤走的记忆 (#620) `2a37c23e`
+- **command** · 命令上下文 sessionId 取逻辑会话 id 而非空串 (#619) `347fd0f4`
+- **eval** · L2 判定器接通 traj-bench（认 score.py 判分行 + 分档基线） (#617) `5dd18e4e`
+- **checkpoint** · bash 快照提取的 git 子进程补 3s 耗时上限 (#616) `f7117255`
+- **task** · bg_task_list 同状态轮询拦截且不再 XML 上屏 (#613) `6f3fd22a`
+- **llm** · Provider 缓存键补上凭据维度，避免同 baseURL 多账户串用 (#609) `7a0834d4`
+- **tool** · Bash 失败级联收窄为写类失败只跳过写类后续 (#614) `91adc771`
+- **llm** · 流只有思考、无 finish_reason 时按上游截断重试 (#615) `7a58bb5b`
+- **eval** · L2 判定器豁免被测二进制，新 beta 不再一律 INVALID (#610) `83fdc117`
+- **trace** · 触发事件进轨迹的口径补强与消费侧测试 (#608) `0b6b2d0e`
+- **trace** · 修正远程接管轨迹的三处口径缺陷 (#607) `de2ffc16`
+- **sandbox** · 补凭据 deny 与包管理器缓存，修子代理 sandboxed 埋点 (#605) `9bde7462`
+- **lsp** · 诊断新鲜度跟进修复——version 优先、屏障白名单与可观测口径 (#606) `55702c27`
+- **rewind** · 仅代码回滚撤不掉本轮改动，双击 Esc 打不开回退面板 (#604) `0d0d9067`
+- **lsp** · 诊断新鲜度改用客户端代际屏障与内容指纹漂移校验 (#602) `248755c9`
+- **sandbox** · 修复 Seatbelt 沙箱开启即全挂 (#601) `cb02a061`
+- **tui** · 输入框高度实时伸缩，↑↓ 翻到多行历史不再卡死 (#595) `17b0467d`
+- **tui** · 空闲时输入框上方不再残留空占位行 (#591) `898ac190`
+- **tool** · 子代理内部字段 _agentId 改为按需注入 (#588) `7a0afe2b`
+- **workflow** · meta.phases 描述写清元素形态，报错给出正确写法示例 (#589) `338ae9b4`
+- **llm** · 补齐 L1 中断源释放的第六处调用点与 L1/L2 验收测试 (#587) `f7cec25c`
+- **eval** · 拆分 harbor 权限观测键并把外部 kill 样本摘出能力分母 (#585) `29f40a06`
+
+### 文档
+- **changelog** · v0.1.615 用户视角更新说明 `1b553bd2`
+- **website** · 补充会话回退的两条 FAQ (#749) `f72aa76d`
+- PR 模板与 Agent Note 补防线归层和方案来源 (#720) `70f02066`
+- **website** · 更正 skip 档能力边界，deny 与禁用工具仍生效 (#710) `c07a6aa4`
+- 修正 README 事实错误与信息缺失 (#598) `c3af1459`
+
+### 其他
+- macOS 时序敏感用例补余量与配置目录隔离 (#739) `492fcc86`
+- **smoke** · B1-webhook-trigger (#724) `9a3dcb4d`
+- **smoke** · 本机定期调度（每周变异复跑 + 仅本机用例） (#723) `5b0d7dee`
+- 非平凡改动缺 Agent Note 时只报告提醒 (#721) `b7e3d2bc`
+- **smoke** · A4-loop-tui 会话内循环 TUI 触发（仅本机） (#719) `f3326e88`
+- G2/G4 冒烟转为阻断检查 (#714) `4a1a32c8`
+- **monitor** · 新增 verify-monitor 自动化验收脚本（FIX-0） (#708) `c9174b32`
+- **ci** · 时序 flake 加固与失败归因 (#695) `43c674bc`
+- **smoke** · G4 TUI e2e 运行器 + A1 回退面板用例，修结果页 Esc 要按两次 (#682) `a52bac82`
+- **smoke** · G2 用例期望守卫，改已有期望需 expect-reviewed (#671) `60ea7ce3`
+- **smoke** · G2 用例 X3 子代理结果回传与 sidechain 落盘 (#670) `f057fbac`
+- **smoke** · 运行器支持 bridge 桩中继，新增 G2 用例 A12 远程接管 (#669) `305e9104`
+- **smoke** · 运行器支持 stream-json 多轮输入，新增 G2 用例 A6 手动压缩 (#667) `3f9b2bdb`
+- **smoke** · G2 用例批 1：X1 退出码、X2 git 写形态、X5 无头命令落盘 (#665) `d2787a1d`
+- **smoke** · G2 用例 A11 远程策略下发 deny 生效，运行器支持桩服务 (#664) `bf6efd81`
+- **permission** · 补 bash 写目标不误拦基线并复核执行边界文档诊断 (#658) `0d40dbac`
+- **smoke** · G2 用例 A10 删掉的键重启不加回 (#644) `420dc1e7`
+- **smoke** · G2 用例 B2 Seatbelt 沙箱 (#643) `65236c23`
+- **smoke** · G2 用例 A5 daemon 执行 durable 任务 (#640) `c6fb009e`
+- **smoke** · G2 用例 A10 团队默认配置首次启动迁移链 (#638) `39754c60`
+- **smoke** · G2 用例 A8 ask 档无头兜底并提升主模型 (#637) `8cf4958e`
+- **smoke** · G2 锁缺陷用例 A2 --settings 注入的 hook 不生效 (#636) `c1ef6b4d`
+- **smoke** · G2 用例 A3 hook 拦截与 A13 团队记忆注入 (#635) `9268c1e4`
+- 补实 G1 变异抽样发现的两条空心测试 (#630) `743b2418`
+- G2 无头回放冒烟接入 test job（shard 1，观察期不阻断） (#629) `466a2617`
+- **startup** · macOS 计时断言改只报告，新增结构性启动门禁 (#612) `087f2fb0`
+- 修复主屏端到端与 ScheduledInject 两处测试竞态 (#611) `717a44e5`
+- **startup** · 事件循环阻塞阈值按平台分档，macOS 放宽到 300ms (#593) `fd730993`
+- **release** · promote v0.1.614 (#584) `01f04da8`
+- **release** · v0.1.614 (#583) `b692b733`
+
 ## v0.1.614 (2026-11-05)
 
 ### 新功能
