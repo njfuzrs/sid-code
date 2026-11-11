@@ -106,6 +106,8 @@ export interface BottomRegionSharedProps {
   usage: Usage;
   stockInputTokens: number;
   costUSD: number;
+  /** 本会话入账价是否发生过汇率折算（费用列 `≈$` / `$` 的判据，见 SessionState.isCostFxConverted） */
+  costFxConverted?: boolean;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD?: number;
   /** 会话累计 API 调用次数（状态栏 `⟳ N` 列）。省略 → Footer 不渲染该列。 */
@@ -204,6 +206,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
   usage,
   stockInputTokens,
   costUSD,
+  costFxConverted,
   cacheSavingsUSD,
   totalRequests,
   discardedRequests,
@@ -329,6 +332,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
         usage={usage}
         stockInputTokens={stockInputTokens}
         costUSD={costUSD}
+        costFxConverted={costFxConverted}
         cacheSavingsUSD={cacheSavingsUSD}
         totalRequests={totalRequests}
         discardedRequests={discardedRequests}

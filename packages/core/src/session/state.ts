@@ -65,6 +65,26 @@ export interface ModelUsageStats {
    */
   endpointHost?: string;
   /**
+   * 该模型入账用到的**原始计价币种**（`resolvePricing` 返回值，**不是** `effectivePricing` 折算后的）。
+   *
+   * 用途：让展示层判断「这笔钱是不是按汇率折算出来的估算值」——折算过的金额在 Footer /
+   * /cost / /debug 前加 `≈`。判据必须看价格数据本身，不能看模型名：`/deepseek/i` 那种写法
+   * 在「别名指向 CNY 价」或「同名模型走美元网关价」两种真实场景里都会给出相反答案（D7）。
+   *
+   * 只记原始值：`effectivePricing` 折算后会把 `currency` 改写成 `"USD"`（防止二次折算，
+   * 见 cost-tracker.ts），拿折算后的值就永远判不出「换过汇」。
+   * undefined = 该模型的价没声明币种（隐含 USD，与改造前的假设一致）。
+   */
+  priceCurrency?: string;
+  /**
+   * `priceCurrency` 对应的原始换算率（1 单位本币 = 多少 USD），与 {@link priceCurrency} 同源。
+   *
+   * 只用于展示换算说明（`1 USD = 1/fxToUSD 本币`）。它同时是「真的换过汇」的第二半判据：
+   * 声明了非 USD 却没给汇率的价，`effectivePricing` 会**原样当 USD 用、不猜汇率**
+   * （见 cost-tracker.ts），那笔钱没经过换算，不该加 `≈`。
+   */
+  priceFxToUSD?: number;
+  /**
    * 作废尝试的次数（P0-2 C 组）：超时/流内错误后重试、响应被丢弃但 prompt 已发出并计费。
    *
    * 与 `requests` 的关系：`requests` 是**总记账次数**（含作废），此字段是其中作废的那部分。
@@ -260,6 +280,15 @@ export class SessionState {
     // P0-4：记末次端点 host，供账本按渠道标注可信度（只取 host，不留 path/query）
     const host = SessionState.hostOf(baseURL);
     if (host) stats.endpointHost = host;
+
+    // D7：记**原始**计价币种与换算率，供展示层判断金额是否按汇率折算过（`≈` 前缀的判据）。
+    // 必须取 `resolvePricing` 的原始值：`effectivePricing` 折算后会把 currency 改写成 "USD"
+    // （防二次折算，见 cost-tracker.ts），拿折算后的值永远判不出「换过汇」。
+    // 与 calculateCost 内部的解析重复一次是刻意的：那个函数是公开的重算入口
+    // （trace 对账也走它），把「记录展示字段」塞进去会污染纯计算职责。
+    const rawPricing = resolvePricing(model, this.availableModels, baseURL);
+    if (rawPricing?.currency) stats.priceCurrency = rawPricing.currency;
+    if (typeof rawPricing?.fxToUSD === "number") stats.priceFxToUSD = rawPricing.fxToUSD;
 
     // 累加 token
     // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
@@ -476,6 +505,16 @@ export class SessionState {
           discardedPromptTokens: Number((s as ModelUsageStats).discardedPromptTokens) || 0,
           costUSD: Number((s as ModelUsageStats).costUSD) || 0,
           cacheSavingsUSD: Number((s as ModelUsageStats).cacheSavingsUSD) || 0,
+          // D7：币种/汇率必须一起回灌 —— 漏了它 resume 后 `≈$` 判据无声丢失，
+          // 同一笔换算过的钱在重启前后写法不一致（旧快照无这两个字段时保持 undefined）。
+          priceCurrency:
+            typeof (s as ModelUsageStats).priceCurrency === "string"
+              ? (s as ModelUsageStats).priceCurrency
+              : undefined,
+          priceFxToUSD:
+            typeof (s as ModelUsageStats).priceFxToUSD === "number"
+              ? (s as ModelUsageStats).priceFxToUSD
+              : undefined,
           provider:
             typeof (s as ModelUsageStats).provider === "string"
               ? (s as ModelUsageStats).provider
@@ -492,6 +531,49 @@ export class SessionState {
    */
   getEffectiveTotalCostUSD(): number {
     return this.totalCostUSD + this.sideCostUSD;
+  }
+
+  /**
+   * 本会话入账用到的价格里，是否发生过「非 USD 币种 → USD」的汇率折算（D7）。
+   *
+   * 展示层用它决定金额前写 `≈$` 还是 `$`。判据只看**价格数据本身**，与模型名无关：
+   * - 内置注册表里 DeepSeek 是 CNY 计价（`fxToUSD` 折算过）→ 该加 `≈`；
+   * - 网关 `billing_expr` 给的价已经是 USD（没折算）→ 不该加 `≈`；
+   * 两者模型名可能完全相同，按名字判必然有一边是错的（旧实现 `/deepseek/i.test(model)`
+   * 就踩在这上面：同名模型走美元网关价时也标 ≈）。
+   *
+   * 声明了非 USD 却**没有** `fxToUSD` 的价不算折算：`effectivePricing` 对这种情况
+   * 不猜汇率、原样当 USD 用（见 cost-tracker.ts），那笔钱没经过换算，加 `≈` 反而是误导。
+   */
+  isCostFxConverted(): boolean {
+    return Object.values(this.modelUsage).some(
+      (s) =>
+        typeof s.priceCurrency === "string" &&
+        s.priceCurrency !== "USD" &&
+        typeof s.priceFxToUSD === "number" &&
+        s.priceFxToUSD > 0,
+    );
+  }
+
+  /**
+   * 本会话真正折算过的币种及其换算率（按币种去重），供 /cost 写换算说明。
+   *
+   * 只收 {@link isCostFxConverted} 认定的那批（判据同源），返回 `perUSD` 是本币/USD
+   * 的比值（即展示用的「1 USD = perUSD ¥」），由 `1 / fxToUSD` 派生。
+   */
+  getCurrencyConversions(): Array<{ currency: string; perUSD: number }> {
+    const byCurrency = new Map<string, number>();
+    for (const s of Object.values(this.modelUsage)) {
+      if (
+        typeof s.priceCurrency === "string" &&
+        s.priceCurrency !== "USD" &&
+        typeof s.priceFxToUSD === "number" &&
+        s.priceFxToUSD > 0
+      ) {
+        byCurrency.set(s.priceCurrency, 1 / s.priceFxToUSD);
+      }
+    }
+    return [...byCurrency].map(([currency, perUSD]) => ({ currency, perUSD }));
   }
 
   /**

@@ -204,6 +204,9 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     usage: { inputTokens: 0, outputTokens: 0 },
     stockInputTokens: 0,
     costUSD: 0,
+    // /clear 清空 modelUsage（resetCounters），折算判据随之归零 —— 不置 false 的话
+    // 新会话会沿用上一段的 `≈$` 前缀，而它已经没有任何 CNY 计价模型在记账了。
+    costFxConverted: false,
     cacheSavingsUSD: 0,
     // /clear 走 sessionState.resetCounters()（清空 modelUsage → requests 归零），
     // 这里同步把展示侧归零，保持「状态栏计量项与上下文一起清空」的既有约定。

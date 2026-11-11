@@ -59,6 +59,13 @@ interface FooterProps {
   stockInputTokens: number;
   costUSD: number;
   costLimit: number;
+  /**
+   * 本会话入账价是否发生过汇率折算（`SessionState.isCostFxConverted()`）。
+   * 为真时费用列写 `≈$`（人民币按固定汇率换算出的估算值），否则写 `$`。
+   * 由 app.ts 推送而不是在这里按模型名推断（旧实现 `/deepseek/i.test(model)`，
+   * 同名模型走美元网关价时会错标 ≈，见 D7）。
+   */
+  costFxConverted?: boolean;
   contextPercent: number;
   /** P1-2：压缩触发点百分比（显示为「17%/82%」）；≤0 或省略则只显示 contextPercent */
   contextTriggerPercent?: number;
