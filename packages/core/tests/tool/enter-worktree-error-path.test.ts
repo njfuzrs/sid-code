@@ -9,7 +9,7 @@
  * 而不是「文案更好看」——后者没法机械断言，前者可以。
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { EnterWorktreeTool } from "@sid-code/core/tool/enter-worktree.ts";
@@ -54,15 +54,25 @@ describe("enter_worktree 报错带路径（CG-1 R5）", () => {
 
 describe("/worktree 报错带路径（CG-1 R5）", () => {
   it("不在 Git 仓库时，报错含检查过的目录", async () => {
-    setCwd(tmpRoot);
-    const cmd = new WorktreeCommand();
+    // 这个命令读的是 process.cwd()（W17 哨兵按源码字面量守它，不能改成变量），
+    // 所以要用 process.chdir 摆场景，不是 setCwd。
+    // macOS 上 chdir 之后 cwd() 给物理路径（/var → /private/var），断言用 realpath。
+    const origProcessCwd = process.cwd();
+    const real = realpathSync(tmpRoot);
+    process.chdir(tmpRoot);
+    try {
+      const cmd = new WorktreeCommand();
 
-    // call 的第二个参数（CommandContext）在该分支里不被使用
-    const r = await cmd.call("", {} as never);
+      // call 的第二个参数（CommandContext）在该分支里不被使用
+      const r = await cmd.call("", {} as never);
 
-    expect(r.type).toBe("text");
-    const value = String((r as { value: string }).value);
-    expect(value).toContain(tmpRoot);
-    expect(value).toContain("下一步");
+      expect(r.type).toBe("text");
+      const value = String((r as { value: string }).value);
+      expect(value).toContain(real);
+      expect(value).toContain("下一步");
+    } finally {
+      // 绝不能漏恢复：同批多文件跑在同一进程里
+      process.chdir(origProcessCwd);
+    }
   });
 });

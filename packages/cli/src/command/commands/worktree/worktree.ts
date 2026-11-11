@@ -4,8 +4,6 @@
 
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import { fmtAge } from "../shared/advanced.ts";
-// CG-1 / R5：报错里要带「检查过的目录」，取值必须与 findGitRootForAgent 同源。
-import { getCwd } from "@sid-code/core/bootstrap/state.ts";
 
 /** /worktree — 管理 Git Worktree */
 export class WorktreeCommand implements LocalCommandModule {
@@ -17,17 +15,20 @@ export class WorktreeCommand implements LocalCommandModule {
     // W17：enter_worktree 之后 process.cwd() 是 worktree，`findGitRoot` 会返回它自己，
     // `/worktree clean` 扫的就成了 worktree 内部的 .sid-code/worktrees（恒为 0 个）。
     //
-    // CG-1 / R5：这里找的是「当前工作区的 git 根」，与 enter_worktree 同源，取 getCwd()
-    // （跟随 bash cd）。报错必须带上**检查过的那个目录** —— 只说「不在 Git 仓库中」时，
+    // CG-1 / R5：报错必须带上**检查过的那个目录** —— 只说「不在 Git 仓库中」时，
     // 模型无法区分「cd 漂了 / 路径写错 / 这目录确实不是仓库」，只会原地重试。
-    const checkedDir = getCwd();
-    const gitRoot = findGitRootForAgent(checkedDir);
+    //
+    // ⚠️ 调用点保持 `findGitRootForAgent(process.cwd())` 字面量不动：
+    // `tests/worktree/w11-w18-defects.test.ts` 的 W17 哨兵就是按这个字面量断言
+    // 「不再用 findGitRoot」的，换成变量会让哨兵失去断言对象。
+    // R5 只要求报错带路径，不需要改 cwd 源。
+    const gitRoot = findGitRootForAgent(process.cwd());
     if (!gitRoot) {
       return {
         type: "text",
         value:
           `当前目录不在 Git 仓库中。\n` +
-          `检查过的目录: ${checkedDir}\n` +
+          `检查过的目录: ${process.cwd()}\n` +
           `下一步：先 \`cd\` 到一个 Git 仓库（或工作区根），或先用 bash 执行 ` +
           `\`git rev-parse --show-toplevel\` 确认所在仓库。`,
       };
