@@ -14,6 +14,8 @@ import {
   makeToolProbeCommand,
   stripLeadingCdAndEnv,
   makeSignature,
+  normalizeProbeCommand,
+  normalizeProbeOutput,
   processObservation,
   createRepeatedReadonlyState,
   buildStuckReminder,
@@ -61,6 +63,30 @@ describe("isReadonlyProbeCommand — 只读探查命令识别", () => {
     expect(isReadonlyProbeCommand("git add -A")).toBe(false);
     expect(isReadonlyProbeCommand("rm -rf foo")).toBe(false);
     expect(isReadonlyProbeCommand("npm install")).toBe(false);
+  });
+
+  // N5：rev-parse 是模型确认「当前在哪个分支 / HEAD 是谁」最高频的写法
+  // （fbb02831 的 88 次分支确认里 69 次以它开头），不在白名单时整条复合命令进不了阀。
+  test("★N5：识别 git rev-parse 开头的只读探查（真实会话的三种写法）", () => {
+    expect(isReadonlyProbeCommand("git rev-parse --abbrev-ref HEAD && git status --short")).toBe(
+      true,
+    );
+    expect(
+      isReadonlyProbeCommand(
+        'git rev-parse --abbrev-ref HEAD && git status --short && echo "===END==="',
+      ),
+    ).toBe(true);
+    expect(
+      isReadonlyProbeCommand(
+        'git rev-parse --abbrev-ref HEAD; git status --short; echo "===END==="',
+      ),
+    ).toBe(true);
+    expect(isReadonlyProbeCommand("git rev-parse HEAD")).toBe(true);
+  });
+
+  test("★N5：rev-parse 带写操作仍被 AST 关卡拦住（放宽白名单不等于放宽安全阀）", () => {
+    expect(isReadonlyProbeCommand("git rev-parse HEAD && git commit -m x")).toBe(false);
+    expect(isReadonlyProbeCommand("git rev-parse HEAD > out.txt")).toBe(false);
   });
 
   test("带写入重定向/副作用的形式不算只读探查（AST 关卡兜底）", () => {
@@ -128,6 +154,76 @@ describe("makeSignature — 归一化", () => {
   });
   test("输出不同 → 签名不同", () => {
     expect(makeSignature("git status", "")).not.toBe(makeSignature("git status", "M a.ts"));
+  });
+});
+
+describe("★N5：bash 探查签名的标记归一化", () => {
+  const OUT = "fix/monitor-burst-flush-assertion";
+  const OUT_MARKED = `${OUT}\n===END===`;
+
+  test("同一组探查换分隔符 / 换顺序 / 加标记 echo → 同一签名", () => {
+    // fbb02831 的三种真实写法：模型每次换一点写法，未归一化时签名每轮都不同。
+    const a = makeSignature("git rev-parse --abbrev-ref HEAD && git status --short", OUT);
+    const b = makeSignature(
+      'git rev-parse --abbrev-ref HEAD && git status --short && echo "===END==="',
+      OUT_MARKED,
+    );
+    const c = makeSignature(
+      'git rev-parse --abbrev-ref HEAD; git status --short; echo "===END==="',
+      OUT_MARKED,
+    );
+    const d = makeSignature("git status --short && git rev-parse --abbrev-ref HEAD", OUT);
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(a).toBe(d); // 段序调换也是同一组探查
+  });
+
+  test("输出不同 → 签名不同（归一化不吞内容差异）", () => {
+    expect(makeSignature("git rev-parse --abbrev-ref HEAD && git status --short", OUT)).not.toBe(
+      makeSignature("git rev-parse --abbrev-ref HEAD && git status --short", "main"),
+    );
+  });
+
+  test("read 家族（kind=tool）不剥离内容里的分隔线", () => {
+    // 文件内容里的 `---` 是 markdown 分隔线，不是视觉标记；剥掉会让不同内容撞签名。
+    const withFrontmatter = "---\ntitle: x\n---";
+    expect(makeSignature('read {"file_path":"/a.md"}', withFrontmatter, "tool")).not.toBe(
+      makeSignature('read {"file_path":"/a.md"}', "title: x", "tool"),
+    );
+  });
+
+  test("echo 里带命令替换时不剥离（携带真信息）", () => {
+    expect(normalizeProbeCommand('echo "$(git status --short)" && git status --short')).toContain(
+      "echo",
+    );
+  });
+
+  test("整条命令都是 echo 时退回原段（不产生空签名）", () => {
+    expect(normalizeProbeCommand('echo "===END==="')).toContain("echo");
+  });
+
+  test("normalizeProbeOutput 只删标记行，保留内容行", () => {
+    expect(normalizeProbeOutput("a\n---\n===END===\nb")).toBe("a\nb");
+    expect(normalizeProbeOutput("M a.ts")).toBe("M a.ts");
+  });
+
+  test("★三种写法交替（同输出）连续 3 轮 → stuck（修复前每轮都被清零）", () => {
+    const state = createRepeatedReadonlyState();
+    const feed = [
+      "git rev-parse --abbrev-ref HEAD && git status --short",
+      'git rev-parse --abbrev-ref HEAD && git status --short && echo "===END==="',
+      'git rev-parse --abbrev-ref HEAD; git status --short; echo "===END==="',
+    ];
+    let last;
+    for (const cmd of feed) {
+      last = processObservation(
+        state,
+        [{ command: cmd, output: cmd.includes("echo") ? OUT_MARKED : OUT }],
+        false,
+      );
+    }
+    expect(last!.stuck).toBe(true);
+    expect(last!.action).toBe("remind");
   });
 });
 
