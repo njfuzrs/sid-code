@@ -18,6 +18,12 @@
  *   emit 会让整棵 App 树 reconcile；updateStreaming 是 32ms 固定窗口合帧、尾沿必触发。
  * - **返回值必须被调用**（TUI 卸载后反注册）：SessionEnd 前的收尾调用仍会入账，
  *   那时 bridge 已不再渲染，继续写只是往没人消费的状态里灌值。
+ *
+ * D18：命中率也在这里推（`cacheHitRate`），且**只推 core 算好的那个数**。
+ * 状态栏此前自己拿「全会话合计 usage + 当前模型推断的 provider」重算，单模型会话看不出问题，
+ * 但会话里换过模型、或主模型与子代理协议族不同时，anthropic 的 `input`（未命中余量）会被
+ * 当成 openai 的 `prompt_tokens`（含命中），命中率直接算错——同一个指标两种算法，
+ * 而 /cost 用的 `getNormalizedCacheUsage()`（按每个模型自己的 provider 归一化后加总）才是对的。
  */
 
 import type { SessionState } from "@sid-code/core/session/state.ts";
@@ -32,6 +38,7 @@ type CostSource = Pick<
   | "getTotalUsage"
   | "getTotalRequests"
   | "getDiscardedRequests"
+  | "getCacheHitRate"
 >;
 
 /** 只用到 updateStreaming，避免把整个 StateBridge 契约拖进类型 */
@@ -45,6 +52,10 @@ export function subscribeCostToBridge(session: CostSource, bridge: CostSink): ()
       usage: { ...session.getTotalUsage() },
       totalRequests: session.getTotalRequests(),
       discardedRequests: session.getDiscardedRequests(),
+      // D18：命中率只推 core 算好的那个数（`SessionState.getCacheHitRate()`，按每个模型
+      // 自己的 provider 归一化后加总，与 /cost 同一个数）。UI 层不许再拿 usage + 当前模型
+      // 推断的 provider 重算——多模型/跨协议族会话那样算会错。
+      cacheHitRate: session.getCacheHitRate(),
     });
   });
 }

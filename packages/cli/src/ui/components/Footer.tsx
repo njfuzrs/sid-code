@@ -43,8 +43,6 @@ import {
 import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useCustomStatusLine } from "../statusline/useCustomStatusLine.ts";
-import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
-import { SessionState } from "@sid-code/core/session/state.ts";
 import { formatLargeNumber } from "../utils/format-number.ts";
 import { getReleaseChannel } from "@sid-code/shared/release-channel.ts";
 
@@ -74,6 +72,15 @@ interface FooterProps {
   totalRequests?: number;
   /** 其中作废（重试白烧）的次数，是 totalRequests 的子集。 */
   discardedRequests?: number;
+  /**
+   * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
+   * `undefined` = 尚无命中 → 不渲染 ⚡ 列。
+   *
+   * **由 core 算好推下来，组件不许自己拿 usage + model 重算**：命中率的协议族归一化
+   * 必须按每个模型**自己记账时的 provider** 逐条做（`getNormalizedCacheUsage`），
+   * 拿全会话合计 usage 配「当前模型」推断的 provider 去归一化，多模型/跨协议族会话会错。
+   */
+  cacheHitRate?: number;
   /**
    * 终端列宽（响应式，随窗口 resize 变化）。用于窄终端下按优先级渐进隐藏区块，
    * 保证状态栏每行不折行。缺省时回退到 stdout.columns，仍可工作只是不随 resize 精确联动。
@@ -136,14 +143,11 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   const val = theme.text.primary;
 
   // P1-5 自定义状态栏：配了 statusLine.command 就跑用户脚本，stdout 作状态栏（原样透传 ANSI）。
-  const cacheNorm = normalizeCacheUsage(
-    props.usage,
-    SessionState.inferProvider(props.model, config.availableModels),
-  );
-  const cacheHitRate =
-    cacheNorm.cacheHitTokens > 0 && cacheNorm.promptTotal > 0
-      ? Math.round((cacheNorm.cacheHitTokens / Math.max(1, cacheNorm.promptTotal)) * 100)
-      : 0;
+  //
+  // D18：命中率直接取 `props.cacheHitRate`（core 的 `SessionState.getCacheHitRate()` 推下来的
+  // 那个数，与 /cost 同一口径）。**不许在这里拿 props.usage + props.model 重算** ——
+  // 那样会把全会话合计 usage 配「当前模型」推断的 provider 去归一化，多模型/跨协议族
+  // 会话（如主模型 openai + anthropic 子代理）命中率会算错。
   const customStatusLine = useCustomStatusLine({
     config: config.statusLine,
     data: {
@@ -156,7 +160,9 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       outputTokens: props.usage.outputTokens,
       contextPercent: props.contextPercent,
       costUSD: props.costUSD,
-      cacheHitRate,
+      // 状态栏脚本的契约是 0-100 数字（无缓存写 0），与 `undefined` 的「不显示」语义不同，
+      // 所以在这里做一次契约转换，而不是把 undefined 透传出去。
+      cacheHitRate: props.cacheHitRate ?? 0,
       effort: config.effortDisplay
         ? config.effortDisplay.isAuto
           ? "auto"

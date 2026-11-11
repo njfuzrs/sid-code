@@ -727,6 +727,24 @@ export class SessionState {
     return total;
   }
 
+  /**
+   * 全会话缓存命中率（0-100 整数），`undefined` = 没有缓存命中可算。
+   *
+   * **状态栏（Footer ⚡）的唯一取数源**。D18 之前 Footer 走的是另一套算法：
+   * 拿全会话合计 `usage` 配「当前模型」推断出的 provider 去 `normalizeCacheUsage`，
+   * 单模型会话看不出来，但只要会话里换过模型、或主模型与子代理协议族不同，
+   * anthropic 的 `inputTokens`（未命中余量）就会被当成 openai 的 `prompt_tokens`（含命中）
+   * 去减，反之亦然——命中率直接算错，而且和 /cost 是两个数。
+   *
+   * `undefined`（而不是 0）用于区分「无缓存数据」和「命中率确实是 0%」：
+   * 前者不渲染 ⚡ 列（避免对无缓存模型显示 0% 误导），后者如实显示。
+   */
+  getCacheHitRate(): number | undefined {
+    const view = this.getNormalizedCacheUsage();
+    if (view.cacheHitTokens <= 0 || view.promptTotal <= 0) return undefined;
+    return Math.round((view.cacheHitTokens / view.promptTotal) * 100);
+  }
+
   /** 全会话累计缓存节省金额（美元） */
   getTotalCacheSavings(): number {
     let sum = 0;

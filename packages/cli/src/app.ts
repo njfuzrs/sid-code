@@ -9763,6 +9763,9 @@ export class App {
       stockInputTokens: this.sessionState.getStockPromptTokens(),
       costUSD: this.sessionState.getEffectiveTotalCostUSD(),
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+      // D18：首帧就要给命中率（resume 进来的会话 modelUsage 已有值），
+      // 之后由 subscribeCostToBridge 在每次入账时续推。
+      cacheHitRate: this.sessionState.getCacheHitRate(),
       totalRequests: this.sessionState.getTotalRequests(),
       discardedRequests: this.sessionState.getDiscardedRequests(),
       // B18：状态栏百分比的分母必须是真正会拦的那个上限。
