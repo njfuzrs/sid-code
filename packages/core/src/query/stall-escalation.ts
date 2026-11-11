@@ -54,6 +54,14 @@ export const STALL_L1_SIGNAL_THRESHOLD = 3;
 export const STALL_L2_AFTER_L1_TURNS = 10;
 /** todo 闸门联动（2e）：本份清单内振荡达到此值，不再劝「继续」。 */
 export const STALL_GATE_OSCILLATION_THRESHOLD = 3;
+/**
+ * N8：L1 文案点名「改用后台等待」所需的最少状态查询次数。
+ *
+ * 分母是 bash 调用数（不是工具轮数）：`read` / `grep` 这类非 bash 工具不会「查外部状态」，
+ * 放进分母只会稀释。1/1 或 2/2 的偶然采样不该改变文案——模型偶尔确认两次状态是正常的，
+ * 只有「反复查」才值得换一套措辞（962011a6 第二段 68 次查询 / 0 个等待原语）。
+ */
+export const STALL_L1_POLL_MIN = 3;
 
 // ─── 开关 ───
 
@@ -124,6 +132,10 @@ export interface StallState {
   bgWaitTurns: number;
   /** 本消息内落在交付 / 验证阶段的工具轮数（不计入 L2 的轮数要求） */
   deliveryTurns: number;
+  /** 本消息内 bash 调用总数（N8：判「多数 bash 调用是状态查询」的分母） */
+  bashCommands: number;
+  /** 本消息内命中外部状态查询命令表的 bash 调用数（N8：L1 文案点名出路） */
+  statusQueryCommands: number;
 }
 
 export function createStallState(currentOscillations: number): StallState {
@@ -141,6 +153,8 @@ export function createStallState(currentOscillations: number): StallState {
     l2Count: 0,
     bgWaitTurns: 0,
     deliveryTurns: 0,
+    bashCommands: 0,
+    statusQueryCommands: 0,
   };
 }
 
@@ -214,6 +228,13 @@ export interface StallTurnObservation {
    * 判据见文件头「判据边界」，轮询类命令（`gh pr view` / `gh run view` / `tail .output`）不算。
    */
   deliveryAction?: boolean;
+  /**
+   * 本轮 bash 调用数（N8）：`read` / `grep` 这类非 bash 工具不会「查外部状态」，
+   * 所以「多数调用是状态查询」的分母用 bash，不用工具轮数（一轮里可能并行发多条）。
+   */
+  bashCommands?: number;
+  /** 本轮命中外部状态查询命令表（`matchStatusQuery`）的**前台** bash 调用数（N8）。 */
+  statusQueryCommands?: number;
 }
 
 export type StallDecision =
@@ -232,6 +253,9 @@ export interface StallSignals {
   l2Count: number;
   bgWaitTurns: number;
   deliveryTurns: number;
+  /** N8：本消息内 bash 调用总数与其中命中外部状态查询命令表的数量（落事件可回看） */
+  bashCommands: number;
+  statusQueryCommands: number;
 }
 
 function signalsOf(s: StallState): StallSignals {
@@ -246,6 +270,8 @@ function signalsOf(s: StallState): StallSignals {
     l2Count: s.l2Count,
     bgWaitTurns: s.bgWaitTurns,
     deliveryTurns: s.deliveryTurns,
+    bashCommands: s.bashCommands,
+    statusQueryCommands: s.statusQueryCommands,
   };
 }
 
@@ -273,6 +299,8 @@ export function observeStallTurn(
   if (obs.backgroundRunning) s.bgWaitTurns++;
   if (obs.deliveryAction) s.deliveryTurns++;
   s.unchangedReports += obs.unchangedReports;
+  s.bashCommands += obs.bashCommands ?? 0;
+  s.statusQueryCommands += obs.statusQueryCommands ?? 0;
   s.oscillationsInPrompt += Math.max(0, obs.oscillations - s.lastOscillationsObserved);
   s.lastOscillationsObserved = obs.oscillations;
 
@@ -349,15 +377,33 @@ export function observeStallTurn(
 
 // ─── 文案 ───
 
+/**
+ * N8：本条消息内是否「多数 bash 调用都是在查外部状态」。
+ *
+ * 门槛：命中 ≥ `STALL_L1_POLL_MIN` 次，且命中数超过 bash 调用总数的一半。
+ * 只影响 L1 文案（多一句可执行的出路），**不参与任何升级 / 停机判据**——
+ * 962011a6 的 68 次前台轮询期间，L1（12:02:34）给的是「如果绿点已经满足用户要求，
+ * 请停止改动，提交收尾」，对一个正在等 CI 的模型来说没有可执行的下一步。
+ */
+export function isPollDominatedStatusQuery(s: StallState): boolean {
+  return s.statusQueryCommands >= STALL_L1_POLL_MIN && s.statusQueryCommands * 2 > s.bashCommands;
+}
+
 export function buildStallL1Message(s: StallState, sig: StallSignals): string {
   const green = s.lastGreen
     ? `上一次测试全绿在本条消息第 ${s.lastGreen.turn} 个工具轮（工作区 ${s.lastGreen.stateHash.slice(0, 8)}）；`
     : "本条消息内还没有观察到一次全绿的测试结果；";
+  // N8：纯轮询场景下「停止改动，提交收尾」没有出路——得点名怎么等。
+  const pollLine = isPollDominatedStatusQuery(s)
+    ? `本条消息内多数 bash 调用是在前台反复查询外部状态（CI / 构建 / 部署）：这类等待不要靠前台轮询，` +
+      `改用后台 bash + wait_until_seconds（条件满足就退出的循环）或 monitor 挂上等待，然后结束本轮。\n`
+    : "";
   return (
     `<system-reminder>\n` +
     `收敛提示（harness 观测，非用户输入）：已连续 ${sig.turnsSinceNewState} 个工具轮没有产生新的工作区状态。` +
     `${green}此后清单振荡 ${sig.oscillations} 次、同参同返回值空转 ${sig.unchangedReports} 次、` +
     `改回历史状态 ${sig.rollbacks} 次、测试由绿变红 ${sig.greenRegressions} 次。\n` +
+    pollLine +
     `如果绿点已经满足用户要求，请停止改动，提交收尾；如果卡在某个设计选择上来回切换，` +
     `请向用户说明现状、卡点和可选方案，由用户决定，而不是继续尝试。\n` +
     `</system-reminder>`
