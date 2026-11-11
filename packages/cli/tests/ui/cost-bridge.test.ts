@@ -1,0 +1,132 @@
+/**
+ * D1（P0）：一轮结束后的辅助调用入账必须推到状态栏。
+ *
+ * 这是本次修复唯一跨层的缺陷：core（SessionState 入账通知）→ cli（cost-bridge 订阅）→
+ * UI（StateBridge 状态）。之前只有五处固定时机（tool_end / done / 轮末 finally / 中断
+ * catch / 首帧）重新读费用，而辅助调用（后台记忆 fork、标题生成、SessionEnd 前的收尾）
+ * 全部发生在一轮结束之后 —— 那五个时机都已经过去了。
+ *
+ * 实测后果：一次会话 Footer 停在 $0.0856（只有主循环），真实总花费 $0.1501，
+ * 少报 43%；用户不再输入就永不更新，要等下一轮第一个工具结束才一次性跳上去。
+ *
+ * 本文件用**真实的 SessionState + StateBridge + 生产订阅函数**复刻 app.ts 的接线，
+ * 而不是在测试里把同样的字段抄一遍 —— 抄件测不到接线本身。
+ *
+ * 变异自证（CLAUDE.md：新增回归必须先把代码改坏看断言变红）：
+ * - 去掉 `app.ts` 里的 subscribeCostToBridge 调用 → 第二个用例的 costUSD 断言变红；
+ * - 在 cost-bridge.ts 的 patch 里加 stockInputTokens → 第三个用例变红。
+ */
+
+import { describe, expect, test } from "bun:test";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import { StateBridge } from "@sid-code/cli/ui/state-bridge.ts";
+import { subscribeCostToBridge } from "@sid-code/cli/ui/cost-bridge.ts";
+
+/** updateStreaming 的合帧窗口是 32ms，等两倍窗口 + 余量，避免慢 runner 上抖 */
+const FLUSH_WAIT_MS = 80;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 复刻 app.ts 的接线：真实 SessionState + 真实 StateBridge 首帧字段 */
+function wire() {
+  const sessionState = new SessionState("d1-bridge");
+  const bridge = new StateBridge({
+    costUSD: sessionState.getEffectiveTotalCostUSD(),
+    cacheSavingsUSD: sessionState.getTotalCacheSavings(),
+    usage: { ...sessionState.getTotalUsage() },
+    totalRequests: sessionState.getTotalRequests(),
+    discardedRequests: sessionState.getDiscardedRequests(),
+    // 主循环入账才会变的字段，订阅不应推它
+    stockInputTokens: sessionState.getStockPromptTokens(),
+  } as any);
+  const frames: number[] = [];
+  bridge.on("change", (s: any) => frames.push(s.costUSD));
+  const off = subscribeCostToBridge(sessionState, bridge);
+  return { sessionState, bridge, frames, off };
+}
+
+describe("D1 · 入账 → 状态栏接线", () => {
+  test("主循环入账：costUSD 经合帧推成状态（基线行为不被破坏）", async () => {
+    const { sessionState, bridge, frames, off } = wire();
+
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+
+    const expected = sessionState.getEffectiveTotalCostUSD();
+    expect(expected).toBeGreaterThan(0);
+    expect(bridge.current.costUSD).toBeCloseTo(expected, 12);
+    expect(frames.length).toBeGreaterThan(0);
+    off();
+    bridge.detach();
+  });
+
+  test("一轮结束后才发生的辅助调用入账，同样推到状态（D1 核心）", async () => {
+    const { sessionState, bridge, off } = wire();
+
+    // 一轮结束：主循环最后一次入账之后，app.ts 的 done / 轮末 finally 已经跑完
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+    const mainOnly = bridge.current.costUSD;
+    expect(mainOnly).toBeGreaterThan(0);
+
+    // 用户不再输入，后台记忆 fork / 标题生成在这之后入账（本次会话真实数字 $0.0645）
+    sessionState.addSideCost(0.0645);
+    await sleep(FLUSH_WAIT_MS);
+
+    // 修复前：没有任何一条路径会推 UI，Footer 永远停在 mainOnly
+    expect(bridge.current.costUSD).toBeCloseTo(sessionState.getEffectiveTotalCostUSD(), 12);
+    expect(bridge.current.costUSD).toBeGreaterThan(mainOnly);
+    off();
+    bridge.detach();
+  });
+
+  test("辅助入账不改「当前上下文大小」：subscription 不推 stockInputTokens", async () => {
+    const { sessionState, bridge, off } = wire();
+    const stockBefore = bridge.current.stockInputTokens;
+
+    sessionState.addSideCost(0.0645);
+    await sleep(FLUSH_WAIT_MS);
+
+    expect(bridge.current.costUSD).toBeCloseTo(0.0645, 12);
+    expect(bridge.current.stockInputTokens).toBe(stockBefore);
+    off();
+    bridge.detach();
+  });
+
+  test("反注册后不再推状态（TUI 卸载后不往没人消费的状态里写）", async () => {
+    const { sessionState, bridge, off } = wire();
+
+    off();
+    sessionState.addSideCost(0.0645);
+    await sleep(FLUSH_WAIT_MS);
+
+    expect(bridge.current.costUSD).toBe(0);
+    bridge.detach();
+  });
+
+  test("同一 SessionState 上账本落盘的旧单槽位观察者不会被挤掉", () => {
+    const sessionState = new SessionState("d1-ledger-coexist");
+    const ledger: number[] = [];
+    sessionState.setCostChangeListener((cost) => ledger.push(cost));
+
+    const bridge = new StateBridge({ costUSD: 0, stockInputTokens: 0 } as any);
+    const off = subscribeCostToBridge(sessionState, bridge);
+
+    sessionState.addSideCost(0.01);
+
+    // 账本那条线（旧接口）与 UI 这条线（新接口）都收到
+    expect(ledger).toEqual([0.01]);
+    expect(bridge.current.costUSD).toBeCloseTo(0.01, 12);
+    off();
+    bridge.detach();
+  });
+});

@@ -9853,6 +9853,16 @@ export class App {
       bridge.updateStreaming(patch);
     };
 
+    // ── D1：每一笔入账都推到状态栏（补上「一轮结束之后」的空档）──
+    //
+    // 此前费用列只在五个固定时机重新读值（tool_end / done / 轮末 finally / 中断 catch），
+    // 而辅助调用（后台记忆 fork、标题生成、SessionEnd 前的收尾调用）走的是 addSideCost，
+    // 不经过这五个时机。于是**一轮结束之后才入账的那部分永远推不到 UI**：实测一次会话
+    // Footer 停在 $0.0856、真实 $0.1501（少报 43%），且用户不再输入就永不更新。
+    // 接线细节（为什么不推 stockInputTokens、为什么用 updateStreaming）见 cost-bridge.ts。
+    const { subscribeCostToBridge } = await import("./ui/cost-bridge.ts");
+    const unsubscribeCostPush = subscribeCostToBridge(this.sessionState, bridge);
+
     // ── P1-2：补全列表随注册表变更自动刷新 ──
     //
     // 修复前 `state.commands` 全仓只被赋值一次（上面那次 await loadCommandList），
@@ -12402,6 +12412,10 @@ export class App {
     }
 
     await app.waitUntilExit();
+
+    // D1 订阅在 TUI 卸载后反注册：SessionEnd 前的收尾调用仍会入账，但那时
+    // bridge 已不再渲染，继续 updateStreaming 只是往一个没人消费的状态里写。
+    unsubscribeCostPush();
 
     // 兜底退出：正常退出路径(Ctrl+C / /quit / Ctrl+D)此前无 failsafe，也无显式 process.exit——
     // 完全依赖事件循环自然 drain。任一清理 await(SessionEnd hook / MCP closeAll / 遥测 flush)
