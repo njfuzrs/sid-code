@@ -28,9 +28,20 @@
  *
  * 代价（更准 ↔ 更省）：静默但最终会退出的长命令（不打日志的构建、`sleep 600 && …`）会多一次
  * 唤醒轮；它退出时照常有完成通知。
+ *
+ * ## 第三件事：自己会回报的任务不叠静默唤醒（N4，事故 20261109-191904-962011a6）
+ *
+ * 上面两条机制口径必须一致，否则会自己打自己：`isAwaitedBackgroundTask` 把「输出憋到退出」
+ * 和「声明了 `wait_until_seconds`」判成**值得等**（它们退出 / 到期时必有通知），于是
+ * `endMainLoopTurn` 把它们登记进 `pendingWakeIds`；60s 后 `takeQuiescentWake` 又只看静默时长，
+ * 放出一条「已静默、不会再自动回报」的通知。模型收到这句话只能自己前台去查——那次会话连查
+ * 32 次、8.45M 输入 token。
+ *
+ * 所以「值得等」的两类在唤醒器里也要短路（`reportsOnItsOwn`）：它们有确定回报，不需要静默兜底。
+ * 常驻服务（静默且永不退出）不在此列，仍走静默唤醒——20261103 事故的修复不能回退。
  */
 
-import { getRunningTasks } from "./registry.ts";
+import { getRunningTasks, getTask } from "./registry.ts";
 import { isPanelTask, isShellTask, type TaskState } from "./types.ts";
 
 /**
@@ -54,6 +65,22 @@ const pendingWakeIds = new Set<string>();
 
 /** 正在运行的主循环数（queryLoop 入口 +1、finally −1；正常只有 0/1） */
 let activeMainLoops = 0;
+
+/**
+ * 「该 shell 任务有显式期限承诺」（`wait_until_seconds` 那种）的判定。
+ *
+ * 由 `wait-registry.ts` 在加载时注入，而不是本模块直接 import 它：那边已经反向依赖本模块的
+ * `isAwaitedBackgroundTask`（登记表要逐字复用「值得等」的口径），直接 import 会成环。
+ *
+ * 默认恒 false = 「没有登记表信息」，退回改动前的纯静默口径。这个默认值**不能**换成 true：
+ * 那等于把所有静默 shell 都当成有期限承诺，20261103 事故（常驻服务死等）会复发。
+ */
+let hasDeadlineWait: (taskId: string) => boolean = () => false;
+
+/** 注入「该 id 是否有 deadline 期限承诺」的判定（生产由 wait-registry 调用；传 null 复位） */
+export function setDeadlineWaitPredicate(fn: ((taskId: string) => boolean) | null): void {
+  hasDeadlineWait = fn ?? (() => false);
+}
 
 /** 登记一个刚起跑的 shell 任务（起跑即算一次「有动静」，新任务不会立刻被判静默） */
 export function trackShellActivity(taskId: string, initialSize = 0, now = Date.now()): void {
@@ -138,6 +165,22 @@ export function hasAwaitedBackgroundTasks(now = Date.now()): boolean {
   return getRunningTasks().some((t) => isAwaitedBackgroundTask(t, now));
 }
 
+/**
+ * 这个 shell 任务会不会**自己**回报（退出 / 到期都有通知），不需要静默唤醒兜底。
+ *
+ * 两类，恰好是 `isAwaitedBackgroundTask` 判「值得等」时不看静默时长的那两类：
+ * - 输出按结构憋到退出（`outputBufferedUntilExit`）：退出时必有完成通知；
+ * - 显式声明了期限（`wait_until_seconds` → 登记表里的 `deadline`）：到期由 harness kill 并通知。
+ *
+ * 为什么不在这里判 monitor：monitor 不是 shell（`isShellTask` 为假），进不了本模块的
+ * `pendingWakeIds`，本来就不会收到静默通知。
+ */
+function reportsOnItsOwn(task: TaskState): boolean {
+  if (!isShellTask(task)) return false;
+  if (outputBufferedUntilExit(task.command ?? "")) return true;
+  return hasDeadlineWait(task.id);
+}
+
 /** queryLoop 入口调用：主循环开始干活，此前登记的待唤醒清单作废（新的一轮会自己看到任务状态） */
 export function beginMainLoopTurn(): void {
   activeMainLoops++;
@@ -147,22 +190,34 @@ export function beginMainLoopTurn(): void {
 /**
  * queryLoop 收尾（finally）调用：主循环即将空闲，登记此刻仍值得等的后台 shell。
  * 之后它们转入静默时由 `takeQuiescentWake` 放出唤醒。
+ *
+ * 「自己会回报」的两类不登记（`reportsOnItsOwn`）：它们会在退出 / 到期时通知，
+ * 再补一条「已静默、不会再自动回报」只会诱导模型前台轮询（N4）。
  */
 export function endMainLoopTurn(now = Date.now()): void {
   activeMainLoops = Math.max(0, activeMainLoops - 1);
   if (activeMainLoops > 0) return;
   pendingWakeIds.clear();
   for (const t of getRunningTasks()) {
-    if (isShellTask(t) && isAwaitedBackgroundTask(t, now)) pendingWakeIds.add(t.id);
+    if (!isShellTask(t) || !isAwaitedBackgroundTask(t, now)) continue;
+    if (reportsOnItsOwn(t)) continue;
+    pendingWakeIds.add(t.id);
   }
 }
 
 /**
  * shell 看门狗每次 tick 调用：主循环空闲、该任务在收尾时被登记为「在等」、且现在已静默
  * → 返回 true（并消费登记，同一次等待只唤醒一次）。
+ *
+ * `reportsOnItsOwn` 的短路必须在**这里**再判一次，不能只靠 `endMainLoopTurn` 不登记：
+ * `wait_until_seconds` 的登记与主循环收尾谁先谁后没有强制约定，只靠「登记时已排除」
+ * 会在顺序变化后静默失效，而失效形态正是它本该防的那条（20261109-191904-962011a6）。
  */
 export function takeQuiescentWake(taskId: string, now = Date.now()): boolean {
   if (activeMainLoops > 0 || !pendingWakeIds.has(taskId)) return false;
+  const task = getTask(taskId);
+  // 自己不回报的任务才需要这条兜底唤醒；登记不消费（它永远不会走到「已唤醒」那一步）
+  if (task && reportsOnItsOwn(task)) return false;
   if (shellSilentForMs(taskId, now) < SHELL_QUIESCENT_MS) return false;
   pendingWakeIds.delete(taskId);
   return true;

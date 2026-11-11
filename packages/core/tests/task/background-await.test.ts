@@ -24,13 +24,14 @@ import {
 import { waitForBackgroundNotification } from "@sid-code/core/task/background-wake.ts";
 import { spawnShellTask, killShellTask } from "@sid-code/core/task/shell-task.ts";
 import { createAgentTask } from "@sid-code/core/task/agent-task.ts";
-import { getTask } from "@sid-code/core/task/registry.ts";
+import { getTask, registerTask } from "@sid-code/core/task/registry.ts";
+import { registerWait, __resetWaitRegistryForTest } from "@sid-code/core/task/wait-registry.ts";
 import type { LocalShellTaskState } from "@sid-code/core/task/types.ts";
 import { drainByKind, __resetForTest } from "@sid-code/core/query/message-queue-manager.ts";
 
 const T0 = 1_000_000;
 
-function shellTask(id: string): LocalShellTaskState {
+function shellTask(id: string, command = "bun run server.ts"): LocalShellTaskState {
   return {
     id,
     type: "local_shell",
@@ -40,7 +41,7 @@ function shellTask(id: string): LocalShellTaskState {
     outputFile: "/dev/null",
     outputOffset: 0,
     notified: false,
-    command: "bun run server.ts",
+    command,
     interrupted: false,
     isBackgrounded: true,
   };
@@ -170,4 +171,138 @@ test("isAwaitedBackgroundTask：`… | tail -60` 静默再久也算值得等（�
   // 对照：同样静默的常驻服务不算
   trackShellActivity("srv", 0, T0);
   expect(isAwaitedBackgroundTask(shellTask("srv"), T0 + SHELL_QUIESCENT_MS)).toBe(false);
+});
+
+/**
+ * N4（事故 20261109-191904-962011a6）：闸门与唤醒器两套口径打架。
+ *
+ * `isAwaitedBackgroundTask` 把「输出憋到退出」和「声明了 wait_until」判成**值得等**
+ * （它们退出 / 到期必有通知），于是 `endMainLoopTurn` 把它们登记进 `pendingWakeIds`；
+ * 60s 后 `takeQuiescentWake` 只看静默时长，放一条「已静默、不会再自动回报」。
+ * 模型收到这句只能自己前台去查——那次会话连查 32 次、8.45M 输入 token。
+ *
+ * 最后一条反例守 20261103-130950-00ef059c：常驻服务必须仍被静默唤醒。
+ */
+describe("N4：自己会回报的后台 shell 不叠静默唤醒", () => {
+  const registered: string[] = [];
+
+  beforeEach(() => {
+    registered.length = 0;
+  });
+
+  afterEach(() => {
+    // 只把自己注册的任务置终态：同批测试文件也在这一个进程里共用 registry
+    for (const id of registered) {
+      const t = getTask(id);
+      if (t) t.status = "completed";
+    }
+    __resetWaitRegistryForTest();
+  });
+
+  function registerRunning(t: LocalShellTaskState): LocalShellTaskState {
+    registerTask(t);
+    registered.push(t.id);
+    return t;
+  }
+
+  test("输出憋到退出（… | tail -30）的 shell 静默后不放静默唤醒", () => {
+    const t = registerRunning({
+      ...shellTask("n4-tail"),
+      command: "gh pr checks 701 --watch 2>&1 | tail -30",
+    });
+    trackShellActivity(t.id, 0, T0);
+    beginMainLoopTurn();
+    endMainLoopTurn(T0 + 1_000);
+
+    const later = T0 + SHELL_QUIESCENT_MS + 5_000;
+    // 闸门口径不变：它退出时必有完成通知，仍算「值得等」
+    expect(isAwaitedBackgroundTask(t, later)).toBe(true);
+    // 唤醒器不该再补一条「已静默、不会再自动回报」
+    expect(takeQuiescentWake(t.id, later)).toBe(false);
+  });
+
+  test("声明了 wait_until 的 shell 静默后不放静默唤醒", () => {
+    const t = registerRunning({
+      ...shellTask("n4-until"),
+      command: "until gh pr checks 1; do sleep 30; done",
+    });
+    registerWait({
+      id: t.id,
+      kind: "shell",
+      promise: { kind: "deadline", deadlineAt: Date.now() + 1_800_000 },
+      description: "等 PR #701 的 CI",
+      registeredAt: Date.now(),
+    });
+    trackShellActivity(t.id, 0, T0);
+    beginMainLoopTurn();
+    endMainLoopTurn(T0 + 1_000);
+
+    expect(takeQuiescentWake(t.id, T0 + SHELL_QUIESCENT_MS + 5_000)).toBe(false);
+  });
+
+  test("wait_until 在收尾之后才登记：唤醒器仍拦得住（顺序变化不许静默失效）", () => {
+    const t = registerRunning({
+      ...shellTask("n4-late"),
+      command: "until gh pr checks 1; do sleep 30; done",
+    });
+    trackShellActivity(t.id, 0, T0);
+    beginMainLoopTurn();
+    // 收尾那一刻还没有 deadline 登记 → 会进 pendingWakeIds，只能靠唤醒器这一道拦
+    endMainLoopTurn(T0 + 1_000);
+
+    registerWait({
+      id: t.id,
+      kind: "shell",
+      promise: { kind: "deadline", deadlineAt: Date.now() + 1_800_000 },
+      description: "等 PR #701 的 CI",
+      registeredAt: Date.now(),
+    });
+
+    expect(takeQuiescentWake(t.id, T0 + SHELL_QUIESCENT_MS + 5_000)).toBe(false);
+  });
+
+  test("反例：常驻服务（无期限、无憋输出）静默后仍要放静默唤醒", () => {
+    const t = registerRunning(shellTask("n4-srv"));
+    trackShellActivity(t.id, 0, T0);
+    beginMainLoopTurn();
+    endMainLoopTurn(T0 + 1_000);
+
+    expect(takeQuiescentWake(t.id, T0 + SHELL_QUIESCENT_MS + 5_000)).toBe(true);
+  });
+});
+
+/**
+ * 真实入口（记忆 `tests-green-but-bypassing-real-entrypoint`）：上面几条用假时间喂纯状态机，
+ * 这条走真实 `spawnShellTask` + 真实看门狗 tick + 真实消息队列，断链发生在子系统之间时只靠
+ * 纯函数是测不出来的。
+ *
+ * 60s 真实时钟路径由 G2 用例（`tests/smoke/cases/N4-quiescent-declared-wait`）守：那里是
+ * 真实二进制、真实时间。这里把「最后一次有输出」拨回阈值之前来加速，其余全是真的。
+ */
+describe("N4 真实入口：声明的等待跨过静默阈值后没有静默通知", () => {
+  let spawned: string[] = [];
+  afterEach(() => {
+    for (const id of spawned) killShellTask(id);
+    spawned = [];
+    __resetForTest();
+  });
+
+  test("`sleep 70 | tail -1` 静默 60s 不投「不会再自动回报」", async () => {
+    const task = spawnShellTask({ command: "sleep 70 | tail -1", cwd: process.cwd() });
+    spawned.push(task.id);
+
+    beginMainLoopTurn();
+    endMainLoopTurn();
+    // 看门狗只在字节数增长时刷新锚点；命令憋输出，所以这次拨回不会被下一次 tick 顶回来
+    trackShellActivity(task.id, 0, Date.now() - SHELL_QUIESCENT_MS - 1_000);
+
+    await new Promise((r) => setTimeout(r, 7_000)); // 一个 5s tick + 余量
+
+    const quiescent = drainByKind("task-notification").filter((n) =>
+      String((n.payload as { content?: string }).content ?? "").includes("不会再自动回报"),
+    );
+    expect(quiescent).toHaveLength(0);
+    // 对照：任务确实还在跑，不是因为提前退出才没有通知
+    expect(getTask(task.id)?.status).toBe("running");
+  }, 20_000);
 });
