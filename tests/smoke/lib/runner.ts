@@ -635,7 +635,9 @@ export async function runCase(
         stdout: "pipe",
         stderr: "pipe",
       });
-      const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
+      // 用例可覆盖单例超时（`SmokeCase.timeoutMs` 是通用字段，此前只有 TUI 分支用上）。
+      // 为 N4 补：静默阈值 60s 本身就是被测对象，命令要跑到 70s 才能跨过它。
+      const timer = setTimeout(() => proc.kill("SIGKILL"), def.timeoutMs ?? CASE_TIMEOUT_MS);
       bridge?.onDone(() => proc.kill("SIGTERM"));
       const stdoutPromise = stream
         ? driveStreamInput(proc, def.streamInput!)

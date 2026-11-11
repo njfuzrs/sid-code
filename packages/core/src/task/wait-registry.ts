@@ -40,7 +40,7 @@
 
 import { performance } from "node:perf_hooks";
 import { getTask, getRunningTasks, notifyTaskChanged, onTaskChanged } from "./registry.ts";
-import { isAwaitedBackgroundTask } from "./background-await.ts";
+import { isAwaitedBackgroundTask, setDeadlineWaitPredicate } from "./background-await.ts";
 import {
   isAgentTask,
   isPanelTask,
@@ -322,6 +322,14 @@ function releaseTerminalWaits(): void {
 }
 
 onTaskChanged(releaseTerminalWaits);
+
+// N4：`wait_until_seconds` 的后台 shell 有「到期必 kill + 通知」的期限承诺，
+// 不需要「已静默、不会再自动回报」那条兜底唤醒——它俩同时出现就是自相矛盾，
+// 模型只能自己前台去查（20261109-191904-962011a6 连查 32 次、8.45M 输入 token）。
+//
+// 用注入而不是让 background-await 直接 import 本模块：本模块已经反向依赖
+// `isAwaitedBackgroundTask`（登记表的派生分支要逐字复用那个口径），直接 import 会成环。
+setDeadlineWaitPredicate((taskId) => explicitWaits.get(taskId)?.src.promise.kind === "deadline");
 
 /** 会话结束：全部释放（并发 `WaitReleased{reason:"session_end"}`，便于对账）。 */
 export function releaseAllWaits(reason: WaitReleaseReason = "session_end"): number {
