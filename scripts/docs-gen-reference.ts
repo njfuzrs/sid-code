@@ -938,6 +938,9 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
 /** 顶层 parseArgs 声明了但刻意不写进 --help 的 flag —— 内部出口，不是用户功能 */
 export const HIDDEN_FLAGS: Record<string, string> = {
   "dump-tools": "文档生成器内部出口（T-3.2），非用户功能",
+  // 门禁专用：只输出「名字 + 延迟/strict 元数据」。与 --dump-tools 分开是因为后者的
+  // 输出形状被本生成器与 gen-reference.test.ts 依赖，往里加字段会让参考页跟着漂移。
+  "dump-tool-meta": "门禁取真实注册表 + 延迟标记的内部出口（D12），非用户功能",
   // 用户看到的是 --no-session-persistence（取反式，见 HELP_ONLY_WHITELIST）。
   // 正向名只是 parseArgs 的声明载体，单独写进 help 会让人以为有两种开关。
   "session-persistence": "声明载体，用户入口是 --no-session-persistence（allowNegative）",

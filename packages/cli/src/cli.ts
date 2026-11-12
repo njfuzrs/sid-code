@@ -80,6 +80,16 @@ type CLIArgs = Partial<Config> & {
    * 内部出口，不是用户功能（对账测试里以 HIDDEN_FLAGS 显式登记豁免）。
    */
   dumpTools?: boolean;
+  /**
+   * D12：隐藏出口 --dump-tool-meta——只输出「名字 + 几个元数据位」的轻量清单，
+   * 供 `tests/tool/` 下的门禁取**真实注册表**（含 `deferred` 延迟标记）。
+   *
+   * 为什么不复用 `--dump-tools`：它的输出形状被 `docs:gen-reference` 与
+   * `tests/website/gen-reference.test.ts` 依赖，往里加字段会把参考页漂移和门禁绑在一起；
+   * 而且它不带「是否延迟」，门禁拿不到常驻/延迟两组的分界。
+   * 两者共用同一段注册路径（含 dump 前补注册 MCP 资源工具），只输出形状不同。
+   */
+  dumpToolMeta?: boolean;
 };
 
 /**
@@ -439,6 +449,8 @@ function parseCLIArgs(): CLIArgs {
 
         // 文档生成出口（T-3.2，隐藏：刻意不进 --help）
         "dump-tools": { type: "boolean" }, // 输出实际注册的工具定义 JSON 后退出
+        // 门禁出口（D12，隐藏：刻意不进 --help）：只输出名字 + 延迟/strict 元数据
+        "dump-tool-meta": { type: "boolean" }, // 输出真实注册表 + 延迟标记 JSON 后退出
       },
       allowPositionals: true,
       allowNegative: true,
@@ -753,6 +765,8 @@ function parseCLIArgs(): CLIArgs {
     "include-history": values["include-history"],
     // T-3.2：文档生成出口（隐藏 flag，见 CLIArgs.dumpTools 注释）
     dumpTools: values["dump-tools"],
+    // D12：门禁出口（隐藏 flag，见 CLIArgs.dumpToolMeta 注释）
+    dumpToolMeta: values["dump-tool-meta"],
     bridgeUrl: values.bridge,
     bridgeToken: values["bridge-token"],
     bridgeInsecure: values["bridge-insecure"] as boolean | undefined,
@@ -2292,20 +2306,39 @@ export async function main(): Promise<void> {
 
     profileCheckpoint("tool_reg_end");
 
-    // T-3.2 --dump-tools：把实际注册进 registry 的工具定义以 JSON 输出后退出。
-    //
-    // 位置刻意选在这里（内置工具注册全部完成之后、--tools 白名单裁剪与 MCP 连接之前）：
+    /**
+     * 两个 dump 出口共用：序列化 → 等 stdout 排空 → exit(0)。
+     *
+     * 必须先等 drain：--dump-tools 产物约 80KB，管道下（`--dump-tools | jq`）单次 write
+     * 会遇背压，裸 process.exit() 会截断 JSON——生成器拿到半截 JSON 会解析失败。
+     * --dump-tool-meta 产物小得多，但退出时机不该有第二套写法。
+     *
+     * 必须显式 exit：走到这里已完成全套初始化（settings 变更监听、日志流、
+     * early-input 的 stdin resume 等），仅 return 会让事件循环一直有活引用而挂住不退。
+     * 与 bootstrap 的 --self-check 快速路径同套路。
+     */
+    const dumpJsonAndExit = async (payload: unknown): Promise<void> => {
+      const json = JSON.stringify(payload, null, 2) + "\n";
+      await new Promise<void>((resolve) => {
+        if (process.stdout.write(json)) resolve();
+        else process.stdout.once("drain", () => resolve());
+      });
+      process.exit(0);
+    };
+
+    // T-3.2 --dump-tools / D12 --dump-tool-meta：两个隐藏出口，位置刻意选在这里
+    // （内置工具注册全部完成之后、--tools 白名单裁剪与 MCP 连接之前）：
     //   - 之前 → 会漏掉 Skill 元工具 / Bundled Skill 工具 / worktree 等后段注册的工具；
     //   - 之后 → 产物会随 --tools 裁剪与本机 MCP 服务器配置变化，生成的文档
     //     就不是"内置工具全集"而是"这台机器这次会话恰好可见的工具"，pre-commit
     //     的 --check 会在不同人机器上给出不同结论（§4.5.2 问题 A 要防的正是这个）。
     //
-    // 取 definitions() 而非 all()：它就是发给 LLM 的那份定义（含 usageGuide 拼接与
-    // zodSchema→JSON Schema 转换），文档因此与模型看到的内容同源。
-    // 不传 deny/mode 裁剪 = 内置工具全集。includeDisabled 必须开：dump 发生在
-    // initializeLSP 之前，且 CI 常零 language server；默认 isEnabled 过滤会让
-    // 参考页丢掉 `lsp`，pre-commit --check 在有/无 LSP 的机器上结论相反。
-    if (cliArgs.dumpTools) {
+    // 两者共用下面这段注册补齐（MCP 资源工具），只有输出形状不同：
+    //   - --dump-tools 输出 definitions()，同时被 docs:gen-reference 用来生成参考页；
+    //   - --dump-tool-meta 只给门禁取「真实注册表 + 延迟标记」，形状独立演进。
+    //     往 --dump-tools 里加字段会把「参考页是否漂移」和「门禁能不能取到延迟标记」
+    //     绑在一起——改一个门禁字段就得重生成参考页。
+    if (cliArgs.dumpTools || cliArgs.dumpToolMeta) {
       // §5.2：MCP 资源工具（ListMcpResources / ReadMcpResource）此刻尚未注册——
       // 它们的真实注册在下方 cli.ts:1715，且受 `if (mcpManager)` 条件包裹（仅配了 MCP
       // 才注册）。而 dump 在此处（1539）早于注册点且紧接着 exit(0)，导致 dump 产物永远
@@ -2320,18 +2353,54 @@ export async function main(): Promise<void> {
         toolRegistry.register(new ListMcpResourcesTool(noop));
         toolRegistry.register(new ReadMcpResourceTool(noop));
       }
-      const json =
-        JSON.stringify(toolRegistry.definitions({ includeDisabled: true }), null, 2) + "\n";
-      // 先等 stdout 排空再 exit：产物约 80KB，管道下（`--dump-tools | jq`）单次 write
-      // 会遇背压，裸 process.exit() 会截断 JSON——生成器拿到半截 JSON 会解析失败。
-      await new Promise<void>((resolve) => {
-        if (process.stdout.write(json)) resolve();
-        else process.stdout.once("drain", () => resolve());
-      });
-      // 必须显式 exit：走到这里已完成全套初始化（settings 变更监听、日志流、
-      // early-input 的 stdin resume 等），仅 return 会让事件循环一直有活引用而挂住不退。
-      // 与 bootstrap 的 --self-check 快速路径同套路。
-      process.exit(0);
+    }
+
+    if (cliArgs.dumpTools) {
+      // 取 definitions() 而非 all()：它就是发给 LLM 的那份定义（含 usageGuide 拼接与
+      // zodSchema→JSON Schema 转换），文档因此与模型看到的内容同源。
+      // 不传 deny/mode 裁剪 = 内置工具全集。includeDisabled 必须开：dump 发生在
+      // initializeLSP 之前，且 CI 常零 language server；默认 isEnabled 过滤会让
+      // 参考页丢掉 `lsp`，pre-commit --check 在有/无 LSP 的机器上结论相反。
+      await dumpJsonAndExit(toolRegistry.definitions({ includeDisabled: true }));
+    }
+
+    if (cliArgs.dumpToolMeta) {
+      // D12：门禁要的是「工具全集 + 每个工具是否延迟」，两个字段各只有一个权威来源，
+      // 不要在这里内联推导：
+      //   - strict 由 toolToDefinition() 计算（内置 true，MCP 与 StructuredOutput 不发），
+      //     所以按名关联 definitions()，让 meta 与真实发送口径同源；
+      //   - deferred 走 registry.isDeferred()，它同时看 shouldDefer 静态声明、mcp__ 前缀、
+      //     运行时名单、激活态与用户豁免名单，内联任何一条都会漏。
+      // includeDisabled 与 --dump-tools 同口径：CI 常零 language server，
+      // 否则 `lsp` 会时有时无，门禁在不同机器上结论不同。
+      const defByName = new Map(
+        toolRegistry.definitions({ includeDisabled: true }).map((d) => [d.name, d]),
+      );
+      const meta = toolRegistry
+        .all()
+        .map((t) => {
+          const name = t.name();
+          const def = defByName.get(name);
+          // 两个出口的注册路径一旦分叉，宁可硬失败也不要给出缺字段的清单：
+          // 门禁读到 undefined 会把它当 false，静默失去保护。
+          if (!def) {
+            throw new Error(
+              `--dump-tool-meta: 工具 ${name} 不在 definitions() 里 —— 两个 dump 出口的注册路径已分叉`,
+            );
+          }
+          return {
+            name,
+            deferred: toolRegistry.isDeferred(name),
+            strict: def.strict === true,
+            // 未声明按 0 处理，与 types.ts 里 strictPriority 的契约一致。
+            strictPriority: t.strictPriority ?? 0,
+            hasZodSchema: t.zodSchema !== undefined,
+          };
+        })
+        // 码点序（与 definitions() 的排序同一口径）：按顺序比对的断言不受注册顺序影响，
+        // 也不用 localeCompare——它随 locale 变化，不同机器可能给出不同顺序。
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      await dumpJsonAndExit(meta);
     }
 
     // P2-6 --tools：白名单替换整个内置工具集（未列出的内置工具不可见）。
