@@ -84,7 +84,7 @@ const grepSchema = lazySchema(() =>
       .int()
       .min(0)
       .optional()
-      .describe("输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches"),
+      .describe("输出结果数上限，默认 250；显式传 0 表示无限制"),
     offset: z.number().int().min(0).optional().describe("分页偏移量（从 0 开始），默认 0"),
     max_matches_per_file: z
       .number()
@@ -100,13 +100,6 @@ const grepSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe("启用多行匹配模式（rg --multiline），允许 pattern 跨行匹配"),
-    // 向后兼容：total_max_matches 作为 head_limit 别名
-    total_max_matches: z
-      .number()
-      .int()
-      .min(0)
-      .optional()
-      .describe("已废弃，请使用 head_limit 代替"),
   }),
 );
 
@@ -233,7 +226,6 @@ export class GrepTool implements Tool {
       max_matches_per_file?: number;
       fixed_strings?: boolean;
       multiline?: boolean;
-      total_max_matches?: number;
     };
 
     if (!params.pattern) {
@@ -242,7 +234,7 @@ export class GrepTool implements Tool {
 
     const searchPath = normalizeToolPath(params.path || ".");
     const mode = params.output_mode || "files_with_matches";
-    const headLimit = params.head_limit ?? params.total_max_matches ?? DEFAULT_HEAD_LIMIT;
+    const headLimit = params.head_limit ?? DEFAULT_HEAD_LIMIT;
     const offset = params.offset ?? 0;
 
     // 路径存在性校验（对标 CC validateInput）。

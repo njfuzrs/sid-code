@@ -15,6 +15,8 @@ import { normalizeInputAliases } from "@sid-code/core/tool/input-alias.ts";
 import { TodoWriteTool } from "@sid-code/core/tool/todo-write.ts";
 import { TaskCreateTool } from "@sid-code/core/tool/structured-task-create.ts";
 import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
+import { GrepTool } from "@sid-code/core/tool/grep.ts";
+import { BashTool } from "@sid-code/core/tool/bash.ts";
 import {
   __clearStructuredTasks,
   getStructuredTask,
@@ -155,5 +157,57 @@ describe("normalizeInputAliases 边界", () => {
     const input = { todos: [{ content: "c", activeForm: "a", status: "pending" }] };
     normalizeInputAliases(tool.zodSchema, input);
     expect(input.todos[0]).toEqual({ content: "c", activeForm: "a", status: "pending" });
+  });
+});
+
+/**
+ * D3（T4）：`grep.total_max_matches` / `bash.is_background` 两个废弃参数已从 zod schema
+ * 删除（每轮省 212 字节常驻上下文，30 天用量里模型没传过一次有意义的值），
+ * 兼容改由别名层在 zod 校验**之前**改名提供。这组测试守的就是「删字段没打断旧调用」。
+ */
+describe("D3：废弃参数旧名 → 协议字段（schema 已删，兼容靠别名层）", () => {
+  test("grep：total_max_matches 改名为 head_limit，并记一条度量事件", () => {
+    const tool = new GrepTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, { pattern: "x", total_max_matches: 5 });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect((v.data as { head_limit?: number }).head_limit).toBe(5);
+    expect("total_max_matches" in (v.data as object)).toBe(false);
+    const alias = events.find((e) => e.event === "ToolInputAliasApplied");
+    expect(alias?.data).toMatchObject({
+      tool: "grep",
+      from: "total_max_matches",
+      to: "head_limit",
+      count: 1,
+      dropped: 0,
+    });
+  });
+
+  test("bash：is_background 改名为 run_in_background", () => {
+    const tool = new BashTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, { command: "echo hi", is_background: true });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect((v.data as { run_in_background?: boolean }).run_in_background).toBe(true);
+    expect("is_background" in (v.data as object)).toBe(false);
+  });
+
+  test("两键同时出现：保留协议字段、丢弃旧名并记 dropped", () => {
+    const tool = new GrepTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, { pattern: "x", head_limit: 3, total_max_matches: 9 });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect((v.data as { head_limit?: number }).head_limit).toBe(3);
+    const alias = events.find((e) => e.event === "ToolInputAliasApplied");
+    expect(alias?.data).toMatchObject({ count: 0, dropped: 1 });
+  });
+
+  test("旧名传 null（strict 线占位）：改名后被 nullish 层剥掉，不报错", () => {
+    const tool = new GrepTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, { pattern: "x", total_max_matches: null });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect("head_limit" in (v.data as object)).toBe(false);
+    expect("total_max_matches" in (v.data as object)).toBe(false);
   });
 });

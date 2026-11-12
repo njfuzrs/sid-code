@@ -24,8 +24,8 @@
  * ## 范围刻意收窄
  *
  * 只认显式登记的别名对（`ALIASES`），不做「命名风格归一化后相等即改名」的通用匹配：
- * 通用匹配会让任何工具的任意键都可能被悄悄改写，而我们目前只有 `activeForm`
- * 这一对的证据。别的漂移先靠 `ToolInputAliasApplied` 事件度量，再决定要不要泛化。
+ * 通用匹配会让任何工具的任意键都可能被悄悄改写，而每一对别名都应该有具体证据
+ * （历史事故或用量统计）。别的漂移先靠 `ToolInputAliasApplied` 事件度量，再决定要不要泛化。
  */
 
 import { getDef, unwrap } from "./nullish-normalize.ts";
@@ -37,6 +37,12 @@ const ALIASES: ReadonlyArray<{ from: string; to: string }> = [
   // zod 会把未声明的 subagent_type 静默剥离，execute 拿不到类型就兜底成 general-purpose，
   // 而分区读的是原始入参、判成可并发——结果是写类子代理被并行执行（2026-11-03 端到端实测）。
   { from: "subagent_type", to: "type" },
+  // 废弃参数（D3）：两个旧名已从 zod schema 里删掉（每轮省 212 字节常驻上下文；30 天用量
+  // 统计里模型一次都没传过有意义的值，全是 strict 线要求的 null/false 占位）。但老对话
+  // 记忆仍可能带出旧键，所以保留别名兼容。改名发生在 zod 校验**之前**，因此删 schema
+  // 字段不会打断兼容；两键同时出现时下面的守卫保留协议字段。
+  { from: "total_max_matches", to: "head_limit" },
+  { from: "is_background", to: "run_in_background" },
 ];
 
 /** 一次归一里每个别名对的命中统计 */
