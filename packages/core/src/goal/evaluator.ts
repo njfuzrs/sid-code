@@ -427,7 +427,6 @@ async function callEvaluatorModel(
           outputTokens: u.outputTokens ?? 0,
           cacheReadTokens: u.cacheReadInputTokens ?? 0,
           cacheCreationTokens: u.cacheCreationInputTokens ?? 0,
-          durationMs: 0,
         });
       }
     }

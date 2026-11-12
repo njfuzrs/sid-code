@@ -323,7 +323,6 @@ export class BashClassifier {
           outputTokens: streamUsage.outputTokens ?? 0,
           cacheReadTokens: streamUsage.cacheReadInputTokens ?? 0,
           cacheCreationTokens: streamUsage.cacheCreationInputTokens ?? 0,
-          durationMs: 0,
         });
       }
       return text;
