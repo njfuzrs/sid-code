@@ -11,6 +11,17 @@
  * - 每条消息是一行完整 JSON（NDJSON），以 \n 分隔
  * - API Key 只在管道中传输，不出现在 ps / 文件系统
  * - 子进程只跑 LLM 循环，工具执行回传父进程
+ *
+ * ## 契约变更记录
+ *
+ * - **2026-11-12（PR-6）**：
+ *   - `ParentInitMessage.max_tokens` → `context_window`。它一直是**上下文窗口**，
+ *     与发送侧的 `max_tokens`（本次请求的输出预算）是两回事，同名导致读代码的人
+ *     极易把窗口当输出上限传下去。
+ *   - 新增 `max_output_tokens`：模型的**物理输出上限**，供子进程用与主循环同一个
+ *     `resolveRequestOutputBudget()` 算本次请求的 `max_tokens`（此前子进程写死 4096）。
+ *   - 不保留旧名兼容：父子两端在**同一个二进制**里同时发布，不存在版本错配
+ *     （spawn 的 headless 入口来自同一份构建产物）。
  */
 
 import type { Usage } from "../llm/types.ts";
@@ -87,7 +98,23 @@ export interface ParentInitMessage {
   model_compat?: Record<string, unknown>;
   /** 最大轮次。可省略 = 无上限（Infinity 无法 JSON 序列化，故用省略表达）。 */
   max_turns?: number;
-  max_tokens: number;
+  /**
+   * 子代理 ContextManager 的**上下文窗口**（tokens）。
+   *
+   * ⚠️ 语义是「窗口」，不是「本次请求的输出预算」。旧名 `max_tokens` 与发送侧的
+   * `max_tokens` 撞名，读代码的人极易把窗口当输出上限、或反过来把输出预算当窗口
+   * 传下去（F7：spawn 路径曾把窗口写死 50,000，子代理在 1M 窗口模型下过早压缩）。
+   */
+  context_window: number;
+  /**
+   * 模型的**物理输出上限**（`availableModels[].maxOutputTokens` > 能力目录 > 内置注册表）。
+   * undefined = 未知，子进程不做物理钳制（仍受窗口钳制）。
+   *
+   * 为什么必须跨进程传：子进程是独立 OS 进程，不读 settings.json、不跑 loadConfig，
+   * 拿不到用户在 `availableModels` 里声明的渠道输出上限 —— 只凭内置注册表猜，
+   * 对于自建/代理端点会 miss，请求预算就失去物理上限这一层钳制。
+   */
+  max_output_tokens?: number;
   workdir: string;
   /** Provider 类型："anthropic" | "openai" | "ollama" */
   provider_name: string;

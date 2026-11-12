@@ -34,6 +34,10 @@ import { streamWithResilience } from "@sid-code/core/llm/resilient-stream.ts";
 import { LLMStreamError } from "@sid-code/core/llm/errors.ts";
 import { resolveLoopTimeouts } from "@sid-code/core/config/network-profile.ts";
 import { raceTurnHardTimeout, tapStreamActivity } from "@sid-code/core/agent/turn-hard-timeout.ts";
+import {
+  resolveRequestBudget,
+  resolveRequestOutputBudget,
+} from "@sid-code/core/llm/output-budget.ts";
 
 // ============================================================
 // 主线
@@ -129,6 +133,32 @@ async function main(): Promise<void> {
 // ============================================================
 
 /**
+ * 从 init 消息派生子进程**本轮请求**的输出预算。
+ *
+ * 抽成纯函数是为了可测：`runAgentLoop` 依赖 stdin/stdout 与真实 provider，单测起不了；
+ * 而 PR-6 的核心契约正是「协议字段 → 预算」这条映射，它必须有不依赖进程的断言。
+ *
+ * 口径与主循环 `query/loop.ts` 完全一致：
+ * - `requestBudget` 走 {@link resolveRequestBudget} 的默认常量，因为**子进程不读配置**
+ *   （用户的 `--max-tokens` 在子进程里不生效，本 PR 明确不扩张这一范围）；
+ * - 物理上限来自父进程（`init.max_output_tokens`），只作 min 钳制、不作预算；
+ * - 真正的值由「窗口 − 输入估算」决定。
+ */
+export function resolveHeadlessSendBudget(
+  init: Pick<ParentInitMessage, "context_window" | "max_output_tokens">,
+  windowTokens: number,
+  estimatedInputTokens: number,
+) {
+  return resolveRequestOutputBudget({
+    requestBudget: resolveRequestBudget(),
+    modelMaxOutputTokens: init.max_output_tokens,
+    contextWindow: windowTokens,
+    estimatedInputTokens,
+    // 子进程恒关思考（SIDE_CALL_NO_THINK），不传 thinkingBudgetTokens。
+  });
+}
+
+/**
  * 运行 Agent Loop。
  *
  * 流程：
@@ -147,7 +177,9 @@ async function runAgentLoop(
   const { Manager: ContextManager } = await import("@sid-code/core/context/manager.ts");
 
   const ctxMgr = new ContextManager({
-    maxTokens: init.max_tokens,
+    // 协议字段是**窗口**（旧名 max_tokens，PR-6 改名）：父进程已按
+    // `task.maxTokens > 主模型窗口 > 50,000` 解析好，子进程直接采用。
+    maxTokens: init.context_window,
     // 传 session_id → 创建即启用工具输出遮罩（对标 cc：headless 是评估/CI/批量入口，
     // 长任务跑批时最需要 masking 压 input token，此前裸发完全没有）。
     sessionId: init.session_id,
@@ -211,6 +243,28 @@ async function runAgentLoop(
             }))
           : undefined;
 
+      // 请求输出预算（F1）：与主循环**同一个函数**。旧实现写死 4096 ——
+      // 大窗口模型下子代理写长文件 / 长回答会被硬截断，父进程只看到一次
+      // 「max_tokens 停止」，无从归因到「子代理的输出预算太小」。
+      // 输入估算在**发送这一刻**重取（循环顶部的值可能已被历史增长拉旧）。
+      const sendBudget = resolveHeadlessSendBudget(
+        init,
+        ctxMgr.getMaxTokens(),
+        ctxMgr.estimateTokens(init.tool_defs.length),
+      );
+      if (!sendBudget.ok) {
+        // 与主循环不同，headless 没有压缩分支可退：窗口剩余连 floor 都放不下时，
+        // 发任何 max_tokens 都是必然 400。如实失败并带齐诊断值，
+        // 让父进程能归因到「窗口/输入」而不是收到一条无从解释的流错误。
+        emitResult(
+          false,
+          `上下文窗口不足以容纳本轮请求：窗口 ${sendBudget.contextWindow}，` +
+            `输入估算 ${sendBudget.estimatedInputTokens}，剩余 ${sendBudget.windowLimitTokens}，` +
+            `下限 ${sendBudget.floorTokens}`,
+        );
+        return;
+      }
+
       // B2（D4）：走唯一漏斗，不再直连。
       //
       // 无头子进程是韧性最差的一条路径：它没有 TUI、没有父进程的重试兜底，
@@ -229,7 +283,7 @@ async function runAgentLoop(
             // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
             messages: ctxMgr.getCleanedMessages(),
             system: ctxMgr.getSystemPrompt(),
-            maxTokens: 4096,
+            maxTokens: sendBudget.maxTokens,
             tools: toolDefs,
             // H8：headless（spawn 出的独立进程子代理）入口无独立 effort 旋钮，默认关思考，
             // 与进程内子代理/fork 收口口径一致（ParentInitMessage 不携带 effort）。
