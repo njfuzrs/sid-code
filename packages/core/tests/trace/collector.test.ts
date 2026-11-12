@@ -39,6 +39,11 @@ async function fireModelRound(
     reasoningTokens?: number;
     provider?: string;
     model?: string;
+    /**
+     * F6：模拟 queryLoop 传下来的校准后输入估算。
+     * 缺省 = 未校准（首轮），采集器应写 null —— 与真实调用方的 null 语义一致。
+     */
+    calibratedEstimate?: number;
   } = {},
 ) {
   const messages = opts.messages ?? [{ role: "user", content: "hello" }];
@@ -54,6 +59,9 @@ async function fireModelRound(
     raw_messages: messages,
     system: opts.system,
     tools: opts.tools,
+    ...(opts.calibratedEstimate !== undefined
+      ? { estimated_input_tokens_calibrated: opts.calibratedEstimate }
+      : {}),
   });
 
   await hookSystem.fireAfterModelEvent(
@@ -483,6 +491,46 @@ describe("TraceCollector", () => {
     expect(line.stop_reason).toBe("end_turn");
     // raw.jsonl 中不应包含 raw_messages 字段
     expect(line.request.raw_messages).toBeUndefined();
+  });
+
+  // F6（2026-11-12）：request_sent 的两个估算字段并存，口径不同、互不覆盖。
+  test("request_sent 行同时落未校准与校准后两个估算字段", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "请帮我详细分析这段代码的性能瓶颈并给出优化建议" }],
+      calibratedEstimate: 4321,
+    });
+
+    const rawPath = join(testDir, "sessions", "sess-001", "raw.jsonl");
+    const sentLine = readFileSync(rawPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .find((r) => r.type === "request_sent")!;
+
+    // 校准值原样落盘，不被采集器本地的启发式覆盖
+    expect(sentLine.estimated_input_tokens_calibrated).toBe(4321);
+    // 未校准字段口径不变：仍是 estimateMessagesTokens 的结果（正数，且与校准值互相独立）
+    expect(typeof sentLine.estimated_input_tokens).toBe("number");
+    expect(sentLine.estimated_input_tokens).toBeGreaterThan(0);
+    expect(sentLine.estimated_input_tokens).not.toBe(4321);
+  });
+
+  // 首轮还没有校准系数时必须是 null，**不能**回落成未校准值——回落会让这一行冒充校准值。
+  test("未传校准值（首轮）时 request_sent 的 calibrated 字段为 null", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem);
+
+    const rawPath = join(testDir, "sessions", "sess-001", "raw.jsonl");
+    const sentLine = readFileSync(rawPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .find((r) => r.type === "request_sent")!;
+
+    // 关键：字段存在且为 null（不是 undefined / 不是未校准值）
+    expect(sentLine.estimated_input_tokens_calibrated).toBeNull();
+    expect(typeof sentLine.estimated_input_tokens).toBe("number");
   });
 
   // §3.5（fdb47f30）：raw_preview.jsonl 的 total_tokens_est 不再恒为 0。
