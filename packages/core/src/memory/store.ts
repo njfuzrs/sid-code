@@ -39,6 +39,7 @@ import { appendEvictionRecord, readEvictionRecords } from "./eviction-log.ts";
 import { enumerateMemoryFiles, readFrontmatterFields, readMemoryFrontmatter } from "./scan.ts";
 // P1-12 指标 ③：防线触发计数（遮蔽 / 写空归档 / 超限归档）。
 import { logMemoryGuard } from "../analytics/events.ts";
+import { resolveMemoryInjectMode } from "./inject-mode.ts";
 
 /** 单条记忆（向后兼容旧结构，新增可选 type/description） */
 export interface MemoryEntry {
@@ -101,6 +102,20 @@ export function formatEvictionNotice(evicted: readonly MemoryEviction[]): string
     `\n\n⚠️ 记忆已达上限 ${MEMORY_LIMITS.STORE_MAX_ENTRIES} 条：` +
     `这次写入把下列记忆移到了 archive/（未删除）：\n${lines.join("\n")}\n` +
     `如果这次保存只是本会话临时用，请删掉它，被移走的记忆会自动放回。`
+  );
+}
+
+/**
+ * 召回模式下项目索引的替身（F5 / PR-4）：一行说明 + 完整索引路径。
+ *
+ * 段标题沿用全量模式的「#### 项目记忆（目录：…）」形态，模型拼路径的方式不变。
+ * 导出供测试断言「system 里只剩这一行、没有任何索引条目」。
+ */
+export function buildRecallModePointer(label: string, dir: string, indexPath: string): string {
+  return (
+    `#### ${label}（目录：${dir}）\n\n` +
+    `> 本项目记忆较多、索引已超出上限，本会话改为**按需召回**：每条用户消息会自动附上相关记忆` +
+    `（<recalled-memory>）。完整索引在 \`${indexPath}\`，召回没覆盖到、又需要查找某条记忆时，用 Read 读取它。`
   );
 }
 
@@ -1536,6 +1551,15 @@ export class MemoryStore {
         continue;
       }
       if (!text) continue;
+      // F5 / PR-4：项目索引已截断 → 本会话走按需召回，system 里**不再放全量索引**，
+      // 只留一行指向 MEMORY.md 的指针。没有这一步，打开召回只会在全量索引之外再加一段，
+      // token 净增（修复前的真实行为）。指针那一行是必需的：召回只看每条用户消息的开头，
+      // 任务中途话题转向时，模型还得能自己去读完整索引。
+      // 只作用于项目 scope：召回（app.ts drainRecalledMemories）只覆盖项目记忆目录。
+      if (dir === this.projectDir && resolveMemoryInjectMode(dir).mode === "recall") {
+        sections.push(buildRecallModePointer(label, dir, join(dir, INDEX_FILE)));
+        continue;
+      }
       // 目录必须是绝对路径且与链接可直接拼接：模型拿 `${dir}/${链接}` 就能 Read。
       // P0-3：正文逐行补「多久之前」，让 freshness 真的到达模型眼前（见 annotateIndexAges）。
       const entries = dir === this.globalDir ? this.globalEntries : this.projectEntries;

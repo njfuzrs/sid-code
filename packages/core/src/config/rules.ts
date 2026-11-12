@@ -213,6 +213,15 @@ export interface ProjectRules {
    * 真正触达对应目录时按作用域注入，预标记它们会让作用域规则永久失效。
    */
   loadedPaths?: string[];
+  /**
+   * F5（固定开销可见化）：本结果里经 `@` 展开进来的文件清单（含嵌套导入，按展开顺序）。
+   *
+   * 用途只有一个：/context 把「`@` 导入文件」按文件单独列出 token 数，让用户看见
+   * 「CONTRIBUTING.md 经 CLAUDE.md:18 导入，约 N token」这类固定开销。sid-code 不替用户删减
+   * 导入（用户显式写了 `@`，静默不展开违背意图且与 CC 不一致），只负责让开销可见。
+   * 只随**实际合并进来**的规则文件携带——被作用域拦下的文件，它的导入也不在此列。
+   */
+  importedFiles?: import("./import-processor.ts").ImportedFileRecord[];
   /** 规则层级（用于调试与优先级展示） */
   layer?: "managed" | "user" | "userRulesDir" | "project" | "subdir" | "rulesDir" | "local";
   /**
@@ -669,6 +678,10 @@ export function mergeProjectRules(base: ProjectRules, override: ProjectRules): P
           ),
         }
       : {}),
+    // F5：导入清单按合并顺序拼接（同一文件被两层分别导入时两次都真实进了提示词，不去重）
+    ...(base.importedFiles || override.importedFiles
+      ? { importedFiles: [...(base.importedFiles || []), ...(override.importedFiles || [])] }
+      : {}),
   };
 }
 
@@ -814,11 +827,13 @@ async function loadAndParse(filePath: string, projectRoot?: string): Promise<Pro
     } catch {
       /* 读批准位失败 → 保守按未批准处理 */
     }
+    const importedFiles: import("./import-processor.ts").ImportedFileRecord[] = [];
     content = await processImports(content, filePath, {
       allowedDirectories: allowedDirs,
       projectRoot,
       externalApproved,
       onExternalSkipped: (p) => recordSkippedExternalImport(p),
+      onImported: (r) => importedFiles.push(r),
     });
 
     log.debug("RULES", `加载 CLAUDE.md: ${filePath} (${content.length} 字符)`);
@@ -832,7 +847,9 @@ async function loadAndParse(filePath: string, projectRoot?: string): Promise<Pro
           `会推高每轮请求成本，建议拆分: ${filePath}（内容未被截断，全部生效）`,
       );
     }
-    return parseClaudeMd(content, filePath);
+    const parsed = parseClaudeMd(content, filePath);
+    if (importedFiles.length > 0) parsed.importedFiles = importedFiles;
+    return parsed;
   } catch (err) {
     log.error("RULES", `读取 CLAUDE.md 失败: ${filePath}`, err);
     return null;
