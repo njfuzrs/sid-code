@@ -16,7 +16,11 @@ import type { Provider } from "../llm/provider.ts";
 import type { Message, ContentBlock, ToolDefinition, Usage } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { LegacyTool, PermissionResult } from "../tool/types.ts";
-import { validateToolInput } from "../tool/input-validator.ts";
+import {
+  validateToolInput,
+  buildUnknownKeysNotice,
+  declaredTopLevelKeys,
+} from "../tool/input-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
@@ -641,6 +645,16 @@ export async function runForkedAgent(
             });
             continue;
           }
+          // T2（D1）：模型传了 schema 没声明的顶层键 → 不报错，结果开头给一条提示
+          // （与主循环 / 子代理同口径）。fork 路径没有 PreToolUse 改参，input 就是模型原始入参。
+          const unknownKeysNotice =
+            validation.ignoredKeys && validation.ignoredKeys.length > 0
+              ? buildUnknownKeysNotice(
+                  tu.name,
+                  validation.ignoredKeys,
+                  declaredTopLevelKeys(tool.zodSchema),
+                )
+              : "";
           // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃。
           // 只给自报 consumesAgentId 的工具注入（契约见 tool/types.ts）：无差别注入会把内部
           // 字段漏给 StructuredOutput 的 schema 校验与 MCP server 的 arguments。
@@ -673,7 +687,8 @@ export async function runForkedAgent(
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,
-            content: res.output,
+            // T2（D1）：提示拼在结果开头（fork 路径不做外部内容包裹，位置与主循环/子代理同序）。
+            content: unknownKeysNotice ? unknownKeysNotice + "\n\n" + res.output : res.output,
             is_error: res.isError,
           });
         } catch (err: any) {
