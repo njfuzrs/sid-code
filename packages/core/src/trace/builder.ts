@@ -245,6 +245,12 @@ export interface TraceMetadata {
    * 用整轮 api_duration_ms 会重蹈 Bug A 的重试/等待污染覆辙（见排查报告 §2）。
    */
   total_gen_elapsed_ms: number;
+  /**
+   * D17：辅助调用（fork / 旁路调用，即带 agentId 或 caller 的流）的生成耗时累计（ms）。
+   * 不进 total_gen_elapsed_ms——吞吐分子 total_tokens_received 只在主循环累加，
+   * 分母混入辅助调用会让 tokens/sec 系统性偏低且随辅助占比平移（跨版本不可比）。
+   */
+  side_gen_elapsed_ms: number;
   /** 拿到过纯生成耗时的 fetch 次数（tokens/sec 分母的样本数，判断吞吐是否可信） */
   gen_samples: number;
   /**
@@ -524,6 +530,11 @@ export interface TrajectoryMetaOutput {
   output_tokens_per_sec?: number;
   /** 缺口分析一类：纯生成耗时累计（ms，tokens/sec 分母，来自 stream_completed） */
   total_gen_elapsed_ms?: number;
+  /**
+   * D17：辅助调用（fork / 旁路调用）的生成耗时累计（ms），不进 total_gen_elapsed_ms。
+   * 本字段上线前的轨迹为 undefined（辅助耗时混在 total_gen_elapsed_ms 里，读侧跨版本连线要小心）。
+   */
+  side_gen_elapsed_ms?: number;
   /** 缺口分析一类：工具执行耗时累计（ms，逐个 PostToolUse.duration_ms 累加） */
   total_tool_duration_ms?: number;
   /** 缺口分析一类：记录到耗时的工具调用次数 */
@@ -1098,6 +1109,9 @@ export function buildTrajectory(
     ...(metadata.total_gen_elapsed_ms
       ? { total_gen_elapsed_ms: metadata.total_gen_elapsed_ms }
       : {}),
+    // D17：辅助调用生成耗时。只在有值时输出（与 total_gen_elapsed_ms 同款守卫，
+    // 无辅助调用的会话形状不变，老读侧不受影响）。
+    ...(metadata.side_gen_elapsed_ms ? { side_gen_elapsed_ms: metadata.side_gen_elapsed_ms } : {}),
     ...(metadata.total_tool_duration_ms
       ? { total_tool_duration_ms: metadata.total_tool_duration_ms }
       : {}),
