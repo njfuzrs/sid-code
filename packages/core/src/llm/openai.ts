@@ -99,10 +99,7 @@ import {
   looksLikeReasoningReplayRejection,
 } from "./reasoning-replay.ts";
 import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
-import {
-  observeRequestShape,
-  type RequestShapeFields,
-} from "./request-shape-observation.ts";
+import { observeRequestShape, type RequestShapeFields } from "./request-shape-observation.ts";
 import {
   parseResponsesStream,
   parseResponsesBody,

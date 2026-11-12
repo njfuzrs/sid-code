@@ -51,7 +51,7 @@ export function observeRequestShape(
   try {
     const fp = toolsFingerprint(params.tools);
     return {
-      ...(fp && fp),
+      ...fp,
       ...(params.forkPrefixSource && { prefixSource: params.forkPrefixSource }),
     };
   } catch {

@@ -456,10 +456,14 @@ export async function runForkedAgent(
   );
   const toolDefs = requestShape.tools;
   if (requestShape.prefixSource === "fallback" && requestShape.fallbackReason !== "no_snapshot") {
-    log.info("FORKED", `fork (${options.querySource}) 未复用主循环请求快照，退回全量工具 + 关思考`, {
-      reason: requestShape.fallbackReason,
-      ...(requestShape.missingTools && { missingTools: requestShape.missingTools }),
-    });
+    log.info(
+      "FORKED",
+      `fork (${options.querySource}) 未复用主循环请求快照，退回全量工具 + 关思考`,
+      {
+        reason: requestShape.fallbackReason,
+        ...(requestShape.missingTools && { missingTools: requestShape.missingTools }),
+      },
+    );
   }
   const thinkingMirror = requestShape.thinkingMirror;
 

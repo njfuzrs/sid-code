@@ -132,7 +132,11 @@ function capturingProvider(captured: SendParams[]) {
     defaultModel: () => "mock-model",
     async *sendMessageStream(params: SendParams) {
       captured.push(params);
-      yield { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { outputTokens: 1 } };
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { outputTokens: 1 },
+      };
     },
   };
 }
@@ -181,7 +185,12 @@ describe("D16 · tools：fork 复用主循环最后一次实际发出的工具�
   test("主循环开 tool search 发了子集 → fork 的 tools 与之逐项相同（不是 registry.definitions()）", async () => {
     const ctxMgr = freshCtx();
     const reg = registryWithDeferred();
-    const main = await runMainLoop({ ctxMgr, toolRegistry: reg, model: "deepseek-flash", provider: "openai" });
+    const main = await runMainLoop({
+      ctxMgr,
+      toolRegistry: reg,
+      model: "deepseek-flash",
+      provider: "openai",
+    });
     // 前提：主循环确实发的是子集，否则本用例测不出东西
     expect(main.tools!.length).toBeLessThan(reg.definitions().length);
 
@@ -205,7 +214,10 @@ describe("D16 · tools：fork 复用主循环最后一次实际发出的工具�
   });
 
   test("required 工具压根没注册 → 不算缺（退回全量也拿不到，退回只会白白放弃缓存）", () => {
-    const shape = { model: "m", tools: [{ name: "read", description: "", input_schema: {} }] } as any;
+    const shape = {
+      model: "m",
+      tools: [{ name: "read", description: "", input_schema: {} }],
+    } as any;
     const r = resolveForkRequestShape(shape, "m", () => shape.tools, ["save_memory"]);
     expect(r.prefixSource).toBe("snapshot");
   });
@@ -239,7 +251,12 @@ describe("D16 · thinking：只在缓存键含思考参数的族上照搬", () =
   test("DeepSeek 族：fork 的 thinking / reasoningEffort = 主循环最后一次实发值", async () => {
     const ctxMgr = freshCtx();
     const reg = registryWithDeferred();
-    const main = await runMainLoop({ ctxMgr, toolRegistry: reg, model: "deepseek-flash", provider: "openai" });
+    const main = await runMainLoop({
+      ctxMgr,
+      toolRegistry: reg,
+      model: "deepseek-flash",
+      provider: "openai",
+    });
     // 前提：主循环确实开了思考，否则「照搬」与「写死关闭」不可区分
     expect(main.thinking?.enabled).toBe(true);
     expect(main.reasoningEffort).toBeDefined();
@@ -357,12 +374,24 @@ describe("D16 · 思维链：fork 开思考后 reasoning 不混进正文", () =>
           content_block: { type: "text", text: "" },
           _raw_block: { type: "thinking" },
         };
-        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "先想想" } };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "先想想" },
+        };
         yield { type: "content_block_stop", index: 0 };
         yield { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } };
-        yield { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "答案" } };
+        yield {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "答案" },
+        };
         yield { type: "content_block_stop", index: 1 };
-        yield { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { outputTokens: 2 } };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { outputTokens: 2 },
+        };
       },
     };
     const res = await runForkedAgent(
