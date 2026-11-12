@@ -102,7 +102,7 @@ describe("D4 · /cost 输出里每个指标都标明范围", () => {
 
   test("主循环 token 段标题标明不含辅助调用、含子代理，并给出请求数", async () => {
     const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    expect(out).toContain("主循环 Token 用量（累计，不含辅助调用；含子代理）:");
+    expect(out).toContain("主循环 Token 用量（不含辅助调用；含子代理）:");
     expect(out).toContain("请求: 1 次");
   });
 
@@ -136,8 +136,9 @@ describe("D4 · 两块 token 互不包含", () => {
 
   test("主循环输入与辅助输入分开显示，不会相加成一个数", async () => {
     const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    // 主循环段 = modelUsage 的累计 prompt（10000）；辅助段 = side-call-sink 的发送量（547419）
-    expect(out).toContain("输入: 10000");
+    // 主循环段 = modelUsage 的累计 prompt（10000，D3 合并后行标签带 flow 口径）；
+    // 辅助段 = side-call-sink 的发送量（547419）
+    expect(out).toContain("输入（累计发送，flow）: 10000");
     expect(out).toContain("输入: 547419");
     // 相加值绝不能出现——出现就说明有人把两块合并了，D4 会以另一种形态复发
     expect(out).not.toContain("输入: 557419");

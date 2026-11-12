@@ -15,10 +15,12 @@ Source: /cost 口径不一致与面板重做-修复与验收方案（2026-11-10�
 本次在 `packages/cli/src/command/commands/cost/cost.ts`：
 
 - **总费用**行加 `（含辅助调用）` —— 它是面板上唯一含辅助调用的指标。
-- **token 段标题**从「Token 用量（汇总）」改成
-  「主循环 Token 用量（累计，不含辅助调用；含子代理）」，并新增 `请求: N 次`
+- **token 段标题**（main 上 D3 已先把它改成「Token 用量:」）改成
+  「主循环 Token 用量（不含辅助调用；含子代理）」，并新增 `请求: N 次`
   （`getTotalRequests()`，同样只含主循环）。「含子代理」必须写：子代理经 usage-sink
-  走同一个 `updateUsage`，本来就在这段数字里。
+  走同一个 `updateUsage`，本来就在这段数字里。**标题刻意不写「累计」**：D3 在下面并列了
+  flow（累计发送）与 stock（当前上下文）两行，写「累计」会和 stock 行自相矛盾
+  —— 这是本 PR 合并 D3（PR #760）时实际踩到并解决的问题。
 - **缓存命中率 / 省钱**行加 `（仅主循环，不含辅助调用）`。
 - **API 耗时**行加 `（仅主循环）` —— `totalAPIDuration` 只在主循环 `updateUsage` 累加。
 - **新增「辅助调用 Token 用量」段**（导出纯函数 `formatSideCallTokenSection`）：
