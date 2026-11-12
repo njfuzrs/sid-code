@@ -20,7 +20,8 @@ import {
   learnFromError,
   shouldSyncCatalogs,
   shouldRetryWithoutEffort,
-  recordEffortRejected,
+  recordEndpointEffortRejected,
+  isEndpointEffortRejected,
   lookupCapability,
   __resetCapabilityCacheForTest,
 } from "@sid-code/core/llm/model-capabilities.ts";
@@ -393,44 +394,80 @@ describe("400 自愈兜底：不得依赖措辞匹配（否则主动多发 = 新
   });
 });
 
-describe("自愈记账：避免永久 2 倍请求", () => {
+describe("自愈记账：只作用于本进程的 (真名, 端点)", () => {
   beforeEach(() => __resetCapabilityCacheForTest({}));
+
+  const ENDPOINT = "https://gateway.example.com/v1";
 
   /**
    * 结构兜底不看措辞，因此也学不到任何东西。若只重试不记账，就退化成
-   * 「每次对话都先撞一次 400 再重试」——永久 2 倍请求数与首字延迟。
+   * 「每次对这条路由都先撞一次 400 再重试」——永久 2 倍请求数与首字延迟。
+   * 记账落点是**进程内的端点表**，不是能力缓存（2026-11-12 F3-c）。
    */
-  test("记账后同一模型不再下发 effort（下次不再撞 400）", () => {
-    const before = resolveEffortCapability({ model: "gw-model", provider: "openai" });
+  test("记账后同一端点不再下发 effort（下次不再撞 400）", () => {
+    const before = resolveEffortCapability({
+      model: "gw-model",
+      provider: "openai",
+      baseURL: ENDPOINT,
+    });
     const p1: any = {};
     before.applyToSendParams(p1, "high", true);
     expect(p1.reasoningEffort).toBeDefined(); // 记账前：乐观放行，会撞 400
 
-    recordEffortRejected("gw-model");
+    expect(recordEndpointEffortRejected("gw-model", ENDPOINT)).toBe(true);
 
-    const after = resolveEffortCapability({ model: "gw-model", provider: "openai" });
+    const after = resolveEffortCapability({
+      model: "gw-model",
+      provider: "openai",
+      baseURL: ENDPOINT,
+    });
     const p2: any = {};
     after.applyToSendParams(p2, "high", true);
     expect(p2.reasoningEffort).toBeUndefined(); // 记账后：不再下发
   });
 
   /**
-   * 已有非空档位列表（用户配置/目录/探针的可信数据）时不得抹平：
-   * 那种情况下的 400 更可能是「我们发的那一档不在列表里」，而非「完全不支持」。
-   * 抹成 [] 会把一个支持 effort 的模型永久降级。
+   * 端点级的关键边界：同一条真名走另一条路由不受影响。
+   * 「这条路由不吃 effort」推不出「模型不支持 effort」——正是被删除的旧行为。
    */
-  test("已有可信档位列表 → 不得被记账抹平", () => {
+  test("换一条端点 → 仍然乐观下发（不把一次路由行为当成模型属性）", () => {
+    recordEndpointEffortRejected("gw-model", ENDPOINT);
+    expect(isEndpointEffortRejected("gw-model", ENDPOINT)).toBe(true);
+    expect(isEndpointEffortRejected("gw-model", "https://other.example.com/v1")).toBe(false);
+
+    const cap = resolveEffortCapability({
+      model: "gw-model",
+      provider: "openai",
+      baseURL: "https://other.example.com/v1",
+    });
+    const p: any = {};
+    cap.applyToSendParams(p, "high", true);
+    expect(p.reasoningEffort).toBeDefined();
+  });
+
+  test("不写能力缓存、不写 supportsReasoning（只存进程内存）", () => {
+    recordEndpointEffortRejected("gw-model", ENDPOINT);
+    expect(lookupCapability("gw-model")).toBeNull();
+  });
+
+  /**
+   * 已有非空档位列表（用户配置/目录/探针的可信数据）时不得记账降级：
+   * 那种情况下的 400 更可能是「我们发的那一档不在列表里」，而非「完全不支持」。
+   */
+  test("已有可信档位列表 → 不得被记账降级", () => {
     __resetCapabilityCacheForTest({
       trusted: { contextWindow: 1000, effortValues: ["low", "high"], source: "catalog" },
     });
-    recordEffortRejected("trusted");
+    expect(recordEndpointEffortRejected("trusted", ENDPOINT)).toBe(false);
+    expect(isEndpointEffortRejected("trusted", ENDPOINT)).toBe(false);
     expect(lookupCapability("trusted")?.effortValues).toEqual(["low", "high"]);
   });
 
   test("重复记账幂等", () => {
-    recordEffortRejected("m");
-    recordEffortRejected("m");
-    expect(lookupCapability("m")?.effortValues).toEqual([]);
+    expect(recordEndpointEffortRejected("m", ENDPOINT)).toBe(true);
+    // 第二次返回 false（没有新记），但结论仍然生效
+    expect(recordEndpointEffortRejected("m", ENDPOINT)).toBe(false);
+    expect(isEndpointEffortRejected("m", ENDPOINT)).toBe(true);
   });
 
   /**
@@ -466,8 +503,8 @@ describe("自愈记账：避免永久 2 倍请求", () => {
       // 确实重试过（两次请求），且错误最终透出给用户（不静默吞掉）
       expect(calls).toBe(2);
       expect(events.some((e) => e.type === "error")).toBe(true);
-      // 关键断言：重试失败 → 不得留下「不支持 effort」的记账
-      expect(lookupCapability("innocent-model")?.effortValues).not.toEqual([]);
+      // 关键断言：重试失败 → 不得留下「这个端点不支持 effort」的记账（进程内表也不许）
+      expect(isEndpointEffortRejected("innocent-model", "https://example.invalid/v1")).toBe(false);
     } finally {
       globalThis.fetch = origFetch;
     }

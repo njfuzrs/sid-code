@@ -20,7 +20,7 @@
  */
 
 import type { SendParams } from "./types.ts";
-import { lookupCapability } from "./model-capabilities.ts";
+import { isEndpointEffortRejected, lookupCapability } from "./model-capabilities.ts";
 import { lookupModelCompat, type ModelCompat } from "./model-compat.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
 import { lookupRegistryExact } from "./model-registry.ts";
@@ -278,7 +278,7 @@ export function resolveEffortCapability(opts: {
 
   // 优先级 2.5：协议族未知 → 查动态能力缓存（纯内存读，不触网）。
   return finalizeThinkingControl(
-    applyCompatOverrides(resolveFromCapabilityCache(opts.model), compat),
+    applyCompatOverrides(resolveFromCapabilityCache(opts.model, opts.baseURL), compat),
     opts.model,
     kind,
     compat,
@@ -424,8 +424,17 @@ function applyCompatOverrides(cap: EffortCapability, compat?: ModelCompat): Effo
  * - 缓存无记录 → 乐观放行（supportsEffort=true）。这是「永不报错」的核心取舍：
  *   宁可发出去被 400 后自愈（learnFromError 会剥字段重试并记住），也不要在 /effort 上
  *   硬报「不支持」把用户挡死。首次可能多一次重试，之后就准了。
+ *
+ * ⚠ 调用前先查**端点级**的进程内记账（`isEndpointEffortRejected`）：「这条路由不吃 effort」
+ * 是 (真名, baseURL) 的运行时事实，不是模型属性；同一条真名换一条路由可能正常。
  */
-function resolveFromCapabilityCache(model: string): EffortCapability {
+function resolveFromCapabilityCache(model: string, baseURL?: string): EffortCapability {
+  // 端点级优先：它来自本进程的真实 400 + 剥字段重试成功，比按模型名的缓存更贴近
+  // 「这一次发往这个端点」的事实。只影响本进程，进程重启后重新乐观试一次。
+  if (isEndpointEffortRejected(model, baseURL)) {
+    return toCapability(dialectOf("unknown"));
+  }
+
   const cap = lookupCapability(model);
 
   // 明确不支持（探针已证实服务端不校验 reasoning_effort）。

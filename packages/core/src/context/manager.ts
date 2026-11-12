@@ -275,10 +275,16 @@ const SMALL_WINDOW_EMERGENCY_RATIO = 0.9;
  * 只作用于 hard / emergency 两层——masking 只是遮罩工具输出，不涉及"必须写得完"。
  *
  * 缓冲区对所有模型统一计算，**不按模型名分档**（遵守全局指令 feedback-no-hardcoded-model-tier-rules）——
- * 唯一的模型相关输入是注册表里的结构性事实 `maxOutputTokens`，属于允许的结构分档。
+ * 唯一的模型相关输入是「本次请求的输出预算」（`requestOutputBudget`），属于允许的结构分档。
+ *
+ * ⚠️ 它**必须**是请求预算（本次回复打算写多少），不是模型的物理输出上限。
+ * 后者（如 DeepSeek 的 384k）从来不会被一次回复用完，拿它算缓冲等于凭空多留 88k：
+ *   - 缓冲被 `OUTPUT_RESERVE_MAX_RATIO` 12% 钳住后仍把 1M 窗口的地板抬到 140k
+ *     （正确值是 32,768 + 20k = 52k），emergency 压缩提前 40k 触发。
+ * 这是「同一个名字两种语义」的典型（见排查报告 §4 原则 3 / F8）。
  */
 const COMPLETION_BUFFER = {
-  /** 未注入模型 maxOutputTokens 时的输出预留兜底 */
+  /** 未注入请求输出预算时的输出预留兜底 */
   DEFAULT_OUTPUT_RESERVE: 16_000,
   /** 输出预留占窗口的上限比例（防止大输出窗口模型把地板抬到吃掉过多上下文） */
   OUTPUT_RESERVE_MAX_RATIO: 0.12,
@@ -295,10 +301,15 @@ export interface ManagerOptions {
   maxTokens: number; // 上下文窗口最大 token 数
   compactThreshold?: number; // 触发压缩的阈值比例（默认 0.7）
   /**
-   * P3-2：模型单次响应的最大输出 token 数（来自 model-registry 的 maxOutputTokens）。
-   * 用于计算完成缓冲区的「输出预留」分量；未传时用 COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE 兜底。
+   * P3-2 / F8：**本次请求的输出预算**（「打算预留多少输出」，不是模型的物理输出上限）。
+   * 来源见 `llm/output-budget.ts` 的 `resolveRequestBudget`（用户显式值 > 默认 32,768）。
+   * 用于计算完成缓冲区的「输出预留」分量；未传时用
+   * COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE 兜底。
+   *
+   * ⚠️ 不要把模型 / 渠道的物理上限（`availableModels[].maxOutputTokens`）传进来：
+   * 那个值（如 DeepSeek 384k）从来不会被一次回复用完，拿它算缓冲会凭空多留 88k。
    */
-  maxOutputTokens?: number;
+  requestOutputBudget?: number;
   /** 项目临时目录（用于工具输出落盘） */
   tempDir?: string;
   /**
@@ -323,10 +334,11 @@ export class Manager {
    */
   private autoCompactPctOverride: number | null = null;
   /**
-   * P3-2：模型单次响应最大输出 token（完成缓冲区的输出预留分量）。
-   * 由构造参数或 setMaxOutputTokens 注入（模型切换时上层重设）。
+   * P3-2 / F8：本次请求的输出预算（完成缓冲区的输出预留分量）。
+   * 由构造参数或 setRequestOutputBudget 注入；模型切换时**不需要**重设——
+   * 预算不随模型变，随模型变的是窗口（setMaxTokens 的第一个参数）。
    */
-  private maxOutputTokens?: number;
+  private requestOutputBudget?: number;
   private tempDir?: string;
   private sessionId?: string;
   private maskingService?: ToolOutputMaskingService;
@@ -499,8 +511,8 @@ export class Manager {
     if (opts.compactThreshold !== undefined) {
       this.setAutoCompactPctOverride(opts.compactThreshold);
     }
-    // P3-2：完成缓冲区的输出预留分量数据源（模型 maxOutputTokens）。
-    this.maxOutputTokens = opts.maxOutputTokens;
+    // P3-2 / F8：完成缓冲区的输出预留分量数据源（本次请求的输出预算，非模型物理上限）。
+    this.requestOutputBudget = opts.requestOutputBudget;
     this.tempDir = opts.tempDir;
     // 创建即启用 masking（对标 cc）：构造时若已知 sessionId，直接建 maskingService，
     // 不必等外部记得调 setSessionId。setSessionId 仍保留（App 侧在 sessionId 晚于
@@ -609,14 +621,15 @@ export class Manager {
    * 200k→1M 方向虚高 → 过早 compact。切模型时同步窗口可消除该失真。
    *
    * @param maxTokens 新模型的上下文窗口 token 数；非正值忽略（防御非法输入）。
-   * @param maxOutputTokens P3-2：新模型的单次最大输出 token（完成缓冲区的输出预留分量）。
-   *   省略时**保持原值不变**（而非清零）——避免只知窗口不知输出上限的调用方把缓冲区打回默认。
-   *   显式传 undefined 与省略同义；要清除请调 setMaxOutputTokens(undefined)。
+   * @param requestOutputBudget F8：本次请求的输出预算（完成缓冲区的输出预留分量）。
+   *   **模型切换时通常不需要传**——预算不随模型变，随模型变的是窗口（第一个参数）。
+   *   省略时**保持原值不变**（而非清零）——避免只知窗口不知预算的调用方把缓冲区打回默认。
+   *   显式传 undefined 与省略同义；要清除请调 setRequestOutputBudget(undefined)。
    */
-  setMaxTokens(maxTokens: number, maxOutputTokens?: number): void {
+  setMaxTokens(maxTokens: number, requestOutputBudget?: number): void {
     if (!Number.isFinite(maxTokens) || maxTokens <= 0) return;
     this.maxTokens = maxTokens;
-    if (maxOutputTokens !== undefined) this.setMaxOutputTokens(maxOutputTokens);
+    if (requestOutputBudget !== undefined) this.setRequestOutputBudget(requestOutputBudget);
   }
 
   /**
@@ -1885,11 +1898,11 @@ export class Manager {
   }
 
   /**
-   * P3-2：设置模型单次响应最大输出 token（完成缓冲区的输出预留分量）。
-   * 模型切换时由上层重设，使缓冲区跟随新模型的输出能力。
+   * F8：设置本次请求的输出预算（完成缓冲区的输出预留分量）。
+   * 预算来自用户显式值或默认常量（`llm/output-budget.ts`），**不随模型切换变化**。
    */
-  setMaxOutputTokens(n: number | undefined): void {
-    this.maxOutputTokens = n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
+  setRequestOutputBudget(n: number | undefined): void {
+    this.requestOutputBudget = n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
   /** 获取压缩阈值比例（默认 0.7）——历史 API，仅诊断用；真实触发点见 getCompactionThresholds() */
@@ -1917,7 +1930,7 @@ export class Manager {
     let completionBuffer = 0;
     if (this.maxTokens > COMPLETION_BUFFER.MIN_WINDOW_TO_APPLY) {
       const outputReserve = Math.min(
-        this.maxOutputTokens ?? COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE,
+        this.requestOutputBudget ?? COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE,
         Math.floor(this.maxTokens * COMPLETION_BUFFER.OUTPUT_RESERVE_MAX_RATIO),
       );
       completionBuffer = Math.min(

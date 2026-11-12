@@ -338,10 +338,15 @@ describe("参考页生成器 · CLI 双源交叉对账（§4.5.5）", () => {
     }
   });
 
-  test("--dump-tools 属隐藏出口：声明了但刻意不进 help，不该被算作缺陷", () => {
-    expect(extractParseArgsFlags(read("packages/cli/src/cli.ts"))).toContain("dump-tools");
-    expect(extractHelpFlags(read("packages/cli/src/help.ts"))).not.toContain("dump-tools");
-    expect(rec().missingInHelp).not.toContain("dump-tools");
+  test("--dump-tools / --dump-tool-meta 属隐藏出口：声明了但刻意不进 help，不该被算作缺陷", () => {
+    // 两个都是内部出口：--dump-tools 给文档生成器，--dump-tool-meta 给根 tests/tool/ 的门禁
+    // （D12：真实注册表 + 延迟标记）。漏登记任何一个，reconcileCliFlags 都会把它算成
+    // 「能用但 help 没写」的文档缺口。
+    for (const flag of ["dump-tools", "dump-tool-meta"]) {
+      expect(extractParseArgsFlags(read("packages/cli/src/cli.ts")), flag).toContain(flag);
+      expect(extractHelpFlags(read("packages/cli/src/help.ts")), flag).not.toContain(flag);
+      expect(rec().missingInHelp, flag).not.toContain(flag);
+    }
   });
 
   test("--dump-tools 必须 includeDisabled，否则 CI 零 LSP 时参考页丢掉 lsp", () => {

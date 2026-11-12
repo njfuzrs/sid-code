@@ -501,18 +501,62 @@ describe("增量压缩", () => {
   });
 
   test("§12 P3-2：完成缓冲区抬高 emergency 地板，且不让 200K 窗口回归（仍 70% 触发）", () => {
-    // 200K 窗口 + 64K 输出：缓冲 = min(64K, 200K×12%)+20K = 24K+20K = 44K，
+    // 200K 窗口 + 64K 输出预算：缓冲 = min(64K, 200K×12%)+20K = 24K+20K = 44K，
     // 但 hard 原门槛 60K > 44K → 缓冲不生效，触发点仍是 70%（零回归）。
-    const std = new Manager({ maxTokens: 200_000, maxOutputTokens: 64_000 });
+    const std = new Manager({ maxTokens: 200_000, requestOutputBudget: 64_000 });
     expect(std.getTokenBreakdown(0).compactThresholdTokens).toBe(140_000);
-    // 80K 窗口 + 超大输出：缓冲被 TOTAL_MAX_RATIO(20%) 封顶为 16K，不会吃掉过多窗口
-    const big = new Manager({ maxTokens: 80_000, maxOutputTokens: 128_000 });
+    // 80K 窗口 + 超大预算：缓冲被 TOTAL_MAX_RATIO(20%) 封顶为 16K，不会吃掉过多窗口
+    const big = new Manager({ maxTokens: 80_000, requestOutputBudget: 128_000 });
     const t = big.getCompactionThresholds();
     expect(t.completionBuffer).toBe(16_000);
     // 不变量：hard 永不晚于 emergency 触发
     expect(t.compressionRemaining).toBeGreaterThanOrEqual(t.emergencyRemaining);
     // 小窗口（≤60K）不启用缓冲区
     expect(new Manager({ maxTokens: 32_000 }).getCompactionThresholds().completionBuffer).toBe(0);
+  });
+
+  test("F8：输出预留取「请求预算」而不是模型物理上限（1M 窗口不再被抬到 140K）", () => {
+    // 1M 窗口 + 默认请求预算 32,768：缓冲 = min(32,768, 1M×12%) + 20K 摘要预留 = 52,768，
+    // emergency 门槛 = max(40K 绝对, 1M×10%, 52,768) = 100K → 触发用量 900K。
+    const budget = new Manager({ maxTokens: 1_000_000, requestOutputBudget: 32_768 });
+    const t = budget.getCompactionThresholds();
+    expect(t.completionBuffer).toBe(52_768);
+    expect(t.emergencyRemaining).toBe(100_000);
+    // hard 档仍由 18% 相对门槛主导（180K），与修复前一致。
+    expect(t.compressionRemaining).toBe(180_000);
+
+    // 对照：把模型物理上限（DeepSeek 384k）当预算是被修正的旧行为——缓冲 140K，
+    // emergency 提前到 860K 触发。用它锁住「物理上限不能进输出预留」这条不变量。
+    const physical = new Manager({ maxTokens: 1_000_000, requestOutputBudget: 384_000 });
+    expect(physical.getCompactionThresholds().completionBuffer).toBe(140_000);
+    expect(physical.getCompactionThresholds().emergencyRemaining).toBe(140_000);
+
+    // 200K 窗口下两种取值都落到 12% 比例钳制（24K+20K 被 20% 封顶到 40K）→ 行为零回归。
+    expect(
+      new Manager({ maxTokens: 200_000, requestOutputBudget: 32_768 }).getCompactionThresholds()
+        .completionBuffer,
+    ).toBe(40_000);
+    expect(
+      new Manager({ maxTokens: 200_000, requestOutputBudget: 384_000 }).getCompactionThresholds()
+        .completionBuffer,
+    ).toBe(40_000);
+  });
+
+  test("F8：setRequestOutputBudget 非法值回退兜底；未注入时走 16K 兜底", () => {
+    // 未注入：16K + 20K = 36K（1M 窗口不触达 12% / 20% 上限）。
+    expect(new Manager({ maxTokens: 1_000_000 }).getCompactionThresholds().completionBuffer).toBe(
+      36_000,
+    );
+    // 非法值（≤0 / NaN）视为未注入，而不是把缓冲算成 20K 摘要预留。
+    const cleared = new Manager({ maxTokens: 1_000_000, requestOutputBudget: 32_768 });
+    cleared.setRequestOutputBudget(0);
+    expect(cleared.getCompactionThresholds().completionBuffer).toBe(36_000);
+    cleared.setRequestOutputBudget(Number.NaN);
+    expect(cleared.getCompactionThresholds().completionBuffer).toBe(36_000);
+    // setMaxTokens 的第二参数只在显式传入时生效（切模型不应把预算打回兜底）。
+    cleared.setRequestOutputBudget(32_768);
+    cleared.setMaxTokens(200_000);
+    expect(cleared.getCompactionThresholds().completionBuffer).toBe(40_000);
   });
 
   test("§12 复审：小窗口模型下 P1-1 override 同样生效（此前被静默忽略）", () => {

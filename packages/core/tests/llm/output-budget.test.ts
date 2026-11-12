@@ -1,11 +1,17 @@
 /**
  * 请求输出预算（`llm/output-budget.ts`）单测
  *
- * 锁住 F1 修复的语义：`config.maxTokens` 是**本次请求预留多少输出**（预算），
- * 不是模型物理输出上限（属性）。旧实现把物理上限（DeepSeek 384k）当 max_tokens 发出去，
- * 而 OpenAI 兼容协议族按「输入 + max_tokens ≤ 窗口」校验 → 输入过 664k 即 400。
+ * 本文件覆盖同一模块的两个消费者：
+ *  - `resolveRequestBudget`（F8）：压缩缓冲区的**预算基准**（用户显式值 > 默认常量），
+ *    不含任何钳制 —— 压缩阈值不能随真实用量抖动。
+ *  - `resolveRequestOutputBudget`（F1）：发送请求的**完整钳制**（物理上限 / 窗口剩余 /
+ *    floor 拒绝 / 思考预算下限）。
  *
- * 覆盖 7 条（对应方案文档 §6.1 的「新增：output-budget.test.ts」清单）：
+ * F1 语义：`config.maxTokens` 是**本次请求预留多少输出**（预算），不是模型物理输出上限
+ * （属性）。旧实现把物理上限（DeepSeek 384k）当 max_tokens 发出去，而 OpenAI 兼容协议族
+ * 按「输入 + max_tokens ≤ 窗口」校验 → 输入过 664k 即 400。
+ *
+ * F1 侧覆盖 7 条（对应方案文档 §6.1 的「新增：output-budget.test.ts」清单）：
  *   ① 默认 32,768；
  *   ② 不超过物理上限；
  *   ③ 输入 + 预算不超过窗口；
@@ -20,6 +26,7 @@ import {
   DEFAULT_REQUEST_MAX_TOKENS,
   THINKING_BODY_RESERVE,
   MIN_THINKING_BUDGET,
+  resolveRequestBudget,
   resolveRequestOutputBudget,
   resolveFloorOutputTokens,
 } from "@sid-code/core/llm/output-budget.ts";
@@ -45,7 +52,32 @@ afterEach(() => {
   else process.env.SID_RECOVERY_FLOOR_TOKENS = ORIGINAL_FLOOR_ENV;
 });
 
-describe("resolveRequestOutputBudget", () => {
+// ─── F8：压缩缓冲区的预算基准（不含钳制）───
+
+describe("resolveRequestBudget（F8：压缩缓冲区的预算基准）", () => {
+  test("未显式配置时取默认 32,768（与 defaultConfig 兜底同源）", () => {
+    expect(DEFAULT_REQUEST_MAX_TOKENS).toBe(32_768);
+    expect(resolveRequestBudget()).toBe(32_768);
+    expect(resolveRequestBudget(undefined)).toBe(32_768);
+  });
+
+  test("用户显式值优先", () => {
+    expect(resolveRequestBudget(65_536)).toBe(65_536);
+    // 小数向下取整，避免把非法精度的 max_tokens 发出去。
+    expect(resolveRequestBudget(12_345.9)).toBe(12_345);
+  });
+
+  test("非法值（≤0 / NaN / Infinity）回退默认，绝不返回 0 或负数", () => {
+    expect(resolveRequestBudget(0)).toBe(32_768);
+    expect(resolveRequestBudget(-1)).toBe(32_768);
+    expect(resolveRequestBudget(Number.NaN)).toBe(32_768);
+    expect(resolveRequestBudget(Number.POSITIVE_INFINITY)).toBe(32_768);
+  });
+});
+
+// ─── F1：发送请求的完整钳制 ───
+
+describe("resolveRequestOutputBudget（F1：发送请求的完整钳制）", () => {
   test("① 默认请求预算 = 32,768（不按模型族分档）", () => {
     const r = resolveRequestOutputBudget(BASE);
     expect(r.ok).toBe(true);

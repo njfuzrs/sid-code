@@ -1,5 +1,5 @@
 /**
- * 请求输出预算（request output budget）——「**本次请求**预留多少输出」。
+ * 请求输出预算（request output budget）——「**本次请求**打算预留多少输出」。
  *
  * ## 为什么必须有这个模块
  *
@@ -10,29 +10,34 @@
  * | 物理上限 `maxOutputTokens` | 模型 / 渠道「**最多能**输出多少」 | `availableModels[].maxOutputTokens` > 能力目录 > 内置注册表 |
  * | 请求预算 | 本次请求「**打算**预留多少输出」 | `--max-tokens` / `SID_MAX_OUTPUT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` > settings `maxTokens` > 默认常量 |
  *
- * 旧实现把注册表里的物理上限（DeepSeek 384k）原样当作每次请求的 `max_tokens` 发出。
- * 而 DeepSeek / GLM 等 OpenAI 兼容协议族按「**输入 + max_tokens ≤ 窗口**」校验，
- * Anthropic 旧模型同理：于是输入超过约 664k（= 1,048,576 − 384,000）就被 400 拒绝，
- * 为一次也没用到的 384k 输出让出了 37% 的输入空间（2026-11-12 排查报告 F1）。
+ * 混用有两个后果，都已在排查报告里核实：
+ *  - 发送侧（F1）：注册表里的物理上限（DeepSeek 384k）被原样当作每次请求的 `max_tokens`
+ *    发出，而 OpenAI 兼容协议族按「输入 + max_tokens ≤ 窗口」校验，输入超过约 664k
+ *    （= 1,048,576 − 384,000）就被 400 拒绝——为一次也没用到的 384k 输出让出 37% 输入空间。
+ *  - 压缩侧（F8）：`ContextManager` 的「完成缓冲区」拿同一个物理上限算输出预留，
+ *    1M 窗口下把 emergency 门槛抬到 140k（本该 52k），压缩提前触发。
  *
- * 实测支撑（同报告 §7.2，41,961 次主循环请求）：所有模型族的 output p99.9 都低于 32,768，
- * `stop_reason=length` 全族 0 次。所以默认预算取 32,768，超出者由主循环的 Stage 1
- * 自动升档兜住（`query/loop.ts` 截断分支）。
+ * ## 本文件的两个消费者
+ *
+ * 1. **压缩缓冲区（F8）** 用 {@link resolveRequestBudget}：只回答「预算基准」，
+ *    **不含任何钳制**。它要的是「本次回复大概要写多少」的预估，不能随真实用量抖动
+ *    （否则阈值跟着输入量上下漂，压缩会在边缘反复触发）。
+ * 2. **发送请求（F1）** 用 {@link resolveRequestOutputBudget}：在预算基准之上叠加
+ *    物理上限钳制 + 窗口剩余钳制 + 窗口不足时拒绝发送 + 思考预算下限。
+ *
+ * 两者共用 {@link DEFAULT_REQUEST_MAX_TOKENS} 与同一套 floor（与 `fallback.ts` 的
+ * 溢出恢复共用），不各写一份 —— 本仓教训：同一口径重实现一遍等于重踩一遍。
  *
  * ## 窗口钳制必须有下界
  *
  * `窗口 − 输入 − 余量` 在输入逼近窗口时会趋近 0 甚至为负（估算值本身也可能大于窗口）。
  * 直接发出去就是非法 `max_tokens`，必然换一个 400。所以这里在窗口剩余低于 floor 时
  * **返回「不发请求」的结构化结果**，由调用方交给压缩 / 报错路径 —— 不要发一个 0 或负数。
- *
- * floor 与 `fallback.ts` 的 max_tokens 溢出恢复**共用同一实现**：两处的语义都是
- * 「窗口里至少还要能放得下这么多输出」，各写一份必然漂移（本仓教训：同一口径重实现
- * 一遍等于重踩一遍）。
  */
 
 /** 默认请求输出预算（所有模型通用，**不按模型名 / 模型族分档**）。
  *
- *  取 2^15 的依据：
+ *  取 2^15 的依据（报告 §5.1 与 §7.2）：
  *  - `defaultConfig()` 的兜底值本来就是 `maxTokens: 32768`（`config/config.ts`），
  *    沿用它可以把「默认预算」与「兜底值」收敛成同一个数，不必再引入新的魔法数。
  *  - 全族实测 p99.9 均低于它（DeepSeek 10,995 / Claude 5,129 / GLM 19,616 /
@@ -40,6 +45,28 @@
  *  - 与 Claude Code 的默认输出上限同量级（CC 默认 32k，可经 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
  *    调整，sid-code 已兼容该环境变量）。 */
 export const DEFAULT_REQUEST_MAX_TOKENS = 32_768;
+
+/**
+ * 解析「本次请求的输出预算基准」——只回答「打算预留多少」，**不做**物理上限 / 窗口钳制。
+ *
+ * 优先级：用户显式值（`--max-tokens` / `SID_MAX_OUTPUT_TOKENS` / settings `maxTokens`，
+ * 收口在 `config._explicitMaxTokens`）> 默认常量。
+ *
+ * ⚠️ `availableModels[].maxOutputTokens` 是**物理上限**，不是预算，绝不要传进这里——
+ * 用户写了 384k 渠道上限就每次请求发 384k，等于把 F1 原样复发。
+ *
+ * 非法值（undefined / NaN / ≤0）回退默认常量，绝不返回 0 或负数。
+ */
+export function resolveRequestBudget(explicitMaxTokens?: number): number {
+  if (
+    explicitMaxTokens !== undefined &&
+    Number.isFinite(explicitMaxTokens) &&
+    explicitMaxTokens > 0
+  ) {
+    return Math.floor(explicitMaxTokens);
+  }
+  return DEFAULT_REQUEST_MAX_TOKENS;
+}
 
 /** 窗口钳制的安全余量。
  *
@@ -123,9 +150,10 @@ export type RequestOutputBudget =
       floorTokens: number;
     };
 
+/** 把任意输入归一成有效预算。与 {@link resolveRequestBudget} 同一事实源，
+ *  避免「预算基准」与「发送侧预算」两处各自判断非法值。 */
 function normalizeBudget(n: number): number {
-  if (Number.isFinite(n) && n > 0) return Math.floor(n);
-  return DEFAULT_REQUEST_MAX_TOKENS;
+  return resolveRequestBudget(Number.isFinite(n) && n > 0 ? n : undefined);
 }
 
 /**
