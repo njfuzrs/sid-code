@@ -37,6 +37,17 @@ const ALIASES: ReadonlyArray<{ from: string; to: string }> = [
   // zod 会把未声明的 subagent_type 静默剥离，execute 拿不到类型就兜底成 general-purpose，
   // 而分区读的是原始入参、判成可并发——结果是写类子代理被并行执行（2026-11-03 端到端实测）。
   { from: "subagent_type", to: "type" },
+  // grep：CC Grep 的协议参数名就是短参数 -i / -n / -B / -A / -C（CC 报告附录 A、
+  // Agent SDK 类型定义），模型按 CC 习惯传这些键时会被 zod 静默剥离。30 天实测
+  // 47 次真正丢意图（-C 28、-i 10、-A 9）：`-C:3` 被吞之后模型拿到的是没有上下文行、
+  // 区分大小写的结果，且 `is_error=false`——失败被藏在「成功」里。这与 activeForm 不同：
+  // 它是跨产品协议先验（CC 的字段名就是这个），不是猜测的命名风格漂移，所以直接登记。
+  // `-n`（105 次）故意不登记：sid 没有对应字段，output_mode=content 时恒带
+  // --line-number（grep.ts），它属于「已知无影响的键」，走 D1/T2 的静默接受 + 事件。
+  { from: "-C", to: "context" },
+  { from: "-i", to: "case_insensitive" },
+  { from: "-A", to: "after_context" },
+  { from: "-B", to: "before_context" },
 ];
 
 /** 一次归一里每个别名对的命中统计 */
