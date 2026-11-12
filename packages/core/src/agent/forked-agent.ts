@@ -37,6 +37,7 @@ import { maskedErrorSummary, sanitizedToolName } from "../telemetry/content-trac
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools } from "../tool/stateful-tools.ts";
 import { summarizeToolInput } from "../tool/input-summary.ts";
+import { resolveForkRequestShape, type MainRequestShape } from "./fork-prefix.ts";
 
 /** 工具权限控制函数 */
 export type CanUseToolFn = (
@@ -89,7 +90,22 @@ function recordForkedToolSpan(
 /** Forked Agent 主上下文（来自主对话） */
 export interface ForkedAgentContext {
   systemPrompt: string;
+  /**
+   * 主对话的原始消息。调用方拿它做触发判断（「主代理本轮是否已写记忆」「token 增量够不够」），
+   * 未提供 {@link sendMessages} 时也作为发送前缀。
+   */
   messages: Message[];
+  /**
+   * D16：发给模型的消息前缀 = 主循环发送视图（`ContextManager.getForkPrefixMessages()`，清理后）。
+   * 缺省时用 {@link messages}。和 `messages` 分开是因为两者用途不同：触发判断要看原文，
+   * 发送前缀要和主循环逐字节一致 —— 主循环发的是清理后的版本，发原文会在第一个被清理的块处分叉。
+   */
+  sendMessages?: Message[];
+  /**
+   * D16：主循环最后一次实际发出请求的形状（tools + 可照搬的思考参数），见 `agent/fork-prefix.ts`。
+   * 缺省（主循环还没发过请求 / 调用方没接线）时退回全量工具 + 关思考，即改造前的行为。
+   */
+  mainRequestShape?: MainRequestShape;
   provider: Provider;
   toolRegistry: ToolRegistry;
   model: string;
@@ -129,6 +145,12 @@ export interface ForkedAgentOptions {
   maxTurns?: number;
   /** 查询来源标识（用于日志和分析） */
   querySource: string;
+  /**
+   * D16：本次 fork 必须能调用的工具。复用主循环工具快照时，快照里缺任何一个就退回全量
+   * （并记日志、`prefix_source=fallback`）—— 延迟加载名单一变，`save_memory` 之类可能被延迟，
+   * fork 不能因为看不到工具而静默失效。纯问答（`/btw`）传空即可。
+   */
+  requiredTools?: readonly string[];
   /** 超时（毫秒，默认 60000） */
   timeoutMs?: number;
   /** 中止信号 */
@@ -150,7 +172,7 @@ export interface ForkedAgentResult {
 }
 
 /**
- * 收集 forked agent 的工具定义 —— **刻意全量，不按 canUseTool 白名单裁剪**（缺陷 7）。
+ * 收集 forked agent 的**退回用**工具定义 —— **刻意全量，不按 canUseTool 白名单裁剪**（缺陷 7）。
  *
  * 理由是 prompt cache 经济学，不是「受约束的工具也得声明」：
  * fork 的请求 = 主对话的 system + 全量 messages + 一条追加提示。Anthropic 族的缓存前缀
@@ -167,6 +189,9 @@ export interface ForkedAgentResult {
  * 守卫单测：tests/agent/forked-agent.test.ts「工具定义与主注册表 definitions() 一致」。
  */
 export function buildToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
+  // D16（2026-11-12）起这只是**退回路径**：主循环发过请求后，fork 复用主循环实际发出的工具列表
+  // （见 resolveForkRequestShape）。上面注释里「已知未对齐：主循环开启 tool search 时……未做」
+  // 已经做了 —— 抽查 249 个 deepseek 会话主循环全部开着 tool search，那是常态不是例外。
   return registry.definitions();
 }
 
@@ -246,6 +271,8 @@ async function accumulate(
   usage: Usage;
   /** C2：入参 JSON 解析失败的 tool_use（id → 失败信息），这些调用**不得执行** */
   malformed: Map<string, MalformedToolInput>;
+  /** D16：OpenAI 族思维链全文（空串 = 没有），调用方写进 assistant 消息的 `_meta.reasoning_content` */
+  reasoning: string;
 }> {
   const content: ContentBlock[] = [];
   const malformed = new Map<string, MalformedToolInput>();
@@ -261,12 +288,26 @@ async function accumulate(
     cacheCreationInputTokens: 0,
   };
   const partialJson = new Map<number, string>();
+  /**
+   * D16：OpenAI 族的思维链（DeepSeek `reasoning_content`）以「text 块 + `_raw_block.type=thinking`」送达。
+   * 改造前 fork 恒关思考，这条通道从不出现；对齐主循环思考参数后必须单独收：
+   * 当正文收会把思维链写进 fork 的回答（`/btw` 的答案、记忆提取的结果全被污染），
+   * 下一轮也不会作为 `reasoning_content` 回传 —— DeepSeek 带 tools 时缺回传直接 400。
+   */
+  const reasoningIndexes = new Set<number>();
+  let reasoning = "";
 
   for await (const event of stream) {
     // B3 纵深防御：forked-agent 流消费中检查 signal，防止 abort 无法穿透底层时挂死
     // （对齐 agent/stream-processor.ts 的 B1 模式）
     if (signal?.aborted) {
-      return { content: content.filter(Boolean), stopReason: "error", usage, malformed };
+      return {
+        content: content.filter(Boolean),
+        stopReason: "error",
+        usage,
+        malformed,
+        reasoning,
+      };
     }
     switch (event.type) {
       case "message_start": {
@@ -284,10 +325,18 @@ async function accumulate(
       case "stream_restart": {
         const outcome = resetOnStreamRestart({ content, jsonAccumulators: partialJson });
         recordStreamRestart(event, outcome, "forked");
+        // 作废尝试的思维链同样作废（usage 不回退，理由同上）
+        reasoningIndexes.clear();
+        reasoning = "";
         break;
       }
       case "content_block_start":
-        if (event.content_block?.type === "text") {
+        if (
+          event.content_block?.type === "text" &&
+          (event._raw_block as { type?: string } | undefined)?.type === "thinking"
+        ) {
+          reasoningIndexes.add(event.index);
+        } else if (event.content_block?.type === "text") {
           content[event.index] = { type: "text", text: event.content_block.text ?? "" };
         } else if (event.content_block?.type === "tool_use") {
           content[event.index] = {
@@ -300,7 +349,9 @@ async function accumulate(
         }
         break;
       case "content_block_delta":
-        if (event.delta?.type === "text_delta") {
+        if (event.delta?.type === "text_delta" && reasoningIndexes.has(event.index)) {
+          reasoning += event.delta.text;
+        } else if (event.delta?.type === "text_delta") {
           const block = content[event.index];
           if (block?.type === "text") block.text += event.delta.text;
         } else if (event.delta?.type === "input_json_delta") {
@@ -347,7 +398,7 @@ async function accumulate(
         break;
     }
   }
-  return { content: content.filter(Boolean), stopReason, usage, malformed };
+  return { content: content.filter(Boolean), stopReason, usage, malformed, reasoning };
 }
 
 /**
@@ -379,12 +430,14 @@ export async function runForkedAgent(
   // forked 消息序列：主对话历史前缀（缓存友好）+ 追加的提示消息
   // 对主历史做结构化克隆,隔离于主上下文——避免主循环就地 mutation 污染
   // forked 正在读取的同一批消息对象(CONTEXT-MEMORY-8)。内容不变,不影响 prompt 缓存。
+  // D16：发送前缀优先用主循环发送视图（清理后），见 ForkedAgentContext.sendMessages。
+  const prefixSource = mainContext.sendMessages ?? mainContext.messages;
   let clonedPrefix: Message[];
   try {
-    clonedPrefix = structuredClone(mainContext.messages) as Message[];
+    clonedPrefix = structuredClone(prefixSource) as Message[];
   } catch {
     // 极端情况下消息含不可克隆字段时,退回浅拷贝(至少数组独立)
-    clonedPrefix = [...mainContext.messages];
+    clonedPrefix = [...prefixSource];
   }
   const conversation: Message[] = [...clonedPrefix, ...options.promptMessages];
   const appended: Message[] = [...options.promptMessages];
@@ -393,7 +446,26 @@ export async function runForkedAgent(
   let deniedToolCalls = 0;
   let truncatedGiveUp = false;
 
-  const toolDefs = buildToolDefinitions(mainContext.toolRegistry);
+  // D16：tools 与思考参数复用主循环最后一次实际发出的快照，前缀才能命中主循环写好的缓存。
+  // 没有快照 / 模型不同 / 缺 fork 要用的工具时退回全量 + 关思考（改造前的行为）。
+  const requestShape = resolveForkRequestShape(
+    mainContext.mainRequestShape,
+    mainContext.model,
+    () => buildToolDefinitions(mainContext.toolRegistry),
+    options.requiredTools,
+  );
+  const toolDefs = requestShape.tools;
+  if (requestShape.prefixSource === "fallback" && requestShape.fallbackReason !== "no_snapshot") {
+    log.info(
+      "FORKED",
+      `fork (${options.querySource}) 未复用主循环请求快照，退回全量工具 + 关思考`,
+      {
+        reason: requestShape.fallbackReason,
+        ...(requestShape.missingTools && { missingTools: requestShape.missingTools }),
+      },
+    );
+  }
+  const thinkingMirror = requestShape.thinkingMirror;
 
   // FileReadTracker 隔离：注入的有状态工具按名建索引，工具执行时优先查这里，
   // 找不到再 fallback 到主注册表（grep/glob/ls/bash 等无 tracker 状态，复用无害）。
@@ -425,7 +497,12 @@ export async function runForkedAgent(
     const forkAgentId = `fork:${options.querySource}`;
     // C1：输出上限按任务类型取（大 edit 的 fork 给 8192，其余 2048）。
     // 循环外取一次而不是每轮算：整个 fork 用同一个上限，截断提示里报的数才对得上。
-    const forkMaxTokens = forkMaxTokensFor(options.querySource);
+    // D16：照搬主循环思考参数时，上限取主循环的值（不低于 fork 自己的）：DeepSeek 的 max_tokens
+    // 含思维链，开思考后仍用 2048 / 8192 会让思考吃掉工具入参的预算，退化成 C2 那种截断白烧。
+    const forkMaxTokens = Math.max(
+      forkMaxTokensFor(options.querySource),
+      thinkingMirror?.maxTokens ?? 0,
+    );
     /** C2：(工具, 目标文件) → 连续入参截断次数 */
     const malformedStreak = new Map<string, number>();
     while (turns < maxTurns) {
@@ -446,9 +523,29 @@ export async function runForkedAgent(
           messages: conversation,
           maxTokens: forkMaxTokens,
           tools: toolDefs,
+          forkPrefixSource: requestShape.prefixSource,
           // H8：fork agent 执行窄范围任务（querySource 标注），无独立 effort 旋钮，默认关思考，
           // 与子代理收口口径一致（thinking 是受控旋钮，不放任沿用思考模型服务端默认 enabled）。
-          thinking: SIDE_CALL_NO_THINK,
+          //
+          // D16：例外是缓存键含思考参数的族（方言 `cacheKeyIncludesThinking`，目前只有 DeepSeek
+          // OpenAI 兼容端点）—— 关思考 = 整条前缀不命中（实测 44,160 → 0），fork「共享前缀」的卖点
+          // 就没了。这些族照搬主循环最后一次实发的 thinking / effort。H8 当时没算缓存这笔账。
+          // 牺牲的是「更快」：fork 要先想再答；按 D16 调研的账，省下的输入费约是多付思考费的 7 倍。
+          ...(thinkingMirror
+            ? {
+                thinking: thinkingMirror.thinking ?? SIDE_CALL_NO_THINK,
+                ...(thinkingMirror.reasoningEffort && {
+                  reasoningEffort: thinkingMirror.reasoningEffort,
+                }),
+                ...(thinkingMirror.outputConfig && { outputConfig: thinkingMirror.outputConfig }),
+                ...(thinkingMirror.thinkingIntent && {
+                  thinkingIntent: thinkingMirror.thinkingIntent,
+                }),
+                ...(thinkingMirror.maxThinkingTokens !== undefined && {
+                  maxThinkingTokens: thinkingMirror.maxThinkingTokens,
+                }),
+              }
+            : { thinking: SIDE_CALL_NO_THINK }),
         },
         signal,
         {
@@ -476,11 +573,15 @@ export async function runForkedAgent(
         },
       );
 
-      const { content, stopReason, usage, malformed } = await accumulate(stream, signal);
+      const { content, stopReason, usage, malformed, reasoning } = await accumulate(stream, signal);
       totalUsage.inputTokens += usage.inputTokens;
       totalUsage.outputTokens += usage.outputTokens;
 
-      const assistantMsg: Message = { role: "assistant", content };
+      // D16：思维链走 `_meta.reasoning_content`（与主循环 query/stream-processor 同口径），
+      // 下一轮由 provider 按协议回传；不进 content，调用方取回答时不会读到它。
+      const assistantMsg: Message = reasoning
+        ? { role: "assistant", content, _meta: { reasoning_content: reasoning } }
+        : { role: "assistant", content };
       conversation.push(assistantMsg);
       appended.push(assistantMsg);
 

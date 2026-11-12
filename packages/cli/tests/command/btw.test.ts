@@ -31,6 +31,7 @@ function makeCtx(provider: any, messages: Message[]): any {
   return {
     ctxMgr: {
       getMessages: () => messages,
+      getForkPrefixMessages: () => messages,
       getSystemPrompt: () => "system",
     },
     toolRegistry: { get: () => undefined, definitions: () => [] },

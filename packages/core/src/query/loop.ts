@@ -54,6 +54,8 @@ import { trackRetryBackoff } from "./retry-backoff-window.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { takeLastRequestId } from "../api/request-id.ts";
 import { resolveWireModel } from "../llm/wire-model.ts";
+import { classifyProtocolFamily, getDialectWire } from "../llm/dialect/catalog.ts";
+import { recordMainRequestShape } from "../agent/fork-prefix.ts";
 import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
 import {
   emitTimeoutFired,
@@ -3296,6 +3298,19 @@ async function* queryLoopBody(
       // 非生成器实现（测试替身、未来改写）可能同步抛错：这里只**捕获**，在下方流式 try 的
       // 第一行原样重抛，让它走同一个 catch。不能把它推迟到"首次迭代"——那依赖消费方真的去
       // 迭代 stream，而替身 processStream 往往不迭代，错误会凭空消失。
+      // D16：记下本轮**实际发出**的 tools 与思考参数，供记忆 fork 对齐前缀、复用本轮写下的缓存。
+      // 放在 BeforeModel 之后、建流之前：hook 拦下的请求没有发出去，不能当快照。
+      try {
+        const modelConfigForShape = config.availableModels?.find((m) => m.name === config.model);
+        const family = classifyProtocolFamily({
+          model: sendParams.wireModel ?? config.model,
+          provider: config.provider,
+          baseURL: modelConfigForShape?.baseURL ?? config.baseURL,
+        });
+        recordMainRequestShape(ctxMgr, sendParams, getDialectWire(family).cacheKeyIncludesThinking);
+      } catch {
+        /* 快照失败只影响 fork 命中率，绝不影响主循环 */
+      }
       let sendError: { err: unknown } | undefined;
       try {
         stream = deps.sendWithRetry(sendParams, composedSignal);

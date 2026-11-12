@@ -839,6 +839,11 @@ export function emitBilledRequest(data: {
   thinking_shown?: boolean;
   /** R10：按线上实发推出的「服务端在思考」 */
   thinking_wire_thinks?: boolean;
+  /** D16：工具定义指纹 / 个数（见 BilledRequest.toolsHash） */
+  tools_hash?: string;
+  tools_count?: number;
+  /** D16：fork 是否复用了主循环快照（见 BilledRequest.prefixSource） */
+  prefix_source?: string;
 }): void {
   try {
     if (_eventWriter && _sessionId) {

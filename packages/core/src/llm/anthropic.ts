@@ -53,6 +53,7 @@ import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
 import { thinkingOffWire } from "./dialect/thinking-off-wire.ts";
 import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
+import { observeRequestShape } from "./request-shape-observation.ts";
 import { lookupRegistryExact } from "./model-registry.ts";
 import { resolveVisionSupport } from "./vision-capability.ts";
 import {
@@ -902,6 +903,7 @@ export class AnthropicProvider implements Provider {
               this.client.baseURL,
               thinkingWire.param,
             ),
+            ...observeRequestShape(params),
           });
         } catch {
           /* 计费上报绝不影响流 */
@@ -1203,6 +1205,7 @@ export class AnthropicProvider implements Provider {
             this.client.baseURL,
             nonStreamThinkingWire.param,
           ),
+          ...observeRequestShape(params),
         });
       }
     }

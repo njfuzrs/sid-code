@@ -557,6 +557,12 @@ export interface SendParams {
    */
   thinkingObservation?: ThinkingObservation;
   /**
+   * 观测用（只进 BilledRequest 的 `prefix_source`，不上线）：fork 这次请求的工具 / 思考参数
+   * 是否复用了主循环最后一次实际发出的快照（D16）。只有 `agent/forked-agent.ts` 写。
+   * `fallback` = 没有快照 / 模型不同 / 快照缺 fork 要用的工具，退回了全量工具 + 关思考。
+   */
+  forkPrefixSource?: "snapshot" | "fallback";
+  /**
    * 用户标识（DeepSeek `user_id`，OpenAI 兼容端点请求体顶层字段）。
    * 用于 KVCache 隔离 / 调度隔离 / 内容安全隔离。须满足正则 `[a-zA-Z0-9\-*]+`、长度 ≤512。
    * 不传则不下发。其它 provider 忽略。
