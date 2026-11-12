@@ -277,4 +277,39 @@ describe("queryLoop recovery transitions", () => {
       );
     expect(clip).toBeDefined();
   });
+
+  // ─── 思考预算：adaptive 模型不能被窗口钳制误关 ───
+  // 回归锁：PR #773 首版把 `resolveRequestOutputBudget` 返回的
+  // `thinkingBudgetTokens === undefined` 一律当成「窗口放不下 → 关思考」，
+  // 但 adaptive 模型（Claude 4.5+）的 `budgetTokens` 恒为 0（预算由服务端定），
+  // 于是 claude-opus-5-5 / claude-sonnet-5 的 adaptive、deepseek 的 enabled
+  // 全被静默关成 disabled。CI 的 T7 进程级 thinking 矩阵测试拦住了它；
+  // 这条单测是同一判据在 G1 层的低成本复现。
+  test("adaptive 模型（budgetTokens=0）不得被窗口钳制误关思考", async () => {
+    const seen: Array<{ enabled?: boolean; budgetTokens?: number }> = [];
+    const { loopConfig } = setup({
+      responses: [normalResp()],
+      configOverrides: {
+        model: "claude-opus-5-5",
+        provider: "anthropic",
+        maxTokens: 8000,
+      },
+      depsOverrides: {
+        sendWithRetry: (params) => {
+          seen.push({ ...(params.thinking ?? {}) });
+          return emptyStream();
+        },
+        // auto = 不显式切换（undefined 即跟随默认）；ThinkingSetting 只接受 on/off/undefined
+        getEffortSetting: () => undefined,
+        getThinkingSetting: () => "on",
+      },
+    });
+
+    await drainLoop(loopConfig);
+
+    expect(seen.length).toBeGreaterThan(0);
+    // adaptive 的 budgetTokens 为 0 表示「服务端定预算」，不是「算不出预算」。
+    // 修复前这里会是 { enabled: false }。
+    expect(seen[0]!.enabled).toBe(true);
+  });
 });

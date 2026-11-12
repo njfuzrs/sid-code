@@ -3057,6 +3057,13 @@ async function* queryLoopBody(
         exitedViaReturn = true;
         return;
       }
+      // 只有「原本就带正的思考预算」才可能被窗口钳制关掉。
+      // adaptive 模型（Claude 4.5+）的 `budgetTokens` 恒为 0 —— 预算由服务端决定，
+      // 不是「窗口放不下」。把 0 当成「算不出来」会静默关掉 thinking
+      //（CI 的 T7 进程级 thinking 矩阵测试就是这条回归：opus-5-5/sonnet-5 的 adaptive、
+      //  deepseek 的 enabled 全被误关成 disabled/null）。
+      const hadThinkingBudget =
+        sendParams.thinking?.enabled === true && (sendParams.thinking.budgetTokens ?? 0) > 0;
       sendParams.maxTokens = sendBudget.maxTokens;
       if (sendParams.thinking) {
         if (sendBudget.thinkingBudgetTokens !== undefined) {
@@ -3066,8 +3073,9 @@ async function* queryLoopBody(
             ...sendParams.thinking,
             budgetTokens: sendBudget.thinkingBudgetTokens,
           };
-        } else if (sendParams.thinking.enabled) {
-          // 窗口连「思考预算 + 正文余量」都放不下 → 关掉思考，而不是发一个非法组合。
+        } else if (hadThinkingBudget) {
+          // 原本有正的思考预算、但窗口连「思考 + 正文余量」都放不下 → 关掉思考，
+          // 而不是发一个非法组合（budget_tokens ≥ max_tokens）。
           sendParams.thinking = { ...sendParams.thinking, enabled: false };
         }
       }
