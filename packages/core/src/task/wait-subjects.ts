@@ -29,6 +29,7 @@
  * 所以判不准一律不认；宁可漏一个反复挂的等待，也不要让两个不相干的对象互相去重。
  */
 
+import { createHash } from "node:crypto";
 import { splitShellSubcommands, splitShellWords } from "../tool/bash/parser.ts";
 import {
   type StatusQueryFamily,
@@ -194,4 +195,41 @@ function commandLikeTexts(sources: WaitSubjectSources): string[] {
   if (sources.command) out.push(sources.command);
   for (const body of sources.scriptBodies ?? []) out.push(body);
   return out;
+}
+
+// ── R2：判「两次等待是不是同一件事」的两个口径 ──
+
+/**
+ * 命令归一化：判 duplicate / replace 的字面口径。
+ *
+ * 三条规则都来自真实轨迹里的等价写法：
+ * - 去掉 `cd <dir> &&` 前缀——同一个脚本换工作目录调用还是同一个等待；
+ * - `chmod +x X && bash X` 视为 `bash X`（ca8d7e5c 的写法，先赋权再跑）；
+ * - 合并空白。
+ *
+ * 刻意**不**做的：不改写参数顺序、不展开变量。归一化只削掉「模型换个说法但语义没变」的
+ * 噪声；判不出来时走 replace（启动新的），不会误判成重复。
+ */
+export function normalizeWaitCommand(command: string): string {
+  let s = command.replace(/\s+/g, " ").trim();
+  for (;;) {
+    const m = /^(?:cd\s+[^\s;&|]+|chmod\s+[^\s;&|]+(?:\s+[^\s;&|]+)?)\s*&&\s*/.exec(s);
+    if (!m) break;
+    s = s.slice(m[0].length);
+  }
+  return s.trim();
+}
+
+/**
+ * 脚本正文的稳定哈希（前 16 位）。
+ *
+ * 用途只有一个：同样的路径、改了内容的脚本算「命令不同」（R2 的 replace 分支）。
+ * b0aa0f1e 10:55:27 改过 `/tmp/wait-pr-779.sh`，10:55:31 起第一份、之后三份内容没变——
+ * 只比路径的话，第一份会被判成后三份的重复，方向正好反了。
+ */
+export function hashScriptBodies(bodies: readonly string[]): string | undefined {
+  if (bodies.length === 0) return undefined;
+  const h = createHash("sha256");
+  for (const b of [...bodies].sort()) h.update(b).update("\u0000");
+  return h.digest("hex").slice(0, 16);
 }

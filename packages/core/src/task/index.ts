@@ -116,6 +116,7 @@ export {
   type WaitNotice,
   type WaitTraceSink,
   DEADLINE_GRACE_MS,
+  WAIT_REGISTERED_EVENT_NAME,
   registerWait,
   releaseWait,
   releaseAllWaits,
@@ -134,6 +135,19 @@ export {
   __clearWaitNoticesForTest,
   __resetWaitRegistryForTest,
 } from "./wait-registry.ts";
+
+// 等待准入判定（R2）：同一个对象同时只允许一个有效的显式等待。
+// 三个入口（bash / monitor / schedule_wakeup）在启动进程或排唤醒之前都必须过这里。
+// 对象签名本身由 R1 的 wait-subjects 提供（见下方），这里只补 R2 的两个判据函数。
+export { normalizeWaitCommand, hashScriptBodies } from "./wait-subjects.ts";
+export {
+  type WaitAdmissionAction,
+  type WaitAdmissionInput,
+  type WaitAdmissionDecision,
+  findActiveWaitsBySubjects,
+  decideWaitAdmission,
+  formatDuplicateWaitReceipt,
+} from "./wait-admission.ts";
 
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 

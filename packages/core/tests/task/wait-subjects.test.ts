@@ -30,6 +30,8 @@ import {
   collectWaitSubjects,
   extractNaturalLanguageSubjects,
   extractScriptPaths,
+  hashScriptBodies,
+  normalizeWaitCommand,
 } from "../../src/task/wait-subjects.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "wait-scripts");
@@ -177,5 +179,32 @@ describe("R1 脚本文件展开：只认命令里字面出现的路径", () => {
     // 也能抽出 gh:pr:757，用例会假通过（2026-11-12 变异自证时实测踩到）。
     // 所以 bash-wait-until.test.ts 的临时脚本名一律叫 `wait.sh`。
     expect(collectWaitSubjects({ command: "bash /tmp/wait-pr757.sh" })).toEqual(["gh:pr:757"]);
+  });
+});
+
+describe("R2 命令归一化", () => {
+  test("去掉 cd / chmod 前缀，合并空白", () => {
+    expect(normalizeWaitCommand("cd /tmp && bash wait.sh")).toBe("bash wait.sh");
+    expect(normalizeWaitCommand("cd /a && cd /b && bash x.sh")).toBe("bash x.sh");
+    expect(normalizeWaitCommand("chmod +x /tmp/wait.sh && bash /tmp/wait.sh")).toBe(
+      "bash /tmp/wait.sh",
+    );
+    expect(normalizeWaitCommand("  gh   pr   checks  779 ")).toBe("gh pr checks 779");
+  });
+
+  test("不改写参数顺序与语义（判不出就让它走 replace）", () => {
+    expect(normalizeWaitCommand("bash a.sh --flag x")).toBe("bash a.sh --flag x");
+    expect(normalizeWaitCommand("bash a.sh --flag x")).not.toBe(
+      normalizeWaitCommand("bash a.sh --flag y"),
+    );
+  });
+});
+
+describe("R2 脚本正文哈希", () => {
+  test("同内容稳定、不同内容可区分、无脚本为 undefined", () => {
+    expect(hashScriptBodies([])).toBeUndefined();
+    const a = hashScriptBodies(["pr=779\ngh pr checks 779\n"]);
+    expect(a).toBe(hashScriptBodies(["pr=779\ngh pr checks 779\n"]));
+    expect(a).not.toBe(hashScriptBodies(["pr=779\ngh pr checks 779 --watch\n"]));
   });
 });

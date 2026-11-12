@@ -41,12 +41,13 @@ import {
 } from "../task/index.ts";
 import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
 import { getRunningTasks } from "../task/registry.ts";
+import { registerWait, isWakeupRegistrationEnabled } from "../task/wait-registry.ts";
 import {
-  registerWait,
-  findWaitBySubject,
-  isWakeupRegistrationEnabled,
-} from "../task/wait-registry.ts";
-import { collectWaitCommandFamilies, collectWaitSubjects } from "../task/wait-subjects.ts";
+  collectWaitCommandFamilies,
+  collectWaitSubjects,
+  normalizeWaitCommand,
+} from "../task/wait-subjects.ts";
+import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
 import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
@@ -259,15 +260,30 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       };
     }
 
-    // 同一被监控对象的提示（T-M1-15）：允许启动，但要点破已有同对象监控，
-    // 否则模型会为了「保险」再挂一个，两路事件重复叫醒主循环。
+    // R2：同一个对象同时只允许一个**有效的显式等待**，且跨类（shell × monitor × wakeup）。
+    // 原来这里只在 monitor 之间比、且只追加一行提示就照常启动——b0aa0f1e 的四份同脚本进程
+    // 正是「每个入口只管自己那一类」的产物。现在走统一判定：重复则不 spawn，直接返回回执。
     const subjects = collectWaitSubjects({ command });
-    const duplicate = subjects
-      .map((s) => findWaitBySubject(s))
-      .find((w) => w !== undefined && w.kind === "monitor");
-    const duplicateNote = duplicate
-      ? `\n注意：已有监控 ${duplicate.id}（${duplicate.description}）在盯同一个对象，两路事件会分别通知。`
-      : "";
+    const normalizedCommand = normalizeWaitCommand(command);
+    const admission = decideWaitAdmission({
+      subjects,
+      command: normalizedCommand,
+      deadlineAt: Date.now() + timeoutMs,
+    });
+    if (admission.action === "duplicate") {
+      return {
+        data: formatDuplicateWaitReceipt(admission.existing, subjects),
+        isError: false,
+      };
+    }
+    // replace：模型换了一种等法（改了脚本 / 从唤醒换成监控）。R2 只判不淘汰，
+    // 旧的仍在跑——不静默，否则模型会以为只剩自己这一路，收不到旧任务通知时又去前台查。
+    const replaceNote =
+      admission.action === "replace"
+        ? `\n注意：${
+            admission.existing[0]!.id
+          }（${admission.existing[0]!.description}）也在盯同一个对象，它仍会继续到结束或你 task_stop 它。`
+        : "";
 
     const taskState = spawnMonitorTask({
       description,
@@ -286,7 +302,10 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       promise: { kind: "deadline", deadlineAt: taskState.deadlineAt },
       description,
       registeredAt: taskState.startTime,
-      subjects,
+      subjects: subjects.length > 0 ? subjects : undefined,
+      // 登记归一化命令：下一个等待来判准入时要能认出「这是同一件事」
+      command: normalizedCommand,
+      // R1：P1 覆盖判定要用命令族，与 subjects 同源同尺
       commandFamilies: collectWaitCommandFamilies({ command }),
     });
 
@@ -311,7 +330,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
         `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
         waitNote +
-        `提前停止：task_stop ${taskState.id}${duplicateNote}`,
+        `提前停止：task_stop ${taskState.id}${replaceNote}`,
     };
   }
 }
