@@ -34,7 +34,11 @@ import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { isAbortError, errorMessageOf } from "../llm/errors.ts";
-import { validateToolInput } from "../tool/input-validator.ts";
+import {
+  validateToolInput,
+  buildUnknownKeysNotice,
+  declaredTopLevelKeys,
+} from "../tool/input-validator.ts";
 import { processToolResult } from "../tool/result-storage.ts";
 import { resolveContentProvenance, wrapExternalContent } from "../tool/content-provenance.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
@@ -182,7 +186,12 @@ export async function runToolUse(
   logToolCall(block.name, efFilePath);
 
   // ── zod 校验 ── 用注入 _agentId 之前的参数校验：严格 schema 会把 _agentId 当非法字段拒绝。
-  const validation = validateToolInput(tool, effectiveInput);
+  // T2（D1）：同主循环——传模型原始键，区分「模型传错参数名」与「hook 注入字段」。
+  const modelKeys =
+    block.input !== null && typeof block.input === "object" && !Array.isArray(block.input)
+      ? new Set(Object.keys(block.input as Record<string, unknown>))
+      : undefined;
+  const validation = validateToolInput(tool, effectiveInput, { modelKeys });
   if (!validation.ok) {
     log.info("SUBAGENT:TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}`);
     // Pre/Post 配对：模型漏 required 字段是最高频的真实失败，不补 fire 它在 trace 里完全不存在。
@@ -201,6 +210,16 @@ export async function runToolUse(
     });
     return errorResult(block.id, validation.message);
   }
+
+  // T2（D1）：模型传了 schema 没声明的顶层键 → 不报错，结果开头给一条提示（同主循环）。
+  const unknownKeysNotice =
+    validation.ignoredKeys && validation.ignoredKeys.length > 0
+      ? buildUnknownKeysNotice(
+          block.name,
+          validation.ignoredKeys,
+          declaredTopLevelKeys(tool.zodSchema),
+        )
+      : "";
 
   // ── 执行 ──
   const startTime = Date.now();
@@ -297,11 +316,15 @@ export async function runToolUse(
     // B14（HB-13a）：外部来源结果的不可信包裹。**排在 hook 收尾之后** ——
     // runPostToolHooks 可能整段替换输出，标签写在它之前会被冲掉且不会有测试变红。
     // 空内容不包（工具无输出且 hook 也没追加）：包一对空标签只会给模型一个错误的来源暗示。
-    const baseContent = hookModifiedNotice
-      ? hookModifiedNotice + "\n\n" + withHookFeedback
-      : withHookFeedback;
+    //
+    // T2（D1）：未声明的顶层键提示与主循环同位置 —— 拼在包裹**外面**。
+    // 子代理跑的是同一个模型，「参数被静默丢弃」在这里同样会让它以为参数生效了；
+    // 提示若进包裹会被标成 untrusted，模型会当成不可信内容忽略。
+    const notices = [unknownKeysNotice, hookModifiedNotice]
+      .filter((n) => n.length > 0)
+      .join("\n\n");
     const provenance =
-      baseContent.trim().length === 0
+      withHookFeedback.trim().length === 0
         ? undefined
         : resolveContentProvenance(
             block.name,
@@ -310,12 +333,15 @@ export async function runToolUse(
             (p) =>
               deps.permissionChecker?.getPathValidator?.()?.isWithinWorkingDirectories(p) ?? true,
           );
+    const rendered = provenance
+      ? wrapExternalContent(withHookFeedback, provenance)
+      : withHookFeedback;
 
     return {
       type: "tool_result",
       tool_use_id: block.id,
-      // 改参告知前置（与主循环同序：先看到「参数被改过」，再读结果与 hook 反馈）
-      content: provenance ? wrapExternalContent(baseContent, provenance) : baseContent,
+      // 附言前置（与主循环同序：先看到「参数被改过 / 被忽略」，再读结果与 hook 反馈）
+      content: notices.length > 0 ? notices + "\n\n" + rendered : rendered,
       is_error: result.isError,
       ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
       // TUI 呈现档位：错误结果不带（错误照常显示，见 tool/types.ts 的硬约束 ②）。

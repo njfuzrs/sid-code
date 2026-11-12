@@ -17,7 +17,12 @@ import { isAbortError, abortReasonOf, errorMessageOf } from "../llm/errors.ts";
 import { isReadOnlyIgnoringCd } from "../tool/bash/read-only-validation.ts";
 import { processToolResult } from "../tool/result-storage.ts";
 import { resolveContentProvenance, wrapExternalContent } from "../tool/content-provenance.ts";
-import { validateToolInput, buildSchemaNotSentHint } from "../tool/input-validator.ts";
+import {
+  validateToolInput,
+  buildSchemaNotSentHint,
+  buildUnknownKeysNotice,
+  declaredTopLevelKeys,
+} from "../tool/input-validator.ts";
 import {
   yieldMissingToolResults,
   collectToolResultIdsFromBlocks,
@@ -1486,7 +1491,15 @@ export async function executeSingleTool(
   // 工具提供 zodSchema 时，safeParse 失败直接返回结构化错误，不带病执行；
   // 成功则用校验后的 data 替换 input（zod 规整/剥离后的安全值）。
   // 工具未提供 zodSchema 时原样放行（回退到工具内部手工检查）。
-  const validation = validateToolInput(tool, effectiveInput);
+  // T2（D1）：把模型**原始发出**的键交给校验层，用于区分「模型传错参数名」与
+  // 「hook 往参数里注入了字段」。hook 改参在上方（effectiveInput 已是被改过的那份），
+  // hook 注入额外字段是合法用法；不区分的话模型会收到「`xxx` 不是参数，
+  // 已被忽略」，而那个键根本不是它传的。
+  const modelKeys =
+    block.input !== null && typeof block.input === "object" && !Array.isArray(block.input)
+      ? new Set(Object.keys(block.input as Record<string, unknown>))
+      : undefined;
+  const validation = validateToolInput(tool, effectiveInput, { modelKeys });
   if (!validation.ok) {
     // 「schema 未发送」补救（对标 claude-code buildSchemaNotSentHint）：模型盲调未激活的
     // 延迟工具、传了畸形参数时，裸 zod 错误会误导它以为是自己参数写错、反复微调猜测。
@@ -1531,6 +1544,17 @@ export async function executeSingleTool(
       elapsedMs: Date.now() - toolStartedAt,
     };
   }
+  // T2（D1）：模型传了 schema 没声明的顶层键时，**不报错、照常执行**，但在结果开头
+  // 给一条提示（取舍见 buildUnknownKeysNotice 的注释）。只提示模型原始发出的键：
+  // hook 改参注入的键已经在上一步由 modelKeys 过滤掉，只发事件。
+  const unknownKeysNotice =
+    validation.ignoredKeys && validation.ignoredKeys.length > 0
+      ? buildUnknownKeysNotice(
+          block.name,
+          validation.ignoredKeys,
+          declaredTopLevelKeys(tool.zodSchema),
+        )
+      : "";
   // GAP-08：纵深防御——校验通过后、执行前剥离模型可能自行伪造的内部字段
   // （_agentId/_simulatedSedEdit/_hookInjected）。即使 zod strict 理论上已拦，
   // 也不信任 schema 层一定拦得住（部分工具走 passthrough），在执行层再加一道，
@@ -1742,6 +1766,16 @@ export async function executeSingleTool(
     // 凭证，模型照样收到凭证。替换值同样过一次 processToolResult，超阈值照常落盘，不绕过大小上限。
     // 只在成功路径生效：CC 的 PostToolUseFailure 没有这个字段。
     let finalOutput = normalizedOutput;
+    // D11（与 T2 同一位置）：把「harness 附言」和「工具产出」分成两个变量。
+    //
+    // 为什么必须分开：`wrapExternalContent` 在函数末尾才执行，原先三种 hook 附言都并进
+    // 了 `finalOutput`，于是它们在 MCP / ReadMcpResource / web_search 的结果里被一起包进
+    // `<external-content untrusted="true">` —— 模型会把 hook 写的话当成不可信内容忽略。
+    // 从现在起：工具产出（含 hook 整段替换）照旧进包裹；附言一律拼在包裹外面，
+    // 前置类（参数被改 / 参数被忽略）放最前面，后置类（附加信息 / 反馈 / 提示）放最后。
+    const prefixNotices: string[] = [];
+    const suffixNotices: string[] = [];
+    if (unknownKeysNotice) prefixNotices.push(unknownKeysNotice);
     const replaced = result.isError
       ? undefined
       : postResult.finalOutput?.getUpdatedToolOutput?.(isMcpTool);
@@ -1758,7 +1792,7 @@ export async function executeSingleTool(
     const additionalCtx = postResult.finalOutput?.getAdditionalContext();
     if (additionalCtx) {
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
-      finalOutput = finalOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
+      suffixNotices.push(`[Hook 附加上下文]\n${additionalCtx}`);
     }
     // HC18：PostToolUse 的 exit 2（stderr）/ decision:"block"（reason）回灌模型（对齐 CC）。
     // 工具已经执行，不撤回；只是让模型看到「lint 没过」这类反馈。原先只取 additionalContext，
@@ -1766,7 +1800,7 @@ export async function executeSingleTool(
     const postFeedback = hookFeedbackText(postResult);
     if (postFeedback) {
       log.info("HOOK", `PostToolUse hook 反馈回灌到 ${block.name} 结果`);
-      finalOutput = finalOutput + "\n\n[Hook 反馈]\n" + postFeedback;
+      suffixNotices.push(`[Hook 反馈]\n${postFeedback}`);
     }
 
     // 连续编辑失败计数提醒（借鉴 edit-guard，用现成的 PostToolUse 回注通道落地）：
@@ -1785,7 +1819,7 @@ export async function executeSingleTool(
         typeof oldString === "string" ? oldString : undefined,
       );
       if (efReminder) {
-        finalOutput = finalOutput + "\n\n" + efReminder;
+        suffixNotices.push(efReminder);
       }
     } catch (e: any) {
       // 提醒是锦上添花，任何异常都不能影响工具结果本身。
@@ -1794,7 +1828,7 @@ export async function executeSingleTool(
 
     // hook 改参告知前置到结果最前（模型先看到"参数被改过"，再读结果，避免按旧参数误判）
     if (hookModifiedNotice) {
-      finalOutput = hookModifiedNotice + "\n\n" + finalOutput;
+      prefixNotices.push(hookModifiedNotice);
     }
 
     // P1：等待期外部状态查询的记忆与提示（只在**真的执行了**之后记，被拦的那次不更新）。
@@ -1815,7 +1849,7 @@ export async function executeSingleTool(
           const rawMeta = result.meta?.rawOutput;
           const pollInput = typeof rawMeta === "string" ? rawMeta : String(result.output ?? "");
           const pollHint = recordStatusQueryResult(cmd, pollInput);
-          if (pollHint) finalOutput = finalOutput + "\n\n" + pollHint;
+          if (pollHint) suffixNotices.push(pollHint);
         }
       }
     } catch (e: any) {
@@ -1868,12 +1902,19 @@ export async function executeSingleTool(
               deps.permissionChecker?.getPathValidator?.()?.isWithinWorkingDirectories(p) ?? true,
           );
     const renderedOutput = provenance ? wrapExternalContent(finalOutput, provenance) : finalOutput;
+    // D11：附言拼在包裹**外面**——前置类（参数被忽略 / 被 hook 改写）放结果最前，
+    // 后置类（hook 附加上下文 / 反馈 / 编辑失败提醒 / 状态轮询提示）放最后。
+    // 工具产出与附言之间只隔一个空行，模型能分辨「哪段是工具说的、哪段是 harness 说的」。
+    // 用户卡片看的是工具自己的输出（resultDisplayMode），不受这一层影响。
+    const content = [...prefixNotices, renderedOutput, ...suffixNotices]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
 
     return {
       block: {
         type: "tool_result",
         tool_use_id: block.id,
-        content: renderedOutput,
+        content,
         is_error: result.isError,
         // 结构化 diff 透传(仅 edit/write 填充)。其它工具为 undefined → 字段不出现,零破坏。
         // provider 序列化逐字段读取,不会泄漏给 LLM;随 Message 持久化可重放回 UI。

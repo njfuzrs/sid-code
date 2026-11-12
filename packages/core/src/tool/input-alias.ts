@@ -24,8 +24,8 @@
  * ## 范围刻意收窄
  *
  * 只认显式登记的别名对（`ALIASES`），不做「命名风格归一化后相等即改名」的通用匹配：
- * 通用匹配会让任何工具的任意键都可能被悄悄改写，而我们目前只有 `activeForm`
- * 这一对的证据。别的漂移先靠 `ToolInputAliasApplied` 事件度量，再决定要不要泛化。
+ * 通用匹配会让任何工具的任意键都可能被悄悄改写，而每一对别名都应该有具体证据
+ * （历史事故或用量统计）。别的漂移先靠 `ToolInputAliasApplied` 事件度量，再决定要不要泛化。
  */
 
 import { getDef, unwrap } from "./nullish-normalize.ts";
@@ -48,7 +48,55 @@ const ALIASES: ReadonlyArray<{ from: string; to: string }> = [
   { from: "-i", to: "case_insensitive" },
   { from: "-A", to: "after_context" },
   { from: "-B", to: "before_context" },
+  // 废弃参数（D3）：两个旧名已从 zod schema 里删掉（每轮省约 300 字节常驻上下文；30 天用量
+  // 统计里模型一次都没传过有意义的值，全是 strict 线要求的 null/false 占位）。但老对话
+  // 记忆仍可能带出旧键，所以保留别名兼容。改名发生在 zod 校验**之前**，因此删 schema
+  // 字段不会打断兼容；两键同时出现时下面的守卫保留协议字段。
+  { from: "total_max_matches", to: "head_limit" },
+  { from: "is_background", to: "run_in_background" },
 ];
+
+/**
+ * 「已知无影响键」名单：能确定「丢了不改变结果」的未声明顶层键。
+ *
+ * ## 为什么需要这张表
+ *
+ * `validateToolInput` 会把未声明的顶层键做成一条**模型可见**的提示
+ * （「参数 X 不是本工具的参数，已被忽略」）。但有一类键丢了**对结果没有任何影响**，
+ * 给提示反而是负收益：
+ *
+ * - `grep` 的 `-n` 是 CC 的「输出行号」，sid 没有对应字段，而 `output_mode=content`
+ *   时 grep 恒带 `--line-number`（见 grep.ts 的 ripgrep 参数）。提示里写「已被忽略」
+ *   会让模型以为结果里没有行号——它读到的是**错误信息**，不只是噪音。
+ * - 30 天轨迹里 `-n` 是未知键里最高频的一个（105/170）；每次都在结果开头加一段，
+ *   会把「同一会话里同一个键的复发率」这个验收指标整个带偏。
+ *
+ * ## 登记口径（与 ALIASES 一致，只认证据）
+ *
+ * - 按「工具名 + 键名」登记，**不允许按模型名**——模型会换、能力会漂移，按模型名
+ *   硬编码是本仓明令禁止的做法。
+ * - 每条必须写清「为什么丢了不影响结果」。写不出这个理由的，不该进这张表。
+ *
+ * 名单里的键仍然发 `ToolInputUnknownKeys` 事件（进 `silenced` 字段），只是不进提示。
+ * 静默行为必须在轨迹上有存在形式——这是 input-validator 与本模块的共同前提。
+ */
+export const IGNORABLE_UNKNOWN_KEYS: ReadonlyArray<{
+  tool: string;
+  key: string;
+  reason: string;
+}> = [
+  {
+    tool: "grep",
+    key: "-n",
+    reason:
+      "CC 的 -n 是「输出行号」；sid 没有对应字段，output_mode=content 时恒带 --line-number，丢了不改变结果",
+  },
+];
+
+/** 「工具 + 键」是否属于已知无影响键（丢了不改结果：只发事件，不提示） */
+export function isIgnorableUnknownKey(tool: string, key: string): boolean {
+  return IGNORABLE_UNKNOWN_KEYS.some((e) => e.tool === tool && e.key === key);
+}
 
 /** 一次归一里每个别名对的命中统计 */
 export interface AliasHit {

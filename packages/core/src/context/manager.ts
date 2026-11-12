@@ -17,6 +17,8 @@ import {
 } from "./tool-result-storage.ts";
 import { applyToolResultBudgetToContent } from "../query/compact/tool-result-budget.ts";
 import { planMicrocompact } from "../query/compact/microcompact.ts";
+import { planStaleToolOutputClear } from "./stale-tool-output.ts";
+import { emitToolResultCleared } from "../query/guidance-events.ts";
 import type { SendMutationCause } from "../hook/types.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import {
@@ -490,6 +492,13 @@ export class Manager {
    * 逐字节贴同一份；与 masking / replacementState 同生命周期，压缩/截断/setMessages/clear 统一清空。
    */
   private coldClearState = new Map<string, string>();
+  /**
+   * F4：按过期程度清理的决策冻结（tool_use_id → 清理后的完整内容）。
+   *
+   * 与 coldClearState 同一形态、同一生命周期：一旦提交，之后每轮逐字节重放同一份占位，
+   * 前缀只在提交那一轮被改写一次。见 `context/stale-tool-output.ts` 的批量门槛说明。
+   */
+  private staleClearState = new Map<string, string>();
 
   /**
    * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
@@ -770,6 +779,7 @@ export class Manager {
     this.tokenFreedTracker.reset();
     this.maskedState.clear();
     this.coldClearState.clear();
+    this.staleClearState.clear();
     this.lastSendSnapshot = null;
     this.pendingSendCauses.add("compact");
     this.validatedPrefix = [];
@@ -830,7 +840,10 @@ export class Manager {
     const plan = planMicrocompact(this.messages, {
       mode: "time",
       skipToolUse: (id) =>
-        this.coldClearState.has(id) || this.maskedState.has(id) || this.replacementState.has(id),
+        this.coldClearState.has(id) ||
+        this.staleClearState.has(id) ||
+        this.maskedState.has(id) ||
+        this.replacementState.has(id),
     });
     let savedChars = 0;
     for (const p of plan) {
@@ -848,14 +861,56 @@ export class Manager {
 
   /** 把冷清理决策贴到发送副本上（只替换内容，其余字段透传） */
   private applyColdClearState(messages: Message[]): Message[] {
-    if (this.coldClearState.size === 0) return messages;
+    return this.applyFrozenClearState(messages, this.coldClearState);
+  }
+
+  /**
+   * F4：提交一批过期清理决策（未达批量门槛时什么都不做，本轮前缀不动）。
+   *
+   * 作用在**发送投影**上判定（遮罩 / 冷清理占位已贴好），决策写进 staleClearState，
+   * 之后每轮由 applyFrozenClearState 重放。释放量按 token 记进 tokenFreedTracker，
+   * 与其余三条本地清理同口径，Footer 与压缩档位都扣得到。
+   */
+  private commitStaleToolOutputClear(projection: Message[]): void {
+    const plan = planStaleToolOutputClear(projection, {
+      skipToolUse: (id) =>
+        this.staleClearState.has(id) ||
+        this.coldClearState.has(id) ||
+        this.maskedState.has(id) ||
+        this.replacementState.has(id),
+    });
+    if (plan.entries.length === 0) return;
+    let savedTokens = 0;
+    let savedChars = 0;
+    for (const e of plan.entries) {
+      this.staleClearState.set(e.toolUseId, e.replacement);
+      savedTokens += e.savedTokens;
+      savedChars += Math.max(0, e.originalLength - e.replacement.length);
+    }
+    this.tokenFreedTracker.recordCompact(savedTokens, "staleToolOutput");
+    this.pendingSendCauses.add("stale_clear");
+    getLogger().info(
+      "CONTEXT",
+      `过期工具输出批量清理：${plan.entries.length} 项，释放约 ${savedTokens} token（${savedChars} 字符）`,
+    );
+    emitToolResultCleared({
+      stage: "stale_clear",
+      cleared: plan.entries.length,
+      saved_chars: savedChars,
+      tool_use_ids: plan.entries.map((e) => e.toolUseId),
+    });
+  }
+
+  /** 把一份冻结的清理决策贴到发送副本上（只替换内容，其余字段透传） */
+  private applyFrozenClearState(messages: Message[], state: Map<string, string>): Message[] {
+    if (state.size === 0) return messages;
     let changed = false;
     const out = messages.map((msg) => {
       if (msg.role !== "user") return msg;
       let touched = false;
       const content = msg.content.map((block) => {
         if (block.type !== "tool_result") return block;
-        const frozen = this.coldClearState.get(block.tool_use_id);
+        const frozen = state.get(block.tool_use_id);
         if (frozen === undefined || block.content === frozen) return block;
         touched = true;
         return { ...block, content: frozen };
@@ -1212,6 +1267,10 @@ export class Manager {
     // 冷清理决策在 masking 之后、大输出清理之前贴：被冷清理的块已是短占位，
     // 不会再进下面的大输出候选，两套占位不会叠在同一个块上。
     cleaned = this.applyColdClearState(cleaned);
+    // F4：按过期程度批量清理。放在冷清理之后、大输出清理之前：已有稳定占位的块一律豁免
+    // （再改一次就是第二次改写前缀），清完的块已是短占位，不会再进下面的大输出候选。
+    this.commitStaleToolOutputClear(cleaned);
+    cleaned = this.applyFrozenClearState(cleaned, this.staleClearState);
 
     // P1-3：构建 tool_use 索引 + 活跃文件集合（正在编辑的文件 read 输出豁免清理）
     const toolIndex = this.buildToolUseIndex(cleaned);
@@ -1337,35 +1396,7 @@ export class Manager {
       }),
     }));
 
-    // 旧持久化引用折叠：引用约 200 字节，不会被上面的大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
-    // 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
-    const REFERENCE_KEEP_RECENT = 20;
-    const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
-    for (let i = 0; i < result.length; i++) {
-      const msg = result[i];
-      for (let j = 0; j < msg.content.length; j++) {
-        const block = msg.content[j];
-        if (
-          block.type === "tool_result" &&
-          typeof block.content === "string" &&
-          isPersistedReference(block.content)
-        ) {
-          persistedRefPositions.push({ msgIdx: i, blockIdx: j });
-        }
-      }
-    }
-    if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
-      const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
-      for (const { msgIdx, blockIdx } of toCollapse) {
-        const block = result[msgIdx].content[blockIdx];
-        if (block.type === "tool_result") {
-          (result[msgIdx].content as any[])[blockIdx] = {
-            ...block,
-            content: "[旧工具输出，如需查阅请重新执行对应工具]",
-          };
-        }
-      }
-    }
+    collapseOldPersistedReferences(result);
 
     // 验证消息格式（仅警告，不阻塞）
     this.validateSendCopy(full, result);
@@ -1373,6 +1404,55 @@ export class Manager {
     this.recordSentIntactToolResults(result);
     this.lastSendSnapshot = { full, sent: result };
     return result;
+  }
+
+  /**
+   * D16：fork（记忆提取 / 会话笔记）发请求用的消息前缀 —— **只读**地复现主循环的发送视图。
+   *
+   * 为什么不直接给 fork `getMessages()`：主循环发的是 `getCleanedMessages()`（遮罩 / 冷清理 /
+   * 大输出占位），fork 发原始消息时，前缀在第一个被清理的 tool_result 处分叉，之后的历史
+   * 全部不命中缓存 —— 会话越长越容易触发，而越长的会话 fork 首请求越贵。
+   *
+   * 为什么不能让 fork 调 `getCleanedMessages()`：它有副作用（新增清理对象、记 sentIntact、
+   * 覆盖 lastSendSnapshot、记 pendingSendCauses），fork 一调就改了主循环下一轮的发送前缀与校准分母。
+   *
+   * 这里只贴**已经发出去过**的三类粘滞占位（maskedState / coldClearState / replacementState，
+   * 都按 tool_use_id 键、一旦发出就不再撤销），再做与发送路径同一份的旧引用折叠。
+   * 不贴「本轮才会新清理」的块：主循环上一次请求里它们还是原文，缓存里存的也是原文。
+   * 不含 transient reminder（只在主循环发送副本里，不进历史）—— 那只影响末尾一小段。
+   */
+  getForkPrefixMessages(): Message[] {
+    const hasSticky =
+      this.maskedState.size > 0 || this.coldClearState.size > 0 || this.replacementState.size > 0;
+    /** 主循环只有在「有大输出占位要贴」的那条分支里才做旧引用折叠（无占位时提前返回），这里同条件 */
+    let hasReplacement = false;
+    const view = !hasSticky
+      ? [...this.messages]
+      : this.messages.map((msg) => {
+          let touched = false;
+          const content = msg.content.map((block) => {
+            if (block.type !== "tool_result") return block;
+            const id = block.tool_use_id;
+            if (this.replacementState.has(id)) hasReplacement = true;
+            // 与 getCleanedMessages 同序：遮罩 → 冷清理 → 大输出占位（后者覆盖前者）
+            const next =
+              this.replacementState.get(id) ??
+              this.coldClearState.get(id) ??
+              this.maskedState.get(id);
+            if (next === undefined || next === block.content) return block;
+            touched = true;
+            return { ...block, content: next };
+          });
+          if (!touched) return msg;
+          // ⚠️ `...msg` 默认透传，不得手写字段清单（会丢 _meta，见 getCleanedMessages 同名注释）
+          return { ...msg, content };
+        });
+    if (!hasReplacement) return view;
+    // 折叠会就地改写 content 数组：没有经过上面重建的消息对象仍是 this.messages 的引用，
+    // 所以先浅拷一层 content 再折叠，绝不碰主历史。
+    const out = view.map((m) => ({ ...m, content: [...m.content] }));
+    collapseOldPersistedReferences(out);
+    return out;
   }
 
   /**
@@ -1398,6 +1478,14 @@ export class Manager {
         if (sticky !== undefined) {
           msgChanged = true;
           return { ...block, content: sticky };
+        }
+        // 已有冷清理 / 过期清理占位的块不再记遮罩：它们之后会被重放为那份占位，
+        // 在这里再记一次只会把同一块的释放量重复记账。
+        if (
+          this.coldClearState.has(block.tool_use_id) ||
+          this.staleClearState.has(block.tool_use_id)
+        ) {
+          return block;
         }
         const fb = freshMsg?.content[j];
         if (
@@ -2994,4 +3082,41 @@ function buildRoleBridge(nextRole: Message["role"], origin: string): Message {
   return nextRole === "user"
     ? { role: "assistant", content: [{ type: "text", text: "好的。" }], _meta: { origin } }
     : { role: "user", content: [{ type: "text", text: "继续。" }], _meta: { origin } };
+}
+
+/**
+ * 旧持久化引用折叠：引用约 200 字节，不会被大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
+ * 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
+ *
+ * 发送路径（getCleanedMessages）与 fork 前缀视图（getForkPrefixMessages）共用这一份，
+ * 两处各写一遍就是下一次「fork 与主循环前缀分叉」。**就地改写**入参的 content 数组。
+ */
+function collapseOldPersistedReferences(result: Message[]): void {
+  const REFERENCE_KEEP_RECENT = 20;
+  const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
+  for (let i = 0; i < result.length; i++) {
+    const msg = result[i];
+    for (let j = 0; j < msg.content.length; j++) {
+      const block = msg.content[j];
+      if (
+        block.type === "tool_result" &&
+        typeof block.content === "string" &&
+        isPersistedReference(block.content)
+      ) {
+        persistedRefPositions.push({ msgIdx: i, blockIdx: j });
+      }
+    }
+  }
+  if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
+    const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
+    for (const { msgIdx, blockIdx } of toCollapse) {
+      const block = result[msgIdx].content[blockIdx];
+      if (block.type === "tool_result") {
+        (result[msgIdx].content as any[])[blockIdx] = {
+          ...block,
+          content: "[旧工具输出，如需查阅请重新执行对应工具]",
+        };
+      }
+    }
+  }
 }

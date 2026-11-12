@@ -4264,6 +4264,7 @@ export class App {
       const { getSessionMemoryPath } = await import("@sid-code/core/memory/paths.ts");
       const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
       const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
+      const { getMainRequestShape } = await import("@sid-code/core/agent/fork-prefix.ts");
       // P0-4：按**逻辑会话 id** 分文件。用 getLogicalSessionId()（resume 时是被恢复
       // 的那个 id，否则是本进程新 id）——与 sidechain 持久化同源，这样 `--resume`
       // 拿回的是同一份笔记，而并发的两个会话各写各的，不再互相覆盖。
@@ -4274,6 +4275,9 @@ export class App {
         getMainContext: () => ({
           systemPrompt: this.ctxMgr.getSystemPrompt(),
           messages: this.ctxMgr.getMessages(),
+          // D16：发送前缀与请求形状对齐主循环最后一次实际发出的请求（缓存命中，见 agent/fork-prefix.ts）
+          sendMessages: this.ctxMgr.getForkPrefixMessages(),
+          mainRequestShape: getMainRequestShape(this.ctxMgr),
           provider: this.provider,
           toolRegistry: this.toolRegistry,
           model: this.config.model,
@@ -5337,6 +5341,7 @@ export class App {
       const { ensureAutoMemPath, isAutoMemoryEnabled } =
         await import("@sid-code/core/memory/paths.ts");
       const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
+      const { getMainRequestShape } = await import("@sid-code/core/agent/fork-prefix.ts");
       const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
 
       if (!isAutoMemoryEnabled(this.config.autoMemory)) {
@@ -5352,6 +5357,9 @@ export class App {
         getMainContext: () => ({
           systemPrompt: this.ctxMgr.getSystemPrompt(),
           messages: this.ctxMgr.getMessages(),
+          // D16：与 session-memory 同口径（见上方 initSessionMemory 处注释）
+          sendMessages: this.ctxMgr.getForkPrefixMessages(),
+          mainRequestShape: getMainRequestShape(this.ctxMgr),
           provider: this.provider,
           toolRegistry: this.toolRegistry,
           model: this.config.model,
@@ -5397,6 +5405,8 @@ export class App {
             getMainContext: () => ({
               systemPrompt: this.ctxMgr.getSystemPrompt(),
               messages: this.ctxMgr.getMessages(),
+              sendMessages: this.ctxMgr.getForkPrefixMessages(),
+              mainRequestShape: getMainRequestShape(this.ctxMgr),
               provider: this.provider,
               toolRegistry: this.toolRegistry,
               model: this.config.model,

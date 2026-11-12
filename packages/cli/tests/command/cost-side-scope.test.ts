@@ -1,5 +1,5 @@
 /**
- * /cost 的范围标注与辅助调用 token 段（D4，2026-11-10 成本口径核查）。
+ * /cost 的范围标注（D4，2026-11-10 成本口径核查）。
  *
  * ## 它防的是什么
  *
@@ -9,48 +9,71 @@
  * 「省钱 vs 费用」也是两个不同范围在比（北极星铁律 3：分母口径必须和指标一起写死）。
  *
  * 修法不是把辅助调用并进 `modelUsage`（会污染 stock 口径的上下文大小），
- * 而是**分两块显示、各自标明范围**：主循环一块，辅助调用一块。
+ * 而是**分两块显示、各自标明范围**。
  *
- * ## 为什么统计源可注入
+ * ## 版式变更说明（PR-B / D15）
  *
- * `side-call-sink` 是进程级单例，`bun test` 同批多文件跑在同一进程里。
- * 测试若直接 `recordSideCall` / `resetSideCallStats`，会让别的测试文件的 /cost 输出
- * 凭空多出辅助段、或清掉别人刚 hydrate 的基线。所以 `CostCommand` 的读取函数可注入，
- * 行为层全部用假快照；「默认读会话维度而非进程维度」另用一条静态断言锁住
- * （`getSessionSideStats` 的语义本身已有 core 测试覆盖）。
+ * 旧版式是一条平铺的「辅助调用 Token 用量」段（main 的 `formatSideCallTokenSection`）。
+ * PR-B 重做成分区账单后，这段的职责被两处接走：`费用构成` 区把主循环/辅助调用拆成两行
+ * （辅助调用再按用途逐行列出，行内带 token），注释区说明辅助调用不经过主对话。
+ * 本测试按新版式断言同样的契约：**两块互不包含、各自可辨**；
+ * 旧版式那几条针对独立段落/文本行的锚点不再适用（版式是有意重做的）。
  */
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { SessionState } from "@sid-code/core/session/state.ts";
-import type { SideCallSnapshot } from "@sid-code/core/trace/side-call-sink.ts";
-import {
-  CostCommand,
-  formatSideCallTokenSection,
-  type PendingTasksView,
-} from "../../src/command/commands/cost/cost.ts";
+import { buildCostReport } from "@sid-code/core/session/cost-report.ts";
+import { renderCostReport } from "../../src/command/commands/cost/cost-render.ts";
+import type { SideCallStats } from "@sid-code/core/trace/side-call-sink.ts";
 
-const IDLE: PendingTasksView = { busy: false, busyLabel: null, pendingLabels: [] };
+const IDLE_GATE = { busy: false, busyLabel: null, pendingLabels: [] as string[] };
 
 /** 无辅助调用：会话只跑了主循环 */
-const NO_SIDE: SideCallSnapshot = {
+const NO_SIDE: SideCallStats = {
   apiCalls: 0,
   costUSD: 0,
   tokensSent: 0,
   tokensReceived: 0,
+  durationMs: 0,
+  durationCalls: 0,
+  details: [],
   failed: 0,
   timedOut: 0,
+  usageMissing: 0,
   byLabel: {},
 };
 
-/** 取证会话第一段的辅助调用累计（方案文档 2.2 节 `side_tokens_sent` / `side_tokens_received`） */
-const SIDE_SAMPLE: SideCallSnapshot = {
+/**
+ * 取证会话第一段的辅助调用累计（方案文档 2.2 节 `side_tokens_sent` / `side_tokens_received`）。
+ * `details` 是进程维度逐条记录：费用构成区按用途拆分就读它。
+ */
+const SIDE_SAMPLE: SideCallStats = {
   apiCalls: 6,
   costUSD: 0.0645,
   tokensSent: 547_419,
   tokensReceived: 4_152,
+  durationMs: 24_000,
+  durationCalls: 6,
+  details: [
+    {
+      label: "fork:memory-extract",
+      model: "test-model",
+      inputTokens: 243_000,
+      outputTokens: 1_800,
+      costUSD: 0.0335,
+      durationMs: 8_000,
+    },
+    {
+      label: "fork:session-memory-update",
+      model: "test-model",
+      inputTokens: 304_000,
+      outputTokens: 2_352,
+      costUSD: 0.0309,
+      durationMs: 15_000,
+    },
+  ],
   failed: 0,
   timedOut: 0,
+  usageMissing: 0,
   byLabel: { "fork:memory-extract": { success: 2, failed: 0 } },
 };
 
@@ -66,107 +89,64 @@ function mainLoopSession(): SessionState {
   return ss;
 }
 
-async function runCost(ss: SessionState, side: SideCallSnapshot = NO_SIDE): Promise<string> {
-  const ctx = { sessionState: ss, config: { provider: "openai" } } as any;
-  const result = (await new CostCommand(
-    () => IDLE,
-    () => side,
-  ).call("", ctx)) as {
-    value: string;
-  };
-  return result.value;
+function render(ss: SessionState, side: SideCallStats = NO_SIDE): string {
+  const report = buildCostReport(ss, { sideStats: side, gateStats: IDLE_GATE, cacheBreaks: [] });
+  return renderCostReport(report, { useColor: false, columns: 120 });
 }
 
-describe("D4 · 辅助调用 token 段（纯函数）", () => {
-  test("没有辅助调用时返回空数组：整段省略，不给正常路径加噪音", () => {
-    expect(formatSideCallTokenSection(NO_SIDE)).toEqual([]);
+describe("D4 · 费用构成分区：主循环与辅助调用各占一行", () => {
+  test("有辅助调用：两行都在，费用分别给出（不合并成一个数）", () => {
+    const out = render(mainLoopSession(), SIDE_SAMPLE);
+    const lines = out.split("\n");
+    expect(lines.some((l) => l.includes("费用构成"))).toBe(true);
+    expect(lines.some((l) => /^\s+主循环\s+\$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^\s+辅助调用\s+\$/.test(l))).toBe(true);
   });
 
-  test("有辅助调用时写出次数与输入/输出 token，并声明不计入主循环", () => {
-    const lines = formatSideCallTokenSection(SIDE_SAMPLE);
-    const text = lines.join("\n");
-    expect(text).toContain("辅助调用 Token 用量（6 次调用");
-    expect(text).toContain("不计入上面的主循环数字");
-    expect(text).toContain("输入: 547,419");
-    expect(text).toContain("输出: 4,152");
+  test("没有辅助调用：辅助调用行整段省略，不给正常路径加噪音", () => {
+    const out = render(mainLoopSession(), NO_SIDE);
+    expect(out).not.toMatch(/^\s+辅助调用\s+\$/m);
+  });
+
+  test("辅助调用按用途逐行拆分，行内 token 来自进程维度明细", () => {
+    const out = render(mainLoopSession(), SIDE_SAMPLE);
+    expect(out).toContain("fork:memory-extract");
+    expect(out).toContain("243k token");
   });
 });
 
-describe("D4 · /cost 输出里每个指标都标明范围", () => {
-  test("总费用标明含辅助调用（它是面板上唯一含辅助的指标）", async () => {
-    const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    const costLine = out.split("\n").find((l) => l.startsWith("总费用:"));
-    expect(costLine).toBeDefined();
-    expect(costLine!).toContain("（含辅助调用）");
+describe("D4 · 主循环 token 段与辅助调用互不包含", () => {
+  test("token 段标题标明是主循环", () => {
+    const out = render(mainLoopSession(), SIDE_SAMPLE);
+    expect(out).toContain("主循环 token 与单价");
   });
 
-  test("主循环 token 段标题标明不含辅助调用、含子代理，并给出请求数", async () => {
-    const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    expect(out).toContain("主循环 Token 用量（不含辅助调用；含子代理）:");
-    expect(out).toContain("请求: 1 次");
+  test("累计发送只含主循环：10,000，不是与辅助调用相加后的 557,419", () => {
+    const out = render(mainLoopSession(), SIDE_SAMPLE);
+    expect(out).toContain("累计发送 10,000（flow");
+    // 相加值绝不能出现——出现就说明有人把两块合并了，D4 会以另一种形态复发
+    expect(out).not.toContain("557,419");
+    expect(out).not.toContain("557419");
   });
 
-  test("缓存命中率与省钱标明仅主循环", async () => {
-    const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    const cacheLine = out.split("\n").find((l) => l.startsWith("缓存命中率:"));
-    expect(cacheLine).toBeDefined();
-    expect(cacheLine!).toContain("（仅主循环，不含辅助调用）");
+  test("注释区说明辅助调用同样计费、按用途拆分只含本次启动后", () => {
+    const out = render(mainLoopSession(), SIDE_SAMPLE);
+    expect(out).toContain("辅助调用 = 标题生成、记忆抽取、权限分类、摘要等");
+    expect(out).toContain("按用途拆分仅含本次启动后的调用");
   });
+});
 
-  test("API 耗时标明仅主循环", async () => {
-    const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    // D8（main）把标签统一成「API 耗时（主循环）」，与本 PR 的「仅主循环」语义一致；
-    // 裸标签「API 耗时:」必须消失，否则两个含义不同的耗时行会并存。
-    const apiLine = out.split("\n").find((l) => l.startsWith("API 耗时（主循环）:"));
-    expect(apiLine).toBeDefined();
+describe("D4 · 耗时与范围标注", () => {
+  test("API 耗时标明仅主循环，裸标签不再出现", () => {
+    const out = render(mainLoopSession(), SIDE_SAMPLE);
+    const lines = out.split("\n");
+    expect(lines.some((l) => l.trimStart().startsWith("API 耗时（主循环）:"))).toBe(true);
     expect(out).not.toMatch(/^API 耗时:/m);
   });
-});
 
-describe("D4 · 两块 token 互不包含", () => {
-  test("没有辅助调用：输出里不出现辅助段", async () => {
-    const out = await runCost(mainLoopSession(), NO_SIDE);
-    expect(out).not.toContain("辅助调用 Token 用量");
-  });
-
-  test("有辅助调用：辅助段出现，且数字来自统计快照", async () => {
-    const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    expect(out).toContain("辅助调用 Token 用量（6 次调用");
-    expect(out).toContain("输入: 547,419");
-    expect(out).toContain("输出: 4,152");
-  });
-
-  test("主循环输入与辅助输入分开显示，不会相加成一个数", async () => {
-    const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    // 主循环段 = modelUsage 的累计 prompt（10000，D3 合并后行标签带 flow 口径）；
-    // 辅助段 = side-call-sink 的发送量（547419）
-    expect(out).toContain("输入·合计（累计发送，flow）: 10,000");
-    expect(out).toContain("输入: 547,419");
-    // 相加值绝不能出现——出现就说明有人把两块合并了，D4 会以另一种形态复发
-    expect(out).not.toContain("输入: 557,419");
-  });
-
-  test("辅助段排在主循环各块之后（范围切换只发生一次）", async () => {
-    const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    const lines = out.split("\n");
-    const cacheIdx = lines.findIndex((l) => l.startsWith("缓存命中率:"));
-    const sideIdx = lines.findIndex((l) => l.startsWith("辅助调用 Token 用量"));
-    expect(sideIdx).toBeGreaterThan(cacheIdx);
-  });
-});
-
-describe("D4 · 接线：默认读会话维度而非进程维度", () => {
-  test("默认统计源是 getSessionSideStats（resume 后与费用同口径）", () => {
-    const src = readFileSync(
-      join(import.meta.dir, "..", "..", "src", "command", "commands", "cost", "cost.ts"),
-      "utf-8",
-    );
-    // 只锁「token 段的默认值」这一处接线，不锁 import：D8（main）的辅助调用耗时
-    // 合理地 import 了进程维度 getSideStats（resume 基线不带逐条耗时），两者并存不冲突。
-    expect(src).toMatch(/=\s*\(\)\s*=>\s*getSessionSideStats\(\)/);
-    // token 的默认统计源不能改成进程维度：resume 会话里它只剩本次启动的记录，
-    // 而 /cost 的费用含回灌基线，用它会重新制造「token 只含本次启动、费用含全会话」
-    // 的范围错位（正是 D4 的形态）。
-    expect(src).not.toMatch(/=\s*\(\)\s*=>\s*getSideStats\s*\(/);
+  test("辅助调用耗时写明本次启动后的覆盖范围", () => {
+    const out = render(mainLoopSession(), SIDE_SAMPLE);
+    expect(out).toContain("辅助调用耗时: 24s");
+    expect(out).toContain("本次启动后 6 次调用");
   });
 });

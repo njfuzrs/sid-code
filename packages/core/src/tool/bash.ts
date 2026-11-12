@@ -63,12 +63,6 @@ const bashSchema = lazySchema(() =>
         "超时时间（毫秒），默认 120000（2 分钟），最长 600000（10 分钟）；可用 BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS 环境变量覆盖默认值与上限",
       ),
     cwd: z.string().optional().describe("工作目录，默认为当前目录"),
-    is_background: z
-      .boolean()
-      .optional()
-      .describe(
-        "[已废弃，请用 run_in_background] 后台运行。为兼容保留，行为已等同 run_in_background（走 Task 系统）",
-      ),
     run_in_background: z
       .boolean()
       .optional()
@@ -795,7 +789,7 @@ export class BashTool implements Tool {
 - 设置合理的 timeout，默认 2 分钟，最长 10 分钟
 - 命令预计耗时超过 10 分钟时直接用 run_in_background=true：前台 timeout 传更大的值也会被截到上限，后台任务没有这个上限
 - 输出超过 30000 字符会被自动截断
-- 长时间运行的进程（如 dev server）可设置 run_in_background=true 后台运行（旧名 is_background 已废弃）
+- 长时间运行的进程（如 dev server）可设置 run_in_background=true 后台运行
 - 后台任务会返回 task_id，可用 task_output 查看输出、task_stop 终止；完成时有通知
 - 命令超时被杀后，不要原样重试——要么用 run_in_background=true 重跑，要么缩小范围（见下条）
 - 全盘/大目录搜索（find / / grep -r ~ 这类）极易超时：优先用 glob / grep 工具并把 path 限定到具体子目录
@@ -1084,10 +1078,10 @@ export class BashTool implements Tool {
     const params = input as {
       command?: unknown;
       run_in_background?: unknown;
-      is_background?: unknown;
     };
-    // 后台命令正是引导要去的方向，不提示
-    if (params?.run_in_background || params?.is_background) return result;
+    // 后台命令正是引导要去的方向，不提示。旧后台参数已由别名层（input-alias.ts）
+    // 在执行之前改名，这一层只认协议字段 run_in_background。
+    if (params?.run_in_background) return result;
     const command = typeof params?.command === "string" ? params.command : "";
     if (!command) return result;
     const matched = detectForegroundSleep(command);
@@ -1129,10 +1123,9 @@ export class BashTool implements Tool {
     const params = input as {
       wait_until_seconds?: unknown;
       run_in_background?: boolean;
-      is_background?: boolean;
     };
     if (params?.wait_until_seconds === undefined) return result;
-    if (params.run_in_background || params.is_background) return result;
+    if (params.run_in_background) return result;
     return {
       ...result,
       output: `${result.output}\n[注意] wait_until_seconds 只在 run_in_background=true 时生效，本次前台执行已忽略它（前台命令本来就等到退出）。`,
@@ -1164,9 +1157,8 @@ export class BashTool implements Tool {
     const params = input as {
       command?: string;
       run_in_background?: boolean;
-      is_background?: boolean;
     };
-    if (!params?.command || params.run_in_background || params.is_background) return undefined;
+    if (!params?.command || params.run_in_background) return undefined;
     if (isReadOnlyCommand(params.command)) return undefined;
     try {
       return this.tracker.beginBashExecution();
@@ -1192,9 +1184,8 @@ export class BashTool implements Tool {
     const params = input as {
       command?: string;
       run_in_background?: boolean;
-      is_background?: boolean;
     };
-    if (!params?.command || params.run_in_background || params.is_background) return result;
+    if (!params?.command || params.run_in_background) return result;
     if (isReadOnlyCommand(params.command)) return result;
     let notice = "";
     try {
@@ -1216,7 +1207,6 @@ export class BashTool implements Tool {
       description?: string;
       timeout?: number;
       cwd?: string;
-      is_background?: boolean;
       run_in_background?: boolean;
       wait_until_seconds?: number;
     };
@@ -1247,10 +1237,10 @@ export class BashTool implements Tool {
     );
 
     // Task 系统后台模式（统一通道）。
-    // P2-10：is_background 是旧后台通道（不进 Task 系统、无 task_id、无完成通知），弱模型
-    // 选到它会落入"无法查询输出"死角。现把两个参数统一重定向到 Task 系统——is_background
-    // 保留仅为向后兼容（schema 已标 deprecated），语义与 run_in_background 完全一致。
-    if (params.run_in_background || params.is_background) {
+    // 旧后台参数已由别名层（input-alias.ts）在执行之前改名成 run_in_background，
+    // 所以执行层只认协议字段。P2-10 的教训保留在这里：旧后台通道（不进 Task 系统、
+    // 无 task_id、无完成通知）会让弱模型落入"无法查询输出"死角，不能重新引入。
+    if (params.run_in_background) {
       return this.executeWithTaskSystem(params, signal);
     }
 
