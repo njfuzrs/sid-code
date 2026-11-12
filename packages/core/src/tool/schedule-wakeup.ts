@@ -19,7 +19,12 @@ import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
 import { registerWait, releaseWait } from "../task/wait-registry.ts";
 import { collectWaitSubjects, normalizeWaitCommand } from "../task/wait-subjects.ts";
-import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
+import {
+  decideWaitAdmission,
+  formatDuplicateWaitReceipt,
+  formatReplaceNote,
+  supersedeReplacedWaits,
+} from "../task/wait-admission.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -166,6 +171,17 @@ export class ScheduleWakeupTool implements Tool {
       command: normalizedCommand,
     });
 
+    // R6：跨类替换——这次排的是唤醒，而旧等待可能是一个盯同一对象的 shell / monitor。
+    // 在 registerWait 之后调（先起新的再停旧的）；唤醒之间的单链替换已由上面的
+    // `replaceSessionTasksByOrigin` 完成——那是 F1 的既有语义，必须排在新唤醒入表之前
+    // （否则新唤醒会被自己的「替换」删掉），所以这里把它们从回执里滤掉，避免同一 id 列两遍。
+    const superseded =
+      admission.action === "replace"
+        ? supersedeReplacedWaits(admission.existing, task.id).filter(
+            (src) => !replaced.includes(src.id),
+          )
+        : [];
+
     const clampNote =
       clamped !== Math.round(params.delay_seconds)
         ? `（已从 ${Math.round(params.delay_seconds)}s 钳制到 ${clamped}s）`
@@ -174,6 +190,7 @@ export class ScheduleWakeupTool implements Tool {
     // 或者以为还有一个在排队而重复安排。
     const replacedNote =
       replaced.length > 0 ? `（已替换此前未触发的唤醒 ${replaced.join("、")}）` : "";
+    const supersededNote = formatReplaceNote(superseded, task.id);
     const reasonNote = params.reason ? `\n理由: ${params.reason}` : "";
     // 倒数第二行是「目标达成后剩下的那一个唤醒」的缓解（本期不做自动撤销，见方案 §6.3）：
     // F1 只能把多余唤醒压到最多 1 个，剩下的这一个要靠模型自己撤。
@@ -184,7 +201,7 @@ export class ScheduleWakeupTool implements Tool {
     // 继续前台查 CI，第二个唤醒因此晚了 383s 才注入（`ScheduledFire.lag_ms = 383270`）。
     return {
       output:
-        `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${replacedNote}${reasonNote}\n` +
+        `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${replacedNote}${supersededNote}${reasonNote}\n` +
         `目标达成后若不再需要，用 cron_delete ${task.id} 取消。\n` +
         `唤醒只在本轮结束、会话空闲后才会触发；本轮继续查询只会推迟它。没有别的事就告诉用户你在等什么，然后结束本轮。`,
     };

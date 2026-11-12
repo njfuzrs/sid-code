@@ -107,6 +107,18 @@ export interface TaskStateBase {
    * 视为 0，即不扣等待——与引入本字段之前的行为一致。
    */
   hitlWaitAtTerminalMs?: number;
+  /**
+   * 被哪个新任务替换（R6）：同 subject 换了等法时，入口在 kill 之前写入。
+   *
+   * 两个消费方，缺一不可：
+   * - `enqueueTaskNotification` 见到它跳过终态通知——旧任务是模型刚亲手换掉的，
+   *   它的 killed 通知信息量为零，只会成为下一次误读的素材（R3）；
+   * - TUI 面板据此把终态行标成「已替换」，用户看得到它为什么没了。
+   *
+   * 只影响「送不送通知」，不影响终态写入与轨迹：lifecycle 的 `completed` 照常发
+   * （带 `reason: "superseded"`），否则这段行为在审计里就消失了。
+   */
+  supersededBy?: string;
 }
 
 /** Shell 任务状态 */
