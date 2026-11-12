@@ -1,4 +1,5 @@
 import { getBackgroundGateStats } from "@sid-code/core/agent/background-task-gate.ts";
+import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 
 /** 后台闸门状态里 /cost 关心的三个字段（窄接口，便于测试注入假状态）。 */
@@ -54,7 +55,12 @@ export class CostCommand implements LocalCommandModule {
   async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {
     const { SessionState } = await import("@sid-code/core/session/state.ts");
     const ss = ctx.sessionState;
-    const totalUsage = ss.getTotalUsage();
+    // D5：token 段必须走归一化后的**互斥三段**（normalizeCacheUsage 的单一事实源），
+    // 不能直接贴 provider 原始的 `getTotalUsage().inputTokens` —— 同一个「输入」字段两族含义相反：
+    //   - openai 族：prompt_tokens **含**命中部分，与「缓存读取」并列会被读成「两者相加才是总量」；
+    //   - anthropic 族：input_tokens 是未命中余量，与缓存读/写互斥。
+    // 拆成 未命中 / 命中 / 写入 + 合计后两族语义一致，也和计价公式（calculateCost）一一对应。
+    const cacheView = ss.getNormalizedCacheUsage();
 
     // D7：`≈` 表示「金额由非 USD 币种按固定汇率折算成 USD」（估算值），判据看价格数据本身
     // （SessionState.isCostFxConverted），不看模型名。同一笔钱在 Footer / /cost / /debug
@@ -80,20 +86,21 @@ export class CostCommand implements LocalCommandModule {
       `API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
       "",
-      "Token 用量（汇总）:",
-      `  输入: ${totalUsage.inputTokens}`,
-      `  输出: ${totalUsage.outputTokens}`,
+      "Token 用量（累计发送）:",
+      // 三段互斥：未命中 + 命中 + 写入 = 合计。命中/写入为 0 时整行省略（与旧
+      // 「缓存创建/读取只在非 0 时显示」一致），0 不参与加法，用户照样能验算。
+      `  输入·未命中: ${fmtNum(cacheView.uncachedInputTokens)}`,
+      ...(cacheView.cacheHitTokens > 0
+        ? [`  输入·缓存命中: ${fmtNum(cacheView.cacheHitTokens)}`]
+        : []),
+      ...(cacheView.cacheWriteTokens > 0
+        ? [`  输入·缓存写入: ${fmtNum(cacheView.cacheWriteTokens)}`]
+        : []),
+      `  输入·合计: ${fmtNum(cacheView.promptTotal)}`,
+      `  输出: ${fmtNum(cacheView.outputTokens)}`,
     );
 
-    if (totalUsage.cacheCreationInputTokens) {
-      lines.push(`  缓存创建: ${totalUsage.cacheCreationInputTokens}`);
-    }
-    if (totalUsage.cacheReadInputTokens) {
-      lines.push(`  缓存读取: ${totalUsage.cacheReadInputTokens}`);
-    }
-
     // 模块 B：本会话缓存命中率 + 省钱（经归一化单一事实源）
-    const cacheView = ss.getNormalizedCacheUsage();
     if (cacheView.cacheHitTokens > 0 && cacheView.promptTotal > 0) {
       const rate = ((cacheView.cacheHitTokens / cacheView.promptTotal) * 100).toFixed(1);
       const savings = ss.getTotalCacheSavings();
@@ -129,14 +136,24 @@ export class CostCommand implements LocalCommandModule {
 
     const models = Object.entries(ss.modelUsage);
     if (models.length > 1) {
-      lines.push("", "按模型统计（input 为 flow 累计口径，与上方汇总一致）:");
+      lines.push("", "按模型统计（累计发送口径，与上方「输入·合计」一致）:");
       for (const [model, stats] of models) {
-        // ⚠️ 必须用 cumulativePromptTokens（flow 累计）而非 inputTokens（stock 末次值）。
-        // 汇总 input 走 getTotalUsage() = ΣcumulativePromptTokens（flow），若此处用末次 stock，
-        // 两者口径不一致：分模型之和 ≪ 汇总（末次值只保留最后一次请求的 prompt 长度），
-        // 用户会看到"汇总 input 远大于分模型 input 之和"的诡异对不上。统一为 flow 口径。
+        // ⚠️ 用归一化后的 promptTotal（由 cumulativePromptTokens 派生），不用 stock 的
+        // `stats.inputTokens`：末次值只保留最后一次请求的 prompt 长度，分模型之和会远小于汇总，
+        // 用户会看到"汇总远大于分模型之和"的诡异对不上。
+        // 也不能直接贴 cumulativePromptTokens：anthropic 族的它是未命中余量，openai 族含命中，
+        // 两族混用时分模型之和会对不上汇总「输入·合计」，所以逐模型过一遍 normalizeCacheUsage。
+        const promptTotal = normalizeCacheUsage(
+          {
+            inputTokens: stats.cumulativePromptTokens,
+            outputTokens: stats.outputTokens,
+            cacheReadInputTokens: stats.cacheReadInputTokens,
+            cacheCreationInputTokens: stats.cacheCreationInputTokens,
+          },
+          stats.provider,
+        ).promptTotal;
         lines.push(
-          `  ${model}: ${stats.requests} 次请求, ${cur}${stats.costUSD.toFixed(4)}, input=${stats.cumulativePromptTokens}, output=${stats.outputTokens}`,
+          `  ${model}: ${stats.requests} 次请求, ${cur}${stats.costUSD.toFixed(4)}, input=${fmtNum(promptTotal)}, output=${fmtNum(stats.outputTokens)}`,
         );
       }
     }
@@ -156,4 +173,14 @@ export class CostCommand implements LocalCommandModule {
 
     return { type: "text", value: lines.join("\n") };
   }
+}
+
+/**
+ * 数字千分位格式化（与 /debug、/stats 面板同款写法）。
+ *
+ * D5：/cost 的 token 数曾裸输出（`2398645`），/debug 却是 `2,398,645`，同一份数据两个长相。
+ * 显式指定 `en-US` 而不是用运行时默认 locale：/cost 输出会被脚本 grep，逗号位置必须稳定。
+ */
+function fmtNum(n: number): string {
+  return n.toLocaleString("en-US");
 }
