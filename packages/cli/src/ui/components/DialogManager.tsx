@@ -1012,6 +1012,29 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
   );
 }
 
+/**
+ * 每个请求对象一个稳定的 React key。
+ *
+ * 为什么必须有：各对话框靠组件内 `resolvedRef` 防重复 resolve。连续两个同类请求时，
+ * app.ts 先 `updateState({ permissionRequest: null })` 再由 interactionQueue 把下一个写进来，
+ * 两次 update 落在同一帧里被合并，React 看到的是「同一位置、同一组件类型、只换了 request prop」，
+ * 于是**复用旧实例**：`resolvedRef.current` 仍为 true，新弹窗的 Enter / y/n/a / Esc 全被
+ * `decide` 的去重静默吞掉（按键 handler 还返回 true，连 Ctrl+C 之外的出口都没有）。
+ * 光标 state 也会跟着串到下一个弹窗（危险操作的「默认落在拒绝」因此失效）。
+ * 按请求对象换 key → 每个请求强制重挂载，去重与光标都回到初始态。
+ * 2026-11-11 PTY 实测：并行两个 bash 权限请求，第二个弹窗按键无反应、无法退出。
+ */
+const requestKeys = new WeakMap<object, number>();
+let requestKeySeq = 0;
+function requestKey(req: object): string {
+  let k = requestKeys.get(req);
+  if (k === undefined) {
+    k = ++requestKeySeq;
+    requestKeys.set(req, k);
+  }
+  return String(k);
+}
+
 /** 对话框渲染器：渲染权限确认、Shell 确认、Plan 审批或 AskUserQuestion 对话框 */
 export function DialogRenderer({
   permissionRequest,
@@ -1025,16 +1048,25 @@ export function DialogRenderer({
   askUserQuestionRequest?: AskUserQuestionRequestInfo | null;
 }) {
   if (permissionRequest) {
-    return <PermissionDialog request={permissionRequest} />;
+    return <PermissionDialog key={requestKey(permissionRequest)} request={permissionRequest} />;
   }
   if (shellConfirmRequest) {
-    return <ShellConfirmDialog request={shellConfirmRequest} />;
+    return (
+      <ShellConfirmDialog key={requestKey(shellConfirmRequest)} request={shellConfirmRequest} />
+    );
   }
   if (planApprovalRequest) {
-    return <PlanApprovalDialog request={planApprovalRequest} />;
+    return (
+      <PlanApprovalDialog key={requestKey(planApprovalRequest)} request={planApprovalRequest} />
+    );
   }
   if (askUserQuestionRequest) {
-    return <AskUserQuestionDialog request={askUserQuestionRequest} />;
+    return (
+      <AskUserQuestionDialog
+        key={requestKey(askUserQuestionRequest)}
+        request={askUserQuestionRequest}
+      />
+    );
   }
   return null;
 }
