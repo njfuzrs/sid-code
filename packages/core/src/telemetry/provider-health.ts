@@ -22,6 +22,7 @@ import {
   type ModelLatencyStats,
 } from "../trace/latency-by-model.ts";
 import { createProviderResolver, resolveEventProvider } from "../trace/provider-resolver.ts";
+import { callScopeOf } from "../trace/call-scope.ts";
 // P1-8 门控：privacy-level 零依赖、无副作用，同步 import 不引入导入链污染。
 import { isEssentialTrafficOnly } from "../analytics/privacy-level.ts";
 
@@ -210,7 +211,8 @@ export function aggregateProviderHealth(options: {
       if (filterProvider && prov !== filterProvider) continue;
       const ttft = e.data.ttft_ms as number | undefined;
       if (ttft && ttft > 0) {
-        ensure(prov).ttfts.push(ttft);
+        // /perf PR-A：与 digest.aggregateProviderStats 同口径，TTFT 分位数只收主循环
+        if (callScopeOf(e.data) === "main") ensure(prov).ttfts.push(ttft);
         // P2-3：Anthropic 事件自带 cache_hit 直接分桶；OpenAI 族暂存待与 completed 配对
         bucketer.observeFirstContent(e, prov, ttft);
       }
@@ -259,7 +261,10 @@ export function aggregateProviderHealth(options: {
   // 刻意**不**传 filterProvider：过滤在 latencyByModelField 里按 provider 归属做，
   // 在这里滤会丢掉配对所需的 headers_received（它只带 model，provider 尚未解析），
   // 让本该配对的样本变成"未闭合"。
-  const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile);
+  //
+  // /perf PR-A：显式传 "main" —— 健康度只看主循环；子代理和后台 fork 的延迟由各自的视图展示。
+  // ⚠️ 口径变化：此前 fork（TTFT 常 30s+）混在同一个 model 桶里，`--health` 的 TTFT 分位数偏高。
+  const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile, "main");
 
   // 生成报告
   const providers: ProviderHealthMetrics[] = [];

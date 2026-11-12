@@ -42,7 +42,14 @@ import { getReleaseChannel } from "@sid-code/shared/release-channel.ts";
 import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
-import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
+import {
+  buildTrajectory,
+  deriveOutputTps,
+  type RequestResponsePair,
+  type TraceMetadata,
+} from "./builder.ts";
+// /perf PR-A：主循环判据唯一来源（digest 的 gens 与这里的 total_gen_elapsed_ms 必须同一谓词）
+import { callScopeOf, isTruncatedStream } from "./call-scope.ts";
 // 远程接管标记：`App.runBridge` 在 init 前置位，这里构造 metadata 时读取。
 // 不能走 SessionStartInput —— 那是对外 hook 契约，加字段要动参考页与用户脚本。
 import { isBridgeSession } from "./session-flags.ts";
@@ -1747,9 +1754,18 @@ export class TraceCollector {
       typeof input.duration_ms === "number" && input.duration_ms >= 0
         ? input.duration_ms
         : undefined;
+    // /perf PR-A（A5）：会话级合计只算主循环。子代理内部的工具调用（带 agent_id）已经包含在
+    // 主循环 sub_agent / workflow 工具自己的 duration_ms 里，再加一遍就是重复计算；同时子代理的
+    // 模型耗时一次都没算（它不发 AfterModelRaw），两边范围对不上。子代理那份另记，只做归因。
+    // ⚠️ 口径变化：0.1.616 起 session-index.tool_duration_ms 不含子代理内部工具。
     if (toolDurationMs !== undefined) {
-      this.metadata.total_tool_duration_ms += toolDurationMs;
-      this.metadata.tool_duration_samples += 1;
+      if (input.agent_id) {
+        this.metadata.subagent_tool_duration_ms =
+          (this.metadata.subagent_tool_duration_ms ?? 0) + toolDurationMs;
+      } else {
+        this.metadata.total_tool_duration_ms += toolDurationMs;
+        this.metadata.tool_duration_samples += 1;
+      }
     }
 
     this.appendHookEvent({
@@ -2219,10 +2235,9 @@ export class TraceCollector {
     // 分子取 total_tokens_received（若上面被 SessionState 覆盖，用的是权威值，口径仍是"最终输出"）。
     // 无纯生成耗时样本（gen_samples=0，如 anthropic 未接 lifecycle telemetry 的旧路径）时留 undefined，
     // 不落一个误导的 0 或 ∞——与 TTFT/Bug A 的"宁缺毋滥"philosophy 一致。
-    if (this.metadata.gen_samples > 0 && this.metadata.total_gen_elapsed_ms > 0) {
-      this.metadata.output_tokens_per_sec =
-        this.metadata.total_tokens_received / (this.metadata.total_gen_elapsed_ms / 1000);
-    }
+    // PR-A（A4）：公式只留一份（builder.ts deriveOutputTps），索引行 / 中途快照 / /perf 共用。
+    const tps = deriveOutputTps(this.metadata);
+    if (tps !== undefined) this.metadata.output_tokens_per_sec = tps;
 
     // 缺口分析三类：输出/输入 token 比。分母用累计输入 prompt（flow，与 output 累计同口径），
     // 输出单价是输入的 3–8×，此比率上涨即成本结构恶化的早期信号。
@@ -2830,7 +2845,7 @@ export class TraceCollector {
 
   /**
    * /perf：collector 自己累计的性能事实，供索引行使用（两条写入路径共用一份，防漂移）。
-   * tps 在增量路径上可能尚未派生（SessionEnd 才算）—— 此处按同一公式现算。
+   * tps 在增量路径上可能尚未派生（SessionEnd 才算）—— 此处调同一个 deriveOutputTps 现算。
    */
   private perfIndexFields(): {
     tps?: number;
@@ -2838,11 +2853,7 @@ export class TraceCollector {
     context_peak_ratio?: number;
   } {
     const md = this.metadata;
-    const tps =
-      md.output_tokens_per_sec ??
-      (md.gen_samples > 0 && md.total_gen_elapsed_ms > 0
-        ? md.total_tokens_received / (md.total_gen_elapsed_ms / 1000)
-        : undefined);
+    const tps = md.output_tokens_per_sec ?? deriveOutputTps(md);
     return {
       tps,
       tool_duration_ms: md.tool_duration_samples > 0 ? md.total_tool_duration_ms : undefined,
@@ -3581,9 +3592,19 @@ export class TraceCollector {
       // 分子是 total_tokens_received。被丢弃那次流的 token 是否计入分子尚未核实
       // （AfterModelRaw 累加 + SessionEnd 时被 SessionState 覆盖两条路径），
       // 若不计入，重试多的会话 tok/s 会偏低。
+      //
+      // /perf PR-A（A3/A6，同 /cost D17）：只累加主循环、未截断的流。
+      // 后台 fork / 子代理的生成耗时混进分母，tok/s 偏低（/cost 取证会话偏低 20%）；
+      // 被打断 / 超时的流不是「生成完」的耗时。谓词与 digest 的 gens 是同一个 callScopeOf，
+      // 所以 tok/s 的分母与 /perf 的生成耗时分位数是同一组样本。
       if (event.type === "stream_completed") {
         const elapsed = event.elapsedMs;
-        if (typeof elapsed === "number" && elapsed > 0) {
+        if (
+          typeof elapsed === "number" &&
+          elapsed > 0 &&
+          callScopeOf(event) === "main" &&
+          !isTruncatedStream(event)
+        ) {
           this.metadata.total_gen_elapsed_ms += elapsed;
           this.metadata.gen_samples += 1;
         }

@@ -231,6 +231,13 @@ export interface RetryTelemetryEvent {
    * 该字段让「超时结束」与「真正常结束」在轨迹里可区分，不必靠时间窗倒推。
    */
   timedOut?: boolean;
+  /**
+   * /perf PR-A（2026-11-12）：`stream_completed` 专用 —— 源没有正常耗尽、也不是超时（被消费方放弃：
+   * 用户 ESC、fork 墙钟 abort、源报错后弃流）。这条流的 `elapsedMs` 不是「生成完」的耗时，
+   * digest 与 collector 的生成耗时都跳过它。
+   * 老轨迹没有这个字段，照旧计入，不做反推。
+   */
+  aborted?: boolean;
 }
 
 // ─── 全局遥测观察者（B4：让子代理侧的重试事件真正落轨迹） ───

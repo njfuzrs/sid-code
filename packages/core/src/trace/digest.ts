@@ -63,6 +63,8 @@ import {
   type ModelLatencyStats,
 } from "./latency-by-model.ts";
 import { createProviderResolver, resolveEventProvider } from "./provider-resolver.ts";
+// 主循环 / 子代理 / 后台辅助的唯一判据（/perf PR-A）。三处聚合都走它，不许再写 `i < 900_000`。
+import { callScopeOf, isTruncatedStream } from "./call-scope.ts";
 // X3-16：审计核查类任务的分类判据收在 trace/ 下的共享模块里 —— 写入侧（本文件算
 // is_audit）与读取侧（northstar-snapshot / defense-trigger-rate）必须是同一份判据，
 // 各写一份就必然漂移（纪律同 TTFT 的谓词只有一份）。
@@ -1597,10 +1599,40 @@ export interface Digest {
  * 而 undefined 才准确表达"这个会话没有可用样本"。
  */
 export interface SessionLevelMetrics {
+  /**
+   * ⚠️ 口径切换（/perf PR-A，0.1.616 起）：`ttft_*` / `gen_*` / `ttfb_*` **只含主循环**。
+   * 此前后台 fork 与子代理的样本混在一起（取证会话 TTFT P95 29.2s → 主循环 15.4s，虚高 90%）。
+   * 子代理与后台调用单列在 `subagent_*` / `side_*`，判据见 `call-scope.ts`。
+   * 索引行用 `perf_scope: "main"` 标记新口径，见 `SessionIndexEntry.perf_scope`。
+   */
   ttft_p50?: number;
   ttft_p95?: number;
+  /**
+   * PR-A（A7）：p99 只在 digest 展示，**不进 `session-index.jsonl`**（理由同 `e2e_p99`）。
+   */
+  ttft_p99?: number;
   /** TTFT 样本数。必须一起给：单会话样本天然少，不标 n 会让人误判置信度 */
   ttft_n: number;
+  /**
+   * PR-A（A7）：主循环 TTFB（`headers_received.ttfb_ms`）分位数。**会话级、跨 model 不分组**——
+   * 只在会话内只用了一个 model 时才有意义；多 model 时消费侧必须改看 `latencyByModel`
+   * （跨路由汇总 TTFB 会得出假结论，见 latency-by-model.ts 文件头）。
+   * 字段名刻意不用 `ttfb_p50`：结构门禁只允许 latency-by-model.ts 声明那组键。
+   */
+  main_headers_p50?: number;
+  main_headers_p95?: number;
+  main_headers_n: number;
+  /** PR-A（A2）：子代理（前台 sub_agent / workflow 内的子代理）的 TTFT，单列不进主口径 */
+  subagent_ttft_p50?: number;
+  subagent_ttft_p95?: number;
+  subagent_ttft_n: number;
+  subagent_gen_n: number;
+  /** PR-A（A2）：后台辅助调用（记忆 fork、compact、goal_eval、标题生成等）的 TTFT，单列 */
+  side_ttft_p50?: number;
+  side_ttft_p95?: number;
+  side_ttft_max?: number;
+  side_ttft_n: number;
+  side_gen_n: number;
   /** 端到端耗时分位数 —— PR-4（P1-4）补 `TurnComplete` 埋点后才有值 */
   e2e_p50?: number;
   e2e_p95?: number;
@@ -1611,7 +1643,19 @@ export interface SessionLevelMetrics {
    * 全量样本上重算 —— 分位数不可再平均，这是同一条铁律的另一面。
    */
   e2e_p99?: number;
+  /**
+   * 正常收尾的轮数。⚠️ PR-A（A3，0.1.616 起）：`stop_reason === "abort"` 的轮**不在**这里，
+   * 单列在 `e2e_interrupted_*`。
+   */
   e2e_n: number;
+  /**
+   * PR-A（A3）：中断轮（`TurnComplete.stop_reason === "abort"`，用户 ESC 或上游 abort，
+   * 事件上分不出是哪一种）。它的耗时语义是「用户打断」不是「agent 答完了」，进分位数没有意义；
+   * 但也不能静默剔除（慢的轮往往被打断，`turn-complete.ts` 头注释），所以单列计数与最大值。
+   * `error` / `max_turns` / `max_duration` / `stalled` 留在主口径：那些是 agent 自己慢或失败，剔掉会让 P95 好看。
+   */
+  e2e_interrupted_n: number;
+  e2e_interrupted_max?: number;
   /**
    * P1-4：含 HITL 等待（权限确认弹窗）的样本数。
    *
@@ -1719,7 +1763,22 @@ export interface SessionLevelMetrics {
    *（`RetryTelemetry(stream_completed).elapsedMs`，单次 fetch，不含重试）。
    */
   gen_p95?: number;
+  /** PR-A（A7）：生成耗时 p50 / p99（只在 digest，不进索引） */
+  gen_p50?: number;
+  gen_p99?: number;
+  /**
+   * ⚠️ PR-A 起只含主循环、且不含被中断 / 超时的流（`stream_completed.aborted|timedOut`）。
+   */
   gen_n: number;
+  /**
+   * PR-A（A3）：被跳过的截断流条数（aborted 或 timedOut）。显式落数，否则 gen_n 变小读起来像「少采了」。
+   */
+  gen_truncated_n: number;
+  /**
+   * PR-A（A4/A6）：主循环、未截断流的生成耗时合计（ms）——会话中现算 tok/s 的分母，
+   * 与 collector `total_gen_elapsed_ms` 同一谓词。
+   */
+  gen_total_ms: number;
   /**
    * S1 L1：跑过工具后以短文本收尾的 end_turn 次数（`EndTurnShape.kind` ∈
    * short_after_tools / promise_after_tools）。分母 = 本会话 EndTurnShape 事件数（`end_turn_n`）。
@@ -3398,7 +3457,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const INTERRUPTED_EXITS = new Set(["abort", "user_interrupt", "terminal_closed"]);
   const mainBefores = beforeModels.filter((b) => {
     const i = (b.data as any)?.index;
-    return typeof i === "number" && i < 900_000;
+    // 只关心主链 BeforeModel：主循环之外的号段（后台辅助 900_000+）不参与「尾部未配对」判定。
+    // 子代理不发 BeforeModel，所以对它而言 callScopeOf 与旧的 `i < 900_000` 行为一致。
+    return typeof i === "number" && callScopeOf(b.data as Record<string, unknown>) === "main";
   });
   const trailingUnpaired: typeof mainBefores = [];
   for (let k = mainBefores.length - 1; k >= 0; k--) {
@@ -5447,7 +5508,10 @@ export function aggregateProviderStats(
       const provider = resolveEventProvider(e.data, resolveProvider);
       const ttft = e.data.ttft_ms as number | undefined;
       if (ttft && ttft > 0) {
-        ensure(provider).ttfts.push(ttft);
+        // /perf PR-A：TTFT 分位数只收主循环。后台 fork 的 TTFT（实测 31–49s）比主循环最慢的一次还慢，
+        // 混进来会把 P95 推高 90%。requests / avgLatencyMs 来自 AfterModelRaw，本来就只有主循环。
+        // 缓存分桶不动：它有自己的分母（total），口径见 ttft-cache-buckets.ts。
+        if (callScopeOf(e.data) === "main") ensure(provider).ttfts.push(ttft);
         // P2-3 分桶（Anthropic 直接分 / OpenAI 族暂存待配对，见 TtftCacheBucketer）
         bucketer.observeFirstContent(e, provider, ttft);
       }
@@ -5473,8 +5537,10 @@ export function aggregateProviderStats(
         stats.failed++;
       } else if (type === "stream_completed") {
         // P0-1：生成耗时（单次 fetch 从响应头之后到流结束，不含 TTFB）
+        // /perf PR-A：只收主循环、且跳过被中断 / 超时的流（与 aggregateSessionMetrics 同一谓词）
         const gen = e.data.elapsedMs as number | undefined;
-        if (gen && gen > 0) stats.gens.push(gen);
+        if (gen && gen > 0 && callScopeOf(e.data) === "main" && !isTruncatedStream(e.data))
+          stats.gens.push(gen);
       }
     }
     // 从 TimeoutFired 事件补充超时计数
@@ -5496,7 +5562,8 @@ export function aggregateProviderStats(
 
   // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面的共享 resolver
   //（不在模块内自己再扫一遍 AfterModelRaw —— 两处各建一份映射必然漂移）。
-  const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile);
+  // /perf PR-A：显式传 "main" —— 与上面 ttfts 同口径，子代理和后台调用的延迟由各自的视图展示。
+  const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile, "main");
 
   const result: ProviderDigestStats[] = [];
   for (const [provider, stats] of map) {
@@ -5636,7 +5703,16 @@ export function aggregateSessionMetrics(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
   opts: { trajCorrupt: boolean },
 ): SessionLevelMetrics {
+  // PR-A：按调用来源分三组（判据 call-scope.ts）。主口径只用 main。
   const ttfts: number[] = [];
+  const subTtfts: number[] = [];
+  const sideTtfts: number[] = [];
+  const mainHeaders: number[] = [];
+  let subGenN = 0;
+  let sideGenN = 0;
+  let genTruncated = 0;
+  let interruptedN = 0;
+  let interruptedMax: number | undefined;
   const e2es: number[] = [];
   // T6：剔除 had_hitl 的那一组 —— 「agent 自身速度」的干净口径
   const e2esNoHitl: number[] = [];
@@ -5683,16 +5759,33 @@ export function aggregateSessionMetrics(
     if (!e.data) continue;
 
     // TTFT：与 aggregateProviderStats 逐字同款条件（首个任意内容 chunk，含 thinking）
+    // PR-A：按 scope 分组 —— 主口径只收主循环，子代理 / 后台各自单列。
     if (e.event === "StreamPhase" && e.data.phase === "first_content") {
       const ttft = e.data.ttft_ms as number | undefined;
-      if (ttft && ttft > 0) ttfts.push(ttft);
+      if (ttft && ttft > 0) {
+        const scope = callScopeOf(e.data);
+        (scope === "main" ? ttfts : scope === "subagent" ? subTtfts : sideTtfts).push(ttft);
+      }
+    }
+    // PR-A（A7）：主循环 TTFB。不做配对（配对版在 latency-by-model.ts，按 model 分组），
+    // 这里只要分布；headers_received 每次 fetch 一条，重试多出来的那条也是一次真实等待。
+    if (e.event === "StreamPhase" && e.data.phase === "headers_received") {
+      const ttfb = e.data.ttfb_ms;
+      if (typeof ttfb === "number" && ttfb >= 0 && callScopeOf(e.data) === "main") {
+        mainHeaders.push(ttfb);
+      }
     }
 
     // 端到端：PR-4 的 TurnComplete。`elapsed_ms_since_prompt` 在发事件时当场算好，
     // 这里不做配对 —— 配对式口径已经栽过（watchdog 快照按两套 key 查，结构性恒 null）。
     if (e.event === "TurnComplete") {
       const ms = e.data.elapsed_ms_since_prompt as number | undefined;
-      if (ms && ms > 0) {
+      // PR-A（A3）：中断轮单列，不进 e2e_* / e2e_no_hitl_*（理由见字段注释）。
+      // 只认 "abort"：TurnStopReason 没有 user_interrupt，用户 ESC 与上游 abort 都归一成它。
+      if (e.data.stop_reason === "abort") {
+        interruptedN++;
+        if (ms && ms > 0) interruptedMax = Math.max(interruptedMax ?? 0, ms);
+      } else if (ms && ms > 0) {
         e2es.push(ms);
         // 含 HITL 的样本单独计数（不剔除）。只在**进了分位数样本的那些轮**上计，
         // 否则分子会包含没进分母的轮，得到 "hitl_n > e2e_n" 这种自相矛盾的数。
@@ -5801,15 +5894,25 @@ export function aggregateSessionMetrics(
     }
 
     // 与 aggregateProviderStats 同款条件：单次 fetch 的纯生成耗时
+    // PR-A：只收主循环、跳过截断流；子代理 / 后台只计条数（D10 由 PR-B 展示）。
     if (e.event === "RetryTelemetry" && e.data.type === "stream_completed") {
       const gen = e.data.elapsedMs as number | undefined;
-      if (gen && gen > 0) gens.push(gen);
+      if (gen && gen > 0) {
+        const scope = callScopeOf(e.data);
+        if (scope === "subagent") subGenN++;
+        else if (scope === "side") sideGenN++;
+        else if (isTruncatedStream(e.data)) genTruncated++;
+        else gens.push(gen);
+      }
     }
   }
 
   const sortedGens = [...gens].sort((a, b) => a - b);
   const sortedHitl = [...hitlWaits].sort((a, b) => a - b);
   const sortedTtfts = [...ttfts].sort((a, b) => a - b);
+  const sortedSubTtfts = [...subTtfts].sort((a, b) => a - b);
+  const sortedSideTtfts = [...sideTtfts].sort((a, b) => a - b);
+  const sortedHeaders = [...mainHeaders].sort((a, b) => a - b);
   const sortedE2es = [...e2es].sort((a, b) => a - b);
   // T6：剔除 HITL 的那一组。单独排序是因为它是**另一组样本**，不是同一个数组的过滤视图 ——
   // 两组的分位数要能各自复算（消费侧拿到的是两个独立口径）。
@@ -5819,11 +5922,26 @@ export function aggregateSessionMetrics(
     // 分位数无样本时 percentile 返回 undefined，正是想要的语义（不是 0）
     ttft_p50: percentile(sortedTtfts, 0.5),
     ttft_p95: percentile(sortedTtfts, 0.95),
+    ttft_p99: percentile(sortedTtfts, 0.99),
     ttft_n: sortedTtfts.length,
+    main_headers_p50: percentile(sortedHeaders, 0.5),
+    main_headers_p95: percentile(sortedHeaders, 0.95),
+    main_headers_n: sortedHeaders.length,
+    subagent_ttft_p50: percentile(sortedSubTtfts, 0.5),
+    subagent_ttft_p95: percentile(sortedSubTtfts, 0.95),
+    subagent_ttft_n: sortedSubTtfts.length,
+    subagent_gen_n: subGenN,
+    side_ttft_p50: percentile(sortedSideTtfts, 0.5),
+    side_ttft_p95: percentile(sortedSideTtfts, 0.95),
+    side_ttft_max: sortedSideTtfts[sortedSideTtfts.length - 1],
+    side_ttft_n: sortedSideTtfts.length,
+    side_gen_n: sideGenN,
     e2e_p50: percentile(sortedE2es, 0.5),
     e2e_p95: percentile(sortedE2es, 0.95),
     e2e_p99: percentile(sortedE2es, 0.99),
     e2e_n: sortedE2es.length,
+    e2e_interrupted_n: interruptedN,
+    ...(interruptedMax !== undefined ? { e2e_interrupted_max: interruptedMax } : {}),
     e2e_hitl_n: hitlSamples,
     // T6：剔除 HITL 的那一组。样本数必须一起给 —— 它和上面的 e2e_n 是**两个分母**，
     // 不标 n 会让人以为两条曲线样本量相同（实测同一会话可能是 1 条 vs 30 条）。
@@ -5858,8 +5976,12 @@ export function aggregateSessionMetrics(
     compactions,
     compact_quality_n: compactQualityN,
     ...(compactCoverageMin !== undefined ? { compact_coverage_min: compactCoverageMin } : {}),
+    gen_p50: percentile(sortedGens, 0.5),
     gen_p95: percentile(sortedGens, 0.95),
+    gen_p99: percentile(sortedGens, 0.99),
     gen_n: sortedGens.length,
+    gen_truncated_n: genTruncated,
+    gen_total_ms: sortedGens.reduce((a, b) => a + b, 0),
   };
 }
 

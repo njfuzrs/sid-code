@@ -38,6 +38,7 @@ import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { streamInRequestContext, type RequestContext } from "./request-context.ts";
 import { clearSnapshotsForIndex } from "../trace/stream-observer.ts";
+import { SIDE_OBSERVER_INDEX_BASE } from "../trace/call-scope.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 
 /**
@@ -154,14 +155,8 @@ export interface ResilientStreamOptions {
   usageAccounting?: RequestContext["usageAccounting"];
 }
 
-/**
- * 非主循环路径的 observer index 号段基址。
- *
- * 取 `900_000` 是为了与既有约定**全部**错开：主循环用轮次号（个位到百位），
- * 子代理用 `10000 + turns` 与 `20000 + turns`，`agent/stream-processor.ts` 用 `-1`。
- * 留出的空档远大于任何真实会话的轮数，所以"号段相撞"这件事不需要靠人记着避开。
- */
-const SIDE_OBSERVER_INDEX_BASE = 900_000;
+// 非主循环路径的 observer index 号段基址 SIDE_OBSERVER_INDEX_BASE：定义与号段约定见
+// `trace/call-scope.ts`。分配侧（这里）与判定侧（`callScopeOf`）共用同一个常量。
 let sideObserverSeq = 0;
 
 /**
