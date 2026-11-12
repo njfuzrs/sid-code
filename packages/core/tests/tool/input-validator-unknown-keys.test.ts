@@ -211,6 +211,19 @@ describe("validateToolInput — ignoredKeys", () => {
     if (v.ok) expect(v.ignoredKeys).toBeUndefined();
   });
 
+  test("T1 的 CC 短参数别名接住后不产生未知键（-C → context，字符串数字照常归一）", () => {
+    // 未知键检测放在三层归一**之后**，正是为了这个场景：`-C` 先被别名层改成 `context`，
+    // 再被 numeric-coerce 转成数字，全程不该出现在 ToolInputUnknownKeys 里。
+    const tool = new GrepTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, { pattern: "x", "-C": "3" });
+    expect(v.ok).toBe(true);
+    if (v.ok) {
+      expect(v.ignoredKeys).toBeUndefined();
+      expect((v.data as { context?: number }).context).toBe(3);
+    }
+    expect(unknownKeyEvents()).toEqual([]);
+  });
+
   test("校验失败时事件照发（度量口径覆盖全部调用）", () => {
     const tool = fakeTool("need", z.object({ n: z.number() }));
     const v = validateToolInput(tool, { n: "abc", bogus: 1 });
