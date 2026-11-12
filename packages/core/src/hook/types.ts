@@ -531,6 +531,25 @@ export interface BeforeModelInput extends HookInput {
      * 只有 6 条样本）。它是 V1-1 验收的唯一取数源，缺了就只能靠日志猜。
      */
     max_tokens?: number;
+    /**
+     * F6（2026-11-12）：本次请求的**校准后**输入估算（`ContextManager.estimateTokensFor`）。
+     *
+     * 它和 `raw.jsonl` 里既有的 `estimated_input_tokens` 是**两个口径**，刻意并存：
+     * - `estimated_input_tokens` = 采集器本地的纯启发式（`estimateTextTokens` 累加），
+     *   与真实 usage 实测差 1.23–1.29 倍（中文密集会话低估约 25%）。
+     * - 本字段 = 同一套启发式 × `calibrationFactor`（由「真实 usage / 同口径启发式」的
+     *   比值 EMA 学出，与 Footer 的 `getContextUsageForDisplay`、压缩判断
+     *   `getCompactionLevel` 共享同一个系数与同一份基线），作用对象是**实际发送的那份
+     *   messages**——`recordActualTokens` 的校准分母正是发送副本，所以这是能跟
+     *   `usage.input_tokens` 直接比值的那个量。
+     *
+     * `null` = 本会话还没收到过真实 usage（首轮，或无 usage 的本地模型），此时不存在校准值。
+     * **不要回落到未校准值**：那会让这一行冒充校准值，正是本次要根治的「字段没标明口径」。
+     *
+     * 为什么不改原字段的含义：同名改义会让 PR 前后的轨迹曲线整体平移约 25%，
+     * 已有分析脚本会静默产出错数（北极星铁律 3：分母口径一变曲线就整体平移）。
+     */
+    estimated_input_tokens_calibrated?: number | null;
     /** 原始 content blocks 结构（不 stringify，采集器用） */
     raw_messages?: unknown[];
     /** system prompt（每次请求都有，但采集器只取首次） */

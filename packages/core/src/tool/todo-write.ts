@@ -263,6 +263,13 @@ export class TodoWriteTool implements Tool {
   readonly exemptFromLoopDetection = true;
 
   /**
+   * D11：本工具的**结果会驱动 harness 状态机**（`todo_gate` 按清单判断能否收尾），
+   * 漏掉 `todos` 会让「模型以为记下了计划、实际清单没变」这类失败完全静默。
+   * strict 超限时优先保留（见 `ToolCapabilityFields.strictPriority`）。
+   */
+  readonly strictPriority = 40;
+
+  /**
    * 整条卡片不渲染（对标 cc `TodoWriteTool.ts:48` 的 `userFacingName() { return '' }`
    * + `renderToolUseMessage() { return null }` + 不实现 `renderToolResultMessage`）。
    *

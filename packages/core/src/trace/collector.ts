@@ -1302,6 +1302,14 @@ export class TraceCollector {
     // 排查者看到 raw.jsonl 有 request_sent 但没有对应的完整记录，即可确认请求已发出。
     try {
       const totalTokensEst = estimateMessagesTokens(rawMessages, req.system, req.tools);
+      // F6（2026-11-12）：两个估算口径**并存**，字段名自带口径。
+      // - estimated_input_tokens：本文件的纯启发式（上面这个 estimateMessagesTokens），
+      //   与真实 usage 实测差 1.23–1.29 倍。数值行为刻意不变——已有分析脚本都在读它，
+      //   静默改义会让新旧轨迹的曲线整体平移约 25%（北极星铁律 3）。
+      // - estimated_input_tokens_calibrated：ContextManager 的校准值（同一套基线 ×
+      //   calibrationFactor，与 Footer / 压缩判断共享系数），由 queryLoop 算好传下来。
+      //   未校准（首轮）时是 null —— **绝不回落**成未校准值，那会让这一行冒充校准值。
+      const calibratedInputTokensEst = req.estimated_input_tokens_calibrated ?? null;
       this.writer.appendRawJsonl(
         JSON.stringify({
           timestamp: input.timestamp,
@@ -1310,6 +1318,7 @@ export class TraceCollector {
           model: req.model,
           msg_count: rawMessages.length,
           estimated_input_tokens: totalTokensEst,
+          estimated_input_tokens_calibrated: calibratedInputTokensEst,
           // V1-1：与完整记录同源，预写行也要能回答「这次打算发多少输出」——
           // 请求没回来的那种失败（进程崩溃 / 断连）只有这一行可查。
           ...(req.max_tokens !== undefined ? { max_tokens: req.max_tokens } : {}),
