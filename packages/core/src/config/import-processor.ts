@@ -95,6 +95,26 @@ export interface ImportOptions {
    * 每个被跳过的外部导入路径回调一次。
    */
   onExternalSkipped?: (absolutePath: string) => void;
+  /**
+   * F5（固定开销可见化）：每成功展开一个导入回调一次，供 /context 按文件列出
+   * 「谁经哪一行导入了多大的文件」。`chars` 是被导入文件**自身**的字符数（不含它再嵌套导入的内容），
+   * 这样嵌套导入逐条列出时不会重复计数。
+   */
+  onImported?: (info: ImportedFileRecord) => void;
+}
+
+/** 一次成功展开的 `@` 导入（F5：/context 固定开销来源） */
+export interface ImportedFileRecord {
+  /** 被导入文件的绝对路径（realpath 归一） */
+  absolutePath: string;
+  /** CLAUDE.md 里写的原始导入路径（如 `CONTRIBUTING.md`） */
+  importPath: string;
+  /** 写下这条 `@` 导入的文件 */
+  fromFile: string;
+  /** 导入指令所在行号（1 起） */
+  line: number;
+  /** 被导入文件自身的字符数 */
+  chars: number;
 }
 
 /** 展开路径中的 `~` / `~/` 为家目录（对齐 CC expandPath）。 */
@@ -241,7 +261,9 @@ export async function processImports(
     let inFence = false;
     let fenceMarker = "";
 
+    let lineNo = 0;
     for (const line of lines) {
+      lineNo++;
       const fenceMatch = line.match(/^\s*(```+|~~~+)/);
       if (fenceMatch) {
         const marker = fenceMatch[1][0]; // ` 或 ~
@@ -325,6 +347,17 @@ export async function processImports(
           result.push(`<!-- @import ${importPath} -->`);
           result.push(processedContent);
           result.push(`<!-- end @import ${importPath} -->`);
+          try {
+            options.onImported?.({
+              absolutePath,
+              importPath,
+              fromFile: currentFile,
+              line: lineNo,
+              chars: importedContent.length,
+            });
+          } catch {
+            /* 记账回调失败不阻断导入 */
+          }
           log.debug("IMPORT", `成功导入: ${importPath} (深度 ${depth})`);
         } catch (err) {
           log.warn("IMPORT", `读取导入文件失败: ${absolutePath}`, err);

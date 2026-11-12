@@ -21,10 +21,11 @@
  * 索引本身极轻（一行一指针，claude-code 实测硬截断到 200 行 / 25KB），全量注入对
  * 中小记忆库完全可控，所以召回是「大记忆库省 token」的优化项，而非必需。
  *
- * 本模块保留为 **flag 门控的休眠能力**（对齐 claude-code「两路温存、开关切换」，而非
- * 删除）：`isMemoryRecallEnabled()` 默认 false，仅 `SID_CODE_MEMORY_RECALL=1` 时启用。
- * 接通点见 `isMemoryRecallEnabled` 的文档注释。**未接通期间不要在文档里宣称记忆走
- * 语义召回**——那是文档失实（本轮已修正 E.11 FAQ）。
+ * 2026-11-12（F5 / PR-4）起不再是休眠能力：**项目索引被截断时自动切到召回**，
+ * 同时 system 里停止注入全量索引（只留一行指向 MEMORY.md）。模式判定与会话内锁定在
+ * `inject-mode.ts`，system 构建（store.getIndexContent）与召回接线（app.ts）都经它，
+ * 两边不会再出现「索引全量注入 + 召回再加一段」的净增形态。
+ * `SID_CODE_MEMORY_RECALL=1/0` 只作为强制开/关的覆盖开关（见 inject-mode.ts）。
  * ─────────────────────────────────────────────────────────────────────
  */
 
@@ -37,21 +38,6 @@ import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
-
-/**
- * 记忆语义召回是否启用（flag 门控的休眠能力，对齐 claude-code 默认关闭的召回开关）。
- *
- * 默认 **false**：走全量索引注入（memory/prompt.ts），与 claude-code 默认一致。
- * 设 `SID_CODE_MEMORY_RECALL=1` 时启用语义召回——此时应在主循环每轮（或每 N 轮）
- * 调用 `findRelevantMemories`，把结果经 `generateRecalledMemoryAttachment`
- * （config/attachments.ts，优先级 MEMORY_RECALLED）注入，并停止全量索引注入。
- *
- * 之所以门控而非直接接通：全量注入对中小记忆库足够，语义召回每轮多一次 sideQuery，
- * 只有记忆库大到全量注入吃紧时才划算——把决策权交给部署方，而不是写死。
- */
-export function isMemoryRecallEnabled(): boolean {
-  return process.env.SID_CODE_MEMORY_RECALL === "1";
-}
 
 /** 轻量 LLM 调用签名（依赖注入，便于测试） */
 export type SideQueryFn = (opts: {
@@ -158,6 +144,12 @@ export async function findRelevantMemories(
     recentTools?: readonly RecentToolUse[];
     alreadySurfaced?: ReadonlySet<string>;
     sessionBytesUsed?: number;
+    /**
+     * 辅助调用失败（超时 / 报错）时回调。召回本身仍降级为返回空数组、不阻断会话；
+     * 这个回调让调用方能区分「没有相关记忆」与「召回坏了」——后者在召回模式下
+     * 意味着模型既看不到全量索引、也拿不到召回结果，必须回退全量注入（inject-mode.ts）。
+     */
+    onSideQueryError?: (err: Error) => void;
   },
 ): Promise<RelevantMemory[]> {
   const log = getLogger();
@@ -203,6 +195,11 @@ export async function findRelevantMemories(
       error: err.message,
       timedOut: /timeout|超时|timed out/i.test(err.message),
     });
+    try {
+      opts?.onSideQueryError?.(err instanceof Error ? err : new Error(String(err?.message ?? err)));
+    } catch {
+      /* 回调失败不影响召回降级 */
+    }
     return [];
   }
 

@@ -15,7 +15,7 @@ import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 import type { Color } from "../render-port/types.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
-import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../constants/figures.ts";
+import { PROGRESS_FILLED, PROGRESS_EMPTY, TREE_BRANCH } from "../constants/figures.ts";
 import type { ContextTokenBreakdown } from "@sid-code/core/context/manager.ts";
 
 interface ContextDialogProps {
@@ -151,6 +151,28 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
           );
         })}
       </Box>
+
+      {/* F5：固定开销来源——「记忆/CLAUDE.md」的细目，逐项列出每轮都带着的东西从哪来 */}
+      {bd.fixedOverhead && bd.fixedOverhead.sources.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Box paddingLeft={2}>
+            <Text color={theme.text.secondary}>固定开销来源（每轮都会带上）</Text>
+          </Box>
+          {bd.fixedOverhead.sources.map((s) => (
+            <Box key={s.key} paddingLeft={4}>
+              <Text color={theme.text.secondary}>{TREE_BRANCH} </Text>
+              <Text color={theme.text.primary}>{s.label}</Text>
+              <Text color={theme.text.primary}> {fmtNum(s.tokens)}</Text>
+              {s.detail ? <Text color={theme.text.secondary}>（{s.detail}）</Text> : null}
+            </Box>
+          ))}
+          {bd.fixedOverhead.hints.map((h, i) => (
+            <Box key={`hint-${i}`} paddingLeft={4}>
+              <Text color={theme.status.warning}>{h}</Text>
+            </Box>
+          ))}
+        </Box>
+      ) : null}
 
       {/* 汇总 */}
       <Box flexDirection="column" marginTop={1}>
