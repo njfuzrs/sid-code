@@ -52,6 +52,7 @@ import {
 } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import type { StatusQueryFamily } from "./status-query-commands.ts";
+import { extractNaturalLanguageSubjects } from "./wait-subjects.ts";
 import { emitScheduledTrace, SCHEDULED_INVALIDATED_EVENT_NAME } from "../cron/cron-telemetry.ts";
 import { enqueueTaskNotification } from "./notification.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -734,13 +735,12 @@ export function invalidateWakeupsForDeliveredTask(taskId: string, status: TaskSt
  *
  * `schedule_wakeup` 不新增参数（让模型管理 key 的方案已被 #642 §6.1 否决）。抽不到就为空，
  * S2 不生效、退回 S1——**这是优化而不是依赖**：抽错了最坏是没撤销，回到现状。
+ *
+ * R1 起规则本体搬到 `wait-subjects.ts`（三个入口共用一份），这里保留同名导出：
+ * 唤醒只给自然语言（prompt），命令类规则对它无意义，调窄口径的入口就不会误抽。
  */
 export function extractWaitSubjects(prompt: string): string[] {
-  const out = new Set<string>();
-  for (const m of prompt.matchAll(/\bPR\s*#?\s*(\d+)/gi)) out.add(`gh:pr:${m[1]}`);
-  for (const m of prompt.matchAll(/\bpull\/(\d+)/gi)) out.add(`gh:pr:${m[1]}`);
-  for (const m of prompt.matchAll(/\bruns?[/\s]\s*(\d{6,})/gi)) out.add(`gh:run:${m[1]}`);
-  return [...out];
+  return extractNaturalLanguageSubjects(prompt);
 }
 
 /** 等待源的展示标签（回执 / 面板 / reminder 共用同一文案，避免三处漂移）。 */

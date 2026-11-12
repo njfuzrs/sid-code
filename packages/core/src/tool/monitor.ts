@@ -42,9 +42,12 @@ import {
 import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
 import { getRunningTasks } from "../task/registry.ts";
 import { registerWait, isWakeupRegistrationEnabled } from "../task/wait-registry.ts";
-import { extractWaitSubjectsFor } from "../task/wait-subjects.ts";
+import {
+  collectWaitCommandFamilies,
+  collectWaitSubjects,
+  normalizeWaitCommand,
+} from "../task/wait-subjects.ts";
 import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
-import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
 import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
@@ -260,15 +263,16 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     // R2：同一个对象同时只允许一个**有效的显式等待**，且跨类（shell × monitor × wakeup）。
     // 原来这里只在 monitor 之间比、且只追加一行提示就照常启动——b0aa0f1e 的四份同脚本进程
     // 正是「每个入口只管自己那一类」的产物。现在走统一判定：重复则不 spawn，直接返回回执。
-    const extraction = extractWaitSubjectsFor({ command, cwd: getCwd() });
+    const subjects = collectWaitSubjects({ command });
+    const normalizedCommand = normalizeWaitCommand(command);
     const admission = decideWaitAdmission({
-      subjects: extraction.subjects,
-      command: extraction.normalizedCommand,
+      subjects,
+      command: normalizedCommand,
       deadlineAt: Date.now() + timeoutMs,
     });
     if (admission.action === "duplicate") {
       return {
-        data: formatDuplicateWaitReceipt(admission.existing, extraction.subjects),
+        data: formatDuplicateWaitReceipt(admission.existing, subjects),
         isError: false,
       };
     }
@@ -298,11 +302,11 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       promise: { kind: "deadline", deadlineAt: taskState.deadlineAt },
       description,
       registeredAt: taskState.startTime,
-      subjects: extraction.subjects.length > 0 ? extraction.subjects : undefined,
-      // 登记命令与脚本哈希：下一个等待来判准入时要能认出「这是同一件事」
-      command: extraction.normalizedCommand,
-      scriptHash: extraction.scriptHash,
-      commandFamilies: extractStatusQueryFamilies(command),
+      subjects: subjects.length > 0 ? subjects : undefined,
+      // 登记归一化命令：下一个等待来判准入时要能认出「这是同一件事」
+      command: normalizedCommand,
+      // R1：P1 覆盖判定要用命令族，与 subjects 同源同尺
+      commandFamilies: collectWaitCommandFamilies({ command }),
     });
 
     getLogger().info(

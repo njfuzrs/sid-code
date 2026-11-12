@@ -18,7 +18,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types
 import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
 import { registerWait, releaseWait } from "../task/wait-registry.ts";
-import { extractWaitSubjectsFor } from "../task/wait-subjects.ts";
+import { collectWaitSubjects, normalizeWaitCommand } from "../task/wait-subjects.ts";
 import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
@@ -126,15 +126,16 @@ export class ScheduleWakeupTool implements Tool {
     // R2：同一个对象同时只允许一个有效的显式等待，且跨类（唤醒 × shell × monitor）。
     // 判定必须放在 `replaceSessionTasksByOrigin` **之前**——先排上再判「重复」的话，
     // 调度器里那条旧唤醒已经被删了，「保留旧的」就无从谈起（静默丢等待）。
-    const extraction = extractWaitSubjectsFor({ prompt: params.prompt });
+    const subjects = collectWaitSubjects({ prompt: params.prompt });
+    const normalizedCommand = normalizeWaitCommand(params.prompt);
     const admission = decideWaitAdmission({
-      subjects: extraction.subjects,
-      command: extraction.normalizedCommand,
+      subjects,
+      command: normalizedCommand,
       deadlineAt: now + clamped * 1000,
     });
     if (admission.action === "duplicate") {
       return {
-        output: formatDuplicateWaitReceipt(admission.existing, extraction.subjects),
+        output: formatDuplicateWaitReceipt(admission.existing, subjects),
         isError: false,
       };
     }
@@ -160,9 +161,9 @@ export class ScheduleWakeupTool implements Tool {
       promise: { kind: "deadline", deadlineAt: task.fireAt! },
       description: firstLine(params.prompt, 60),
       registeredAt: now,
-      subjects: extraction.subjects.length > 0 ? extraction.subjects : undefined,
-      // R2：登记命令与对象签名，下一个等待来判准入时要能认出「这是同一件事」
-      command: extraction.normalizedCommand,
+      subjects: subjects.length > 0 ? subjects : undefined,
+      // R2：登记归一化命令，下一个等待来判准入时要能认出「这是同一件事」
+      command: normalizedCommand,
     });
 
     const clampNote =

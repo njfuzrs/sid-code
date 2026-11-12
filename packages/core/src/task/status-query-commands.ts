@@ -705,9 +705,8 @@ export function extractStatusQueryFamilies(script: string): StatusQueryFamily[] 
 /**
  * 一行脚本里可能藏状态查询的片段（见 `extractStatusQueryFamilies` 的注释）。
  *
- * 导出的唯一原因是 `wait-subjects.ts` 要拿同一套切片规则抽等待对象签名——
- * 「P1 认为这条命令在查 gh:pr:779」与「等待表认为它等的是 gh:pr:779」必须是同一张表算出来的，
- * 各写一份切片规则就会在 `$(...)` / 管道 / 循环这些形态上悄悄分叉。
+ * 导出给 `wait-subjects.ts`：等待表抽 subject 与 P1 抽命令族必须用**同一个切法**，
+ * 否则同一行脚本会出现「P1 认得、等待表认不出」的两套尺子（R1 的根因 2 就是这个形态）。
  */
 export function statusQueryCandidates(line: string): string[] {
   const out = new Set<string>();

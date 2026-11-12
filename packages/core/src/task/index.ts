@@ -136,16 +136,10 @@ export {
   __resetWaitRegistryForTest,
 } from "./wait-registry.ts";
 
-// 等待对象签名与准入判定（R2）：同一个对象同时只允许一个有效的显式等待。
+// 等待准入判定（R2）：同一个对象同时只允许一个有效的显式等待。
 // 三个入口（bash / monitor / schedule_wakeup）在启动进程或排唤醒之前都必须过这里。
-export {
-  type WaitSubjectInput,
-  type WaitSubjectExtraction,
-  extractWaitSubjectsFor,
-  collectWaitScriptBodies,
-  normalizeWaitCommand,
-  hashScriptBodies,
-} from "./wait-subjects.ts";
+// 对象签名本身由 R1 的 wait-subjects 提供（见下方），这里只补 R2 的两个判据函数。
+export { normalizeWaitCommand, hashScriptBodies } from "./wait-subjects.ts";
 export {
   type WaitAdmissionAction,
   type WaitAdmissionInput,
@@ -156,6 +150,16 @@ export {
 } from "./wait-admission.ts";
 
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
+
+// 等待对象签名（R1）：bash / monitor / schedule_wakeup 三个入口共用同一把尺子。
+export {
+  type WaitSubjectSources,
+  MAX_SCRIPT_BODY_BYTES,
+  collectWaitSubjects,
+  collectWaitCommandFamilies,
+  extractNaturalLanguageSubjects,
+  extractScriptPaths,
+} from "./wait-subjects.ts";
 
 // 等待期外部状态查询守卫（P1）：判「在等 + 只读状态查询 + 结果没变」三条同时成立才拦。
 // 与 Q1 的 background-poll-guard 是同一类空转的两个入口，判据不同所以分模块。

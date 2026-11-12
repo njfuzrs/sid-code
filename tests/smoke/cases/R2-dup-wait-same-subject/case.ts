@@ -11,9 +11,11 @@
  * 判据（方案 §R2 验收 2）：整段只有 **1 个** shell 任务被 spawn，另外 3 次工具回执含
  * 「本次未重复启动」。期望来源是方案 §1.4 / §R2 里人工核过的轨迹数字，不是从实现反推的。
  *
- * 为什么脚本里用 `# gh pr checks 779` 注释而不是真的调 gh：对象签名来自**脚本正文**
+ * 为什么脚本里用 `# 等待 PR #779 的 CI` 注释而不是真的调 gh：对象签名来自**脚本正文**
  * （`bash xxx.sh` 的命令行上什么都看不出，8b8d721f 的形态），而回放环境没有 gh 可调。
- * 注释与真实脚本里的 `gh pr checks "$pr"` 走同一套抽取（宽松正则 + 变量展开）。
+ * 注释形式与真实 fixture（`fixtures/wait-scripts/b0aa0f1e-wait-pr-779-v2.sh` 的
+ * `# 等待 PR #779 的 CI + auto-merge 结果`）一致——R1 对脚本正文走自然语言规则，
+ * 写成 `# gh pr checks 779` 时命令表不认被注释掉的查询，抽不出签名。
  *
  * 时长：`wait_until_seconds` 的下限是 60s，第一次 spawn 的等待要活到第 4 次调用结束，
  * 因此用例至少要跑满一次期限（`timeoutMs` 覆盖运行器缺省的 60s 单例超时）。
@@ -29,7 +31,7 @@ const def: SmokeCase = {
   kind: "guard",
   repo: {
     "README.md": "R2：同一对象的第二个等待不该再起进程\n",
-    "wait-pr-779.sh": "#!/bin/sh\n# gh pr checks 779\nwhile true; do sleep 5; done\n",
+    "wait-pr-779.sh": "#!/bin/sh\n# 等待 PR #779 的 CI\nwhile true; do sleep 5; done\n",
   },
   argv: ["-p", "等 PR 779 的 CI 过了告诉我"],
   timeoutMs: 150_000,
