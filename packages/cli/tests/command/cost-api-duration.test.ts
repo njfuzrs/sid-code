@@ -114,10 +114,11 @@ describe("/cost 耗时口径（D8）", () => {
   test("辅助调用耗时排在主循环 API 耗时之后、工具耗时之前", async () => {
     recordSideCall(sideCall("fork:memory-extract", 1200));
 
+    // D15 版式后耗时行带两格缩进（分区内的行），行首匹配要 trim 后判。
     const lines = (await runCost()).split("\n");
-    const apiIdx = lines.findIndex((l) => l.startsWith("API 耗时（主循环）:"));
-    const sideIdx = lines.findIndex((l) => l.startsWith("辅助调用耗时:"));
-    const toolIdx = lines.findIndex((l) => l.startsWith("工具耗时:"));
+    const apiIdx = lines.findIndex((l) => l.trim().startsWith("API 耗时（主循环）:"));
+    const sideIdx = lines.findIndex((l) => l.trim().startsWith("辅助调用耗时:"));
+    const toolIdx = lines.findIndex((l) => l.trim().startsWith("工具耗时:"));
     expect(apiIdx).toBeGreaterThanOrEqual(0);
     expect(sideIdx).toBeGreaterThan(apiIdx);
     expect(toolIdx).toBeGreaterThan(sideIdx);

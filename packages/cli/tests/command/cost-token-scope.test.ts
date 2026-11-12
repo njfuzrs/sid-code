@@ -65,12 +65,14 @@ async function runDebug(ss: SessionState): Promise<string> {
 }
 
 describe("/cost 标注 stock / flow 两种 token 口径（D3）", () => {
-  test("flow 行用累计发送口径，stock 行用当前上下文口径，且指向状态栏 ↑", async () => {
+  // D15 版式重做后（PR-B）：两个口径并到一行「累计发送 X（flow…） · 当前上下文 Y（stock…）」，
+  // 数字带千分位。口径标注语义不变，锚点随版式更新。
+  test("flow 用累计发送口径，stock 用当前上下文口径，且指向状态栏 ↑", async () => {
     const out = await runCost(sessionTwoRequests());
     // flow：两次请求之和 70,000（不是末次 40,000）
-    expect(out).toContain("输入（累计发送，flow）: 70000");
+    expect(out).toContain("累计发送 70,000（flow，每次请求的 prompt 都计入）");
     // stock：末次请求 40,000（不是累加 70,000）
-    expect(out).toContain("当前上下文（stock）: 40000");
+    expect(out).toContain("当前上下文 40,000（stock，末次请求；状态栏 ↑ 显示的就是它）");
     // 两个口径的桥梁：用户看到 Footer 的 ↑ 时知道它对应哪一行
     expect(out).toContain("状态栏 ↑");
   });
@@ -83,8 +85,11 @@ describe("/cost 标注 stock / flow 两种 token 口径（D3）", () => {
     expect(flow).toBe(70_000);
     expect(stock).toBe(40_000);
     expect(flow).not.toBe(stock);
-    expect(out).toContain(`输入（累计发送，flow）: ${flow}`);
-    expect(out).toContain(`当前上下文（stock）: ${stock}`);
+    // D15 版式带千分位：70,000 / 40,000。断言用源字段值拼千分位（不是手抄常量），
+    // 防「源字段换口径、断言还锁着旧值」的假绿。
+    const fmtInt = (n: number) => n.toLocaleString("en-US");
+    expect(out).toContain(`累计发送 ${fmtInt(flow)}（flow`);
+    expect(out).toContain(`当前上下文 ${fmtInt(stock)}（stock`);
   });
 });
 
@@ -98,11 +103,12 @@ describe("/debug 标注 stock / flow 两种 token 口径（D3）", () => {
     expect(debugOut).toContain("当前上下文 : 40,000（stock");
     expect(debugOut).toContain("状态栏 ↑");
 
-    // 两个入口同一指标同一数字：截图对账时不许出现「/cost 和 /debug 又对不上」
+    // 两个入口同一指标同一数字：截图对账时不许出现「/cost 和 /debug 又对不上」。
+    // /cost 的锚点随 D15 版式更新（口径并到一行、千分位），/debug 未在本次范围（自有版式）。
     const pick = (out: string, re: RegExp): string => out.match(re)?.[1] ?? "";
     expect(pick(debugOut, /入 ([\d,]+)（累计发送/)).toBe("70,000");
-    expect(pick(costOut, /输入（累计发送，flow）: (\d+)/)).toBe("70000");
+    expect(pick(costOut, /累计发送 ([\d,]+)（flow/)).toBe("70,000");
     expect(pick(debugOut, /当前上下文 : ([\d,]+)（stock/)).toBe("40,000");
-    expect(pick(costOut, /当前上下文（stock）: (\d+)/)).toBe("40000");
+    expect(pick(costOut, /当前上下文 ([\d,]+)（stock/)).toBe("40,000");
   });
 });
