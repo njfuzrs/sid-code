@@ -1,6 +1,6 @@
 {
   "tscVersion": "5.9.3",
-  "total": 64,
+  "total": 62,
   "note": "tsc 存量错误基线（由 scripts/tsc-baseline.ts 维护）。门禁只拦新增、允许收紧：新增的错误必须修掉，不许调高数字；存量清理之后跑 bun run typecheck:gate --update-baseline 收紧。键 = 归一化文件路径 + 错误码 + 归一化消息（不含行列号，行号漂移不触发门禁），值 = 出现次数。换 tsc 版本或大改依赖树之后错误集合可能变，需要重新 --init 并在 PR 里说明总数变化。",
   "errors": {
     "packages/cli/tests/render-port/fixtures/idle-timers-app.tsx|TS1375|'await' expressions are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.": 7,
@@ -30,7 +30,6 @@
     "packages/core/tests/sdk/headless-event-format.test.ts|TS2345|Argument of type '{ kind: \"max_turns\"; maxTurns: number; }' is not assignable to parameter of type 'QueryEngineEvent'.": 1,
     "packages/core/tests/sdk/message-converter.test.ts|TS2345|Argument of type '{ kind: \"max_turns\"; maxTurns: number; }' is not assignable to parameter of type 'QueryEngineEvent'.": 1,
     "packages/core/tests/session/teammate-registration.test.ts|TS2741|Property 'agentId' is missing in type '{ id: string; type: \"local_agent\"; status: TaskStatus; description: string; startTime: number; outputFile: string; outputOffset: number; notified: false; agentType: string; prompt: string; isBackgrounded: true; progress: { ...; }; }' but required in type 'LocalAgentTaskState'.": 1,
-    "packages/core/tests/skill/skill-invoked-telemetry.test.ts|TS2322|Type '\"plugin\"' is not assignable to type '\"mcp\" | ExtensionSource | undefined'.": 2,
     "packages/core/tests/workflow/budget-shared-pool.test.ts|TS2305|Module '\"@sid-code/core/workflow/types.ts\"' has no exported member 'AgentCallContext'.": 1,
     "packages/core/tests/workflow/budget-shared-pool.test.ts|TS2305|Module '\"@sid-code/core/workflow/types.ts\"' has no exported member 'AgentRunner'.": 1,
     "scripts/docs-gen-reference.ts|TS18048|'proc.stderr' is possibly 'undefined'.": 1,
