@@ -219,7 +219,6 @@ export async function partialCompact(
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
-      durationMs: 0,
       success: false,
       error: err.message,
       timedOut: /timeout|超时|timed out/i.test(err.message),
@@ -387,7 +386,6 @@ async function runPartialSummaryRequest(
       outputTokens: streamUsage.outputTokens ?? 0,
       cacheReadTokens: streamUsage.cacheReadInputTokens ?? 0,
       cacheCreationTokens: streamUsage.cacheCreationInputTokens ?? 0,
-      durationMs: 0,
     });
   }
 
