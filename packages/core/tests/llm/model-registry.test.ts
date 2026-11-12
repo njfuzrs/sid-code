@@ -30,8 +30,10 @@ describe("lookupRegistry 匹配策略", () => {
   describe("最长前缀匹配", () => {
     test("变体后缀命中前缀（deepseek-v4-flash-maxthink → deepseek-v4-flash）", () => {
       const entry = lookupRegistry("deepseek-v4-flash-maxthink");
-      expect(entry?.contextWindow).toBe(1_000_000);
-      expect(entry?.maxOutputTokens).toBe(384_000);
+      // 2026-11-12：DeepSeek 在役条目改为官方精确值 1,048,576 / 393,216（报告的 F1 修复顺带
+      // 让注册表描述事实）。取整口径 1_000_000 / 384_000 的旧期望随之过期。
+      expect(entry?.contextWindow).toBe(1_048_576);
+      expect(entry?.maxOutputTokens).toBe(393_216);
     });
 
     test("命中的是最长前缀而非最短（deepseek-v4-pro 不退化到更短的 key）", () => {
@@ -39,7 +41,7 @@ describe("lookupRegistry 匹配策略", () => {
       // 这里 deepseek-v4-pro-xxx 应命中 deepseek-v4-pro（384K），
       // 而非任何更短前缀。
       const entry = lookupRegistry("deepseek-v4-pro-experimental");
-      expect(entry?.maxOutputTokens).toBe(384_000);
+      expect(entry?.maxOutputTokens).toBe(393_216);
       expect(entry?.requiresReasoningContentForToolCalls).toBe(true);
     });
   });
@@ -53,7 +55,7 @@ describe("lookupRegistry 匹配策略", () => {
 
     test('"/" 剥离后走前缀匹配（openrouter/deepseek-v4-flash-x → deepseek-v4-flash）', () => {
       const entry = lookupRegistry("openrouter/deepseek-v4-flash-x");
-      expect(entry?.maxOutputTokens).toBe(384_000);
+      expect(entry?.maxOutputTokens).toBe(393_216);
     });
   });
 
@@ -61,7 +63,7 @@ describe("lookupRegistry 匹配策略", () => {
   describe("供应商连字符前缀剥离（白名单）", () => {
     test("ali-deepseek-v4-pro → deepseek-v4-pro", () => {
       const entry = lookupRegistry("ali-deepseek-v4-pro");
-      expect(entry?.contextWindow).toBe(1_000_000);
+      expect(entry?.contextWindow).toBe(1_048_576);
       // 断言"剥离后拿到的就是裸名那一条"，而不是写死单价 —— 写死会让每次厂商调价
       // 都连带改一批与前缀剥离无关的测试（D1 教训）。
       expect(entry?.pricing?.input).toBe(lookupRegistry("deepseek-v4-pro")!.pricing!.input);
@@ -69,11 +71,13 @@ describe("lookupRegistry 匹配策略", () => {
 
     test("volc-deepseek-v4-flash → deepseek-v4-flash", () => {
       const entry = lookupRegistry("volc-deepseek-v4-flash");
-      expect(entry?.maxOutputTokens).toBe(384_000);
+      expect(entry?.maxOutputTokens).toBe(393_216);
     });
 
     test("siliconflow- 前缀剥离命中", () => {
       const entry = lookupRegistry("siliconflow-deepseek-chat");
+      // deepseek-chat 是 2026-07-24 停用的历史条目（保留只为成本估算），**刻意未按
+      // 在役条目改成精确值**：停用后不再发请求，窗口值不参与成本。
       expect(entry?.contextWindow).toBe(1_000_000);
     });
 

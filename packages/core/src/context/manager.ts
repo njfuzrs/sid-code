@@ -275,10 +275,16 @@ const SMALL_WINDOW_EMERGENCY_RATIO = 0.9;
  * 只作用于 hard / emergency 两层——masking 只是遮罩工具输出，不涉及"必须写得完"。
  *
  * 缓冲区对所有模型统一计算，**不按模型名分档**（遵守全局指令 feedback-no-hardcoded-model-tier-rules）——
- * 唯一的模型相关输入是注册表里的结构性事实 `maxOutputTokens`，属于允许的结构分档。
+ * 唯一的模型相关输入是「本次请求的输出预算」（`requestOutputBudget`），属于允许的结构分档。
+ *
+ * ⚠️ 它**必须**是请求预算（本次回复打算写多少），不是模型的物理输出上限。
+ * 后者（如 DeepSeek 的 384k）从来不会被一次回复用完，拿它算缓冲等于凭空多留 88k：
+ *   - 缓冲被 `OUTPUT_RESERVE_MAX_RATIO` 12% 钳住后仍把 1M 窗口的地板抬到 140k
+ *     （正确值是 32,768 + 20k = 52k），emergency 压缩提前 40k 触发。
+ * 这是「同一个名字两种语义」的典型（见排查报告 §4 原则 3 / F8）。
  */
 const COMPLETION_BUFFER = {
-  /** 未注入模型 maxOutputTokens 时的输出预留兜底 */
+  /** 未注入请求输出预算时的输出预留兜底 */
   DEFAULT_OUTPUT_RESERVE: 16_000,
   /** 输出预留占窗口的上限比例（防止大输出窗口模型把地板抬到吃掉过多上下文） */
   OUTPUT_RESERVE_MAX_RATIO: 0.12,
@@ -295,10 +301,15 @@ export interface ManagerOptions {
   maxTokens: number; // 上下文窗口最大 token 数
   compactThreshold?: number; // 触发压缩的阈值比例（默认 0.7）
   /**
-   * P3-2：模型单次响应的最大输出 token 数（来自 model-registry 的 maxOutputTokens）。
-   * 用于计算完成缓冲区的「输出预留」分量；未传时用 COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE 兜底。
+   * P3-2 / F8：**本次请求的输出预算**（「打算预留多少输出」，不是模型的物理输出上限）。
+   * 来源见 `llm/output-budget.ts` 的 `resolveRequestBudget`（用户显式值 > 默认 32,768）。
+   * 用于计算完成缓冲区的「输出预留」分量；未传时用
+   * COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE 兜底。
+   *
+   * ⚠️ 不要把模型 / 渠道的物理上限（`availableModels[].maxOutputTokens`）传进来：
+   * 那个值（如 DeepSeek 384k）从来不会被一次回复用完，拿它算缓冲会凭空多留 88k。
    */
-  maxOutputTokens?: number;
+  requestOutputBudget?: number;
   /** 项目临时目录（用于工具输出落盘） */
   tempDir?: string;
   /**
@@ -323,10 +334,11 @@ export class Manager {
    */
   private autoCompactPctOverride: number | null = null;
   /**
-   * P3-2：模型单次响应最大输出 token（完成缓冲区的输出预留分量）。
-   * 由构造参数或 setMaxOutputTokens 注入（模型切换时上层重设）。
+   * P3-2 / F8：本次请求的输出预算（完成缓冲区的输出预留分量）。
+   * 由构造参数或 setRequestOutputBudget 注入；模型切换时**不需要**重设——
+   * 预算不随模型变，随模型变的是窗口（setMaxTokens 的第一个参数）。
    */
-  private maxOutputTokens?: number;
+  private requestOutputBudget?: number;
   private tempDir?: string;
   private sessionId?: string;
   private maskingService?: ToolOutputMaskingService;
@@ -499,8 +511,8 @@ export class Manager {
     if (opts.compactThreshold !== undefined) {
       this.setAutoCompactPctOverride(opts.compactThreshold);
     }
-    // P3-2：完成缓冲区的输出预留分量数据源（模型 maxOutputTokens）。
-    this.maxOutputTokens = opts.maxOutputTokens;
+    // P3-2 / F8：完成缓冲区的输出预留分量数据源（本次请求的输出预算，非模型物理上限）。
+    this.requestOutputBudget = opts.requestOutputBudget;
     this.tempDir = opts.tempDir;
     // 创建即启用 masking（对标 cc）：构造时若已知 sessionId，直接建 maskingService，
     // 不必等外部记得调 setSessionId。setSessionId 仍保留（App 侧在 sessionId 晚于
@@ -609,14 +621,15 @@ export class Manager {
    * 200k→1M 方向虚高 → 过早 compact。切模型时同步窗口可消除该失真。
    *
    * @param maxTokens 新模型的上下文窗口 token 数；非正值忽略（防御非法输入）。
-   * @param maxOutputTokens P3-2：新模型的单次最大输出 token（完成缓冲区的输出预留分量）。
-   *   省略时**保持原值不变**（而非清零）——避免只知窗口不知输出上限的调用方把缓冲区打回默认。
-   *   显式传 undefined 与省略同义；要清除请调 setMaxOutputTokens(undefined)。
+   * @param requestOutputBudget F8：本次请求的输出预算（完成缓冲区的输出预留分量）。
+   *   **模型切换时通常不需要传**——预算不随模型变，随模型变的是窗口（第一个参数）。
+   *   省略时**保持原值不变**（而非清零）——避免只知窗口不知预算的调用方把缓冲区打回默认。
+   *   显式传 undefined 与省略同义；要清除请调 setRequestOutputBudget(undefined)。
    */
-  setMaxTokens(maxTokens: number, maxOutputTokens?: number): void {
+  setMaxTokens(maxTokens: number, requestOutputBudget?: number): void {
     if (!Number.isFinite(maxTokens) || maxTokens <= 0) return;
     this.maxTokens = maxTokens;
-    if (maxOutputTokens !== undefined) this.setMaxOutputTokens(maxOutputTokens);
+    if (requestOutputBudget !== undefined) this.setRequestOutputBudget(requestOutputBudget);
   }
 
   /**
@@ -1318,35 +1331,7 @@ export class Manager {
       }),
     }));
 
-    // 旧持久化引用折叠：引用约 200 字节，不会被上面的大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
-    // 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
-    const REFERENCE_KEEP_RECENT = 20;
-    const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
-    for (let i = 0; i < result.length; i++) {
-      const msg = result[i];
-      for (let j = 0; j < msg.content.length; j++) {
-        const block = msg.content[j];
-        if (
-          block.type === "tool_result" &&
-          typeof block.content === "string" &&
-          isPersistedReference(block.content)
-        ) {
-          persistedRefPositions.push({ msgIdx: i, blockIdx: j });
-        }
-      }
-    }
-    if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
-      const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
-      for (const { msgIdx, blockIdx } of toCollapse) {
-        const block = result[msgIdx].content[blockIdx];
-        if (block.type === "tool_result") {
-          (result[msgIdx].content as any[])[blockIdx] = {
-            ...block,
-            content: "[旧工具输出，如需查阅请重新执行对应工具]",
-          };
-        }
-      }
-    }
+    collapseOldPersistedReferences(result);
 
     // 验证消息格式（仅警告，不阻塞）
     this.validateSendCopy(full, result);
@@ -1354,6 +1339,55 @@ export class Manager {
     this.recordSentIntactToolResults(result);
     this.lastSendSnapshot = { full, sent: result };
     return result;
+  }
+
+  /**
+   * D16：fork（记忆提取 / 会话笔记）发请求用的消息前缀 —— **只读**地复现主循环的发送视图。
+   *
+   * 为什么不直接给 fork `getMessages()`：主循环发的是 `getCleanedMessages()`（遮罩 / 冷清理 /
+   * 大输出占位），fork 发原始消息时，前缀在第一个被清理的 tool_result 处分叉，之后的历史
+   * 全部不命中缓存 —— 会话越长越容易触发，而越长的会话 fork 首请求越贵。
+   *
+   * 为什么不能让 fork 调 `getCleanedMessages()`：它有副作用（新增清理对象、记 sentIntact、
+   * 覆盖 lastSendSnapshot、记 pendingSendCauses），fork 一调就改了主循环下一轮的发送前缀与校准分母。
+   *
+   * 这里只贴**已经发出去过**的三类粘滞占位（maskedState / coldClearState / replacementState，
+   * 都按 tool_use_id 键、一旦发出就不再撤销），再做与发送路径同一份的旧引用折叠。
+   * 不贴「本轮才会新清理」的块：主循环上一次请求里它们还是原文，缓存里存的也是原文。
+   * 不含 transient reminder（只在主循环发送副本里，不进历史）—— 那只影响末尾一小段。
+   */
+  getForkPrefixMessages(): Message[] {
+    const hasSticky =
+      this.maskedState.size > 0 || this.coldClearState.size > 0 || this.replacementState.size > 0;
+    /** 主循环只有在「有大输出占位要贴」的那条分支里才做旧引用折叠（无占位时提前返回），这里同条件 */
+    let hasReplacement = false;
+    const view = !hasSticky
+      ? [...this.messages]
+      : this.messages.map((msg) => {
+          let touched = false;
+          const content = msg.content.map((block) => {
+            if (block.type !== "tool_result") return block;
+            const id = block.tool_use_id;
+            if (this.replacementState.has(id)) hasReplacement = true;
+            // 与 getCleanedMessages 同序：遮罩 → 冷清理 → 大输出占位（后者覆盖前者）
+            const next =
+              this.replacementState.get(id) ??
+              this.coldClearState.get(id) ??
+              this.maskedState.get(id);
+            if (next === undefined || next === block.content) return block;
+            touched = true;
+            return { ...block, content: next };
+          });
+          if (!touched) return msg;
+          // ⚠️ `...msg` 默认透传，不得手写字段清单（会丢 _meta，见 getCleanedMessages 同名注释）
+          return { ...msg, content };
+        });
+    if (!hasReplacement) return view;
+    // 折叠会就地改写 content 数组：没有经过上面重建的消息对象仍是 this.messages 的引用，
+    // 所以先浅拷一层 content 再折叠，绝不碰主历史。
+    const out = view.map((m) => ({ ...m, content: [...m.content] }));
+    collapseOldPersistedReferences(out);
+    return out;
   }
 
   /**
@@ -1885,11 +1919,11 @@ export class Manager {
   }
 
   /**
-   * P3-2：设置模型单次响应最大输出 token（完成缓冲区的输出预留分量）。
-   * 模型切换时由上层重设，使缓冲区跟随新模型的输出能力。
+   * F8：设置本次请求的输出预算（完成缓冲区的输出预留分量）。
+   * 预算来自用户显式值或默认常量（`llm/output-budget.ts`），**不随模型切换变化**。
    */
-  setMaxOutputTokens(n: number | undefined): void {
-    this.maxOutputTokens = n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
+  setRequestOutputBudget(n: number | undefined): void {
+    this.requestOutputBudget = n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
   /** 获取压缩阈值比例（默认 0.7）——历史 API，仅诊断用；真实触发点见 getCompactionThresholds() */
@@ -1917,7 +1951,7 @@ export class Manager {
     let completionBuffer = 0;
     if (this.maxTokens > COMPLETION_BUFFER.MIN_WINDOW_TO_APPLY) {
       const outputReserve = Math.min(
-        this.maxOutputTokens ?? COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE,
+        this.requestOutputBudget ?? COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE,
         Math.floor(this.maxTokens * COMPLETION_BUFFER.OUTPUT_RESERVE_MAX_RATIO),
       );
       completionBuffer = Math.min(
@@ -2967,4 +3001,41 @@ function buildRoleBridge(nextRole: Message["role"], origin: string): Message {
   return nextRole === "user"
     ? { role: "assistant", content: [{ type: "text", text: "好的。" }], _meta: { origin } }
     : { role: "user", content: [{ type: "text", text: "继续。" }], _meta: { origin } };
+}
+
+/**
+ * 旧持久化引用折叠：引用约 200 字节，不会被大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
+ * 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
+ *
+ * 发送路径（getCleanedMessages）与 fork 前缀视图（getForkPrefixMessages）共用这一份，
+ * 两处各写一遍就是下一次「fork 与主循环前缀分叉」。**就地改写**入参的 content 数组。
+ */
+function collapseOldPersistedReferences(result: Message[]): void {
+  const REFERENCE_KEEP_RECENT = 20;
+  const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
+  for (let i = 0; i < result.length; i++) {
+    const msg = result[i];
+    for (let j = 0; j < msg.content.length; j++) {
+      const block = msg.content[j];
+      if (
+        block.type === "tool_result" &&
+        typeof block.content === "string" &&
+        isPersistedReference(block.content)
+      ) {
+        persistedRefPositions.push({ msgIdx: i, blockIdx: j });
+      }
+    }
+  }
+  if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
+    const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
+    for (const { msgIdx, blockIdx } of toCollapse) {
+      const block = result[msgIdx].content[blockIdx];
+      if (block.type === "tool_result") {
+        (result[msgIdx].content as any[])[blockIdx] = {
+          ...block,
+          content: "[旧工具输出，如需查阅请重新执行对应工具]",
+        };
+      }
+    }
+  }
 }

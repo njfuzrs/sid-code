@@ -7,6 +7,7 @@
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { DEFAULT_REQUEST_MAX_TOKENS } from "../llm/output-budget.ts";
 import { getSidHome, sidPaths } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings, PerModelStreamTimeouts } from "./network-profile.ts";
@@ -196,7 +197,13 @@ export interface Config {
   openaiKey: string;
   /** 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 */
   baseURL: string;
-  /** 单次响应最大输出 token 数（≥1000） */
+  /** **本次请求的输出预算**（≥1000）——「打算预留多少输出」，不是模型的物理输出上限。
+   *
+   *  两个概念不要混：物理上限（`availableModels[].maxOutputTokens` > 能力目录 > 注册表）
+   *  是模型 / 渠道的固定属性，只用来钳制；本字段是请求侧的预算，来源是
+   *  `--max-tokens` / `SID_MAX_OUTPUT_TOKENS`（含 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`）>
+   *  settings 顶层 `maxTokens` > 默认 32,768。发送前由 `llm/output-budget.ts`
+   *  统一做「物理上限 + 窗口剩余」双重钳制。 */
   maxTokens: number;
   /** 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 */
   availableModels: ModelConfig[];
@@ -731,9 +738,13 @@ export interface Config {
    * settings.json 顶层 maxTokens）。仅运行时携带，不写入磁盘。
    *
    * 用途：让 resolveCurrentModelConfig 在「运行时 /model 切换」时能区分
-   * 「maxTokens 是用户刻意设的」还是「上个模型自动推导出的残留值」——
-   * 前者应尊重（但仍钳制到新模型物理上限），后者应按新模型重算。
-   * 不设置表示用户从未显式指定，maxTokens 完全由模型能力推导。
+   * 「maxTokens 是用户刻意设的」还是默认预算值——
+   * 前者应尊重（但仍钳制到新模型物理上限），后者应回到通用默认预算。
+   * 不设置表示用户从未显式指定，maxTokens 取 DEFAULT_REQUEST_MAX_TOKENS（32,768）。
+   *
+   * ⚠️ 它表达的是**请求输出预算**，不是模型物理上限。`availableModels[].maxOutputTokens`
+   * 属于后者，绝不能写进这里（否则「用户配了渠道上限 384k」会重新变成「每次请求发 384k」，
+   * F1 原样复发）。
    */
   _explicitMaxTokens?: number;
 }
@@ -1030,14 +1041,15 @@ export function defaultConfig(): Config {
     anthropicKey: "",
     openaiKey: "",
     baseURL: "",
-    // maxTokens 是「最后兜底」：正常路径下会被四重覆盖——
-    //   availableModels.maxOutputTokens（:810）> CLI/env/file 显式值（:744）> 模型推导（:746-748）。
-    // 仅当用户既没配 availableModels、也没在任何地方显式给 maxTokens、且模型推导也失败时，才用到这里。
-    // 旧值 16384 是 Claude 3 时代输出上限，会把今天 32K~128K 输出能力的模型阉割掉；
-    // 不存在对所有模型都"安全且不阉割"的硬编码值（各家 max_output 差异大），故取一个
-    // 主流模型普遍可接受、又不会过度保守的兜底；输出上限低于此值的模型，API 会自行截到合法值。
+    // maxTokens 是**请求输出预算**（不是模型物理上限）：正常路径下会被
+    //   CLI/env/file 显式值 > 本默认值 覆盖；模型的物理输出上限只参与发送前钳制
+    //   （见 llm/output-budget.ts），不再写回这里。
+    // 旧实现把它按模型注册表推导成物理上限（DeepSeek 384k），于是每次请求都发
+    // `max_tokens=384000`，而 OpenAI 兼容协议族按「输入 + max_tokens ≤ 窗口」校验，
+    // 输入超过约 664k 就被 400 拒绝 —— 为一次也没用到的 384k 输出让出 37% 输入空间。
+    // 取 32768 的依据见 llm/output-budget.ts 的 DEFAULT_REQUEST_MAX_TOKENS 注释。
     // 想放宽/收紧无需改源码：设 SID_MAX_OUTPUT_TOKENS（见 loadFromEnv）。
-    maxTokens: 32768,
+    maxTokens: DEFAULT_REQUEST_MAX_TOKENS,
     availableModels: [],
     permissionMode: "default",
     planExecMode: undefined,
@@ -1897,17 +1909,17 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     return config;
   }
 
-  // maxTokens 兜底推导：_explicitMaxTokens 已在前面(首次 resolveCurrentModelConfig 之前)登记。
-  // 当有 availableModels 时，resolveCurrentModelConfig 已完成 maxTokens 重算/钳制；
-  // 但它对「无 availableModels」的场景早返回、不动 maxTokens，故此处兜底：用户未显式配置
-  // 时按当前模型注册表推导。最后统一钳制到模型物理上限（含无 availableModels 的注册表兜底）。
+  // maxTokens 兜底：_explicitMaxTokens 已在前面(首次 resolveCurrentModelConfig 之前)登记。
+  // 当有 availableModels 时，resolveCurrentModelConfig 已完成重算；但它对「无 availableModels」
+  // 的场景早返回、不动 maxTokens，故此处兜底。
+  //
+  // ⚠️ 用户未显式配置时用**通用默认预算**，不再按模型注册表推导物理上限——那正是 F1：
+  // 每轮把 384k 当 max_tokens 发出去，输入过 664k 就被 400 拒绝。物理上限只用来钳制
+  // （下一行 clamp），发送前还会由 llm/output-budget.ts 按「窗口 − 输入」再钳一次。
   if (!config._explicitMaxTokens) {
-    const modelMaxOutput = resolveModelMaxOutputTokens(config);
-    if (modelMaxOutput) {
-      config.maxTokens = modelMaxOutput;
-    }
+    config.maxTokens = DEFAULT_REQUEST_MAX_TOKENS;
   }
-  // 统一钳制：即便用户显式配置，也不能超过当前模型的物理输出上限（否则网关直接 400）。
+  // 统一钳制：即便用户显式配置，请求预算也不能超过当前模型的物理输出上限（否则网关直接 400）。
   clampMaxTokensToModelCeiling(config);
 
   // P2-4：CC 的 "manual" 是 sid "default" 的别名，归一到内部规范名
@@ -2215,24 +2227,28 @@ export function resolveCurrentModelConfig(config: Config): void {
   }
 
   // maxTokens 重算（根治「运行时切模型不重算，把上个模型的高上限带到新模型触发 HTTP 400」）：
-  //   1. 用户显式全局覆盖（_explicitMaxTokens）优先，但仍要钳制到新模型物理上限（见步骤 3）。
-  //   2. 否则按新模型能力推导：availableModels[].maxOutputTokens > 内置注册表兜底。
-  //      不能像旧实现那样「没配 maxOutputTokens 就不动 config.maxTokens」——那正是残留值 bug 根因。
-  //   3. 无论哪条路径，最终都钳制到当前模型的物理输出上限。
+  //   1. 用户显式全局覆盖（_explicitMaxTokens）优先，但仍要钳制到新模型物理上限（见步骤 2）。
+  //   2. 否则回到**通用默认请求预算**——不再按新模型推导物理上限。
+  //      旧实现的问题不是「没重算」，而是**算出来的东西本身用错了**：把物理上限
+  //      （DeepSeek 384k）当成每次请求的 max_tokens，于是「输入 + 384k」撞窗口吃 400（F1）。
+  //      物理上限现在的用途只有一个：钳制（见下一行 clamp），以及发送前由
+  //      llm/output-budget.ts 再做一次窗口钳制。
   if (config._explicitMaxTokens && config._explicitMaxTokens > 0) {
     config.maxTokens = config._explicitMaxTokens;
   } else {
-    const derived = resolveModelMaxOutputTokens(config);
-    if (derived) config.maxTokens = derived;
+    config.maxTokens = DEFAULT_REQUEST_MAX_TOKENS;
   }
   clampMaxTokensToModelCeiling(config);
 }
 
 /**
- * 把 config.maxTokens 钳制到当前模型的物理输出上限（maxOutputTokens）。
- * 上限来源：availableModels[].maxOutputTokens > 内置注册表。二者都拿不到时不钳制
+ * 把 config.maxTokens（**请求预算**）钳制到当前模型的物理输出上限（maxOutputTokens）。
+ * 上限来源：availableModels[].maxOutputTokens > 能力目录 > 内置注册表。都拿不到时不钳制
  * （未知模型不臆测上限，保持调用方给的值，避免误伤自定义端点）。
  * 幂等：多次调用结果一致。
+ *
+ * ⚠️ 这里钳的是「请求预算不许超过物理上限」，不是「预算就该等于上限」——
+ * 后者正是 F1。默认预算 32,768 远低于绝大多数模型的上限，本函数对它们恒不生效。
  */
 export function clampMaxTokensToModelCeiling(config: Config): void {
   const ceiling = resolveModelMaxOutputTokens(config);

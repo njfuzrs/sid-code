@@ -521,6 +521,14 @@ export interface BeforeModelInput extends HookInput {
     model: string;
     messages: Array<{ role: string; content: string }>;
     config?: Record<string, unknown>;
+    /**
+     * 本次请求**实际发出**的 `max_tokens`（请求输出预算，非模型物理上限）。
+     *
+     * 为什么要在这里单列而不是只挂在 `config` 里：`raw.jsonl` 此前完全没有这个字段，
+     * 排查「输入 + max_tokens 撞窗口」时只能从 `debug.log` 抽查（2026-11-12 那份报告
+     * 只有 6 条样本）。它是 V1-1 验收的唯一取数源，缺了就只能靠日志猜。
+     */
+    max_tokens?: number;
     /** 原始 content blocks 结构（不 stringify，采集器用） */
     raw_messages?: unknown[];
     /** system prompt（每次请求都有，但采集器只取首次） */

@@ -5,6 +5,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { GrepTool } from "@sid-code/core/tool/grep.ts";
+import { validateToolInput } from "@sid-code/core/tool/input-validator.ts";
 import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 
@@ -178,18 +179,22 @@ describe("GrepTool", () => {
     expect(parsed.numMatches).toBe(50);
   });
 
-  test("total_max_matches 向后兼容", async () => {
+  // D3（T4）：旧名已从 zod schema 删除（省常驻字节），兼容由 input-alias 在 zod 校验前改名提供。
+  // 因此必须走真实链路（validateToolInput → execute）；直接 execute 传旧名已不再生效。
+  test("废弃旧名 total_max_matches 经别名层改名后仍按 head_limit 执行", async () => {
     const lines = Array.from({ length: 10 }, (_, i) => `match ${i}`);
     createFile("test.ts", lines.join("\n") + "\n");
 
     const tool = new GrepTool();
-    const result = await tool.execute({
+    const validation = validateToolInput(tool, {
       pattern: "match",
       path: tempDir,
       output_mode: "content",
       total_max_matches: 3,
     });
+    if (!validation.ok) throw new Error(`校验失败: ${validation.message}`);
 
+    const result = await tool.execute(validation.data as Record<string, unknown>);
     const parsed = parseOutput(result.output);
     expect(parsed.appliedLimit).toBe(3);
   });

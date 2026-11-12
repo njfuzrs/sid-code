@@ -46,7 +46,8 @@ describe("ProviderRegistry", () => {
   test("#9：getContextWindow 未声明时回退到内置/启发式（deepseek 系 1M）", () => {
     const config = testConfig({ model: "deepseek-v4-pro", availableModels: [] });
     const registry = new ProviderRegistry(config);
-    expect(registry.getContextWindow()).toBe(1_000_000);
+    // 2026-11-12：在役 DeepSeek 条目改为官方精确值 1,048,576（原取整口径 1_000_000）
+    expect(registry.getContextWindow()).toBe(1_048_576);
   });
 
   test("getModelForSubAgent 无映射时返回主模型", () => {

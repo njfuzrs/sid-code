@@ -443,8 +443,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   //
   // `cacheWrite: 0` 保留：DeepSeek 无缓存写入计费概念（不是"免费"，是这个维度不存在）。
   "deepseek-v4-pro": {
-    contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 393_216,
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
@@ -466,8 +466,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     },
   },
   "deepseek-v4-flash": {
-    contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 393_216,
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
@@ -488,8 +488,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     },
   },
   "DeepSeek-V4-Flash": {
-    contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 393_216,
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
@@ -510,8 +510,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     },
   },
   "DeepSeek-V4-Pro": {
-    contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 393_216,
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
@@ -540,12 +540,14 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // `DeepSeek-V4-Flash` 已是路由到它的别名，按 Flash 价计费（deepseek-api.md:132,2233），
   // 所以上面两条与这里同值。四条 Flash 键**必须同步改**，理由同 DeepSeek-V4-Pro 注释。
   //
-  // 窗口 / 输出：文档写 1M（1048576）/ 384K（393216）（deepseek-api.md:98-99,2231）。
-  // 这里沿用既有 V4 条目的 1_000_000 / 384_000 取整口径，让同一模型的四个键数值一致，
-  // 且比文档精确值略保守（低估窗口 ≈4.6% 只会早压缩，不会撞 400）。
+  // 窗口 / 输出：官方精确值 1,048,576（1M）/ 393,216（384K）（deepseek-api.md:98-99,2231）。
+  // 用精确值而不是取整：注册表要描述事实。取整口径（1_000_000 / 384_000）在 F1 修复前
+  // 还有一个隐含代价 —— `maxOutputTokens` 被当成每次请求的 max_tokens 发出去，
+  // 384_000 让「输入 + max_tokens」的墙上限凭空少了 9,216。现在 max_tokens 不再取物理上限
+  // （见 llm/output-budget.ts），窗口值偏小 4.6% 只剩「早压缩」一个副作用，没有收益。
   "deepseek-flash": {
-    contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 393_216,
     // 「支持非思考与思考模式（默认）」（deepseek-api.md:97）
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
@@ -572,8 +574,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // `deepseek-v4-1-flash` 不以任何键为「变体后缀」开头而落空 → 计价落 FALLBACK、vision 判 false。
   // 值与 deepseek-flash 完全相同（同一个底层模型 V4.1-Flash）。
   "deepseek-v4-1-flash": {
-    contextWindow: 1_000_000,
-    maxOutputTokens: 384_000,
+    contextWindow: 1_048_576,
+    maxOutputTokens: 393_216,
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,

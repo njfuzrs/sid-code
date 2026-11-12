@@ -62,6 +62,11 @@ export interface RequestResponsePair {
   model: string;
   request: {
     model: string;
+    /**
+     * 本次请求**实际发出**的 `max_tokens`（请求输出预算）。V1-1 验收的取数源：
+     * 修复前 raw.jsonl 没有这个字段，只能从 debug.log 抽查几条。
+     */
+    max_tokens?: number;
     system?: unknown;
     messages?: unknown[];
     tools?: unknown[];

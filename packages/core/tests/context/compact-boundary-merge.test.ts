@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, spyOn, afterEach } from "bun:test";
-import { Manager } from "@sid-code/core/context/manager.ts";
+import { Manager, compactBoundaryBreaksAlternation } from "@sid-code/core/context/manager.ts";
 import { MessageValidator } from "@sid-code/core/context/validator.ts";
 import { isCompactSourceMessage } from "@sid-code/core/context/auto-compact.ts";
 import { snipCompact } from "@sid-code/core/query/compact/snip-compact.ts";
@@ -231,5 +231,17 @@ describe("MessageValidator.validate 的 from 参数", () => {
       (e) => `${e.code}@${e.messageIndex}`,
     );
     expect(codes).toEqual(["ROLE_NOT_ALTERNATING@3"]);
+  });
+});
+
+// 原在 learned-window-followups.test.ts 的 D5：撤销 S6 窗口学习时迁到这里，
+// 它测的是 compact_boundary 合法性判据，与窗口学习无关。
+describe("compactBoundaryBreaksAlternation：接在 user 之后会被识别出来", () => {
+  test("尾部 user → true；尾部 assistant / 空 → false", () => {
+    const u: Message = { role: "user", content: [{ type: "text", text: "a" }] };
+    const a: Message = { role: "assistant", content: [{ type: "text", text: "b" }] };
+    expect(compactBoundaryBreaksAlternation([u])).toBe(true);
+    expect(compactBoundaryBreaksAlternation([u, a])).toBe(false);
+    expect(compactBoundaryBreaksAlternation([])).toBe(false);
   });
 });
