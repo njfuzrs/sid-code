@@ -887,6 +887,10 @@ export class AnthropicProvider implements Provider {
             agentId: bctx.agentId,
             callerLabel: bctx.callerLabel,
             atMs: Date.now(),
+            // D8：本次 fetch 的墙钟耗时（含握手 / 首字节 / 生成 / 读流）。
+            // 消费侧（app.ts 的 billing 观察者）据此填 SideCallRecord.durationMs，
+            // `/cost` 才有「辅助调用耗时」——此前这个数哪里都看不到。
+            elapsedMs: Date.now() - requestStartTime,
             accounted: !bctx.agentId && !bctx.callerLabel,
             thinkingWire: thinkingWireLabel(thinkingWire.param),
             effortWire: wireEffort ?? "omitted",
@@ -1101,6 +1105,8 @@ export class AnthropicProvider implements Provider {
 
     // 缺陷 15：非流式同样收口计费（见 recordNonStreamingBilledRequest）。
     // SDK 对非 2xx 直接抛错，所以 create resolve 即「拿到 2xx」。
+    // D8：请求开始时刻，供 finally 里的 BilledRequest 带出墙钟耗时。
+    const requestStartTime = Date.now();
     const billingFetchId = nextFetchId();
     let billedUsage: Usage | undefined;
     let billable = false;
@@ -1185,6 +1191,8 @@ export class AnthropicProvider implements Provider {
           provider: this.name(),
           baseURL: this.client.baseURL,
           usage: billedUsage,
+          // D8：与流式路径同口径，带上本次 fetch 的墙钟耗时
+          elapsedMs: Date.now() - requestStartTime,
           thinkingWire: thinkingWireLabel(nonStreamThinkingWire.param),
           effortWire: nonStreamWireEffort ?? "omitted",
           thinkingInResponse: nonStreamSawThinking,

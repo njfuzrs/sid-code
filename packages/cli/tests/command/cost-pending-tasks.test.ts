@@ -98,7 +98,8 @@ describe("/cost 后台任务提示（D2）：接进真实命令输出", () => {
     const lines = out.split("\n");
     const costIdx = lines.findIndex((l) => l.startsWith("总费用:"));
     const noticeIdx = lines.findIndex((l) => l.includes("后台任务 memory-extract 进行中"));
-    const apiIdx = lines.findIndex((l) => l.startsWith("API 耗时:"));
+    // D8：标签改成「API 耗时（主循环）」——数值只含主循环请求，不再叫「API 耗时」
+    const apiIdx = lines.findIndex((l) => l.startsWith("API 耗时（主循环）:"));
     expect(noticeIdx).toBeGreaterThan(costIdx);
     expect(noticeIdx).toBeLessThan(apiIdx);
   });
