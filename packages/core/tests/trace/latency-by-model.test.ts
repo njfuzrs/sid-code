@@ -146,14 +146,35 @@ describe("配对规则：按时间序，不按 (session, index)", () => {
     const subPair = fetchPair("s1", 0, "m1", 5000, 6000, "sub-1");
     const events = [mainPair[0]!, subPair[0]!, subPair[1]!, mainPair[1]!];
 
-    const s = aggregateLatencyByModel(events, asOpenai, percentile).get("m1")!;
-    expect(s.n).toBe(2);
-    // 这两条是判据：不含 agent_id 时分别是 1 和 undefined→只剩 5000 一个样本
-    expect(s.unpairedHeaders).toBe(0);
-    expect(s.ttfb_p50).toBe(100);
-    // 两条 gap（主循环 90%、子代理 16.7%）都在，说明两次都正确配上了
-    expect(s.gapRatioP50).toBeCloseTo(0.1667, 3);
-    expect(s.gapRatioP95).toBeCloseTo(0.9, 3);
+    // /perf PR-A 起按 scope 分别聚合（缺省只算主循环），原先的「同一个桶里两条都在」
+    // 改成「各 scope 各自配对正确」：防错配的原意不变，只是不再混进同一组分位数。
+    const main = aggregateLatencyByModel(events, asOpenai, percentile).get("m1")!;
+    expect(main.n).toBe(1);
+    expect(main.unpairedHeaders).toBe(0);
+    expect(main.ttfb_p50).toBe(100);
+    expect(main.gapRatioP50).toBeCloseTo(0.9, 3);
+
+    const sub = aggregateLatencyByModel(events, asOpenai, percentile, "subagent").get("m1")!;
+    expect(sub.n).toBe(1);
+    expect(sub.unpairedHeaders).toBe(0);
+    expect(sub.ttfb_p50).toBe(5000);
+    expect(sub.gapRatioP50).toBeCloseTo(0.1667, 3);
+  });
+
+  test("/perf PR-A：缺省只算主循环，后台 fork 与子代理不进主循环的 model 桶", () => {
+    const events = [
+      ...fetchPair("s1", 1, "m1", 100, 1000),
+      ...fetchPair("s1", 2, "m1", 200, 2000),
+      // fork：index 900000+ 段、agent_id=fork:*（取证会话 20261110-152006-77684ab7 的形态）
+      ...fetchPair("s1", 900002, "m1", 30000, 40000, "fork:session-memory-update"),
+      // 子代理：index 10000+ 段
+      ...fetchPair("s1", 10001, "m1", 4000, 5000, "subagent-abc"),
+    ];
+    const main = aggregateLatencyByModel(events, asOpenai, percentile).get("m1")!;
+    expect(main.n).toBe(2);
+    expect(main.ttft_p95).toBe(2000); // 混入时会是 40000
+    expect(aggregateLatencyByModel(events, asOpenai, percentile, "side").get("m1")!.n).toBe(1);
+    expect(aggregateLatencyByModel(events, asOpenai, percentile, "subagent").get("m1")!.n).toBe(1);
   });
 
   test("跨会话不互配（同 index 不同 session）", () => {

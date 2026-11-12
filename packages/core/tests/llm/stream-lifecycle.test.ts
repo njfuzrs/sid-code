@@ -328,6 +328,46 @@ describe("T7 — signal 穿透", () => {
   }, 10_000);
 });
 
+describe("/perf PR-A（T-A5）— stream_completed.aborted", () => {
+  const opts = (telemetry: StreamTelemetrySignal[]) => ({
+    idleTimeoutMs: 5_000,
+    contentProgressTimeoutMs: 5_000,
+    overallTimeoutMs: 10_000,
+    isContentProgress: isContent,
+    stallWarnMs: 10_000,
+    label: "TEST",
+    onTelemetry: (e: StreamTelemetrySignal) => telemetry.push(e),
+  });
+  const completed = (t: StreamTelemetrySignal[]) =>
+    t.find((e) => e.type === "stream_completed") as Extract<
+      StreamTelemetrySignal,
+      { type: "stream_completed" }
+    >;
+
+  // 变异自证：把条件改成恒真 → 这条红；改成生产里恒假的 `signal?.aborted`（provider 都不传 signal）
+  // → 下一条红。
+  test("正常走完：不落 aborted 字段", async () => {
+    const telemetry: StreamTelemetrySignal[] = [];
+    const lc = createStreamLifecycle<Evt>(opts(telemetry));
+    for await (const _ of lc.guard(normal(5, 3))) {
+      /* drain */
+    }
+    expect(completed(telemetry)).toBeDefined();
+    expect("aborted" in completed(telemetry)).toBe(false);
+  }, 15_000);
+
+  test("消费方中途放弃（不传 signal，与三个 provider 的真实接法一致）：落 aborted=true", async () => {
+    const telemetry: StreamTelemetrySignal[] = [];
+    const lc = createStreamLifecycle<Evt>(opts(telemetry));
+    let i = 0;
+    for await (const _ of lc.guard(normal(5, 10))) {
+      if (++i === 2) break; // 模拟用户 ESC 后 provider 消费循环 throw / break
+    }
+    expect(completed(telemetry).aborted).toBe(true);
+    expect(completed(telemetry).timedOut).toBeUndefined();
+  }, 15_000);
+});
+
 describe("T7 — streamLifecycle 便捷函数（无 getSnapshot）", () => {
   test("与 createStreamLifecycle().guard 行为一致：正常流走完", async () => {
     const telemetry: StreamTelemetrySignal[] = [];

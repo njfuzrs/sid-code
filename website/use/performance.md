@@ -50,13 +50,15 @@ description: 用 /perf 看本机的首字延迟、生成速度、端到端耗时
 
 | 指标 | 口径 | 取数源 |
 | --- | --- | --- |
-| 首字延迟 TTFT | 发出请求到收到**第一个任意内容**（含思考、工具调用），每次请求单独计，不跨重试累加 | `StreamPhase(first_content).ttft_ms` |
+| 首字延迟 TTFT | 发出请求到收到**第一个任意内容**（含思考、工具调用），每次请求单独计，不跨重试累加。**只算主循环**，后台辅助调用（记忆整理、压缩等）和子代理不算在内 | `StreamPhase(first_content).ttft_ms` |
 | TTFB | 发出请求到收到响应头 | `StreamPhase(headers_received).ttfb_ms` |
-| 生成耗时 | 单次请求从收到响应头到流结束，不含重试 | `RetryTelemetry(stream_completed).elapsedMs` |
-| 生成速度 | 输出 token ÷ 生成耗时累计 | 轨迹 `output_tokens_per_sec` |
-| 端到端 | 你按回车到最终答复，**含**等你确认权限的时间 | `TurnComplete.elapsed_ms_since_prompt` |
-| 时间花在哪 | 模型整轮耗时累计 vs 工具执行墙钟累计 | `AfterModelRaw.elapsed_ms` / `PostToolUse.duration_ms` |
+| 生成耗时 | 单次请求从收到响应头到流结束，不含重试。只算主循环；被打断或超时结束的流不算 | `RetryTelemetry(stream_completed).elapsedMs` |
+| 生成速度 | 输出 token ÷ 生成耗时累计（与上一行同一组请求）。会话进行中也能算出来 | 轨迹 `output_tokens_per_sec` |
+| 端到端 | 你按回车到最终答复，**含**等你确认权限的时间。被打断（ESC 或上游中止）的轮不算在内 | `TurnComplete.elapsed_ms_since_prompt` |
+| 时间花在哪 | 模型整轮耗时累计 vs 工具执行墙钟累计。工具只算主循环的调用，子代理内部的工具已经包含在 `sub_agent` 工具自身的耗时里 | `AfterModelRaw.elapsed_ms` / `PostToolUse.duration_ms` |
 | 上下文峰值 | 本会话最高一轮的上下文占用 ÷ 模型窗口 | 轨迹 `context_usage_peak_ratio` |
+
+**0.1.616 起口径变了。** 之前 TTFT 和生成耗时里混着后台辅助调用和子代理的请求（后台调用的首字往往要 30 秒以上），P95 偏高；被打断的轮也算进了端到端。所以 `/perf --days` 和 `--by-version` 在对比窗口里含旧口径会话时会提示一行。新旧版本之间的「变快」有一部分只是口径变化。
 
 TTFT 只认可视文本会出错：思考型模型和纯工具调用轮会被系统性高估几十秒。这也是它必须按「首个任意内容」算的原因。
 

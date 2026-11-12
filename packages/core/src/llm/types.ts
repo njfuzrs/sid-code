@@ -666,6 +666,11 @@ export type StreamTelemetrySignal =
        * 未触发超时时不落该字段（保持既有事件形状不变）。
        */
       timedOut?: boolean;
+      /**
+       * /perf PR-A（2026-11-12）：源没有正常耗尽、也不是超时 —— 被消费方放弃（用户 ESC、fork 墙钟
+       * abort、源报错后弃流）。只在这种情况下落字段。digest 与 collector 的生成耗时都跳过它。
+       */
+      aborted?: boolean;
     };
 
 /** 累积的流式响应 */

@@ -17,6 +17,45 @@ import { createHash } from "node:crypto";
 // ─── 数据结构定义 ───
 
 /** 单次 LLM 请求/响应对 */
+/**
+ * /perf PR-A（A4）：会话级输出吞吐 tok/s 的**唯一公式**。
+ *
+ * 此前只在 `handleSessionEnd` 派生，会话进行中的快照没有这个字段 → `/perf` 恒显示「无样本」，
+ * 而 `perfIndexFields` 另抄了一份公式现算，于是「索引里有 tps、面板上没有」。
+ * 现在 SessionEnd、索引行、中途快照、`/perf` 全部调这一个函数。
+ *
+ * 分母 `total_gen_elapsed_ms` 从 PR-A 起只累加主循环、未截断的流（collector `writeRetryTelemetry`），
+ * 分子 `total_tokens_received` 只来自主循环 AfterModel —— 两端同范围。
+ * 无纯生成耗时样本时返回 undefined，不落一个误导的 0 或 ∞。
+ */
+export function deriveOutputTps(md: {
+  total_tokens_received?: number;
+  total_gen_elapsed_ms?: number;
+  gen_samples?: number;
+}): number | undefined {
+  const recv = md.total_tokens_received;
+  const gen = md.total_gen_elapsed_ms;
+  // 中途快照（builder 输出）不带 gen_samples：有 total_gen_elapsed_ms 就说明至少有一个样本
+  if (md.gen_samples !== undefined && md.gen_samples <= 0) return undefined;
+  if (typeof recv !== "number" || typeof gen !== "number" || gen <= 0) return undefined;
+  const tps = recv / (gen / 1000);
+  return Number.isFinite(tps) && tps > 0 ? tps : undefined;
+}
+
+/**
+ * /perf PR-A（A4）：reasoning token 占输出的比例（给瓶颈判定用：thinking 占比高 → 生成慢的主因是思考）。
+ * 只有 OpenAI 族上报 reasoning 计数；Anthropic 恒 0，此时返回 undefined 而不是 0（0 会被读成「没有思考」）。
+ */
+export function deriveReasoningShare(md: {
+  total_tokens_received?: number;
+  total_reasoning_tokens?: number;
+}): number | undefined {
+  const recv = md.total_tokens_received;
+  const r = md.total_reasoning_tokens;
+  if (typeof recv !== "number" || recv <= 0 || typeof r !== "number" || r <= 0) return undefined;
+  return Math.min(1, r / recv);
+}
+
 export interface RequestResponsePair {
   timestamp: string;
   index: number;
@@ -243,6 +282,7 @@ export interface TraceMetadata {
    * （单次 fetch 从 lifecycle 创建——响应头之后——到流结束，不含握手/TTFB/重试退避）。
    * 与 total_tokens_received 配对派生"输出吞吐 tokens/sec"——**分母必须是纯生成耗时**，
    * 用整轮 api_duration_ms 会重蹈 Bug A 的重试/等待污染覆辙（见排查报告 §2）。
+   * ⚠️ /perf PR-A（0.1.616 起）：只累加主循环、未被打断 / 超时的流（判据 call-scope.ts）。
    */
   total_gen_elapsed_ms: number;
   /**
@@ -261,10 +301,17 @@ export interface TraceMetadata {
   /**
    * 工具执行耗时累计（ms）。逐个 PostToolUse 的 duration_ms 累加。
    * 与主循环 SessionState.totalToolDuration 同口径，但持久化进轨迹供离线复盘。
+   * ⚠️ /perf PR-A（0.1.616 起）：只累加主循环（PostToolUse 无 agent_id），子代理那份在
+   * `subagent_tool_duration_ms`。
    */
   total_tool_duration_ms: number;
   /** 记录到耗时的工具调用次数（求均值/判断样本量用） */
   tool_duration_samples: number;
+  /**
+   * /perf PR-A（A5）：子代理内部工具调用的耗时累计（ms），**只做归因，不进上面的合计**。
+   * 它已经包含在主循环 sub_agent / workflow 工具的 duration_ms 里，加进合计就是重复计算。
+   */
+  subagent_tool_duration_ms?: number;
   /**
    * 上下文占用峰值（0~1）。每轮 AfterModel 用 promptTotal/contextWindow 计算，取最大值。
    * 反映"最接近上下文溢出的时刻"，比末值更能预警 lost-in-the-middle 与成本膨胀。
@@ -539,6 +586,8 @@ export interface TrajectoryMetaOutput {
   total_tool_duration_ms?: number;
   /** 缺口分析一类：记录到耗时的工具调用次数 */
   tool_duration_samples?: number;
+  /** /perf PR-A：子代理内部工具耗时累计（归因用，不在 total_tool_duration_ms 里） */
+  subagent_tool_duration_ms?: number;
   /** 缺口分析五类：上下文占用峰值（0~1）；窗口未知时 undefined */
   context_usage_peak_ratio?: number;
   /** 缺口分析五类：上下文占用峰值对应的绝对 token 数 */
@@ -1103,9 +1152,12 @@ export function buildTrajectory(
     ...(metadata.total_reasoning_tokens
       ? { total_reasoning_tokens: metadata.total_reasoning_tokens }
       : {}),
-    ...(metadata.output_tokens_per_sec !== undefined
-      ? { output_tokens_per_sec: metadata.output_tokens_per_sec }
-      : {}),
+    // PR-A（A4）：中途快照也写 tok/s（会话进行中 /perf 原先恒「无样本」）。
+    // SessionEnd 已派生的权威值优先；否则按同一公式现算。所有读 traj 的地方因此都受益。
+    ...((): { output_tokens_per_sec?: number } => {
+      const tps = metadata.output_tokens_per_sec ?? deriveOutputTps(metadata);
+      return tps !== undefined ? { output_tokens_per_sec: tps } : {};
+    })(),
     ...(metadata.total_gen_elapsed_ms
       ? { total_gen_elapsed_ms: metadata.total_gen_elapsed_ms }
       : {}),
@@ -1117,6 +1169,9 @@ export function buildTrajectory(
       : {}),
     ...(metadata.tool_duration_samples
       ? { tool_duration_samples: metadata.tool_duration_samples }
+      : {}),
+    ...(metadata.subagent_tool_duration_ms
+      ? { subagent_tool_duration_ms: metadata.subagent_tool_duration_ms }
       : {}),
     ...(metadata.context_usage_peak_ratio !== undefined
       ? {
