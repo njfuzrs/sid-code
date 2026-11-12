@@ -17,12 +17,11 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
-import {
-  extractWaitSubjects,
-  registerWait,
-  releaseWait,
-  describeBackgroundWaitFact,
-} from "../task/wait-registry.ts";
+// R3：describeBackgroundWaitFact 用于排定回执的确定性状态事实；
+// R2 把对象签名抽取换成了 wait-subjects（extractWaitSubjects 已删）。
+import { registerWait, releaseWait, describeBackgroundWaitFact } from "../task/wait-registry.ts";
+import { collectWaitSubjects, normalizeWaitCommand } from "../task/wait-subjects.ts";
+import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -126,6 +125,26 @@ export class ScheduleWakeupTool implements Tool {
       };
     }
 
+    // R2：同一个对象同时只允许一个有效的显式等待，且跨类（唤醒 × shell × monitor）。
+    // 判定必须放在 `replaceSessionTasksByOrigin` **之前**——先排上再判「重复」的话，
+    // 调度器里那条旧唤醒已经被删了，「保留旧的」就无从谈起（静默丢等待）。
+    const subjects = collectWaitSubjects({ prompt: params.prompt });
+    const normalizedCommand = normalizeWaitCommand(params.prompt);
+    const admission = decideWaitAdmission({
+      subjects,
+      command: normalizedCommand,
+      deadlineAt: now + clamped * 1000,
+    });
+    if (admission.action === "duplicate") {
+      return {
+        // R3 修法 2（R2 合入后补）：duplicate 回执同样是「模型刚发起一次等待」，
+        // 把当前状态事实写进去，模型不必凭记忆判断某条旧通知是不是这次的结果。
+        output:
+          formatDuplicateWaitReceipt(admission.existing, subjects) + describeBackgroundWaitFact(),
+        isError: false,
+      };
+    }
+
     // 与 cron_create / /loop 共用会话级上限（守卫在 scheduler.addSessionTask）。
     // 单链语义：同一会话同时只保留一个待触发的唤醒，新的替换旧的。并存多个唤醒
     // 没有合法用途，只会在会话空闲后连环触发（2026-11-07 实测一轮 5 次调用 → 4 轮空跑）。
@@ -147,7 +166,9 @@ export class ScheduleWakeupTool implements Tool {
       promise: { kind: "deadline", deadlineAt: task.fireAt! },
       description: firstLine(params.prompt, 60),
       registeredAt: now,
-      subjects: extractWaitSubjects(params.prompt),
+      subjects: subjects.length > 0 ? subjects : undefined,
+      // R2：登记归一化命令，下一个等待来判准入时要能认出「这是同一件事」
+      command: normalizedCommand,
     });
 
     const clampNote =

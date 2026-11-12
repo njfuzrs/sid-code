@@ -52,6 +52,7 @@ import {
 } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import type { StatusQueryFamily } from "./status-query-commands.ts";
+import { extractNaturalLanguageSubjects } from "./wait-subjects.ts";
 import { emitScheduledTrace, SCHEDULED_INVALIDATED_EVENT_NAME } from "../cron/cron-telemetry.ts";
 import { enqueueTaskNotification, hasPendingNotifications } from "./notification.ts";
 import { formatClockWithSeconds } from "./monitor-text.ts";
@@ -75,6 +76,21 @@ export interface WaitSource {
   registeredAt: number;
   /** 等待对象的签名（S2 用）：monitor 的命令归一化后的关键实体，如 "gh:pr:662" */
   subjects?: string[];
+  /**
+   * 登记时的原始命令 / 唤醒 prompt（R2 的「同一件事」判定输入）。
+   *
+   * 只用于 `decideWaitAdmission` 的归一化比对，不进回执正文（回执里给人看的是
+   * 归一化值，否则同一个等待在不同入口会显示成两种样子）。不登记它就只剩 subjects
+   * 一个维度，`bash /tmp/a.sh` 与 `bash /tmp/b.sh` 等同一个 PR 时永远判不出重复。
+   */
+  command?: string;
+  /**
+   * 等待脚本正文的哈希（R2 的 replace 分支判据）。
+   *
+   * 路径相同但内容被改过 = 换了一种等法，必须允许替换（b0aa0f1e 10:55:27 改过脚本）。
+   * 只比路径会把模型刚改过的脚本判成重复，方向正好反了。
+   */
+  scriptHash?: string;
   /**
    * monitor 脚本里出现的**命令族**（D13 的字段级覆盖判定用）。
    *
@@ -256,6 +272,14 @@ let wakeupRegistrationEnabled = false;
 export type WaitTraceSink = (event: string, data: Record<string, unknown>) => void;
 let traceSink: WaitTraceSink | null = null;
 
+/**
+ * 等待登记的轨迹事件名。
+ *
+ * 导出成常量是因为 G2 用例按名字断言事件：写字面量的用例在改名后会「匹配 0 条」而**照样通过**，
+ * 那正是这层门禁要防的形态（见 tests/smoke/lib/types.ts 文件头）。
+ */
+export const WAIT_REGISTERED_EVENT_NAME = "WaitRegistered";
+
 /** 注入 trace 通道。传 `null` 关闭。 */
 export function setWaitTraceSink(s: WaitTraceSink | null): void {
   traceSink = s;
@@ -345,7 +369,7 @@ export function registerWait(src: WaitSource): boolean {
   everWaitedTaskIds.add(src.id);
   // 同 id 重新登记视为一份新承诺：旧的失效记录不能继续挡它（id 随机，理论上不会撞）
   invalidatedIds.delete(src.id);
-  emitWaitTrace("WaitRegistered", {
+  emitWaitTrace(WAIT_REGISTERED_EVENT_NAME, {
     id: src.id,
     kind: src.kind,
     promise_kind: src.promise.kind,
@@ -798,13 +822,12 @@ export function invalidateWakeupsForDeliveredTask(taskId: string, status: TaskSt
  *
  * `schedule_wakeup` 不新增参数（让模型管理 key 的方案已被 #642 §6.1 否决）。抽不到就为空，
  * S2 不生效、退回 S1——**这是优化而不是依赖**：抽错了最坏是没撤销，回到现状。
+ *
+ * R1 起规则本体搬到 `wait-subjects.ts`（三个入口共用一份），这里保留同名导出：
+ * 唤醒只给自然语言（prompt），命令类规则对它无意义，调窄口径的入口就不会误抽。
  */
 export function extractWaitSubjects(prompt: string): string[] {
-  const out = new Set<string>();
-  for (const m of prompt.matchAll(/\bPR\s*#?\s*(\d+)/gi)) out.add(`gh:pr:${m[1]}`);
-  for (const m of prompt.matchAll(/\bpull\/(\d+)/gi)) out.add(`gh:pr:${m[1]}`);
-  for (const m of prompt.matchAll(/\bruns?[/\s]\s*(\d{6,})/gi)) out.add(`gh:run:${m[1]}`);
-  return [...out];
+  return extractNaturalLanguageSubjects(prompt);
 }
 
 /** 等待源的展示标签（回执 / 面板 / reminder 共用同一文案，避免三处漂移）。 */

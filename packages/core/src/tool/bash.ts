@@ -18,7 +18,7 @@ import type {
 import { spawn } from "bun";
 import { platform } from "os";
 import { join, isAbsolute, relative, resolve as resolvePath } from "path";
-import { readFileSync, unlinkSync, existsSync, realpathSync } from "fs";
+import { readFileSync, unlinkSync, existsSync, realpathSync, statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { describeAbortReason } from "../llm/errors.ts";
 import type { Config } from "../config/config.ts";
@@ -89,6 +89,23 @@ const FACTORY_DEFAULT_TIMEOUT_MS = 120000;
 /** 出厂上限（未配 env 时）：10 分钟。 */
 const FACTORY_MAX_TIMEOUT_MS = 600000;
 
+/** R2 的等待准入计划：spawn 之前算好（判定要赶在起进程之前），spawn 之后复用它登记 */
+interface WaitPlan {
+  /** R1 抽出的对象签名（决定「和谁去重」） */
+  subjects: string[];
+  /** R2 归一化后的命令（判「是不是同一件事」） */
+  normalizedCommand: string;
+  /** 脚本正文哈希（判「脚本改了算换等法」） */
+  scriptHash?: string;
+  /** 已读到的脚本正文：判定与登记共用同一份，避免两次读盘之间文件被改写 */
+  scriptBodies: string[];
+  decision: import("../task/index.ts").WaitAdmissionDecision;
+  /** 钳制后的等待秒数 */
+  clamped: number;
+  /** 调用方原样传入的秒数（钳制提示要说清「从多少钳到多少」） */
+  rawSeconds: number;
+}
+
 /**
  * `wait_until_seconds` 的钳制区间（秒）。
  *
@@ -97,7 +114,6 @@ const FACTORY_MAX_TIMEOUT_MS = 600000;
  */
 const MIN_WAIT_UNTIL_S = 60;
 const MAX_WAIT_UNTIL_S = 3600;
-
 /**
  * 解析 bash 超时的默认值与上限，支持 env 覆盖（对齐 CC 的
  * BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS）。
@@ -1804,7 +1820,8 @@ export class BashTool implements Tool {
     },
     signal?: AbortSignal,
   ): Promise<ToolResult> {
-    const { spawnShellTask } = require("../task/index.ts");
+    const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    const { spawnShellTask } = task;
     await this.snapshotReady;
     this.registerSnapshotToSandbox();
     const resolved = this.resolveCwd(params.cwd);
@@ -1820,6 +1837,23 @@ export class BashTool implements Tool {
       ? this.sandboxManager.wrapCommand(rawTaskCommand, getPlatformShell().shell)
       : rawTaskCommand;
 
+    // R2：显式等待先过「同一个对象只允许一个有效等待」的准入判定，而且必须在 spawn **之前**——
+    // 起了进程再 kill 会先产生一次输出与一条终态通知，与「本次未重复启动」的承诺自相矛盾
+    // （b0aa0f1e 正是四次 spawn、四条通知）。
+    const waitPlan = this.planWaitUntil(params.command, params.wait_until_seconds, cwd);
+    if (waitPlan?.decision.action === "duplicate") {
+      // isError 保持 false：这不是失败，是「已经有东西在盯它了」。
+      // 回执里必须带 task_stop 出口，否则模型改了脚本也挂不上新的（R2 §修法 2）。
+      return {
+        output:
+          task.formatDuplicateWaitReceipt(waitPlan.decision.existing, waitPlan.subjects) +
+          // R3 修法 2（R2 合入后补）：duplicate 回执同样是「模型刚发起一次等待」，
+          // 也最容易被上一轮那条旧通知误导成「我这次挂的又被杀了」。把当前状态事实
+          // 直接写在回执里，模型不必凭记忆判断。
+          task.describeBackgroundWaitFact(),
+      };
+    }
+
     const taskState = spawnShellTask({
       command: commandString,
       displayCommand: params.command,
@@ -1829,11 +1863,9 @@ export class BashTool implements Tool {
       toolUseId: params.toolUseId,
     });
 
-    const waitNote = this.registerWaitUntil(
-      taskState.id,
-      params.command,
-      params.wait_until_seconds,
-    );
+    // R2 的 registerWaitUntil 签名（第三参数是准入判定产出的 waitPlan）；
+    // R3 在此之上追加一句确定性状态事实。
+    const waitNote = this.registerWaitUntil(taskState.id, params.command, waitPlan);
     // R3 修法 2：回执末尾写一句确定性事实——「此刻有无待送达通知 / 上一条已送达的是谁」。
     // 旧通知被误当成新结果的根因是模型没有可核对的事实，这里直接把事实放回执里。
     // 惰性 require 与上方 registerWaitUntil 同款（bash.ts 对 task 模块一贯如此）。
@@ -1854,6 +1886,47 @@ export class BashTool implements Tool {
   }
 
   /**
+   * R2 的准入判定：把「这次等待盯的是哪个对象」抽出来，再问等待表能不能起。
+   *
+   * 判定放在 spawn 之前，而登记（`registerWaitUntil`）放在 spawn 之后——两者需要的信息不同：
+   * 判定只需要命令与目录，登记需要真实 task id。
+   *
+   * 不带 `wait_until_seconds` 的后台命令**完全不参与**：它是普通后台任务（承诺是「退出或静默
+   * 时回报」），不是模型声明的等待。把普通后台任务也纳入去重会误伤「等 PR + 跑 bun test」
+   * 这种合法组合（a7d1c888 的形态）。
+   */
+  private planWaitUntil(
+    command: string,
+    rawSeconds: number | undefined,
+    cwd: string,
+  ): WaitPlan | null {
+    if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return null;
+    const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    const clamped = Math.min(MAX_WAIT_UNTIL_S, Math.max(MIN_WAIT_UNTIL_S, Math.round(rawSeconds)));
+    // R1 的脚本展开与 R2 的准入判定共用同一份脚本文本：读两次会让两次判定看到的内容
+    // 可能不同（文件在两次读之间被改写），而「脚本内容变没变」正是 duplicate / replace 的判据之一。
+    const scriptBodies = this.readWaitScriptBodies(task, command, cwd);
+    const subjects = task.collectWaitSubjects({ command, scriptBodies });
+    const normalizedCommand = task.normalizeWaitCommand(command);
+    const scriptHash = task.hashScriptBodies(scriptBodies);
+    const decision = task.decideWaitAdmission({
+      subjects,
+      command: normalizedCommand,
+      scriptHash,
+      deadlineAt: Date.now() + clamped * 1000,
+    });
+    return {
+      subjects,
+      normalizedCommand,
+      scriptHash,
+      scriptBodies,
+      decision,
+      clamped,
+      rawSeconds: Math.round(rawSeconds),
+    };
+  }
+
+  /**
    * W1.3：`wait_until_seconds`——「这是一次等待」的显式声明。
    *
    * 为什么需要（G3）：CC 的分流规则是「只要一次通知就用后台 Bash + 会自己退出的循环」，
@@ -1863,21 +1936,29 @@ export class BashTool implements Tool {
    *
    * 不带这个参数的后台 bash 行为**与改动前完全相同**。
    */
-  private registerWaitUntil(
-    taskId: string,
-    command: string,
-    rawSeconds: number | undefined,
-  ): string {
-    if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return "";
-    const clamped = Math.min(MAX_WAIT_UNTIL_S, Math.max(MIN_WAIT_UNTIL_S, Math.round(rawSeconds)));
+  private registerWaitUntil(taskId: string, command: string, plan: WaitPlan | null): string {
+    if (!plan) return "";
+    const { clamped } = plan;
     // 惰性 require：bash.ts 对 task 模块一贯如此（见 background-receipt.ts 的注释）
     const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    // R1：登记项必须带上「在等哪个对象」。缺了它，harness 回答不了「这个等待在等哪个 PR」，
+    // 后续的去重（R2）、同对象替换（R6）、P1 覆盖判定全部没有前提。
+    // 复用 plan 里已读到的脚本正文：判定与登记必须看到同一份内容（见 planWaitUntil 的注释）
+    const sources = { command, scriptBodies: plan.scriptBodies };
     const registered = task.registerWait({
       id: taskId,
       kind: "shell",
       promise: { kind: "deadline", deadlineAt: Date.now() + clamped * 1000 },
       description: command.slice(0, 60),
       registeredAt: Date.now(),
+      // R2：把对象签名与「同一件事」的判据一起登记。不登记的话，第二个等待来判准入时
+      // 只看得到 [[subjects]] 而看不到命令/脚本版本，`bash a.sh` 与 `bash b.sh` 等同一个
+      // PR 时永远判不出重复（8b8d721f 的形态）。
+      subjects: plan.subjects.length > 0 ? plan.subjects : undefined,
+      command: plan.normalizedCommand,
+      scriptHash: plan.scriptHash,
+      // R1：P1 覆盖判定要用命令族，与 subjects 同源同尺
+      commandFamilies: task.collectWaitCommandFamilies(sources),
     });
     if (!registered) return "";
 
@@ -1895,12 +1976,42 @@ export class BashTool implements Tool {
     }
 
     const clampNote =
-      clamped !== Math.round(rawSeconds)
-        ? `（已从 ${Math.round(rawSeconds)}s 钳制到 ${clamped}s）`
-        : "";
+      clamped !== plan.rawSeconds ? `（已从 ${plan.rawSeconds}s 钳制到 ${clamped}s）` : "";
     return (
       `\n已声明这是一次等待：最多等 ${clamped}s${clampNote}，期间不按「静默」判定；` +
       `到期仍在跑会被终止并以通知告知（不需要你轮询）。`
     );
+  }
+
+  /**
+   * R1：把命令调用到的脚本文件正文读出来，供等待登记抽对象签名。
+   *
+   * 为什么必须读文件：`bash /tmp/wait-pr-779.sh` 的命令行上一个字都没有，对象写在文件里
+   * （b0aa0f1e / 8b8d721f 的四个脚本全是这个形态）。不展开就等于没抽。
+   *
+   * 为什么读在这里而不是等待表里：只有这一侧知道解析后的 cwd，也只有这一侧该决定
+   * 「读不到就跳过」。而这个文件本来就要被 shell 执行，读它不扩大访问面。
+   *
+   * 四条保守边界（都是为了「抽不到就为空」这个方向）：读不到 / 不是普通文件 / 超过
+   * 64KB / 只认命令里字面出现的路径（不跟随 `source`、不递归进脚本里再调用的脚本）。
+   */
+  private readWaitScriptBodies(
+    task: typeof import("../task/index.ts"),
+    command: string,
+    cwd: string,
+  ): string[] {
+    const bodies: string[] = [];
+    for (const raw of task.extractScriptPaths(command)) {
+      try {
+        const abs = isAbsolute(raw) ? raw : resolvePath(cwd, raw);
+        const stat = statSync(abs);
+        if (!stat.isFile() || stat.size > task.MAX_SCRIPT_BODY_BYTES) continue;
+        bodies.push(readFileSync(abs, "utf8"));
+      } catch {
+        // 不存在 / 无权限 / 是目录：跳过。抽不到 subject 只是回到改造前，不是错误，
+        // 更不能因为它让一条本来能跑的命令登记失败。
+      }
+    }
+    return bodies;
   }
 }

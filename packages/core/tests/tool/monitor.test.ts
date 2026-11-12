@@ -125,20 +125,30 @@ describe("MonitorTool 启动返回（T-M1-1）", () => {
     expect(wait?.promise.kind).toBe("deadline");
   });
 
-  test("同 subject 第二个 monitor 允许启动，但结果提示已有同对象监控（T-M1-15）", async () => {
+  // 契约变更（R2）：改动前第二个同对象 monitor 照常启动、只在回执里加一行提示，
+  // 于是「为了保险再挂一个」的两路事件都分别叫醒主循环。现在同一个对象只允许一个
+  // 有效等待——第二个不 spawn，回执给出停旧任务的出口。
+  test("同 subject 第二个 monitor 不再启动，回执点明已有等待（T-M1-15 / R2）", async () => {
     const first = await tool.call({
       description: "首个",
       command: "gh pr checks 662",
       timeout_ms: 60_000,
     });
     expect(first.isError).toBeFalsy();
+    const firstId = /已启动监控 (m[a-z0-9]{8})/.exec(first.data)?.[1];
+    expect(firstId).toBeTruthy();
+
     const second = await tool.call({
       description: "第二个",
       command: "gh pr checks 662",
       timeout_ms: 60_000,
     });
     expect(second.isError).toBeFalsy();
-    expect(second.data).toContain("已有监控");
+    expect(second.data).toContain("本次未重复启动");
+    expect(second.data).toContain(firstId!);
+    expect(second.data).toContain(`task_stop ${firstId}`);
+    // 只有一个 monitor 在跑：没有第二个进程，也没有第二条通知源
+    expect(listWaits().filter((w) => w.kind === "monitor")).toHaveLength(1);
   });
 });
 
