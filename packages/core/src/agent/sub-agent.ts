@@ -803,6 +803,26 @@ export class SubAgent {
   }
 
   /**
+   * 解析子代理实际模型（可能已按 `subAgentModels` / `task.model` 切换）的**物理输出上限**。
+   *
+   * 为什么必须按模型传参：spawn 路径的 model 不一定是主模型（上方的 `sc?.model ?? task.model`
+   * 解析结果），拿主模型的输出上限去钳子代理的请求预算，对「子代理配了小输出模型」的配置
+   * 会高估，换来的是一次必然的 400。
+   *
+   * undefined = 未知（不钳制）。与 `TokenEstimator.getMaxOutputTokens` 同口径：
+   * 全 miss 返回 undefined 而不是编一个数字 —— 编出来的值会被子进程当成已知事实参与 min。
+   */
+  private resolveSubAgentMaxOutputTokens(model: string): number | undefined {
+    try {
+      const max = this.registry?.getMaxOutputTokens?.(model);
+      if (typeof max === "number" && Number.isFinite(max) && max > 0) return max;
+    } catch {
+      /* registry 未实现 getMaxOutputTokens 或派生失败，交给子进程按窗口钳制 */
+    }
+    return undefined;
+  }
+
+  /**
    * 为子代理 ContextManager 派生一个独立的 masking 会话 ID。
    *
    * masking 服务按 sessionId 建会话级临时目录（ensureSessionTempDir，0o700）落盘被遮罩的
@@ -1365,7 +1385,11 @@ export class SubAgent {
       model_compat: modelCompat,
       // 父进程在启动子进程前按 Agent 默认值与调用级 maxTurns 合并。
       max_turns: spawnMaxTurns(maxTurns),
-      max_tokens: task.maxTokens ?? 50000,
+      // 窗口与进程内路径同源（task.maxTokens > 主模型窗口 > 50,000），不再写死 50,000：
+      // 写死会让子代理在 1M 窗口模型下过早压缩（F7）。
+      context_window: this.resolveSubAgentWindow(task),
+      // 物理输出上限供子进程算请求预算（同一份 resolveRequestOutputBudget）。
+      max_output_tokens: this.resolveSubAgentMaxOutputTokens(model),
       workdir: getCwd(),
       provider_name: providerName,
       api_key: apiKey,
@@ -1443,7 +1467,10 @@ export class SubAgent {
       model_compat: modelCompat,
       // 与进程内路径同口径：Agent 默认上限与任务级上限已在父进程合并。
       max_turns: spawnMaxTurns(maxTurns),
-      max_tokens: task.maxTokens ?? 50000,
+      // 自定义 agent 同样是**窗口**，与 spawn 路径共用同一个解析函数。
+      // 这处曾与上面那处一模一样地写死 50,000 —— 只改一处会让自定义 agent 继续停在旧兜底。
+      context_window: this.resolveSubAgentWindow(task),
+      max_output_tokens: this.resolveSubAgentMaxOutputTokens(model),
       workdir: getCwd(),
       provider_name: providerName,
       api_key: apiKey,

@@ -6,6 +6,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
 import { Registry } from "@sid-code/core/tool/registry.ts";
 // 同 tests/tool/registry.test.ts：Registry 接受的是 LegacyTool 形态。
@@ -130,7 +132,8 @@ describe("子代理通信协议", () => {
       ],
       model: "test-model",
       max_turns: 5,
-      max_tokens: 50000,
+      context_window: 50000,
+      max_output_tokens: 8192,
       workdir: "/tmp",
       provider_name: "anthropic",
       api_key: "test-key-redacted",
@@ -389,5 +392,74 @@ describe("Headless 入口", () => {
     // 不实际执行 main()，只验证模块可以加载
     const mod = await import("@sid-code/cli/entrypoints/headless.ts");
     expect(mod).toBeDefined();
+  });
+});
+
+// ============================================================
+// Spawn init 契约字段（PR-6 / F7 第 2 条）
+// ============================================================
+
+describe("spawn init 契约字段", () => {
+  const provider = new SimpleMockProvider();
+  const tools = new Registry();
+  tools.register(new EchoTool());
+
+  test("context_window 走 registry 窗口，不再写死 50,000", () => {
+    const sub = new SubAgent(provider, "test-model", tools);
+    (sub as any).registry = { getContextWindow: () => 1_000_000 };
+    expect((sub as any).resolveSubAgentWindow({})).toBe(1_000_000);
+  });
+
+  test("task.maxTokens 显式值优先于 registry 窗口", () => {
+    const sub = new SubAgent(provider, "test-model", tools);
+    (sub as any).registry = { getContextWindow: () => 1_000_000 };
+    expect((sub as any).resolveSubAgentWindow({ maxTokens: 120_000 })).toBe(120_000);
+  });
+
+  test("registry 未实现 getContextWindow → 回退 50,000（兜底仍在，只是不再是唯一来源）", () => {
+    const sub = new SubAgent(provider, "test-model", tools);
+    (sub as any).registry = {};
+    expect((sub as any).resolveSubAgentWindow({})).toBe(50_000);
+  });
+
+  test("max_output_tokens 按**实际模型**取物理上限（不是主模型）", () => {
+    const sub = new SubAgent(provider, "test-model", tools);
+    const asked: string[] = [];
+    (sub as any).registry = {
+      getMaxOutputTokens: (m: string) => {
+        asked.push(m);
+        return 8_192;
+      },
+    };
+    expect((sub as any).resolveSubAgentMaxOutputTokens("sub-model")).toBe(8_192);
+    // 传错模型会让「子代理配了小输出模型」的配置被主模型上限高估 → 必然 400
+    expect(asked).toEqual(["sub-model"]);
+  });
+
+  test("物理上限未知 / 抛错 / 非法值 → undefined，绝不编一个数字", () => {
+    const sub = new SubAgent(provider, "test-model", tools);
+
+    (sub as any).registry = { getMaxOutputTokens: () => undefined };
+    expect((sub as any).resolveSubAgentMaxOutputTokens("m")).toBeUndefined();
+
+    (sub as any).registry = { getMaxOutputTokens: () => 0 };
+    expect((sub as any).resolveSubAgentMaxOutputTokens("m")).toBeUndefined();
+
+    (sub as any).registry = {
+      getMaxOutputTokens: () => {
+        throw new Error("registry 派生失败");
+      },
+    };
+    expect((sub as any).resolveSubAgentMaxOutputTokens("m")).toBeUndefined();
+  });
+
+  test("源码哨兵：两处 spawn 传参都改名且不再写死 50,000（防只改一处）", () => {
+    const src = readFileSync(join(import.meta.dir, "../../src/agent/sub-agent.ts"), "utf8");
+    // 旧写法必须彻底消失 —— 只改 spawn 路径、漏掉自定义 agent 路径是本次最容易犯的错
+    expect(src).not.toContain("max_tokens: task.maxTokens ?? 50000");
+    expect(src.match(/context_window: this\.resolveSubAgentWindow\(task\)/g)).toHaveLength(2);
+    expect(
+      src.match(/max_output_tokens: this\.resolveSubAgentMaxOutputTokens\(model\)/g),
+    ).toHaveLength(2);
   });
 });
