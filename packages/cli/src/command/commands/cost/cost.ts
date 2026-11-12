@@ -1,6 +1,12 @@
 import { getBackgroundGateStats } from "@sid-code/core/agent/background-task-gate.ts";
 import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
-import { getSideStats } from "@sid-code/core/trace/side-call-sink.ts";
+// D4 的辅助调用 token 用会话维度 getSessionSideStats（与费用同口径）；
+// D8 的辅助调用耗时用进程维度 getSideStats（resume 基线没有逐条耗时）。
+import {
+  getSessionSideStats,
+  getSideStats,
+  type SideCallSnapshot,
+} from "@sid-code/core/trace/side-call-sink.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 
 /** 后台闸门状态里 /cost 关心的三个字段（窄接口，便于测试注入假状态）。 */
@@ -41,6 +47,39 @@ export function formatPendingTasksNotice(view: PendingTasksView): string | null 
   return `⚠ 后台任务 ${parts.join("、")}；费用可能还会增加，稍后重开 /cost 查看最新数字`;
 }
 
+/**
+ * 辅助调用 token 段（D4）。无辅助调用时返回空数组，整段省略。
+ *
+ * ## 为什么必须单独成段，而不是并进主循环数字
+ *
+ * /cost 的「总费用」含辅助调用（`totalCostUSD + sideCostUSD`），但 token / 请求数 /
+ * 缓存命中率 / 省钱全部来自 `modelUsage` —— `addSideCost` 刻意不写 `modelUsage`
+ * （辅助调用的 prompt 不是当前上下文，混进去会污染 stock 口径的上下文大小，
+ * 见 `session/state.ts` 的对应注释）。两种范围混在一个面板上，用户拿
+ * 「费用 ÷ token」估单价必然偏高，「省钱 vs 费用」也是两个不同范围在比
+ * （北极星铁律 3：分母口径必须和指标一起写死）。
+ *
+ * 修法**不是**把辅助调用并进 `modelUsage`，而是分两块显示、各自标明范围：
+ * 主循环一块（`modelUsage`），辅助调用一块（本函数）。
+ *
+ * ## 数据源为什么取会话维度 `getSessionSideStats`
+ *
+ * `getSideStats()` 是**进程维度**：resume 会话里它只剩本次启动后的记录，而 /cost 的
+ * 费用是**会话累计**（`sideCostUSD` 有快照回灌基线）。用进程维度会让 token 只含本次
+ * 启动、费用含全会话 —— 正是 D4 要消除的那种「分子分母范围不同」。
+ * `getSessionSideStats()` = 回灌基线 + 本进程记录，与费用同口径。
+ */
+export function formatSideCallTokenSection(side: SideCallSnapshot): string[] {
+  if (side.apiCalls <= 0) return [];
+  return [
+    "",
+    `辅助调用 Token 用量（${side.apiCalls} 次调用；不计入上面的主循环数字）:`,
+    // 千分位与主循环段（#763 的 fmtNum）一致：同一面板两套数字长相会让人以为口径不同。
+    `  输入: ${fmtNum(side.tokensSent)}`,
+    `  输出: ${fmtNum(side.tokensReceived)}`,
+  ];
+}
+
 /** /cost 命令 */
 export class CostCommand implements LocalCommandModule {
   /**
@@ -48,9 +87,13 @@ export class CostCommand implements LocalCommandModule {
    * 测试若去占用/重置它会和 `packages/core/tests/agent/background-task-gate.test.ts`
    * 互相干扰（两个文件并发跑时，一边的 drain 会清掉另一边的待补队列）。
    * 生产路径用默认值读真实闸门，测试传假状态即可覆盖「进行中 / 排队 / 空闲」三个分支。
+   *
+   * 辅助调用统计同理可注入（第二个参数）：`side-call-sink` 也是进程级单例，
+   * 测试直接 recordSideCall 会让别的测试文件的 /cost 输出凭空多出辅助段。
    */
   constructor(
     private readonly readGateStats: () => PendingTasksView = () => getBackgroundGateStats(),
+    private readonly readSideStats: () => SideCallSnapshot = () => getSessionSideStats(),
   ) {}
 
   async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {
@@ -71,7 +114,11 @@ export class CostCommand implements LocalCommandModule {
 
     const lines = [
       `会话时长: ${SessionState.formatDuration(ss.getElapsedMs())}`,
-      `总费用: ${cur}${ss.getEffectiveTotalCostUSD().toFixed(4)}`,
+      // D4：总费用是面板上**唯一含辅助调用**的指标，标签必须写出来。
+      // 其余指标（token / 请求数 / 缓存命中率 / 省钱 / API 耗时）都只来自主循环
+      // （`modelUsage` / `totalAPIDuration`），两段各自标明范围，用户才不会拿
+      // 「含辅助的费用 ÷ 不含辅助的 token」去估单价、或拿两个范围的数直接相比。
+      `总费用: ${cur}${ss.getEffectiveTotalCostUSD().toFixed(4)}（含辅助调用）`,
       ...(ss.sideCostUSD > 0
         ? [`  其中辅助调用: ${cur}${ss.sideCostUSD.toFixed(4)}（标题/记忆/分类/摘要等）`]
         : []),
@@ -106,13 +153,21 @@ export class CostCommand implements LocalCommandModule {
     })();
 
     lines.push(
+      // D8（main）把「API 耗时」标注成主循环并单独给出辅助调用耗时行；
+      // D4 的范围要求被这一版完整覆盖（「（主循环）」= 「仅主循环」）。
       `API 耗时（主循环）: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
       ...(sideDurationLine ? [sideDurationLine] : []),
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
       "  （会话时长是墙钟：含思考与空闲；API 耗时只算主循环请求，子代理与辅助调用不含在内）",
       "",
-      "Token 用量:",
-      // D5：三段互斥。未命中 + 命中 + 写入 = 合计，命中/写入为 0 时整行省略
+      // D4：以下 token / 请求数 / 缓存 / 省钱全部来自 `modelUsage`（辅助调用刻意不进），
+      // 标题必须标明范围，否则用户会拿它们和「含辅助调用」的总费用相除/相比。
+      // 「含子代理」也要写：子代理经 usage-sink 走同一个 updateUsage，本来就在这段数字里，
+      // 不写会被读成「不含子代理」而低估。标题不写「累计」：下面 flow 与 stock 两行并列，
+      // 写「累计」会和 stock 行自相矛盾（D3 与 D4 合并时踩到的点）。
+      "主循环 Token 用量（不含辅助调用；含子代理）:",
+      `  请求: ${ss.getTotalRequests()} 次`,
+      // D5（main）：三段互斥。未命中 + 命中 + 写入 = 合计，命中/写入为 0 时整行省略
       // （与旧「缓存创建/读取只在非 0 时显示」一致，0 不参与加法，用户照样能验算）。
       `  输入·未命中: ${fmtNum(cacheView.uncachedInputTokens)}`,
       ...(cacheView.cacheHitTokens > 0
@@ -135,7 +190,13 @@ export class CostCommand implements LocalCommandModule {
     if (cacheView.cacheHitTokens > 0 && cacheView.promptTotal > 0) {
       const rate = ((cacheView.cacheHitTokens / cacheView.promptTotal) * 100).toFixed(1);
       const savings = ss.getTotalCacheSavings();
-      lines.push("", `缓存命中率: ${rate}%   省钱: ${cur}${savings.toFixed(4)}`);
+      // D4：命中率与省钱都只遍历 `modelUsage`（`getNormalizedCacheUsage` /
+      // `getTotalCacheSavings`），不含辅助调用。标注范围，否则用户会拿它和含辅助调用的
+      // 总费用相比；辅助调用本身也没有缓存省钱数据可算。
+      lines.push(
+        "",
+        `缓存命中率: ${rate}%   省钱: ${cur}${savings.toFixed(4)}（仅主循环，不含辅助调用）`,
+      );
       // P2-2：openai 协议路径为服务端隐式缓存（无客户端主动写入 cache_control，
       // cacheCreation 恒 0），命中率结构性上限约 60-70%，不同于 anthropic 族显式缓存的 90%+。
       // 对该族标注正常上限，避免用户把 60-70% 误判为 harness bug。以协议路径为准，非按模型名单。
@@ -167,7 +228,9 @@ export class CostCommand implements LocalCommandModule {
 
     const models = Object.entries(ss.modelUsage);
     if (models.length > 1) {
-      lines.push("", "按模型统计（累计发送口径，与上方「输入·合计」一致）:");
+      // D4：标题里的「主循环」明确指向不含辅助调用的那一段；#763 的「输入·合计」
+      // 是同一段的 flow 合计行，两者说的是同一份 modelUsage。
+      lines.push("", "按模型统计（累计发送口径，与上方主循环的「输入·合计」一致）:");
       for (const [model, stats] of models) {
         // ⚠️ 用归一化后的 promptTotal（由 cumulativePromptTokens 派生），不用 stock 的
         // `stats.inputTokens`：末次值只保留最后一次请求的 prompt 长度，分模型之和会远小于汇总，
@@ -188,6 +251,11 @@ export class CostCommand implements LocalCommandModule {
         );
       }
     }
+
+    // D4：辅助调用 token 单独成段。费用（总费用 / 其中辅助调用）与 token 的范围不同，
+    // 分两块显示并各自标明范围，用户才能正确算单价、正确比较「省钱 vs 费用」。
+    // 放在按模型统计之后：上面所有块都是主循环（modelUsage）口径，这里开始是辅助调用口径。
+    lines.push(...formatSideCallTokenSection(this.readSideStats()));
 
     // D7：金额带 `≈` 时给出换算依据，让用户能自己验算「这个数怎么来的」。
     // 汇率取入账时的原始 fxToUSD（1/fx = 每 1 USD 折多少本币），不写死 7.1：
