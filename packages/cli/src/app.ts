@@ -1161,11 +1161,7 @@ export class App {
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
     const estimator = new TokenEstimator();
-    const ctxWindow = estimator.getContextLimit(
-      opts.config.model,
-      opts.config.availableModels,
-      opts.config.baseURL,
-    );
+    const ctxWindow = estimator.getContextLimit(opts.config.model, opts.config.availableModels);
     // §12 P1-1：env（SID_CODE_AUTOCOMPACT_PCT / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE）解析出的使用率
     // 上限透传为 compactThreshold，接活这个此前从未被注入的死参数（见 manager 构造）。
     const autoCompactPct = resolveAutoCompactPctOverride() ?? undefined;
@@ -1590,12 +1586,7 @@ export class App {
         // 保证主模型切换后仍按当前 model + availableModels 解析。
         resolveContextLimit: (model: string) => {
           try {
-            // D4：带上 baseURL，否则学到的已放行上限（按 (model, base_url) 存）在这里读不到
-            return new TokenEstimator().getContextLimit(
-              model,
-              this.config.availableModels,
-              this.config.baseURL,
-            );
+            return new TokenEstimator().getContextLimit(model, this.config.availableModels);
           } catch {
             return undefined;
           }
@@ -3014,7 +3005,7 @@ export class App {
       const est = new TokenEstimator();
       // §12 P3-2：窗口与输出上限一起同步——完成缓冲区的输出预留分量依赖新模型的 maxOutputTokens。
       this.ctxMgr.setMaxTokens(
-        est.getContextLimit(model, this.config.availableModels, this.config.baseURL),
+        est.getContextLimit(model, this.config.availableModels),
         est.getMaxOutputTokens(model, this.config.availableModels),
       );
     } catch {
@@ -4764,7 +4755,6 @@ export class App {
           preferredLanguage: this.config.language,
           model: this.config.model,
           availableModels: this.config.availableModels,
-          baseURL: this.config.baseURL,
           // 缺口 E：CLAUDE.md 重建路径同样收集 skill 摘要，避免重建后丢失 skill 列表
           skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
           // 延迟工具呈现（见 core/config/deferred-tool-view.ts）：重建路径漏传会让
@@ -6087,7 +6077,6 @@ export class App {
         preferredLanguage: this.config.language,
         model: this.config.model,
         availableModels: this.config.availableModels,
-        baseURL: this.config.baseURL,
         skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
         denyRulesSummary:
           this.permissionChecker &&
@@ -6504,11 +6493,7 @@ export class App {
               const est = new TokenEstimator();
               // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
               this.ctxMgr.setMaxTokens(
-                est.getContextLimit(
-                  setting.model,
-                  this.config.availableModels,
-                  this.config.baseURL,
-                ),
+                est.getContextLimit(setting.model, this.config.availableModels),
                 est.getMaxOutputTokens(setting.model, this.config.availableModels),
               );
             } catch {
@@ -12278,7 +12263,7 @@ export class App {
           const est = new TokenEstimator();
           // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
           this.ctxMgr.setMaxTokens(
-            est.getContextLimit(result.model, this.config.availableModels, this.config.baseURL),
+            est.getContextLimit(result.model, this.config.availableModels),
             est.getMaxOutputTokens(result.model, this.config.availableModels),
           );
         } catch {
