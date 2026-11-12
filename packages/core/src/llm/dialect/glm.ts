@@ -62,6 +62,7 @@ export const glmOpenAIDialect: Dialect = {
     // GLM 的 tool_choice 默认且仅支持 auto：required/none/指定函数会被拒绝。
     // 降级为不下发（等价服务端默认 auto）而非冒 400。见 glm.md。
     toolChoice: "auto-only",
+    cacheKeyIncludesThinking: false,
   },
   applyToSendParams(params: SendParams, effort, thinking) {
     params.thinking = { enabled: thinking, budgetTokens: 0 };

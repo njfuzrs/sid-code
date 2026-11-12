@@ -65,6 +65,7 @@ import {
 import { createProviderResolver, resolveEventProvider } from "./provider-resolver.ts";
 // 主循环 / 子代理 / 后台辅助的唯一判据（/perf PR-A）。三处聚合都走它，不许再写 `i < 900_000`。
 import { callScopeOf, isTruncatedStream } from "./call-scope.ts";
+import { aggregatePerfDetail, type PerfDetail } from "./perf-detail.ts";
 // X3-16：审计核查类任务的分类判据收在 trace/ 下的共享模块里 —— 写入侧（本文件算
 // is_audit）与读取侧（northstar-snapshot / defense-trigger-rate）必须是同一份判据，
 // 各写一份就必然漂移（纪律同 TTFT 的谓词只有一份）。
@@ -1590,6 +1591,11 @@ export interface Digest {
    * （`traj_file_corrupt` 异常），再判一次会漂移出两个答案。
    */
   sessionMetrics?: SessionLevelMetrics;
+  /**
+   * /perf PR-B：面板明细（时间构成 / 按工具 / 最慢调用 / 慢响应计数 / 后台辅助单列）。
+   * 只给 /perf 用、不进索引；与 sessionMetrics 共用同一份 events，不再读第二遍文件。
+   */
+  perfDetail?: PerfDetail;
 }
 
 /**
@@ -4323,6 +4329,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // P0-2：会话级指标（供 session-index 长留）。trajCorrupt 复用上面已经做过的
   // 损坏判定（trajRead.corrupt），不再判第二次 —— 两处判定必然漂移出两个答案。
   const sessionMetrics = aggregateSessionMetrics(events, { trajCorrupt: trajRead.corrupt });
+  const perfDetail = aggregatePerfDetail(events);
 
   // ── 第 5 批：JIT 上下文度量（命中率 / 字节 / 浪费率 / 耗时分位）──
   const jit = aggregateJitStats(events);
@@ -4418,6 +4425,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
     sessionMetrics,
+    perfDetail,
   };
 }
 
@@ -5431,6 +5439,12 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
 // ─────────────────────────── T12.5：Provider 聚合 ───────────────────────────
 
 /**
+ * TTFT P95 超过它就给黄色警示。`/trace` 的 provider 健康 warning 与 `/perf` 面板共用这一个值，
+ * 两处阈值不一致会出现「/trace 说慢、/perf 不说」。
+ */
+export const TTFT_P95_WARN_MS = 30_000;
+
+/**
  * 从 events.jsonl 事件列表聚合 per-provider 统计（导出供测试 + provider-health 使用）。
  *
  * P0-1（排查报告 Bug A 修复）—— 三个耗时指标的取数源分工：
@@ -5574,7 +5588,7 @@ export function aggregateProviderStats(
     if (timeoutRate > 0.1) warning = `超时率 ${(timeoutRate * 100).toFixed(1)}% > 10%`;
     // T14.5：TTFT > 30s 标记 warning（现在基于纯净的 first_content TTFT，不再虚高误报）
     const ttftP95 = percentile(sortedTtfts, 0.95);
-    if (ttftP95 && ttftP95 > 30000 && !warning)
+    if (ttftP95 && ttftP95 > TTFT_P95_WARN_MS && !warning)
       warning = `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s`;
 
     result.push({

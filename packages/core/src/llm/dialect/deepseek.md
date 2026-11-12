@@ -66,6 +66,27 @@ sid-code 直发 fetch，故直接写顶层即可。
 私有网关上的私有模型名（如 `gw-internal-r1`）必然 miss，而这个字段
 **自愈救不回来**（两个方向都是 400），故必须给显式出口。
 
+## 缓存键含思考参数（`cacheKeyIncludesThinking: true`）
+
+2026-11-12 对照实验（官方端点 `deepseek-flash` + 一家透传 DeepSeek 的企业网关，各自独立跑），
+约 44K token 的请求体，预热后重发：
+
+| 改了什么 | 命中 |
+| --- | --- |
+| 完全相同 | 44,160 |
+| 只改 `thinking` 开关（enabled ↔ disabled，两个方向都测） | **0** |
+| `thinking=enabled`，只改 `reasoning_effort`（max → high） | **0** |
+| `thinking=enabled`，不带 effort（与 max 互相命中） | 44,160 |
+| 只多一个工具（字典序插在第 6 位） | 32,768 |
+
+结论：**thinking 开关与 effort 都在缓存键里**，只改其一整条前缀（连 system 开头）都不命中；
+不同开关的请求各写一份缓存，互不共用。「不带 effort = max」只在官方端点测过，不可依赖，
+复用时一律原样照搬主循环发出的值。
+
+用途：记忆 fork（`agent/fork-prefix.ts`）据此照搬主循环的思考参数，才能读到主循环写好的缓存
+（改前 fork 写死关思考，deepseek 族 fork 首请求命中率 p50 只有 6%）。
+Anthropic 兼容端点没测过，`deepseekAnthropicDialect` 仍为 `false`。
+
 ## `insufficient_system_resource`：DeepSeek 特有的可重试终止原因
 
 依据 `deepseek-api.md:2094-2096`。`finish_reason` 的规范 5 值之外的第 6 个取值，

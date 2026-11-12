@@ -445,8 +445,11 @@ describe("runForkedAgent", () => {
   });
 });
 
-describe("缺陷 7：fork 工具定义与主注册表一致（prompt cache 前缀）", () => {
-  test("发给 provider 的 tools 与主注册表 definitions() 逐字节相同，不按 canUseTool 裁剪", async () => {
+describe("缺陷 7：fork 工具定义不按 canUseTool 裁剪（prompt cache 前缀）", () => {
+  // D16（2026-11-12）有意改行为：主循环发过请求后，fork 复用主循环**实际发出**的工具列表
+  // （tool search 开启时是 activeDefinitions 子集），守卫在 fork-prefix-alignment.test.ts。
+  // 本用例只守「没有主循环快照时退回全量、且不按白名单裁剪」这条退回路径。
+  test("无主循环快照时 tools = 主注册表 definitions()，不按 canUseTool 裁剪", async () => {
     let sentTools: unknown;
     const provider = {
       name: () => "mock",
