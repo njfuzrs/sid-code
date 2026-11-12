@@ -5,7 +5,7 @@
  * 支持：权限确认对话框、Shell 命令确认对话框、设置对话框、模型对话框、主题对话框。
  */
 
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { Ansi } from "../render-port/components.ts";
@@ -35,6 +35,11 @@ import {
 } from "../constants/figures.ts";
 import { renderMarkdown } from "../markdown.ts";
 import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
+import {
+  notePromptKey,
+  notePromptKeyDropped,
+  notePromptMounted,
+} from "@sid-code/core/permission/decision-telemetry.ts";
 import { HotkeyChoiceList, choiceListHint } from "./shared/HotkeyChoiceList.tsx";
 import {
   buildPermissionChoices,
@@ -70,6 +75,12 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   // 权限框是授权决策入口，必须让用户看清完整命令/路径，不截断（长则换行）。
   const detail = getToolDetailFull(request.toolName, request.toolInput);
   const resolvedRef = useRef(false);
+  // B21：挂载即「弹窗真的显示了」。首帧时刻是 queue_ms 的终点——之前这个时刻在轨迹里
+  // 完全不存在，`duration_ms=300009 + timeout` 分不出「压根没显示」还是「显示了没人按到」。
+  // 用 useEffect 而非 useLayoutEffect：只做观测，不需要在 commit 阶段同步执行。
+  useEffect(() => {
+    notePromptMounted();
+  }, []);
   // 危险操作差异化：破坏性命令标红 + 警告行 + 仪式感文案（对标 cc destructiveCommandWarning）
   const danger = inspectToolCall(request.toolName, request.toolInput);
 
@@ -80,7 +91,12 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   const initialIndex = initialPermissionChoiceIndex(choices, danger.isDangerous);
 
   const decide = (answer: PermissionAnswer) => {
-    if (resolvedRef.current) return;
+    // B21：到这里说明按键**已经穿过 handler 并选出了值**。被 resolvedRef 拦下 =
+    // 「按键到了组件却被去重吞掉」，正是 #756 的根因形态；此前它是静默 return，轨迹上零痕迹。
+    if (resolvedRef.current) {
+      notePromptKeyDropped();
+      return;
+    }
     resolvedRef.current = true;
     request.resolve(answer);
   };
@@ -145,6 +161,7 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
           initialIndex={initialIndex}
           onSelect={decide}
           escapeValue="no"
+          onKeyObserved={notePromptKey}
         />
       </Box>
       <Box marginTop={1}>

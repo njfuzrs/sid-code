@@ -1832,6 +1832,23 @@ export class TraceCollector {
       ...(e.guard ? { guard: e.guard } : {}),
       // A9：auto 档分类器回退人工的成因
       ...(e.autoClassifier ? { auto_classifier: e.autoClassifier } : {}),
+      // B21：弹窗生命周期观测。字段名用 prompt_lifecycle 而不是 prompt —— 后者与
+      // UserPromptSubmit 的 data.prompt（用户输入原文）重名，上传前的 LOCAL_ONLY 剥离
+      // 是按字段名匹配的，同名会把用户输入一起剥掉。
+      // 只进本地轨迹？不，这组字段不含隐私（全是计数与时长），但它只对本机排障有意义，
+      // 云端没有对应的消费方，所以同样登记进 LOCAL_ONLY 剥离，不发出去。
+      ...(e.prompt
+        ? {
+            prompt_lifecycle: {
+              ...(e.prompt.queueMs !== undefined ? { queue_ms: e.prompt.queueMs } : {}),
+              ...(e.prompt.shownMs !== undefined ? { shown_ms: e.prompt.shownMs } : {}),
+              mounts: e.prompt.mounts,
+              keys: e.prompt.keys,
+              keys_dropped: e.prompt.keysDropped,
+              resolve_dropped: e.prompt.resolveDropped,
+            },
+          }
+        : {}),
     });
   }
 

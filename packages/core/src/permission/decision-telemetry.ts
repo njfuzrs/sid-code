@@ -116,6 +116,100 @@ export interface PermissionDecisionEvent {
    * unavailable / error）。取自 `Decision.metadata.autoClassifier`，只有 auto 档的 ask 才有。
    */
   autoClassifier?: string;
+  /**
+   * B21：这次弹窗的生命周期观测（只有 TUI 真弹过窗才有，见 `PromptObservation`）。
+   *
+   * 补它之前，「弹窗显示后无人能答」只有 `duration_ms=300009 + source=timeout` 一条事实，
+   * 而下面四种**完全不同**的故障在该形态上一模一样，排查只能靠 PTY 探针逐次复现：
+   *   ① 弹窗根本没显示（排队中被 abort）；② 显示了但按键没到组件（handler 未订阅/焦点被吃）；
+   *   ③ 按键到了、`onSelect` 也触发了，却被 `resolvedRef` 静默吞掉（#756 的根因形态）；
+   *   ④ `decide` 走了，但 resolve 被 app.ts 的 `settled` 去重吞掉。
+   */
+  prompt?: PromptObservation;
+}
+
+/**
+ * 一次确认弹窗的生命周期观测。**只进本地轨迹**：它是「这台机器上这次为什么卡住」的
+ * 排障数据，不是跨会话指标的分母，不扩外发遥测 schema。
+ *
+ * 字段判读（配合 `duration_ms` 一起看）：
+ * - `mounts === 0` → 弹窗从未挂载，落在 ①；
+ * - `queue_ms` 大而 `shown_ms` 小 → 时间花在等显示权（interactionQueue 排队），不是弹窗问题；
+ * - `keys === 0` 且 `shown_ms` 很大 → 按键没到组件，落在 ②；
+ * - `keys_dropped > 0` → 按键到了但被 `resolvedRef` 去重吞掉，落在 ③（#756 的精确信号）；
+ * - `resolve_dropped > 0` → `decide` 走了但 app 层已 `settled`，落在 ④。
+ */
+export interface PromptObservation {
+  /** 请求产生 → 弹窗首帧挂载的排队墙钟（interactionQueue + 状态桥） */
+  queueMs?: number;
+  /** 弹窗首帧挂载 → 决策落定 的墙钟；缺失 = 弹窗没显示过 */
+  shownMs?: number;
+  /** 弹窗组件挂载次数。>1 = 发生过重挂载（换 key / 父级重建）；0 = 从未挂载 */
+  mounts: number;
+  /** 到达组件的按键数（handler 收到即算，含方向键与被忽略的键） */
+  keys: number;
+  /** 被 `resolvedRef` 去重静默吞掉的按键数（#756 形态） */
+  keysDropped: number;
+  /** 被 app.ts `settled` 去重吞掉的 resolve 次数 */
+  resolveDropped: number;
+}
+
+let _promptObs: PromptObservation | null = null;
+let _promptRequestedAt = 0;
+let _promptShownAt = 0;
+
+/**
+ * 一次确认请求拿到显示权（interactionQueue 的 show 里）时调用。
+ *
+ * `requestedAt` 由调用方在请求产生时取（要早于排队），所以 `queue_ms` 能量的出
+ * 「等了多久才轮到显示」——`duration_ms` 含这段，分不出卡在队列还是卡在弹窗。
+ */
+export function beginPromptObservation(requestedAt: number): void {
+  _promptRequestedAt = requestedAt;
+  _promptShownAt = 0;
+  _promptObs = { mounts: 0, keys: 0, keysDropped: 0, resolveDropped: 0 };
+}
+
+/** 弹窗组件挂载一次（`PermissionDialog` 的 mount effect）。首帧时刻即「弹窗真的显示了」 */
+export function notePromptMounted(): void {
+  const obs = _promptObs;
+  if (!obs) return;
+  obs.mounts += 1;
+  if (_promptShownAt === 0) {
+    _promptShownAt = Date.now();
+    obs.queueMs = _promptShownAt - _promptRequestedAt;
+  }
+}
+
+/** handler 收到一个按键（`HotkeyChoiceList` 的 onKeyObserved） */
+export function notePromptKey(): void {
+  if (_promptObs) _promptObs.keys += 1;
+}
+
+/** 按键到了组件、但 `decide` 被 `resolvedRef` 去重吞掉 */
+export function notePromptKeyDropped(): void {
+  if (_promptObs) _promptObs.keysDropped += 1;
+}
+
+/** `decide` 已经调用 resolve，但被 app.ts 的 `settled` 去重吞掉 */
+export function notePromptResolveDropped(): void {
+  if (_promptObs) _promptObs.resolveDropped += 1;
+}
+
+/**
+ * 取走本次观测并清空——一次确认对应一条决策。
+ *
+ * 消费即清的理由与 `consumeConfirmVia` 相同：单例会串到下一次「没弹窗」的决策上。
+ * 没有正在观测的弹窗（规则直放行 / 子代理）时返回 null。
+ */
+export function consumePromptObservation(): PromptObservation | null {
+  const obs = _promptObs;
+  _promptObs = null;
+  if (!obs) return null;
+  if (_promptShownAt > 0) obs.shownMs = Date.now() - _promptShownAt;
+  _promptShownAt = 0;
+  _promptRequestedAt = 0;
+  return obs;
 }
 
 /**
