@@ -3095,6 +3095,15 @@ async function* queryLoopBody(
             // V1-1：实际发出的 max_tokens 单独记一份。排查「输入 + max_tokens 撞窗口」时
             // raw.jsonl 是唯一可靠的取数源（此前完全没有这个字段，只能从 debug.log 抽查）。
             max_tokens: sendParams.maxTokens,
+            // F6（2026-11-12）：校准后输入估算随请求下发，与采集器本地的纯启发式
+            // `estimated_input_tokens` 并存（口径不同，见 hook/types.ts 的字段注释）。
+            // 作用对象是**实际要发的这份 messages**：recordActualTokens 的校准分母正是
+            // 发送副本，所以这个值能直接跟 usage.input_tokens 比值。
+            // 未校准（本会话还没收到过真实 usage）传 null —— 不回落成 estimateMessagesTokens
+            // 的未校准值，否则这一行会冒充校准值。
+            estimated_input_tokens_calibrated: ctxMgr.isCalibrated()
+              ? ctxMgr.estimateTokensFor(sendParams.messages, toolRegistry.size())
+              : null,
             raw_messages: sendParams.messages,
             system: sendParams.system,
             tools: sendParams.tools,
@@ -7048,6 +7057,11 @@ async function* queryLoopBody(
             raw_messages: summaryParams.messages,
             system: summaryParams.system,
             // tools 刻意不传：本轮真的没下发工具，传了就是让轨迹撒谎。
+            // F6：toolCount 同理传 0 而不是 toolRegistry.size()——估算必须对齐「实际发出的这份」，
+            // 多算一份 tool schema 会让校准字段凭空虚高，验收比值就失真了。
+            estimated_input_tokens_calibrated: ctxMgr.isCalibrated()
+              ? ctxMgr.estimateTokensFor(summaryParams.messages, 0)
+              : null,
           },
           {
             // ⚠️ `turn_index` 必须是 maxTurns + 1 而不是复用 maxTurns。
