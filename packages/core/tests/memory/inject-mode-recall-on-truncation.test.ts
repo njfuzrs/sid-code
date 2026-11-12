@@ -23,6 +23,10 @@ let root: string;
 let projDir: string;
 let globalDir: string;
 let savedEnv: string | undefined;
+// `new MemoryStore(root, { projectMemoryDir, globalMemoryDir })` 只覆盖了显式传入的两个目录，
+// 内部还有走 `projectsRoot()` 的默认路径，读的是 SID_CONFIG_DIR —— 不重定向就会在真实
+// ~/.sid-code/ 下留文件（防复发哨兵 packages/core/tests/telemetry/no-real-path-writes.test.ts 会点名）。
+let savedConfigDir: string | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "sid-inject-mode-"));
@@ -32,11 +36,16 @@ beforeEach(() => {
   mkdirSync(globalDir, { recursive: true });
   savedEnv = process.env[ENV];
   delete process.env[ENV];
+  savedConfigDir = process.env.SID_CONFIG_DIR;
+  process.env.SID_CONFIG_DIR = root;
   resetMemoryInjectModeForTest();
 });
 afterEach(() => {
   if (savedEnv === undefined) delete process.env[ENV];
   else process.env[ENV] = savedEnv;
+  // 存/恢复原值，不要无条件 delete：bun test 同进程跑多文件，删掉会连 preload 的兜底一起抹掉。
+  if (savedConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = savedConfigDir;
   resetMemoryInjectModeForTest();
   rmSync(root, { recursive: true, force: true });
 });
