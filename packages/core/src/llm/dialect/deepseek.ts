@@ -47,6 +47,8 @@ export const deepseekOpenAIDialect: Dialect = {
     // DeepSeek V4 思考模式实测 400（`deepseek.md` §tool_choice）。思考关闭时可正常下发，
     // 故是 reject-when-thinking 而非一律拒绝。
     toolChoice: "reject-when-thinking",
+    // 实测（官方端点 + 公司网关，2026-11-12）：只改 thinking 开关或只改 effort，命中都从 44,160 掉到 0。
+    cacheKeyIncludesThinking: true,
   },
   applyToSendParams(params: SendParams, effort, thinking) {
     // budgetTokens 在 DeepSeek OpenAI 端点无对应字段，置 0；强度走 reasoningEffort。
@@ -85,6 +87,8 @@ export const deepseekAnthropicDialect: Dialect = {
     effortGatedByThinking: true,
     allowsMaxEffort: true,
     toolChoice: "full",
+    // Anthropic 兼容端点没测过，按「没测过就不猜」保持 false。
+    cacheKeyIncludesThinking: false,
   },
   applyToSendParams(params: SendParams, effort, thinking) {
     params.thinking = { enabled: thinking, budgetTokens: 0 };
