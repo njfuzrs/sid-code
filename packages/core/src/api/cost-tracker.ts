@@ -335,11 +335,25 @@ export interface CostBreakdown {
   totalUSD: number;
   /**
    * 本次取价来源：
-   * - `pricing`：命中定价表（用户配置 / 网关采集价 / 内置注册表）
+   * - `pricing`：命中定价表且该价没有更细的 `source`（注册表 / 用户手写）
+   * - `gateway:*`：命中网关采集价，冒号后是采集口径（原样透传 `ModelPricing.source`）
    * - `fallback`：未知模型，按 {@link FALLBACK_PRICING} 估算（调用方应告警）
    * - `local`：本地推理 provider（ollama 等），不产生费用，四项均为 0
+   *
+   * 保留细粒度原值而不是压成三档：/cost 要告诉用户「这条价是从网关同步来的」，
+   * 压成 `pricing` 之后那句来源就只能写死「注册表」，与实际取价不符（PR-B / D11）。
+   * 判 fallback 的消费方用 `=== "fallback"` 仍然成立，两种口径可以共存。
    */
-  source: "pricing" | "fallback" | "local";
+  source: string;
+  /**
+   * 本次计价落的时段（D11）：`"offpeak"` = 空闲折扣价，`"peak"` = 高峰价，
+   * `"none"` = 该价无分时段政策（也覆盖 fallback / local）。
+   *
+   * 入账方靠它把 costUSD 拆进 `peakCostUSD` / `offpeakCostUSD`——会话跨高峰与空闲时
+   * 一个模型实际用了两档价，不拆的话「单价 × token ≠ 费用」无法解释。
+   * 判据必须与计价同一个函数（{@link priceTierAt}），两份实现会漂成「账本说 offpeak、成本按 peak 算」。
+   */
+  tier: PriceTier;
 }
 
 /**
@@ -379,6 +393,7 @@ export function calculateCostBreakdown(
       outputUSD: 0,
       totalUSD: 0,
       source: "local",
+      tier: "none",
     };
   }
 
@@ -400,7 +415,16 @@ export function calculateCostBreakdown(
     cacheWriteUSD,
     outputUSD,
     totalUSD: uncachedInputUSD + cacheHitUSD + cacheWriteUSD + outputUSD,
-    source: rawPricing ? "pricing" : "fallback",
+    // 细粒度来源（PR-B / D11）：网关采集价要能显示「网关同步（表达式）」，
+    // 压成 "pricing" 会让 /cost 把网关价说成注册表价。fallback / local 仍是明确信号。
+    source: rawPricing ? (rawPricing.source ?? "pricing") : "fallback",
+    // tier 必须在 effectivePricing **之前**的 raw 上判：折算后的 p 已把 peakWindows 清空
+    // （防二次折算），拿 p 判永远得 "none"，空闲时段的入账就全被记进 peak 桶。
+    // 判据与计价同一个 priceTierAt —— 账本说的时段就是计价用的时段。
+    tier:
+      rawPricing && rawPricing.peakWindows && rawPricing.peakWindows.length > 0
+        ? priceTierAt(rawPricing, at)
+        : "none",
   };
 }
 

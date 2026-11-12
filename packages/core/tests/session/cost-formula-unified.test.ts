@@ -114,6 +114,8 @@ describe("D20 — 两条计价入口逐位相同", () => {
       outputUSD: 0,
       totalUSD: 0,
       source: "local",
+      // 本地 provider 没有分时段政策，tier 恒 "none"（PR-B 新增字段，与 source 同源入账）
+      tier: "none",
     });
   });
 

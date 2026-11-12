@@ -115,9 +115,11 @@ describe("/cost 耗时口径（D8）", () => {
     recordSideCall(sideCall("fork:memory-extract", 1200));
 
     const lines = (await runCost()).split("\n");
-    const apiIdx = lines.findIndex((l) => l.startsWith("API 耗时（主循环）:"));
-    const sideIdx = lines.findIndex((l) => l.startsWith("辅助调用耗时:"));
-    const toolIdx = lines.findIndex((l) => l.startsWith("工具耗时:"));
+    // D15 分区版式把耗时段整体缩进两格（在「耗时」分区内），行首判断先 trimStart：
+    // 三行的**相对顺序**才是被测契约，缩进属于版式细节。
+    const apiIdx = lines.findIndex((l) => l.trimStart().startsWith("API 耗时（主循环）:"));
+    const sideIdx = lines.findIndex((l) => l.trimStart().startsWith("辅助调用耗时:"));
+    const toolIdx = lines.findIndex((l) => l.trimStart().startsWith("工具耗时:"));
     expect(apiIdx).toBeGreaterThanOrEqual(0);
     expect(sideIdx).toBeGreaterThan(apiIdx);
     expect(toolIdx).toBeGreaterThan(sideIdx);
