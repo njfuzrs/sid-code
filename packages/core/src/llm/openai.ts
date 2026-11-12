@@ -1477,17 +1477,24 @@ export class OpenAIProvider implements Provider {
       });
       // PR12：把渠道别名传进 parseSSE，让字节级两档能吃到 per-model 覆盖。
       for await (const event of lifecycle.guard(
-        this.parseSSE(response.body!, signal, params.model ?? this._model, {
-          wire: chatThinkingWireLabel(requestBody),
-          effortWire: wireEffortLabel(requestBody),
-          intent: observedThinkingIntent(params),
-          fields: observeOpenAIThinking(
-            params,
-            effectiveModel,
-            this.baseURL,
-            chatThinkingWireLabel(requestBody),
-          ),
-        }),
+        this.parseSSE(
+          response.body!,
+          signal,
+          params.model ?? this._model,
+          {
+            wire: chatThinkingWireLabel(requestBody),
+            effortWire: wireEffortLabel(requestBody),
+            intent: observedThinkingIntent(params),
+            fields: observeOpenAIThinking(
+              params,
+              effectiveModel,
+              this.baseURL,
+              chatThinkingWireLabel(requestBody),
+            ),
+          },
+          // D8：真实请求起点（不是 parseSSE 自己的解析起点），计费事件据此算墙钟耗时
+          requestStartTime,
+        ),
       )) {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
         if (signal?.aborted) {
@@ -2029,6 +2036,10 @@ export class OpenAIProvider implements Provider {
           agentId: bctx.agentId,
           callerLabel: bctx.callerLabel,
           atMs: Date.now(),
+          // D8：本次 fetch 的墙钟耗时（含握手 / 首字节 / 生成 / 读流）。
+          // 消费侧（app.ts 的 billing 观察者）据此填 SideCallRecord.durationMs，
+          // `/cost` 才有「辅助调用耗时」——此前这个数哪里都看不到。
+          elapsedMs: Date.now() - requestStartTime,
           accounted: !bctx.agentId && !bctx.callerLabel,
           // R5：Responses 路径同样埋点。请求体没有 thinking 字段（推理只走 reasoning.effort），
           // 线上恒为 omitted；思考内容 = 出现过 reasoning 块，或服务端报了推理 token。
@@ -2120,6 +2131,9 @@ export class OpenAIProvider implements Provider {
     params: SendParams,
     signal?: AbortSignal,
   ): Promise<AccumulatedResponse> {
+    // D8：请求开始时刻，供两处 finally 里的计费事件带出墙钟耗时。
+    // 非流式路径同样要采集：它是「辅助调用耗时」的组成部分之一，缺席就等于低估。
+    const requestStartTime = Date.now();
     // D1-1：发送前协议完整性关卡（非流式路径同样校验）
     guardOutgoingMessages(params.messages, { providerName: this.name() });
     // 真名：与流式 sendMessageStreamInner 严格同源（进请求体 + 做协议/参数判据）。
@@ -2368,6 +2382,8 @@ export class OpenAIProvider implements Provider {
           provider: this.name(),
           baseURL: this.baseURL,
           usage: billedUsage,
+          // D8：本次 fetch 的墙钟耗时，供 /cost 的「辅助调用耗时」用
+          elapsedMs: Date.now() - requestStartTime,
           thinkingWire: chatThinkingWireLabel(requestBody),
           effortWire: wireEffortLabel(requestBody),
           thinkingInResponse: nonStreamSawThinking,
@@ -2413,6 +2429,8 @@ export class OpenAIProvider implements Provider {
     });
 
     // 缺陷 15：与 Chat 非流式同口径收口计费
+    // D8：请求开始时刻，供 finally 里的计费事件带出墙钟耗时
+    const requestStartTime = Date.now();
     const billingFetchId = nextFetchId();
     let billedUsage: Usage | undefined;
     let billable = false;
@@ -2501,6 +2519,8 @@ export class OpenAIProvider implements Provider {
           provider: this.name(),
           baseURL: this.baseURL,
           usage: billedUsage,
+          // D8：本次 fetch 的墙钟耗时，供 /cost 的「辅助调用耗时」用
+          elapsedMs: Date.now() - requestStartTime,
           // R5：与流式 Responses 同口径
           thinkingWire: "omitted",
           effortWire: wireEffortLabel(requestBody),
@@ -2535,6 +2555,14 @@ export class OpenAIProvider implements Provider {
       intent?: boolean;
       fields?: ThinkingObservationFields;
     },
+    /**
+     * D8：本次请求的发起时刻（`sendMessageStreamInner` 的 `requestStartTime`）。
+     *
+     * 为什么不能在本函数里自己取：这里有 `requestStartAt`，但那是**开始解析 SSE**的时刻，
+     * 已经吃掉了建连 + 等响应头的时间。辅助调用（尤其 10 万 token 的 fork）大头常常就在
+     * TTFB 上，用解析起点会系统性低估耗时。本函数是计费事件的唯一出口，让它带上正确起点。
+     */
+    requestStartedAt?: number,
   ): AsyncIterable<StreamEvent> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -3419,6 +3447,14 @@ export class OpenAIProvider implements Provider {
           agentId: dumpCtx.agentId,
           callerLabel: dumpCtx.callerLabel,
           atMs: Date.now(),
+          // D8：本函数是 Chat Completions 路径计费事件的唯一出口，耗时用**真实请求起点**
+          // （`requestStartedAt`，由调用方传入），不是本函数自己的 `requestStartAt`。
+          // 后者是「开始解析 SSE」的时刻，已经吃掉了建连与等响应头 —— 辅助调用
+          // （尤其 10 万 token 的 fork）大头常就在 TTFB 上，用它会系统性低估。
+          // `requestStartedAt` 缺失时**不传**（= 未采集），不用 0 冒充。
+          ...(requestStartedAt !== undefined && {
+            elapsedMs: Date.now() - requestStartedAt,
+          }),
           accounted: isMainLoop,
           // PR-5：思考内容 = 出现过 reasoning_content，或服务端报了推理 token（隐式推理族）
           ...(thinkingObs && {

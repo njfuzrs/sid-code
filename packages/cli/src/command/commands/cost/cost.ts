@@ -1,5 +1,11 @@
 import { getBackgroundGateStats } from "@sid-code/core/agent/background-task-gate.ts";
-import { getSessionSideStats, type SideCallSnapshot } from "@sid-code/core/trace/side-call-sink.ts";
+// D4 用会话维度 getSessionSideStats（token 与费用同口径）；
+// D8 的辅助调用耗时用进程维度 getSideStats（resume 基线没有逐条耗时）。
+import {
+  getSessionSideStats,
+  getSideStats,
+  type SideCallSnapshot,
+} from "@sid-code/core/trace/side-call-sink.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 
 /** 后台闸门状态里 /cost 关心的三个字段（窄接口，便于测试注入假状态）。 */
@@ -117,11 +123,35 @@ export class CostCommand implements LocalCommandModule {
     const pendingNotice = formatPendingTasksNotice(this.readGateStats());
     if (pendingNotice) lines.push(pendingNotice);
 
+    // D8：耗时三条线各自的范围必须写在标签里，否则用户会拿它们相加去对墙钟。
+    // - 「API 耗时」只含**主循环**请求（totalAPIDuration 只在 query/loop 的 updateUsage 累加）；
+    // - 辅助调用（fork / 标题生成 / 记忆召回等）的耗时单独一行，数据来自计费事件；
+    // - 「会话时长」是墙钟，含思考 / 空闲 / 等待，不等于上面任何两项之和。
+    //
+    // 辅助调用耗时用 getSideStats()（**进程维度**）：resume 回灌的基线只有汇总，
+    // 没有逐条耗时，所以这个数天然只覆盖「本次启动后」。文案里写明，
+    // 避免用户拿它和会话维度的 sideCostUSD 硬对。
+    const sideStats = getSideStats();
+    const sideDurationLine = (() => {
+      if (sideStats.apiCalls === 0) return null; // 没有辅助调用：整行省略
+      if (sideStats.durationCalls === 0) {
+        // 有调用但一次耗时都没采集到：写「—」，**不要写 0**。
+        // 写 0 会让用户以为辅助调用没花时间，而实际可能是计费通道没接计时。
+        return `辅助调用耗时: —（本次启动后 ${sideStats.apiCalls} 次调用均未采集耗时）`;
+      }
+      const base = `辅助调用耗时: ${SessionState.formatDuration(sideStats.durationMs)}`;
+      return sideStats.durationCalls < sideStats.apiCalls
+        ? `${base}（本次启动后 ${sideStats.durationCalls}/${sideStats.apiCalls} 次采集到耗时，其余未采集）`
+        : `${base}（本次启动后 ${sideStats.durationCalls} 次调用）`;
+    })();
+
     lines.push(
-      // D4：totalAPIDuration 只在主循环的 updateUsage 里累加（query/loop.ts），
-      // 辅助调用的耗时不在内。标签不写清范围，用户会把它和含辅助调用的总费用摆在一起对账。
-      `API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}（仅主循环）`,
+      // D8（main）把「API 耗时」标注成主循环并单独给出辅助调用耗时行；
+      // D4 的范围要求被这一版完整覆盖（「（主循环）」= 「仅主循环」）。
+      `API 耗时（主循环）: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
+      ...(sideDurationLine ? [sideDurationLine] : []),
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
+      "  （会话时长是墙钟：含思考与空闲；API 耗时只算主循环请求，子代理与辅助调用不含在内）",
       "",
       // D4：以下 token / 请求数 / 缓存 / 省钱全部来自 `modelUsage`（辅助调用刻意不进），
       // 标题必须标明范围，否则用户会拿它们和「含辅助调用」的总费用相除/相比。

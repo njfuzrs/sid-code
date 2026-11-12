@@ -115,9 +115,11 @@ describe("D4 · /cost 输出里每个指标都标明范围", () => {
 
   test("API 耗时标明仅主循环", async () => {
     const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
-    const apiLine = out.split("\n").find((l) => l.startsWith("API 耗时:"));
+    // D8（main）把标签统一成「API 耗时（主循环）」，与本 PR 的「仅主循环」语义一致；
+    // 裸标签「API 耗时:」必须消失，否则两个含义不同的耗时行会并存。
+    const apiLine = out.split("\n").find((l) => l.startsWith("API 耗时（主循环）:"));
     expect(apiLine).toBeDefined();
-    expect(apiLine!).toContain("（仅主循环）");
+    expect(out).not.toMatch(/^API 耗时:/m);
   });
 });
 
@@ -159,15 +161,12 @@ describe("D4 · 接线：默认读会话维度而非进程维度", () => {
       join(import.meta.dir, "..", "..", "src", "command", "commands", "cost", "cost.ts"),
       "utf-8",
     );
-    // 只锁「导入」与「默认值」两处接线，不锁注释：说明为什么不用 getSideStats 的注释里
-    // 必然出现那个函数名，按全文 grep 会把解释文字当成违规。
-    expect(src).toMatch(
-      /import\s*\{[^}]*\bgetSessionSideStats\b[^}]*\}\s*from\s*"@sid-code\/core\/trace\/side-call-sink\.ts"/,
-    );
+    // 只锁「token 段的默认值」这一处接线，不锁 import：D8（main）的辅助调用耗时
+    // 合理地 import 了进程维度 getSideStats（resume 基线不带逐条耗时），两者并存不冲突。
     expect(src).toMatch(/=\s*\(\)\s*=>\s*getSessionSideStats\(\)/);
-    // 进程维度 getSideStats 在 resume 会话里只剩本次启动的记录，而 /cost 的费用含回灌基线，
-    // 用它会重新制造「token 只含本次启动、费用含全会话」的范围错位（正是 D4 的形态）。
-    expect(src).not.toMatch(/\bimport\s*\{[^}]*\bgetSideStats\b[^}]*\}/);
+    // token 的默认统计源不能改成进程维度：resume 会话里它只剩本次启动的记录，
+    // 而 /cost 的费用含回灌基线，用它会重新制造「token 只含本次启动、费用含全会话」
+    // 的范围错位（正是 D4 的形态）。
     expect(src).not.toMatch(/=\s*\(\)\s*=>\s*getSideStats\s*\(/);
   });
 });
