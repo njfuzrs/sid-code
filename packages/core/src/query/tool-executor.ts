@@ -1566,6 +1566,13 @@ export async function executeSingleTool(
   if (block.name === "sub_agent" && effectiveInput && typeof effectiveInput === "object") {
     effectiveInput = { ...(effectiveInput as Record<string, unknown>), _parentToolUseId: block.id };
   }
+  // R3：后台任务通知的调用锚点（契约见 tool/types.ts 的 consumesToolUseId）。
+  // 只有自报「我会把本次调用 id 存进后台任务」的工具拿得到——`<task-notification>`
+  // 因此能带 `<tool-use-id>`，模型可以核对「这条通知对应我哪一次调用」，
+  // 而不是把上一轮那条旧通知当成刚挂的这次等待的结果。
+  if (tool.consumesToolUseId && effectiveInput && typeof effectiveInput === "object") {
+    effectiveInput = { ...(effectiveInput as Record<string, unknown>), _toolUseId: block.id };
+  }
 
   // hook 改写后、注入内部字段之前的参数：给 hook / LSP / 编辑失败计数 / 遥测看的「这次实际执行了什么」。
   // 不用 effectiveInput：它带 _parentToolUseId 这类内部字段，不该外泄给用户 hook。

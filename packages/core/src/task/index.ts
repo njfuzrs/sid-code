@@ -125,6 +125,10 @@ export {
   isWaitInvalidated,
   invalidateWakeups,
   invalidateWakeupsForDeliveredTask,
+  // R3（修法 2）：新起后台等待的回执要写「此刻有无待送达 / 上一条已送达是谁」。
+  recordDeliveredTaskNotification,
+  getLastDeliveredWaitNotice,
+  describeBackgroundWaitFact,
   extractWaitSubjects,
   describeWaitSource,
   drainWaitNotices,

@@ -287,6 +287,14 @@ interface ScheduledPromptItem {
   origin?: CronTask["origin"];
   /** onFire 被调用的时刻（ms），用于算 queue_wait_ms */
   firedAt: number;
+  /**
+   * R3：这个唤醒**排定**的时刻（ms）。一次性任务（schedule_wakeup）取 `fireAt`，
+   * 周期任务（/loop、cron_create）取本轮应触发的时刻（`lastFiredAt` 或直接按 firedAt 兑底）。
+   *
+   * 注入文案里会带上「排定于 / 触发于」，模型据此判断「我是不是还在等同一件事」——
+   * 事故 b0aa0f1e 的误读类型之一就是分不清旧等待与新等待。
+   */
+  scheduledAt?: number;
 }
 
 /**
@@ -8210,13 +8218,16 @@ export class App {
    */
   async enqueueScheduledPrompt(
     prompt: string,
-    task?: { id: string; origin?: CronTask["origin"] },
+    task?: { id: string; origin?: CronTask["origin"]; fireAt?: number; lastFiredAt?: number },
   ): Promise<void> {
     const item: ScheduledPromptItem = {
       prompt,
       taskId: task?.id,
       origin: task?.origin,
       firedAt: Date.now(),
+      // R3：排定时刻。一次性唤醒（schedule_wakeup）用 `fireAt`；周期任务没有单独记录
+      // 「本轮应触发时刻」，退回上一次触发时间（没有就用 firedAt 兜底——至少不编造）。
+      scheduledAt: task?.fireAt ?? task?.lastFiredAt,
     };
     if (this.busy || !this.promptInjector) {
       this.scheduledPromptQueue.push(item);
@@ -8287,6 +8298,11 @@ export class App {
         ? {
             taskId: item.taskId ?? "unknown",
             origin: normalizeScheduledOrigin(item.origin),
+            // R3：排定时刻与触发时刻一起给模型，用于分辨「这是刚排的那次还是上一轮那次」。
+            // `firedAt` 是 onFire 时刻（可能与实际注入相隔一次排队），`scheduledAt` 是
+            // 任务本该触发的时刻——两者都写绝对时钟，不写相对时长。
+            ...(item.scheduledAt !== undefined ? { scheduledAt: item.scheduledAt } : {}),
+            firedAt: item.firedAt,
           }
         : undefined,
     );

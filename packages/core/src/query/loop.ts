@@ -232,6 +232,9 @@ import {
   listWaits,
   drainWaitNotices,
   invalidateWakeupsForDeliveredTask,
+  // R3（修法 2）：通知真正进模型上下文的这一刻记「最近一条已送达的等待类通知」，
+  // 下一次新起等待的回执据此写出可核对的事实。
+  recordDeliveredTaskNotification,
   type WaitNotice,
   beginMainLoopTurn,
   endMainLoopTurn,
@@ -7505,6 +7508,11 @@ export function injectPendingNotifications(
     const st = n.structured;
     if (!st) continue;
     invalidateWakeupsForDeliveredTask(st.taskId, st.status);
+    // R3 修法 2：记下「最近一条已送达的等待类通知」。下一次模型新起后台等待时，
+    // 回执会把这条事实写回去（`describeBackgroundWaitFact`）——旧通知被误当成新结果
+    // 的根因是模型没有任何可核对的事实，这里就是提供那个事实的取数点。
+    // 与 markNotificationsDelivered 同处，口径都是「真正进了模型上下文」。
+    recordDeliveredTaskNotification(st.taskId, st.status);
   }
   try {
     sessionStore?.appendMessage(message);

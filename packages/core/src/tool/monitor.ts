@@ -46,6 +46,7 @@ import {
   findWaitBySubject,
   extractWaitSubjects,
   isWakeupRegistrationEnabled,
+  describeBackgroundWaitFact,
 } from "../task/wait-registry.ts";
 import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
 import { formatClockWithSeconds } from "../task/monitor-text.ts";
@@ -99,6 +100,13 @@ function listRunningMonitorBrief(): string {
 
 export class MonitorTool implements Tool<MonitorInput, string> {
   readonly zodSchema = monitorSchema();
+
+  /**
+   * R3：声明「我会把本次工具调用 id 存进后台任务」，执行器据此注入 `_toolUseId`。
+   * monitor 的每条事件/终态通知因此能带 `<tool-use-id>`，模型可核对通知对应哪一次调用。
+   * 契约见 `tool/types.ts`。
+   */
+  readonly consumesToolUseId = true as const;
   /**
    * 延迟加载：与 `schedule_wakeup` 同档（长尾、低频）。关键词覆盖中英文常见说法，
    * 让 `tool_search` 在「等 CI」「watch」「监控」这类描述下都能把它调出来。
@@ -285,6 +293,8 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       command,
       timeoutMs,
       cwd: getCwd(),
+      // R3：通知锚点。执行器注入的本次调用 id；拿不到时通知少一栏，其余照常。
+      toolUseId: (params as { _toolUseId?: unknown })._toolUseId as string | undefined,
     });
 
     // 登记为等待源（deadline 承诺）：todo 闸门 T2 据此放行、静默判据不误杀。
@@ -322,6 +332,9 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
         `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
         waitNote +
+        // R3 修法 2：把「此刻有没有待送达通知、上一条已送达的是谁」写成事实，
+        // 模型不必凭记忆判断某条通知是不是自己刚挂的这次监控的事件。
+        `${describeBackgroundWaitFact()}\n` +
         `提前停止：task_stop ${taskState.id}${duplicateNote}`,
     };
   }

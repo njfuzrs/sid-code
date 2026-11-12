@@ -23,6 +23,7 @@
  */
 
 import type { LanguagePref } from "../config/prompt-lang.ts";
+import { formatClockWithSeconds } from "../task/monitor-text.ts";
 
 /** 注入消息的消息来源标记（写进 `_meta.origin`） */
 export const SCHEDULED_PROMPT_ORIGIN = "scheduled-prompt";
@@ -36,6 +37,16 @@ export interface ScheduledPromptSource {
   taskId: string;
   /** 任务来源（决定渲染标签与文案措辞） */
   origin: ScheduledPromptTaskOrigin;
+  /**
+   * R3：这个唤醒**排定**的时刻（epoch ms，一次性任务即 fireAt，周期任务即本轮到点时刻）。
+   *
+   * 为什么要给模型看：事故 b0aa0f1e 里模型把一条旧的后台通知当成了刚挂的等待结果。
+   * 唤醒注入也有同款风险——「这条 prompt 是什么时候排的、什么时候才到」是模型判断
+   * 「我是不是还在等同一件事」的唯一客观依据。缺省（老任务 / 测试直接构造）时不写。
+   */
+  scheduledAt?: number;
+  /** R3：**实际触发**（注入队列）的时刻（epoch ms）。与 scheduledAt 一起给出延迟量。 */
+  firedAt?: number;
 }
 
 /** 把 `CronTask["origin"]`（可能是 undefined 的老任务）归一成闭集 */
@@ -99,6 +110,32 @@ export function formatWakeupTurnGuidance(language: LanguagePref | undefined): st
 }
 
 /**
+ * 来源头里的「时间锚点」段（R3）。
+ *
+ * 形态固定成 ` · 排定于 HH:MM:SS、触发于 HH:MM:SS`，两个时刻都有才写；只有一个时
+ * 只写那一个。**用绝对时钟而不是「N 分钟前」**：注入可能因会话忙而排队，
+ * 相对时间在送达时已经失真。
+ *
+ * 单独抽成函数是为了让 `stripScheduledPromptHeader` 能用一个固定正则把它剥掉 ——
+ * 剥离侧拿不到当时的时间（`ScheduledPromptSource` 只有 taskId/origin），
+ * 只能按形态匹配。
+ */
+function formatHeaderTimeAnchor(source: ScheduledPromptSource): string {
+  const segments: string[] = [];
+  if (source.scheduledAt !== undefined) {
+    segments.push(`排定于 ${formatClockWithSeconds(source.scheduledAt)}`);
+  }
+  if (source.firedAt !== undefined) {
+    segments.push(`触发于 ${formatClockWithSeconds(source.firedAt)}`);
+  }
+  return segments.length > 0 ? ` · ${segments.join("、")}` : "";
+}
+
+/** 时间锚点段的形态（剥离用）。与 `formatHeaderTimeAnchor` 的产出必须保持一致。 */
+const HEADER_TIME_ANCHOR_PATTERN =
+  / · (?:排定于 \d{2}:\d{2}:\d{2}(?:、触发于 \d{2}:\d{2}:\d{2})?|触发于 \d{2}:\d{2}:\d{2})/;
+
+/**
  * 拼一行来源头，作为喂给模型的文本的**第一行**（与 prompt 同属一个 text block）。
  *
  * 不另起 block 的原因：独立 block 要靠 `<system-reminder>` 前缀才能被 history-adapter
@@ -107,6 +144,10 @@ export function formatWakeupTurnGuidance(language: LanguagePref | undefined): st
  * 这一行是给模型看的：它必须能确定「这条是此前我自己安排的唤醒，不是用户新说话」，
  * 才能在目标已达成时直接短答收尾，而不是重跑一遍检查。**它不是安全边界**，模型照旧
  * 可以忽略；真正的行为约束在工具与调度器的机制层（单链替换、注入前判过期）。
+ *
+ * R3（2026-11-12）：多带一段排定/触发时刻。唤醒也可能被误当成新结果——模型看到一条
+ * 自己的 prompt 就问「这是刚排的那次还是上一轮那次」。`scheduledAt` / `firedAt` 两个
+ * 绝对时刻是它唯一能自己核对的事实。
  */
 export function formatScheduledPromptHeader(
   source: ScheduledPromptSource,
@@ -114,10 +155,11 @@ export function formatScheduledPromptHeader(
 ): string {
   const label = describeScheduledOrigin(source.origin, language);
   const isEn = language === "en";
+  const timeAnchor = formatHeaderTimeAnchor(source);
   if (isEn) {
-    return `[${label} · ${source.origin} · ID ${source.taskId} · scheduled by you earlier, not a new user message]`;
+    return `[${label} · ${source.origin} · ID ${source.taskId}${timeAnchor} · scheduled by you earlier, not a new user message]`;
   }
-  return `[${label} · ${source.origin} · ID ${source.taskId} · 由你此前安排，不是用户新输入的消息]`;
+  return `[${label} · ${source.origin} · ID ${source.taskId}${timeAnchor} · 由你此前安排，不是用户新输入的消息]`;
 }
 
 /**
@@ -152,9 +194,23 @@ export function withScheduledPromptHeader(
  * 用户看到的是 harness 的话而不是自己安排的任务。
  */
 export function stripScheduledPromptHeader(text: string, source: ScheduledPromptSource): string {
+  // R3：header 现在可能带一段「排定于 / 触发于」时间锚点（新消息有，改动前落盘的
+  // 历史消息没有）。剥离侧拿不到当时的时间，所以先把**首行**的这一段按固定形态
+  // 归一化掉，再与「无时间 header」做精确匹配。仍然是确定性字符串匹配（段的形态由
+  // `formatHeaderTimeAnchor` 唯一决定），不是按前缀猜来源。
+  const newlineAt = text.indexOf("\n");
+  const firstLine = newlineAt >= 0 ? text.slice(0, newlineAt) : text;
+  const normalized =
+    firstLine.replace(HEADER_TIME_ANCHOR_PATTERN, "") +
+    (newlineAt >= 0 ? text.slice(newlineAt) : "");
+  const headerSource: ScheduledPromptSource = {
+    ...source,
+    scheduledAt: undefined,
+    firedAt: undefined,
+  };
   for (const language of ["zh", "en"] as const) {
-    const header = formatScheduledPromptHeader(source, language);
-    if (text === header) return "";
+    const header = formatScheduledPromptHeader(headerSource, language);
+    if (normalized === header) return "";
     // 长前缀必须排在短前缀之前：`${header}\n` 是 `${header}\n${guidance}\n` 的前缀，
     // 先试短的会把指引行留在正文里。
     const prefixes =
@@ -162,7 +218,7 @@ export function stripScheduledPromptHeader(text: string, source: ScheduledPrompt
         ? [`${header}\n${formatWakeupTurnGuidance(language)}\n`, `${header}\n`]
         : [`${header}\n`];
     for (const prefix of prefixes) {
-      if (text.startsWith(prefix)) return text.slice(prefix.length);
+      if (normalized.startsWith(prefix)) return normalized.slice(prefix.length);
     }
   }
   return text;

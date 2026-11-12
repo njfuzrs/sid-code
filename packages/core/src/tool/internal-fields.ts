@@ -27,6 +27,12 @@ export const INTERNAL_FIELDS = [
   // E1（2026-10-14）：派发子代理的那次 sub_agent 调用 id，由执行器在剥离后注入。
   // 模型伪造它会让 SubagentStart.parent_tool_use_id 指向别的调用，关联键就失真了。
   "_parentToolUseId",
+  // R3（2026-11-12）：**本次**工具调用 id，由执行器在剥离后注入给自报
+  // `consumesToolUseId: true` 的工具（bash / monitor）。它们把 id 存进后台任务，
+  // 让完成通知带 `<tool-use-id>` —— 模型因此能核对「这条通知对应我哪一次调用」，
+  // 而不是把上一轮的旧通知当成刚挂的这次等待的结果。
+  // 必须剥离：模型伪造它会让通知指向别的调用，锚点反而变成误导。
+  "_toolUseId",
 ] as const;
 
 /**

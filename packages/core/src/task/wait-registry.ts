@@ -53,7 +53,8 @@ import {
 import { getScheduler } from "../cron/scheduler.ts";
 import type { StatusQueryFamily } from "./status-query-commands.ts";
 import { emitScheduledTrace, SCHEDULED_INVALIDATED_EVENT_NAME } from "../cron/cron-telemetry.ts";
-import { enqueueTaskNotification } from "./notification.ts";
+import { enqueueTaskNotification, hasPendingNotifications } from "./notification.ts";
+import { formatClockWithSeconds } from "./monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 回报承诺：最晚何时、以何种方式把空闲主循环叫醒 */
@@ -160,6 +161,89 @@ const terminalMonitorSubjects = new Map<string, { subjects: string[]; at: number
 const TERMINAL_SUBJECT_TTL_MS = 5 * 60_000;
 
 /**
+ * R3：「本会话曾经登记过等待」的任务 id 集合。
+ *
+ * ## 要解决的事故（b0aa0f1e）
+ *
+ * 模型挂完一次等待后，后续每个请求的 thinking 都在复述「后台任务 sjgm4oq76 又被杀了」——
+ * 上下文里最近那条 `<task-notification>` 是**上一轮**的旧通知，而模型没有任何确定性
+ * 事实可以核对「这条是不是我刚挂的这次」。修法 1 让通知本身带上了 `<tool-use-id>` 与
+ * 时间锚点；修法 2 在**新起等待的回执**里直接把当前状态写死：此刻有没有待送达的通知、
+ * 上一条已送达的是谁。
+ *
+ * ## 为什么需要这个集合
+ *
+ * 「等待类通知」= 由本模块登记过等待的任务完成通知。仅凭 task 类型判不出来：
+ * 普通后台 shell 也是 `local_shell`，但它的退出通知不属于「模型在等外部状态」那一类。
+ * 在 `registerWait` 时打标是唯一准确的判据来源。
+ *
+ * ## 有界性
+ *
+ * 只加不删（id 是随机 8 位、每会话数量有限），但代价是每个 id 一个字符串。
+ * 相比 registry 本身的条目规模可忽略；会话结束随进程回收。
+ * 不用「随 release 删除」——那会让「上一条已送达通知」在通知送达前就失去判定依据。
+ */
+const everWaitedTaskIds = new Set<string>();
+
+/**
+ * R3：最近一条**已送达**的等待类通知（会话内）。
+ *
+ * 只在 `recordDeliveredTaskNotification` 里更新，由 `loop.ts` 的通知注入点调用——
+ * 那里是「通知真正进了模型上下文」的唯一汇合点（与 `markNotificationsDelivered` 同处）。
+ *
+ * 用途：新起等待的回执里写一句「`<id>` 的终态通知已在 HH:MM:SS 送达过，**不对应
+ * 本次启动的任务**」。这是给模型的直接反证——它不必回忆，回执里就有。
+ */
+let lastDeliveredWaitNotice: { taskId: string; status: TaskStatus; at: number } | null = null;
+
+/**
+ * 记录一条**刚送达**的终态通知（R3 修法 2）。非等待类任务不记。
+ *
+ * 调用点唯一（`loop.ts` 的注入函数），与 `markNotificationsDelivered` 并排——
+ * 那里是「通知进模型上下文」的字面时刻，早一步（入队时）记会把排队中误算成已送达。
+ */
+export function recordDeliveredTaskNotification(taskId: string, status: TaskStatus): void {
+  if (!everWaitedTaskIds.has(taskId)) return;
+  if (!isTerminalStatus(status)) return;
+  lastDeliveredWaitNotice = { taskId, status, at: Date.now() };
+}
+
+/** 读最近一条已送达的等待类通知（`describeBackgroundWaitFact` 的判据来源，测试也用它）。 */
+export function getLastDeliveredWaitNotice(): {
+  taskId: string;
+  status: TaskStatus;
+  at: number;
+} | null {
+  return lastDeliveredWaitNotice;
+}
+
+/**
+ * R3 修法 2：新起一次后台等待时，回执末尾附上的**确定性状态事实**。
+ *
+ * 两半句，各自有独立判据：
+ *
+ * 1. 「此刻没有待送达的通知」——`hasPendingNotifications()` 为假时才写。排队中的通知
+ *    模型还没看到，这时候说「没有」是错的，所以**只要有一条待送达就整句不写**。
+ * 2. 「`<id>` 的终态通知已在 HH:MM:SS 送达过，不对应本次启动的任务」——只在会话内
+ *    有已送达的等待类通知时写。这是当年那次误读的直接反证：模型看到「sjgm4oq76」
+ *    同时看到「已在 10:55:04 送达过，不对应本次启动的任务」，就不会再把它讲成
+ *    刚挂的这次等待的结果。
+ *
+ * 返回空串表示「没有可写的事实」（有待送达通知 / 两者都不成立），调用方原样拼接即可。
+ *
+ * ⚠️ 这是**事实陈述**，不是行为指令。不要加「所以不要……」这类叮嘱——模型需要的是
+ * 可核对的事实，指令文案会在下一轮被稀释掉（方案 §修法 4「不做」）。
+ */
+export function describeBackgroundWaitFact(now = Date.now()): string {
+  // 有通知在排队：模型还没看到它们，不能声称「没有待送达」。
+  if (hasPendingNotifications()) return "";
+  const head = "此刻没有待送达的通知";
+  if (!lastDeliveredWaitNotice) return `\n${head}。`;
+  const clock = formatClockWithSeconds(lastDeliveredWaitNotice.at);
+  return `\n${head}；${lastDeliveredWaitNotice.taskId} 的终态通知已在 ${clock} 送达过，不对应本次启动的任务。`;
+}
+
+/**
  * 唤醒是否登记取决于「宿主有没有注入通道」。
  *
  * 无头（`-p` / SDK 单轮）下 `promptInjector` 不注册，`schedule_wakeup` 永远等不到触发——
@@ -256,6 +340,9 @@ export function registerWait(src: WaitSource): boolean {
       ? monoNow() + Math.max(0, src.promise.deadlineAt - Date.now())
       : undefined;
   explicitWaits.set(src.id, { src, deadlineMono });
+  // R3：打「这个任务曾被当作等待源」的标。release 时不删——送达侧要据此判断
+  // 「最近一条已送达的通知是不是等待类」，而通知送达一定晚于 release。
+  everWaitedTaskIds.add(src.id);
   // 同 id 重新登记视为一份新承诺：旧的失效记录不能继续挡它（id 随机，理论上不会撞）
   invalidatedIds.delete(src.id);
   emitWaitTrace("WaitRegistered", {
@@ -770,6 +857,10 @@ export function __resetWaitRegistryForTest(): void {
   invalidatedIds.clear();
   pendingNotices.length = 0;
   terminalMonitorSubjects.clear();
+  // R3：会话内记忆，测试之间必须复位——否则「上一条已送达通知」会跨用例泄漏，
+  // 让回执文案断言在单跑时绿、全量跑时红。
+  everWaitedTaskIds.clear();
+  lastDeliveredWaitNotice = null;
   wakeupRegistrationEnabled = false;
   traceSink = null;
   monoNowImpl = () => performance.now();

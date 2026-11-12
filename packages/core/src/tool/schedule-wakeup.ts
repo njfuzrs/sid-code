@@ -17,7 +17,12 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
-import { extractWaitSubjects, registerWait, releaseWait } from "../task/wait-registry.ts";
+import {
+  extractWaitSubjects,
+  registerWait,
+  releaseWait,
+  describeBackgroundWaitFact,
+} from "../task/wait-registry.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -165,6 +170,9 @@ export class ScheduleWakeupTool implements Tool {
       output:
         `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${replacedNote}${reasonNote}\n` +
         `目标达成后若不再需要，用 cron_delete ${task.id} 取消。\n` +
+        // R3 修法 2：写清「此刻有没有待送达通知、上一条已送达的是谁」。唤醒全程不产生
+        // 后台进程，模型更容易把上一轮的旧通知误当成这次唤醒的结果——回执里直接给事实。
+        `${describeBackgroundWaitFact()}\n` +
         `唤醒只在本轮结束、会话空闲后才会触发；本轮继续查询只会推迟它。没有别的事就告诉用户你在等什么，然后结束本轮。`,
     };
   }

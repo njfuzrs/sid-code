@@ -245,7 +245,7 @@ describe("F2 注入前判过期", () => {
 });
 
 describe("F3 注入来源标记", () => {
-  it("T-F3-1 注入器收到的第二个参数是 { taskId, origin }", async () => {
+  it("T-F3-1 注入器收到的第二个参数是 { taskId, origin, firedAt }", async () => {
     const app = makeApp();
     const sources: unknown[] = [];
     (app as any).busy = false;
@@ -253,8 +253,31 @@ describe("F3 注入来源标记", () => {
       sources.push(source);
     };
 
+    // R3（2026-11-12）：source 契约新增 `firedAt`（实际触发时刻），一次性任务还会带
+    // `scheduledAt`（排定时刻）。注入文案据此写出「排定于 / 触发于」两个绝对时刻——
+    // 模型靠它们判断「这是刚排的那次唤醒还是上一轮那次」。
+    // 契约变更导致本断言前提变化：由精确对象改为「固定字段 + 动态时刻」。
     await app.enqueueScheduledPrompt("hello", { id: "task-9", origin: "schedule_wakeup" });
-    expect(sources).toEqual([{ taskId: "task-9", origin: "schedule_wakeup" }]);
+    expect(sources).toEqual([
+      { taskId: "task-9", origin: "schedule_wakeup", firedAt: expect.any(Number) },
+    ]);
+  });
+
+  it("T-F3-1c 一次性唤醒带上排定时刻（fireAt）", async () => {
+    const app = makeApp();
+    const sources: Array<{ taskId?: string; scheduledAt?: number; firedAt?: number }> = [];
+    (app as any).busy = false;
+    (app as any).promptInjector = async (_t: string, source?: any) => {
+      sources.push(source);
+    };
+
+    await app.enqueueScheduledPrompt("hello", {
+      id: "task-10",
+      origin: "schedule_wakeup",
+      fireAt: 1_700_000_000_000,
+    });
+    expect(sources[0]!.scheduledAt).toBe(1_700_000_000_000);
+    expect(typeof sources[0]!.firedAt).toBe("number");
   });
 
   it("T-F3-1b 没有来源信息时第二个参数是 undefined（普通路径不受影响）", async () => {
