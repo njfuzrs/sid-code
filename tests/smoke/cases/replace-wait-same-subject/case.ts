@@ -17,7 +17,12 @@
  * 分不开。
  *
  * 期限的算术：准入的第二条判据是「新期限落在旧等待剩余期限之内 → duplicate」，
- * 所以 B 的 `wait_until_seconds` 必须**大于** A 的（60 → 120），才会判成 replace。
+ * 所以 B 的 `wait_until_seconds` 必须**大于** A 的（1800 → 3600），才会判成 replace。
+ *
+ * 为什么 A 的期限远大于用例超时：变异自证要求「不淘汰旧任务」能被这个用例抓住。
+ * 用 60s 时，A 到期也会产生 `completed(superseded)`（替换路径已经写好了标记），
+ * 与「立即淘汰」在事件上无法区分——实测该 mutation 会 SURVIVED。拉到 1800s 后，
+ * 没被淘汰的 A 会一直跑，用例在 120s 超时**红**，形态与真实事故一致（旧等待拖到期限）。
  */
 import { TASK_LIFECYCLE_EVENT_NAME } from "@sid-code/core/task/lifecycle.ts";
 import { WAIT_REGISTERED_EVENT_NAME } from "@sid-code/core/task/index.ts";
