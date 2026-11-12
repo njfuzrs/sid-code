@@ -302,6 +302,16 @@ let _eventWriter: EventWriter | null = null;
 const _snapshots = new Map<string, StreamSnapshot>();
 
 /**
+ * 本会话已发过的「端点 + 上限 + 降级名单」组合（D4）。
+ *
+ * 发前收口是**每轮请求**都会发生的：一次 20 轮的会话会算出同一份名单 20 次。
+ * 不去重就等于把 events.jsonl 灌满同一条事件，digest 里的计数随即失去意义
+ * （「每轮都发」的 20 条会被读成「发生了 20 次不同的降级」）。
+ * 名单一旦变化（激活了延迟工具、上限被事后学习改小）就该重新发一条 —— 所以 key 含全部三要素。
+ */
+const _cappedStrictCombos = new Set<string>();
+
+/**
  * 每个 (loopId, index, agentId) 最近一次 `first_content` 的 TTFT（ms），供 AfterModel 载荷取用。
  *
  * ## 为什么需要它（2026-10-08 端到端核出）
@@ -427,6 +437,7 @@ export function initStreamObserver(
   _snapshots.clear();
   _attempts.clear();
   _firstContentTtft.clear();
+  _cappedStrictCombos.clear();
 }
 
 /**
@@ -438,6 +449,7 @@ export function resetStreamObserver(): void {
   _snapshots.clear();
   _attempts.clear();
   _firstContentTtft.clear();
+  _cappedStrictCombos.clear();
 }
 
 // ─── StreamPhase 事件（缺口 1+6） ───
@@ -926,6 +938,44 @@ export function emitStrictToolDegraded(data: {
         data: data as unknown as Record<string, unknown>,
       });
     }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
+// ─── StrictToolsCapped 事件（D4） ───
+
+/**
+ * 发前收口把一部分常驻工具降成非 strict（D4）。与 `StrictToolDegraded` 是**两条不同的
+ * 路径**，不要合并：那个是上游已经回 400 之后的事后补救（一次事故一条），这个是**每轮
+ * 请求前**按容量上限做的例行截断（没出事也会发生）。
+ *
+ * 修前这条路径不留任何痕迹：常驻 24 个 > 上限 20，每轮固定有 4 个工具不受 constrained
+ * decoding 保护，而轨迹里 `StrictToolDegraded` 是 0 条 —— 「上游零 400」与「一上来就在
+ * 降级」因此在数据上无法区分。谁被降级取决于工具列表的码点序，新增一个字典序靠前的
+ * 常驻工具就会把别的工具静默挤出 strict，没有任何提示。
+ *
+ * 去重口径：每个会话每种「端点 + 上限 + 降级名单」只写一条。名单变化（激活延迟工具、
+ * 上限被 `learnStrictToolLimit` 学小）会重新发 —— 那才是新信息。
+ */
+export function emitStrictToolsCapped(data: {
+  endpoint: string;
+  limit: number;
+  demoted: string[];
+}): void {
+  try {
+    if (!_eventWriter || !_sessionId) return;
+    // key 含全部三要素：只按 endpoint 去重会漏掉「上限学小了、名单变长」这一次变化。
+    // 分隔符用 \u0000 —— 工具名里不可能出现它，拼不出第二个相同 key。
+    const key = `${data.endpoint}\u0000${data.limit}\u0000${data.demoted.join("\u0000")}`;
+    if (_cappedStrictCombos.has(key)) return;
+    _cappedStrictCombos.add(key);
+    _eventWriter({
+      event: "StrictToolsCapped",
+      session_id: _sessionId,
+      timestamp: new Date().toISOString(),
+      data: data as unknown as Record<string, unknown>,
+    });
   } catch {
     /* 可观测性不影响正常流程 */
   }

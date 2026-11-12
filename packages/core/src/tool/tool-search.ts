@@ -63,6 +63,13 @@ export class ToolSearchTool implements Tool {
    */
   readonly alwaysLoad = true;
 
+  /**
+   * D11：本工具的**结果会驱动 harness 状态机**（激活延迟工具、决定下一轮哪些工具可见），
+   * 漏掉必填的 `query` 会让「模型以为调出了工具、实际一个都没激活」这类失败完全静默 ——
+   * 比普通工具的参数错误更难发现。strict 超限时优先保留（见 `ToolCapabilityFields.strictPriority`）。
+   */
+  readonly strictPriority = 60;
+
   readonly searchHint = "search discover deferred tools 搜索 工具 发现";
 
   /**
