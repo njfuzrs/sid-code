@@ -36,6 +36,7 @@ import {
   emitStreamPhase,
   emitHttpConnected,
   emitStrictToolDegraded,
+  emitStrictToolsCapped,
   emitPromptCacheLayout,
   streamAttributionOf,
   cacheDimsFor,
@@ -276,14 +277,26 @@ export class AnthropicProvider implements Provider {
     // 降级只去掉 `strict` 字段、不动顺序，断点打在降级后的数组上才是真正发出去的那份。
     const strictEndpointKey = strictToolEndpointKey(model, this.client.baseURL);
     const strictPriorityOf = strictPriorityLookup(params.tools);
-    let tools = applyStrictToolBudget(
+    const strictLimit = getStrictToolLimit(strictEndpointKey);
+    const strictBudget = applyStrictToolBudget(
       convertAnthropicTools(model, params.tools, {
         strictOn: enableStrict,
         eagerInputStreaming: enableFGTS,
       }),
-      getStrictToolLimit(strictEndpointKey),
+      strictLimit,
       strictPriorityOf,
-    ).tools;
+    );
+    let tools = strictBudget.tools;
+    // D4：发前收口把哪些工具挤出了 strict。修前这条路径不留任何痕迹 —— 常驻工具数长期
+    // 超过上限，每轮都有固定几个工具不受 constrained decoding 保护，而轨迹里一条事件都没有，
+    // 「上游零 400」与「一上来就在降级」在数据上无法区分。
+    if (strictBudget.demoted.length > 0) {
+      emitStrictToolsCapped({
+        endpoint: strictEndpointKey,
+        limit: strictLimit,
+        demoted: strictBudget.demoted,
+      });
+    }
 
     // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
     // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control（不带 scope，见 cache-strategy.ts 头）
@@ -1056,7 +1069,8 @@ export class AnthropicProvider implements Provider {
     // D11：同流式路径，strict 数收到端点已知上限以内。
     const strictEndpointKey = strictToolEndpointKey(nonStreamingModel, this.client.baseURL);
     const strictPriorityOf = strictPriorityLookup(params.tools);
-    let tools = applyStrictToolBudget(
+    const strictLimit = getStrictToolLimit(strictEndpointKey);
+    const strictBudget = applyStrictToolBudget(
       convertAnthropicTools(nonStreamingModel, params.tools, {
         strictOn: !process.env.SID_DISABLE_STRICT_TOOLS && modelSupportsStrict(nonStreamingModel),
         // ⚠ 非流式刻意**不**开 FGTS：eager_input_streaming 是流式专属语义
@@ -1064,9 +1078,18 @@ export class AnthropicProvider implements Provider {
         // 此前两处手写的 .map() 里非流式那份也没有它 —— 保持原样，不趁收敛改行为。
         eagerInputStreaming: false,
       }),
-      getStrictToolLimit(strictEndpointKey),
+      strictLimit,
       strictPriorityOf,
-    ).tools;
+    );
+    let tools = strictBudget.tools;
+    // D4：与流式路径同口径（事件本身按「端点 + 上限 + 名单」去重，两条路径谁先跑都只发一条）。
+    if (strictBudget.demoted.length > 0) {
+      emitStrictToolsCapped({
+        endpoint: strictEndpointKey,
+        limit: strictLimit,
+        demoted: strictBudget.demoted,
+      });
+    }
 
     // G8: 非流式路径缓存标记对齐流式路径——
     // ① system 按 DYNAMIC_BOUNDARY 分区打 cache_control；

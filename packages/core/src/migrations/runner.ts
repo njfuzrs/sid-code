@@ -22,6 +22,7 @@ import { migrate as rewriteLegacyReleaseHost } from "./rewrite-legacy-release-ho
 import { migrate as moveStrayAppConfigKeys } from "./move-stray-app-config-keys.ts";
 import { migrate as removeTeamDefaultTraceUpload } from "./remove-team-default-trace-upload.ts";
 import { migrate as moveBehaviorKeysOutOfAppJson } from "./move-behavior-keys-out-of-app-json.ts";
+import { migrate as removeLearnedInputCeiling } from "./remove-learned-input-ceiling.ts";
 
 interface Migration {
   version: number;
@@ -72,6 +73,14 @@ const migrations: Migration[] = [
     version: 7,
     name: "move-behavior-keys-out-of-app-json",
     migrate: moveBehaviorKeysOutOfAppJson,
+  },
+  {
+    // S6 运行时窗口学习已整体撤销（#770），读取点全删，但已写进老用户磁盘的
+    // learned-input-ceiling.json 还在。留着会被误认为仍生效、回滚 #770 会立刻复活 664k。
+    // 与 v6 同型：改代码只影响新装用户，已落盘的只能靠迁移收回。
+    version: 8,
+    name: "remove-learned-input-ceiling",
+    migrate: removeLearnedInputCeiling,
   },
 ];
 

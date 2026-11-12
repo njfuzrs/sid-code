@@ -207,10 +207,22 @@ export interface ToolCapabilityFields<Input = unknown> {
    * D11：单请求 strict 工具超过上游上限（Anthropic 20 个）时，谁先保住 strict。
    *
    * 数值越大越优先，未声明为 0。只在超限时起作用，不影响「发不发 strict」本身。
-   * 声明标准：漏发 required 字段会**静默产出错误结果**的工具（`ask_user_question`
-   * 曾因漏字段出过事故，会话 20260803-135816-8c8619e7），其次是改文件的编辑类工具。
+   *
+   * 声明标准（按优先级从高到低）：
+   *   1. 漏发 required 字段会**静默产出错误结果**的工具（`ask_user_question` 曾因漏字段
+   *      出过事故，会话 20260803-135816-8c8619e7）；
+   *   2. **工具结果会驱动 harness 状态机**的（`tool_search` 决定下一轮哪些工具可见、
+   *      `todo_write` 推进 `todo_gate`）。这类工具的失败形态是「模型以为生效了、实际没有」，
+   *      比参数被拒更难发现 —— 参数被拒至少还有一条 tool_result 错误可读；
+   *   3. 改文件的编辑类工具（`edit` / `write` / `notebook_edit`）。
+   *
    * 让工具自报而不是在 `anthropic.ts` 里写名单：与 `exemptFromLoopDetection` 同一范式，
    * 新增工具时在定义处就能看到这一项。
+   *
+   * ⚠️ 这是一份**优先级**，不是豁免名单：常驻工具数超过上限时（`--dump-tool-meta` 里
+   * `deferred=false` 的那批），排在后段、没声明优先级的照样会被降级。谁被降级由
+   * `applyStrictToolBudget()` 在**请求时**按真实工具集算出来，并作为 `StrictToolsCapped`
+   * 事件落进轨迹 —— 想知道实际名单，看事件，不要手推。
    */
   strictPriority?: number;
 
