@@ -6,6 +6,11 @@
  * blockedDirectories / permissionMode），首次启动时被 v4/v5 迁移按「值等于代码默认」清掉，20 → 14；
  * `state/migrations.json` 记 `migrationVersion=7` + `teamDefaults.{hash,keys}`（20 键）。
  *
+ * ⚠️ 水位随迁移链增长而前进，不是固定常量：2026-11-12 新增 v8（删除已废弃的
+ * learned-input-ceiling.json）后 `CURRENT_VERSION = migrations.length` 变成 8，
+ * 首启落盘的水位也随之变 8。这里的数字要跟着迁移链一起改，别当成历史实测快照。
+ * 键集合那几条断言（20 → 14、teamDefaults.keys）不受影响。
+ *
  * 放 G2 而不是 G1 的理由（台账 A10）：单个迁移的单测都在，但「20 → 14」是 v1 补全、v4/v5 清理
  * 按 runner 顺序串起来的结果，只有走真实启动入口才看得到。
  *
@@ -47,8 +52,8 @@ const def: SmokeCase = {
         return `首次启动后键集合期望 ${want.length} 个 ${JSON.stringify(want)}，实际 ${got.length} 个 ${JSON.stringify(got)}`;
       }
       const state = JSON.parse(readFileSync(join(configDir, "state/migrations.json"), "utf8"));
-      if (state.migrationVersion !== 7)
-        return `migrationVersion 期望 7，实际 ${state.migrationVersion}`;
+      if (state.migrationVersion !== 8)
+        return `migrationVersion 期望 8，实际 ${state.migrationVersion}`;
       const marked = state.teamDefaults?.keys;
       if (!Array.isArray(marked) || marked.length !== 20) {
         return `teamDefaults.keys 期望 20 个，实际 ${JSON.stringify(marked)}`;

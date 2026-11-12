@@ -10,7 +10,6 @@ import { tmpdir } from "os";
 import {
   findRelevantMemories,
   parseSelection,
-  isMemoryRecallEnabled,
   type SideQueryFn,
 } from "@sid-code/core/memory/recall.ts";
 
@@ -124,31 +123,28 @@ describe("findRelevantMemories", () => {
   });
 });
 
-describe("isMemoryRecallEnabled — flag 门控（对齐 claude-code 默认关闭）", () => {
-  const KEY = "SID_CODE_MEMORY_RECALL";
-  let saved: string | undefined;
-  beforeEach(() => {
-    saved = process.env[KEY];
-  });
-  afterEach(() => {
-    if (saved === undefined) delete process.env[KEY];
-    else process.env[KEY] = saved;
-  });
-
-  test("默认（未设 env）关闭——走全量索引注入", () => {
-    delete process.env[KEY];
-    expect(isMemoryRecallEnabled()).toBe(false);
+describe("sideQuery 失败回调（F5 / PR-4：区分「没有相关记忆」与「召回坏了」）", () => {
+  test("sideQuery 抛错 → 返回空数组且回调 onSideQueryError", async () => {
+    writeMemory("a.md", "A", "desc a", "project", "body a");
+    const errors: string[] = [];
+    const failing: SideQueryFn = async () => {
+      throw new Error("side-call-timeout");
+    };
+    const out = await findRelevantMemories("q", dir, failing, {
+      onSideQueryError: (e) => errors.push(e.message),
+    });
+    expect(out).toEqual([]);
+    expect(errors).toEqual(["side-call-timeout"]);
   });
 
-  test("SID_CODE_MEMORY_RECALL=1 时启用", () => {
-    process.env[KEY] = "1";
-    expect(isMemoryRecallEnabled()).toBe(true);
-  });
-
-  test("其它值（如 'true' / '0'）不启用——只认严格 '1'", () => {
-    process.env[KEY] = "true";
-    expect(isMemoryRecallEnabled()).toBe(false);
-    process.env[KEY] = "0";
-    expect(isMemoryRecallEnabled()).toBe(false);
+  test("选择器返回空选择（没有相关记忆）→ 不回调", async () => {
+    writeMemory("a.md", "A", "desc a", "project", "body a");
+    const errors: string[] = [];
+    const empty: SideQueryFn = async () => '{"selected": []}';
+    const out = await findRelevantMemories("q", dir, empty, {
+      onSideQueryError: (e) => errors.push(e.message),
+    });
+    expect(out).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });
