@@ -19,6 +19,7 @@
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { safeProviderName, stampUsageProvider } from "./types.ts";
+import { resolveRequestOutputBudget } from "./output-budget.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   emitTimeoutFired,
@@ -192,33 +193,11 @@ const EMPTY_STREAM: AsyncIterable<StreamEvent> = {
   }),
 };
 
-/** max_tokens 溢出恢复：安全余量 */
-const SAFETY_BUFFER = 1_000;
-
-/** max_tokens 溢出恢复：最小输出 token 数的绝对下限（兜底）。
- *  历史固定值 3000——对输出能力 128K 的模型，降到 3K 几乎等于放弃恢复。
- *  现改为"按 contextLimit 比例算 floor，再与此绝对下限取较大者"（见 resolveFloorOutputTokens），
- *  可经 SID_RECOVERY_FLOOR_TOKENS 显式覆盖。保成功：让需要大段输出的任务更易从溢出中恢复。 */
-const FLOOR_OUTPUT_TOKENS = 3_000;
-
-/** 溢出恢复 floor 占 contextLimit 的比例（默认 5%）。
- *  对 1M 窗口模型给出 50K floor，对 200K 给 10K，远比固定 3K 更贴合模型能力。 */
-const FLOOR_OUTPUT_RATIO = 0.05;
-
-/** 解析溢出恢复的最小输出 token 下限。
- *  优先级：SID_RECOVERY_FLOOR_TOKENS 显式值 > contextLimit × 5%（与绝对下限取大）> 绝对下限 3000。
- *  非法 env 值（NaN/≤0）静默回退，绝不更紧。 */
-function resolveFloorOutputTokens(contextLimit: number): number {
-  const raw = process.env.SID_RECOVERY_FLOOR_TOKENS;
-  if (raw !== undefined && raw !== "") {
-    const n = Number.parseInt(raw, 10);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  if (contextLimit > 0) {
-    return Math.max(FLOOR_OUTPUT_TOKENS, Math.floor(contextLimit * FLOOR_OUTPUT_RATIO));
-  }
-  return FLOOR_OUTPUT_TOKENS;
-}
+/** max_tokens 溢出恢复的安全余量与 floor 都来自 `output-budget.ts`（见该文件头注释）：
+ *
+ *  这两项在「发送前的窗口钳制」与「溢出后的恢复」两处问的是同一个问题——
+ *  「窗口里还剩不剩得下这么多输出」。各写一份必然漂移（本仓教训：同一口径重实现
+ *  一遍等于重踩一遍）。`SID_RECOVERY_FLOOR_TOKENS` 因此会同时影响两条路径，刻意如此。 */
 
 /** S4：非流式降级的 maxTokens 上限。
  *
@@ -2316,17 +2295,22 @@ export class ModelFallback {
    *
    * 对标 claude-code 的 thinking budget 感知：当 Extended Thinking 启用时，
    * thinking 消耗的 token 不计入 output，但仍占用上下文窗口，需要从可用空间中扣除。
+   *
+   * 与发送前的窗口钳制共用 `resolveRequestOutputBudget`（同一份 SAFETY_BUFFER / floor）：
+   * 恢复场景没有「请求预算」上限，只受窗口与物理上限约束，把能给的输出尽量给足。
    */
   private computeSafeMaxTokens(
     inputTokens: number,
     contextLimit: number,
     thinkingBudget?: number,
   ): number | null {
-    const thinkingCost = thinkingBudget ?? 0;
-    const available = Math.max(0, contextLimit - inputTokens - thinkingCost - SAFETY_BUFFER);
-    const floor = resolveFloorOutputTokens(contextLimit);
-    if (available < floor) return null;
-    return Math.max(floor, available);
+    const budget = resolveRequestOutputBudget({
+      // 恢复场景不设预算上限：目标是把这次回答救回来，不是守某个默认值。
+      requestBudget: Number.MAX_SAFE_INTEGER,
+      contextWindow: contextLimit,
+      estimatedInputTokens: inputTokens + (thinkingBudget ?? 0),
+    });
+    return budget.ok ? budget.maxTokens : null;
   }
 
   /**

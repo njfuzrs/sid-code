@@ -58,9 +58,12 @@ describe("post-compact-flags", () => {
 });
 
 describe("哨兵：所有压缩出口都经单一入口置位", () => {
-  test("loop.ts 无裸置位，且 loop 内出口数为 7", () => {
+  test("loop.ts 无裸置位，且 loop 内出口数为 8", () => {
     expect(loopSrc).not.toMatch(/PendingAfterCompact\s*=\s*true/);
-    expect(loopSrc.match(/markPostCompactReinject\(state\)/g)?.length).toBe(7);
+    // 8 = 原 7 个出口 + F1 新增的「输出预算不足 → 压缩后重试」（发送前窗口钳制命中 floor）。
+    // 哨兵红了要补清单而不是删断言：这个数字的存在就是为了让新出口被迫过一遍
+    // 「是否走 markPostCompactReinject」的判断。
+    expect(loopSrc.match(/markPostCompactReinject\(state\)/g)?.length).toBe(8);
   });
 
   test("queryLoop 入口消费会话标记", () => {
