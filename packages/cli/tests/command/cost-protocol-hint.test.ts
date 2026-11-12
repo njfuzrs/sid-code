@@ -87,7 +87,7 @@ describe("/cost 缓存命中率提示：按实测值判断（D6）", () => {
     // 方案文档 2.2 节第一段结束时的真实值：累计发送 2,398,645 / 命中 2,199,936 / 31 次请求
     recordOpenAI(ss, { hit: 2_199_936, prompt: 2_398_645, requests: 31 });
     const out = await runCost(ss);
-    expect(out).toContain("缓存命中率: 91.7%");
+    expect(out).toContain("命中率 91.7%");
     // 旧文案会在这一行之后写「60-70% 属正常上限」——与面板上的 91.7% 自相矛盾
     expect(out).not.toContain("上限");
     expect(out).not.toContain("60-70");
@@ -98,7 +98,7 @@ describe("/cost 缓存命中率提示：按实测值判断（D6）", () => {
     const ss = new SessionState("cost-hit-hint-test");
     recordOpenAI(ss, { hit: 3_000, prompt: 10_000, requests: 5 });
     const out = await runCost(ss);
-    expect(out).toContain("缓存命中率: 30.0%");
+    expect(out).toContain("命中率 30.0%");
     expect(out).toContain("缓存命中率偏低");
     expect(out).toContain("/cache --breaks");
   });
@@ -107,7 +107,7 @@ describe("/cost 缓存命中率提示：按实测值判断（D6）", () => {
     const ss = new SessionState("cost-hit-hint-test");
     recordOpenAI(ss, { hit: 1_000, prompt: 10_000, requests: LOW_CACHE_HIT_RATE_MIN_REQUESTS - 1 });
     const out = await runCost(ss);
-    expect(out).toContain("缓存命中率: 10.0%");
+    expect(out).toContain("命中率 10.0%");
     expect(out).not.toContain("偏低");
   });
 
@@ -115,7 +115,7 @@ describe("/cost 缓存命中率提示：按实测值判断（D6）", () => {
     const ss = new SessionState("cost-hit-hint-test");
     recordOpenAI(ss, { hit: 5_000, prompt: 10_000, requests: 5 });
     const out = await runCost(ss);
-    expect(out).toContain(`缓存命中率: ${LOW_CACHE_HIT_RATE_THRESHOLD}.0%`);
+    expect(out).toContain(`命中率 ${LOW_CACHE_HIT_RATE_THRESHOLD}.0%`);
     expect(out).not.toContain("偏低");
   });
 
@@ -124,7 +124,7 @@ describe("/cost 缓存命中率提示：按实测值判断（D6）", () => {
     recordAnthropic(ss, 5);
     const out = await runCost(ss);
     // promptTotal = 未命中 500 + 命中 8,000 + 写入 1,500 = 10,000 → 80.0%
-    expect(out).toContain("缓存命中率: 80.0%");
+    expect(out).toContain("命中率 80.0%");
     expect(out).not.toContain("上限");
     expect(out).not.toContain("偏低");
   });
@@ -135,7 +135,7 @@ describe("/cost 缓存命中率提示：按实测值判断（D6）", () => {
     recordAnthropic(ss, 3);
     const out = await runCost(ss);
     // 两族各 10,000 promptTotal，命中 6,500 + 8,000 = 14,500 → 72.5%
-    expect(out).toContain("缓存命中率: 72.5%");
+    expect(out).toContain("命中率 72.5%");
     expect(out).not.toContain("混用多个协议族");
     expect(out).not.toContain("上限");
     expect(out).not.toContain("偏低");

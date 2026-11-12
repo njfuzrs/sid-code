@@ -17,6 +17,8 @@ import {
 } from "./tool-result-storage.ts";
 import { applyToolResultBudgetToContent } from "../query/compact/tool-result-budget.ts";
 import { planMicrocompact } from "../query/compact/microcompact.ts";
+import { planStaleToolOutputClear } from "./stale-tool-output.ts";
+import { emitToolResultCleared } from "../query/guidance-events.ts";
 import type { SendMutationCause } from "../hook/types.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import {
@@ -484,6 +486,13 @@ export class Manager {
    * 逐字节贴同一份；与 masking / replacementState 同生命周期，压缩/截断/setMessages/clear 统一清空。
    */
   private coldClearState = new Map<string, string>();
+  /**
+   * F4：按过期程度清理的决策冻结（tool_use_id → 清理后的完整内容）。
+   *
+   * 与 coldClearState 同一形态、同一生命周期：一旦提交，之后每轮逐字节重放同一份占位，
+   * 前缀只在提交那一轮被改写一次。见 `context/stale-tool-output.ts` 的批量门槛说明。
+   */
+  private staleClearState = new Map<string, string>();
 
   /**
    * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
@@ -764,6 +773,7 @@ export class Manager {
     this.tokenFreedTracker.reset();
     this.maskedState.clear();
     this.coldClearState.clear();
+    this.staleClearState.clear();
     this.lastSendSnapshot = null;
     this.pendingSendCauses.add("compact");
     this.validatedPrefix = [];
@@ -824,7 +834,10 @@ export class Manager {
     const plan = planMicrocompact(this.messages, {
       mode: "time",
       skipToolUse: (id) =>
-        this.coldClearState.has(id) || this.maskedState.has(id) || this.replacementState.has(id),
+        this.coldClearState.has(id) ||
+        this.staleClearState.has(id) ||
+        this.maskedState.has(id) ||
+        this.replacementState.has(id),
     });
     let savedChars = 0;
     for (const p of plan) {
@@ -842,14 +855,56 @@ export class Manager {
 
   /** 把冷清理决策贴到发送副本上（只替换内容，其余字段透传） */
   private applyColdClearState(messages: Message[]): Message[] {
-    if (this.coldClearState.size === 0) return messages;
+    return this.applyFrozenClearState(messages, this.coldClearState);
+  }
+
+  /**
+   * F4：提交一批过期清理决策（未达批量门槛时什么都不做，本轮前缀不动）。
+   *
+   * 作用在**发送投影**上判定（遮罩 / 冷清理占位已贴好），决策写进 staleClearState，
+   * 之后每轮由 applyFrozenClearState 重放。释放量按 token 记进 tokenFreedTracker，
+   * 与其余三条本地清理同口径，Footer 与压缩档位都扣得到。
+   */
+  private commitStaleToolOutputClear(projection: Message[]): void {
+    const plan = planStaleToolOutputClear(projection, {
+      skipToolUse: (id) =>
+        this.staleClearState.has(id) ||
+        this.coldClearState.has(id) ||
+        this.maskedState.has(id) ||
+        this.replacementState.has(id),
+    });
+    if (plan.entries.length === 0) return;
+    let savedTokens = 0;
+    let savedChars = 0;
+    for (const e of plan.entries) {
+      this.staleClearState.set(e.toolUseId, e.replacement);
+      savedTokens += e.savedTokens;
+      savedChars += Math.max(0, e.originalLength - e.replacement.length);
+    }
+    this.tokenFreedTracker.recordCompact(savedTokens, "staleToolOutput");
+    this.pendingSendCauses.add("stale_clear");
+    getLogger().info(
+      "CONTEXT",
+      `过期工具输出批量清理：${plan.entries.length} 项，释放约 ${savedTokens} token（${savedChars} 字符）`,
+    );
+    emitToolResultCleared({
+      stage: "stale_clear",
+      cleared: plan.entries.length,
+      saved_chars: savedChars,
+      tool_use_ids: plan.entries.map((e) => e.toolUseId),
+    });
+  }
+
+  /** 把一份冻结的清理决策贴到发送副本上（只替换内容，其余字段透传） */
+  private applyFrozenClearState(messages: Message[], state: Map<string, string>): Message[] {
+    if (state.size === 0) return messages;
     let changed = false;
     const out = messages.map((msg) => {
       if (msg.role !== "user") return msg;
       let touched = false;
       const content = msg.content.map((block) => {
         if (block.type !== "tool_result") return block;
-        const frozen = this.coldClearState.get(block.tool_use_id);
+        const frozen = state.get(block.tool_use_id);
         if (frozen === undefined || block.content === frozen) return block;
         touched = true;
         return { ...block, content: frozen };
@@ -1206,6 +1261,10 @@ export class Manager {
     // 冷清理决策在 masking 之后、大输出清理之前贴：被冷清理的块已是短占位，
     // 不会再进下面的大输出候选，两套占位不会叠在同一个块上。
     cleaned = this.applyColdClearState(cleaned);
+    // F4：按过期程度批量清理。放在冷清理之后、大输出清理之前：已有稳定占位的块一律豁免
+    // （再改一次就是第二次改写前缀），清完的块已是短占位，不会再进下面的大输出候选。
+    this.commitStaleToolOutputClear(cleaned);
+    cleaned = this.applyFrozenClearState(cleaned, this.staleClearState);
 
     // P1-3：构建 tool_use 索引 + 活跃文件集合（正在编辑的文件 read 输出豁免清理）
     const toolIndex = this.buildToolUseIndex(cleaned);
@@ -1413,6 +1472,14 @@ export class Manager {
         if (sticky !== undefined) {
           msgChanged = true;
           return { ...block, content: sticky };
+        }
+        // 已有冷清理 / 过期清理占位的块不再记遮罩：它们之后会被重放为那份占位，
+        // 在这里再记一次只会把同一块的释放量重复记账。
+        if (
+          this.coldClearState.has(block.tool_use_id) ||
+          this.staleClearState.has(block.tool_use_id)
+        ) {
+          return block;
         }
         const fb = freshMsg?.content[j];
         if (

@@ -22,10 +22,27 @@
 import { describe, test, expect } from "bun:test";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { CostCommand } from "../../src/command/commands/cost/cost.ts";
+import { buildCostReport } from "@sid-code/core/session/cost-report.ts";
+import type { SideCallStats } from "@sid-code/core/trace/side-call-sink.ts";
 import type { PendingTasksView } from "../../src/command/commands/cost/cost.ts";
 
 /** 后台闸门注入空闲状态：真实闸门是进程级单例，测试不碰它（理由见 cost-pending-tasks.test.ts）。 */
 const IDLE: PendingTasksView = { busy: false, busyLabel: null, pendingLabels: [] };
+
+/** 无辅助调用的进程级快照：这些用例只关心主循环 token 口径。 */
+const EMPTY_SIDE_STATS: SideCallStats = {
+  apiCalls: 0,
+  costUSD: 0,
+  tokensSent: 0,
+  tokensReceived: 0,
+  durationMs: 0,
+  durationCalls: 0,
+  details: [],
+  failed: 0,
+  timedOut: 0,
+  usageMissing: 0,
+  byLabel: {},
+};
 
 async function runCost(ss: SessionState): Promise<string> {
   const ctx = { sessionState: ss, config: { provider: "openai" } } as any;
@@ -44,11 +61,11 @@ describe("/cost token 三段互斥与千分位（D5）", () => {
       "openai",
     );
     const out = await runCost(ss);
-    expect(out).toContain("输入·未命中: 198,709");
-    expect(out).toContain("输入·缓存命中: 2,199,936");
+    expect(out).toMatch(/输入·未命中\s+198,709/);
+    expect(out).toMatch(/输入·缓存命中\s+2,199,936/);
     // D3（#760）起合计行带 stock/flow 口径标注，D5 的千分位同样作用在这一行
-    expect(out).toContain("输入·合计（累计发送，flow）: 2,398,645");
-    expect(out).toContain("输出（累计）: 17,440");
+    expect(out).toContain("累计发送 2,398,645（flow，每次请求的 prompt 都计入）");
+    expect(out).toMatch(/输出\s+17,440/);
     // 裸数字（无千分位）不能再出现——这正是修复前的现场
     expect(out).not.toContain("2398645");
     expect(out).not.toContain("2199936");
@@ -70,19 +87,19 @@ describe("/cost token 三段互斥与千分位（D5）", () => {
       "anthropic",
     );
     const out = await runCost(ss);
-    expect(out).toContain("输入·未命中: 500");
-    expect(out).toContain("输入·缓存命中: 8,000");
-    expect(out).toContain("输入·缓存写入: 1,500");
+    expect(out).toMatch(/输入·未命中\s+500/);
+    expect(out).toMatch(/输入·缓存命中\s+8,000/);
+    expect(out).toMatch(/输入·缓存写入\s+1,500/);
     // 合计 = 500 + 8,000 + 1,500，不能是 500（旧「输入」只显示未命中余量）
-    expect(out).toContain("输入·合计（累计发送，flow）: 10,000");
+    expect(out).toContain("累计发送 10,000（flow");
   });
 
   test("命中与写入都为 0 时两行都省略，合计仍等于未命中", async () => {
     const ss = new SessionState("cost-token-breakdown-test");
     ss.updateUsage("gpt-test", { inputTokens: 1_000, outputTokens: 50 }, 1, "openai");
     const out = await runCost(ss);
-    expect(out).toContain("输入·未命中: 1,000");
-    expect(out).toContain("输入·合计（累计发送，flow）: 1,000");
+    expect(out).toMatch(/输入·未命中\s+1,000/);
+    expect(out).toContain("累计发送 1,000（flow");
     expect(out).not.toContain("输入·缓存命中");
     expect(out).not.toContain("输入·缓存写入");
   });
@@ -109,9 +126,20 @@ describe("/cost token 三段互斥与千分位（D5）", () => {
       "anthropic",
     );
     const out = await runCost(ss);
-    expect(out).toContain("输入·合计（累计发送，flow）: 20,000");
-    // 两个模型各自的 input= 都是 10,000（OpenAI 族若直接贴 cumulativePromptTokens
-    // 也对，但 anthropic 族若直接贴就是 500，会与汇总对不上）
-    expect(out.match(/input=10,000/g)?.length).toBe(2);
+    expect(out).toContain("累计发送 20,000（flow");
+    // D15 版式不再逐模型列出 `input=` 行，但「分模型之和 === 汇总」这条 D5 判据
+    // 仍必须在数据层成立（渲染层不展示，不代表口径可以分叉）。这里直接查 CostReport：
+    // 两个模型各自的 promptTotal 都是 10,000（OpenAI 族若直接贴 cumulativePromptTokens
+    // 也对，但 anthropic 族若直接贴就是 500，会与汇总对不上）。
+    const report = buildCostReport(ss, {
+      sideStats: EMPTY_SIDE_STATS,
+      gateStats: IDLE,
+      cacheBreaks: [],
+    });
+    const perModel = report.byModel.map(
+      (m) => m.uncachedTokens + m.cacheHitTokens + m.cacheWriteTokens,
+    );
+    expect(perModel).toEqual([10_000, 10_000]);
+    expect(perModel.reduce((a, b) => a + b, 0)).toBe(report.main.promptTotal);
   });
 });
