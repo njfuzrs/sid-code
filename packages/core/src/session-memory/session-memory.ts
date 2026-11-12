@@ -123,6 +123,8 @@ export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemory
         // 不设 maxTurns（对齐 CC）：轨迹 166 次 run 中 65 次（39%）恰好停在 5 轮，
         // 说明是被截断而非自然收尾——笔记只更新了一半。轮数靠提示词「一次并行 Edit 后停止」收敛。
         querySource: "session-memory-update",
+        // D16：会话笔记只用 read / edit；快照缺它们就退回全量工具（见 ForkedAgentOptions.requiredTools）
+        requiredTools: ["read", "edit"],
         timeoutMs: 60_000,
       });
 

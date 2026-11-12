@@ -100,6 +100,10 @@ import {
 } from "./reasoning-replay.ts";
 import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
 import {
+  observeRequestShape,
+  type RequestShapeFields,
+} from "./request-shape-observation.ts";
+import {
   parseResponsesStream,
   parseResponsesBody,
   isResponsesContentProgress,
@@ -1523,6 +1527,7 @@ export class OpenAIProvider implements Provider {
               this.baseURL,
               chatThinkingWireLabel(requestBody),
             ),
+            shape: observeRequestShape(params),
           },
           // D8：真实请求起点（不是 parseSSE 自己的解析起点），计费事件据此算墙钟耗时
           requestStartTime,
@@ -2080,6 +2085,7 @@ export class OpenAIProvider implements Provider {
           thinkingInResponse: responsesSawThinking || (accumulatedUsage?.reasoningTokens ?? 0) > 0,
           thinkingIntent: observedThinkingIntent(params),
           ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
+          ...observeRequestShape(params),
         });
       } catch {
         /* 计费上报绝不影响流 */
@@ -2443,6 +2449,7 @@ export class OpenAIProvider implements Provider {
             this.baseURL,
             chatThinkingWireLabel(requestBody),
           ),
+          ...observeRequestShape(params),
         });
       }
     }
@@ -2576,6 +2583,7 @@ export class OpenAIProvider implements Provider {
           thinkingInResponse: nonStreamSawThinking || (billedUsage?.reasoningTokens ?? 0) > 0,
           thinkingIntent: observedThinkingIntent(params),
           ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
+          ...observeRequestShape(params),
         });
       }
     }
@@ -2603,6 +2611,8 @@ export class OpenAIProvider implements Provider {
       effortWire?: string;
       intent?: boolean;
       fields?: ThinkingObservationFields;
+      /** D16：请求形状观测（tools_hash / tools_count / prefix_source） */
+      shape?: RequestShapeFields;
     },
     /**
      * D8：本次请求的发起时刻（`sendMessageStreamInner` 的 `requestStartTime`）。
@@ -3512,6 +3522,7 @@ export class OpenAIProvider implements Provider {
             thinkingInResponse: reasoningContent.length > 0 || (usage.reasoningTokens ?? 0) > 0,
             thinkingIntent: thinkingObs.intent,
             ...thinkingObs.fields,
+            ...thinkingObs.shape,
           }),
         });
       } catch {
