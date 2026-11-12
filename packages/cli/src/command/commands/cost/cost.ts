@@ -48,6 +48,57 @@ export function formatPendingTasksNotice(view: PendingTasksView): string | null 
 }
 
 /**
+ * 命中率低于该值（百分比）视为偏低，触发提示。
+ *
+ * 阈值依据是 2026-11-10 对本机 `~/.sid-code/usage-ledger.jsonl` 的实测
+ * （筛 provider=openai、单会话 promptTotal ≥ 20 万，太短的会话缓存还没热起来）：
+ *
+ * | 模型 | 会话数 | 加权命中 | p50 | p90 |
+ * | --- | --- | --- | --- | --- |
+ * | origin-deepseek-v4-1-flash | 473 | 91.4% | 89.6% | 96.2% |
+ * | glm-5.2 | 157 | 85.5% | 81.0% | 93.3% |
+ * | glm-5.3-uniapi | 51 | 83.8% | 79.8% | 91.3% |
+ * | kimi-k3 | 7 | 81.9% | 80.0% | 85.6% |
+ * | gpt-5.6-luna | 19 | 2.2% | 0.0% | 0.0% |
+ *
+ * openai 族的命中率按厂商/网关差别很大：主流渠道稳定在 80–95%，有的渠道几乎为 0。
+ * 所以旧口径「openai 族结构性上限约 60–70%」不成立（那是早期某个模型的样本）。
+ * 阈值取 50% 既能抓住「渠道不支持缓存」这类真问题，又不会误伤正常渠道。
+ *
+ * 刻意**不按模型名/协议族分档**（CLAUDE.md：禁按模型硬编码分级）：同一族里既有 91%
+ * 的渠道也有 2% 的渠道，按族给「正常上限」只会让前者看到无意义提示、后者被放过。
+ */
+export const LOW_CACHE_HIT_RATE_THRESHOLD = 50;
+
+/**
+ * 少于这么多次请求时不提示。
+ *
+ * 会话刚开始时缓存还没热起来（前几次请求几乎必然低命中），此时提示「偏低」是噪音：
+ * 取证会话里最贵的 3 次请求正是缓存没热起来的前 3 次。
+ */
+export const LOW_CACHE_HIT_RATE_MIN_REQUESTS = 5;
+
+/**
+ * 命中率偏低时的提示行；不偏低或样本太少时返回 null（整段省略，不给正常路径加噪音）。
+ *
+ * ## 为什么改成按实测值判断（D6）
+ *
+ * 旧实现是「会话里有 openai 族命中、且该族没有缓存写入 → 输出写死的一句
+ * 『openai 协议为隐式缓存，60-70% 属正常上限』」，**完全不看实际数值**。
+ * 取证会话（`~/.sid-code/trajectories/sessions/20261110-142303-21c3a481`）里
+ * `/cost` 显示命中率 91.7%，下一行却写「60-70% 属正常上限」，自相矛盾。
+ *
+ * 现在只在实测值低于 {@link LOW_CACHE_HIT_RATE_THRESHOLD} 且请求数达到
+ * {@link LOW_CACHE_HIT_RATE_MIN_REQUESTS} 时提示，且提示内容是可行动的动作
+ * （`/cache --breaks` 能看本会话每次缓存中断的归因）。
+ */
+export function formatCacheHitHint(hitRatePercent: number, requests: number): string | null {
+  if (requests < LOW_CACHE_HIT_RATE_MIN_REQUESTS) return null;
+  if (hitRatePercent >= LOW_CACHE_HIT_RATE_THRESHOLD) return null;
+  return `  ⚠ 缓存命中率偏低（低于 ${LOW_CACHE_HIT_RATE_THRESHOLD}%）：可能是前缀被改动或渠道不支持缓存，可运行 /cache --breaks 查看本会话的中断原因`;
+}
+
+/**
  * 辅助调用 token 段（D4）。无辅助调用时返回空数组，整段省略。
  *
  * ## 为什么必须单独成段，而不是并进主循环数字
@@ -188,42 +239,21 @@ export class CostCommand implements LocalCommandModule {
 
     // 模块 B：本会话缓存命中率 + 省钱（经归一化单一事实源）
     if (cacheView.cacheHitTokens > 0 && cacheView.promptTotal > 0) {
-      const rate = ((cacheView.cacheHitTokens / cacheView.promptTotal) * 100).toFixed(1);
+      const hitRate = (cacheView.cacheHitTokens / cacheView.promptTotal) * 100;
       const savings = ss.getTotalCacheSavings();
       // D4：命中率与省钱都只遍历 `modelUsage`（`getNormalizedCacheUsage` /
       // `getTotalCacheSavings`），不含辅助调用。标注范围，否则用户会拿它和含辅助调用的
       // 总费用相比；辅助调用本身也没有缓存省钱数据可算。
       lines.push(
         "",
-        `缓存命中率: ${rate}%   省钱: ${cur}${savings.toFixed(4)}（仅主循环，不含辅助调用）`,
+        `缓存命中率: ${hitRate.toFixed(1)}%   省钱: ${cur}${savings.toFixed(4)}（仅主循环，不含辅助调用）`,
       );
-      // P2-2：openai 协议路径为服务端隐式缓存（无客户端主动写入 cache_control，
-      // cacheCreation 恒 0），命中率结构性上限约 60-70%，不同于 anthropic 族显式缓存的 90%+。
-      // 对该族标注正常上限，避免用户把 60-70% 误判为 harness bug。以协议路径为准，非按模型名单。
-      //
-      // 判据必须与命中率同源：上面的命中率是全会话跨模型聚合（getNormalizedCacheUsage 遍历
-      // modelUsage），所以这里也遍历 modelUsage，按每条记账时的 provider 判断。
-      // 不能用 ctx.config.provider（当前模型）+ 全会话 cacheCreation：先 anthropic 后 /model 切
-      // openai、或主模型 openai + anthropic 子代理时，anthropic 那部分的写入量会让条件恒假，
-      // 提示要防的「60-70% 误判成 bug」恰好在多协议会话里重新暴露。
-      // 写入量也只看 openai 族自己的那几条：该族恒 0（见 llm/openai-usage.ts），
-      // 非 0 说明走了显式缓存，结构性上限的解释不再适用。
-      const usageList = Object.values(ss.modelUsage);
-      const implicitCacheUsage = usageList.filter(
-        (s) => s.provider === "openai" && s.cacheReadInputTokens > 0,
-      );
-      const hasImplicitOnly =
-        implicitCacheUsage.length > 0 &&
-        implicitCacheUsage.every((s) => s.cacheCreationInputTokens === 0);
-      if (hasImplicitOnly) {
-        // 混了别的协议族时，整体命中率是两族加权的结果，不能直接拿 60-70% 去套
-        const mixed = usageList.some((s) => s.provider !== "openai" && s.cacheReadInputTokens > 0);
-        lines.push(
-          mixed
-            ? "  （本会话混用多个协议族：openai 协议部分为隐式缓存，60-70% 属正常上限；上面的命中率是各族加权结果，不能直接套单一族的标准）"
-            : "  （openai 协议为隐式缓存，60-70% 属正常上限；90%+ 需 anthropic 族显式缓存）",
-        );
-      }
+      // D6：这里原本写死「openai 族 60-70% 属正常上限」，不看实际数值，导致取证会话里
+      // 91.7% 的命中率下面紧跟一句「60-70% 属正常上限」，自相矛盾。实测主流 openai
+      // 兼容渠道命中率 80–95%（依据见 LOW_CACHE_HIT_RATE_THRESHOLD），旧口径不成立。
+      // 现在只在实测值确实偏低且样本足够时提示，且给的是可行动的动作（/cache --breaks）。
+      const hint = formatCacheHitHint(hitRate, ss.getTotalRequests());
+      if (hint) lines.push(hint);
     }
 
     const models = Object.entries(ss.modelUsage);
