@@ -28,6 +28,7 @@ const mod: LocalCommandModule = {
     const { runForkedAgent } = await import("@sid-code/core/agent/forked-agent.ts");
     const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
     const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
+    const { getMainRequestShape } = await import("@sid-code/core/agent/fork-prefix.ts");
 
     const messages = ctx.ctxMgr.getMessages();
     if (messages.length === 0) {
@@ -58,6 +59,10 @@ const mod: LocalCommandModule = {
         {
           systemPrompt: ctx.ctxMgr.getSystemPrompt(),
           messages,
+          // D16：与记忆 fork 同口径对齐主循环前缀。/btw 是用户在等的同步问答，
+          // 前缀命中直接缩短等待（DeepSeek 族上代价是要先思考，见 agent/fork-prefix.ts）。
+          sendMessages: ctx.ctxMgr.getForkPrefixMessages(),
+          mainRequestShape: getMainRequestShape(ctx.ctxMgr),
           provider: ctx.provider,
           toolRegistry: ctx.toolRegistry,
           model: ctx.config.model,

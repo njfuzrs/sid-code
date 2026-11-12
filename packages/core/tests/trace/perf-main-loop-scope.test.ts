@@ -29,12 +29,17 @@ import {
   isMainScopePerfRow,
   type SessionIndexEntry,
 } from "@sid-code/core/trace/session-index.ts";
+import { buildByVersion, buildTrend } from "@sid-code/core/trace/perf-report.ts";
+// PR-B：渲染搬到 cli（要用 string-width / 颜色），断言文本不变
 import {
-  buildByVersion,
-  buildTrend,
-  renderByVersion,
-  renderTrend,
-} from "@sid-code/core/trace/perf-report.ts";
+  renderByVersion as renderByVersionEnv,
+  renderTrend as renderTrendEnv,
+} from "@sid-code/cli/command/commands/perf/render.ts";
+
+const PLAIN = { width: 120, color: false };
+const renderTrend = (t: Parameters<typeof renderTrendEnv>[0]) => renderTrendEnv(t, PLAIN);
+const renderByVersion = (v: Parameters<typeof renderByVersionEnv>[0]) =>
+  renderByVersionEnv(v, PLAIN);
 
 const ev = (event: string, data: Record<string, unknown>) => ({ event, data });
 

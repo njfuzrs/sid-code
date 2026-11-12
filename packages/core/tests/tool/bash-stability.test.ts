@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BashTool, resolveTimeoutBounds } from "@sid-code/core/tool/bash.ts";
+import { validateToolInput } from "@sid-code/core/tool/input-validator.ts";
 import { interpretExitCode } from "@sid-code/core/tool/bash/command-semantics.ts";
 import { getCwd, setCwd } from "@sid-code/core/bootstrap/state.ts";
 
@@ -245,7 +246,7 @@ describe("缺口6: 预先取消的 signal 守卫", () => {
     const bash = new BashTool();
     const ac = new AbortController();
     ac.abort();
-    const result = await bash.execute({ command: "sleep 5", is_background: true }, ac.signal);
+    const result = await bash.execute({ command: "sleep 5", run_in_background: true }, ac.signal);
     expect(result.isError).toBe(true);
     expect(result.output).toContain("取消");
   }, 10000);
@@ -294,8 +295,10 @@ describe("缺口3-补: run_in_background(Task系统) 进程树清理", () => {
   }, 10000);
 });
 
-// P2-10：is_background 与 run_in_background 统一走 Task 系统（返回 task_id，非旧 PID 格式）
-describe("P2-10: is_background 统一到 Task 系统", () => {
+// P2-10：旧名 is_background 与 run_in_background 统一走 Task 系统（返回 task_id，非旧 PID 格式）
+// D3（T4）：旧名已从 zod schema 删除，兼容由 input-alias 在 zod 校验前改名提供，
+// 所以「旧名仍生效」的断言必须走真实链路（validateToolInput → execute）。
+describe("P2-10: 后台参数统一到 Task 系统", () => {
   it("run_in_background 返回 task_id", async () => {
     const { clearAllTasks } = await import("@sid-code/core/task/index.ts");
     const bash = new BashTool();
@@ -306,10 +309,13 @@ describe("P2-10: is_background 统一到 Task 系统", () => {
     clearAllTasks();
   });
 
-  it("is_background（旧通道）也返回 task_id，不再是旧 PID 格式", async () => {
+  it("is_background（旧名）经别名层改名后仍返回 task_id，不再是旧 PID 格式", async () => {
     const { clearAllTasks } = await import("@sid-code/core/task/index.ts");
     const bash = new BashTool();
-    const result = await bash.execute({ command: "echo hi", is_background: true });
+    const validation = validateToolInput(bash, { command: "echo hi", is_background: true });
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) return;
+    const result = await bash.execute(validation.data as Record<string, unknown>);
     // 修复前 is_background 走 executeBackground → 返回 "命令已在后台运行 (PID: ...)"（非 JSON）
     // 修复后统一走 Task 系统 → 返回含 task_id 的 JSON
     const parsed = JSON.parse(result.output);
@@ -370,18 +376,20 @@ describe("P2-11: bash 超时 env 覆盖", () => {
 });
 
 describe("usageGuide 不得引导模型用已废弃参数", () => {
-  // 缺陷来源：schema 里 is_background 已标「[已废弃，请用 run_in_background]」
-  // （bash.ts:56），而 usageGuide 却写着「可设置 is_background=true 后台运行」——
+  // 缺陷来源：schema 里 is_background 曾标「[已废弃，请用 run_in_background]」，
+  // 而 usageGuide 却写着「可设置 is_background=true 后台运行」——
   // 指南与 schema 自相矛盾，模型照指南走就落进旧通道（不进 Task 系统、无 task_id、
   // 无完成通知）。实测 20260907-155904-69998cf1 里两条 bash 超时后模型都只是干等，
   // 没有转后台。
+  //
+  // D3（T4）之后旧名已从 schema 删除、指南也不再提它。断言因此从「不许推荐」
+  // 收紧成「一个字都不许出现」，防止旧名从文档里回流（schema 里已经没有它，
+  // 指南再提只会让模型以为有这个参数）。
   const guide = new BashTool().usageGuide();
 
-  it("推荐的是 run_in_background，不是 is_background", () => {
+  it("推荐的是 run_in_background，且指南完全不再出现旧名", () => {
     expect(guide).toContain("run_in_background=true");
-    // is_background 只允许以「已废弃」的形式出现，不能作为推荐用法
-    const recommendsDeprecated = /设置\s*is_background\s*=\s*true/.test(guide);
-    expect(recommendsDeprecated).toBe(false);
+    expect(guide).not.toContain("is_background");
   });
 
   it("提到后台任务的查询/终止入口（task_output / task_stop）", () => {

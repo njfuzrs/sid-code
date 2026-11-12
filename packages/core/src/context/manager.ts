@@ -1390,35 +1390,7 @@ export class Manager {
       }),
     }));
 
-    // 旧持久化引用折叠：引用约 200 字节，不会被上面的大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
-    // 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
-    const REFERENCE_KEEP_RECENT = 20;
-    const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
-    for (let i = 0; i < result.length; i++) {
-      const msg = result[i];
-      for (let j = 0; j < msg.content.length; j++) {
-        const block = msg.content[j];
-        if (
-          block.type === "tool_result" &&
-          typeof block.content === "string" &&
-          isPersistedReference(block.content)
-        ) {
-          persistedRefPositions.push({ msgIdx: i, blockIdx: j });
-        }
-      }
-    }
-    if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
-      const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
-      for (const { msgIdx, blockIdx } of toCollapse) {
-        const block = result[msgIdx].content[blockIdx];
-        if (block.type === "tool_result") {
-          (result[msgIdx].content as any[])[blockIdx] = {
-            ...block,
-            content: "[旧工具输出，如需查阅请重新执行对应工具]",
-          };
-        }
-      }
-    }
+    collapseOldPersistedReferences(result);
 
     // 验证消息格式（仅警告，不阻塞）
     this.validateSendCopy(full, result);
@@ -1426,6 +1398,55 @@ export class Manager {
     this.recordSentIntactToolResults(result);
     this.lastSendSnapshot = { full, sent: result };
     return result;
+  }
+
+  /**
+   * D16：fork（记忆提取 / 会话笔记）发请求用的消息前缀 —— **只读**地复现主循环的发送视图。
+   *
+   * 为什么不直接给 fork `getMessages()`：主循环发的是 `getCleanedMessages()`（遮罩 / 冷清理 /
+   * 大输出占位），fork 发原始消息时，前缀在第一个被清理的 tool_result 处分叉，之后的历史
+   * 全部不命中缓存 —— 会话越长越容易触发，而越长的会话 fork 首请求越贵。
+   *
+   * 为什么不能让 fork 调 `getCleanedMessages()`：它有副作用（新增清理对象、记 sentIntact、
+   * 覆盖 lastSendSnapshot、记 pendingSendCauses），fork 一调就改了主循环下一轮的发送前缀与校准分母。
+   *
+   * 这里只贴**已经发出去过**的三类粘滞占位（maskedState / coldClearState / replacementState，
+   * 都按 tool_use_id 键、一旦发出就不再撤销），再做与发送路径同一份的旧引用折叠。
+   * 不贴「本轮才会新清理」的块：主循环上一次请求里它们还是原文，缓存里存的也是原文。
+   * 不含 transient reminder（只在主循环发送副本里，不进历史）—— 那只影响末尾一小段。
+   */
+  getForkPrefixMessages(): Message[] {
+    const hasSticky =
+      this.maskedState.size > 0 || this.coldClearState.size > 0 || this.replacementState.size > 0;
+    /** 主循环只有在「有大输出占位要贴」的那条分支里才做旧引用折叠（无占位时提前返回），这里同条件 */
+    let hasReplacement = false;
+    const view = !hasSticky
+      ? [...this.messages]
+      : this.messages.map((msg) => {
+          let touched = false;
+          const content = msg.content.map((block) => {
+            if (block.type !== "tool_result") return block;
+            const id = block.tool_use_id;
+            if (this.replacementState.has(id)) hasReplacement = true;
+            // 与 getCleanedMessages 同序：遮罩 → 冷清理 → 大输出占位（后者覆盖前者）
+            const next =
+              this.replacementState.get(id) ??
+              this.coldClearState.get(id) ??
+              this.maskedState.get(id);
+            if (next === undefined || next === block.content) return block;
+            touched = true;
+            return { ...block, content: next };
+          });
+          if (!touched) return msg;
+          // ⚠️ `...msg` 默认透传，不得手写字段清单（会丢 _meta，见 getCleanedMessages 同名注释）
+          return { ...msg, content };
+        });
+    if (!hasReplacement) return view;
+    // 折叠会就地改写 content 数组：没有经过上面重建的消息对象仍是 this.messages 的引用，
+    // 所以先浅拷一层 content 再折叠，绝不碰主历史。
+    const out = view.map((m) => ({ ...m, content: [...m.content] }));
+    collapseOldPersistedReferences(out);
+    return out;
   }
 
   /**
@@ -3047,4 +3068,41 @@ function buildRoleBridge(nextRole: Message["role"], origin: string): Message {
   return nextRole === "user"
     ? { role: "assistant", content: [{ type: "text", text: "好的。" }], _meta: { origin } }
     : { role: "user", content: [{ type: "text", text: "继续。" }], _meta: { origin } };
+}
+
+/**
+ * 旧持久化引用折叠：引用约 200 字节，不会被大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
+ * 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
+ *
+ * 发送路径（getCleanedMessages）与 fork 前缀视图（getForkPrefixMessages）共用这一份，
+ * 两处各写一遍就是下一次「fork 与主循环前缀分叉」。**就地改写**入参的 content 数组。
+ */
+function collapseOldPersistedReferences(result: Message[]): void {
+  const REFERENCE_KEEP_RECENT = 20;
+  const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
+  for (let i = 0; i < result.length; i++) {
+    const msg = result[i];
+    for (let j = 0; j < msg.content.length; j++) {
+      const block = msg.content[j];
+      if (
+        block.type === "tool_result" &&
+        typeof block.content === "string" &&
+        isPersistedReference(block.content)
+      ) {
+        persistedRefPositions.push({ msgIdx: i, blockIdx: j });
+      }
+    }
+  }
+  if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
+    const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
+    for (const { msgIdx, blockIdx } of toCollapse) {
+      const block = result[msgIdx].content[blockIdx];
+      if (block.type === "tool_result") {
+        (result[msgIdx].content as any[])[blockIdx] = {
+          ...block,
+          content: "[旧工具输出，如需查阅请重新执行对应工具]",
+        };
+      }
+    }
+  }
 }

@@ -161,6 +161,14 @@ export interface BilledRequest {
   /** R10：按线上实发推出的「服务端在思考」；omitted 且服务端默认未知时缺省（不猜） */
   thinkingWireThinks?: boolean;
   /**
+   * D16：本次请求工具定义的指纹（sha256 前 16 位）与个数。主循环最后一次与 fork 首请求的
+   * hash 相同 = 工具列表逐字节对齐，prompt cache 的 tools 段能复用。缺省 = 请求不带 tools 或未接线。
+   */
+  toolsHash?: string;
+  toolsCount?: number;
+  /** D16：只有 fork 有 —— `snapshot` 复用了主循环快照 / `fallback` 退回全量（见 SendParams.forkPrefixSource） */
+  prefixSource?: "snapshot" | "fallback";
+  /**
    * S13（PR-8）：`accounted=true` 时是谁入的账。缺省 = 主循环（`updateUsage` + `AfterModelRaw`）；
    * `"usage-sink"` = 子代理链经 `createSubAgentUsageSink` 按 `SubAgentResult.usage` 入账，
    * 本事件同样只作核对（见 {@link UsageSinkTicket}）。
@@ -375,6 +383,9 @@ export function recordBilledRequest(req: BilledRequest): void {
       ...(req.thinkingWireThinks !== undefined && {
         thinking_wire_thinks: req.thinkingWireThinks,
       }),
+      ...(req.toolsHash !== undefined && { tools_hash: req.toolsHash }),
+      ...(req.toolsCount !== undefined && { tools_count: req.toolsCount }),
+      ...(req.prefixSource !== undefined && { prefix_source: req.prefixSource }),
     });
     // 记忆横向剖析 T1.2：按调用方聚合进账本行 `byAgent`。与上面落盘同理放在去重之后——
     // 与「谁记这笔钱」无关，所有非主循环 fetch 都要数（含已自报成本的链）。
@@ -638,6 +649,10 @@ export function recordNonStreamingBilledRequest(req: {
   thinkingControl?: BilledRequest["thinkingControl"];
   thinkingShown?: boolean;
   thinkingWireThinks?: boolean;
+  /** D16：请求形状观测（见 {@link BilledRequest.toolsHash}） */
+  toolsHash?: string;
+  toolsCount?: number;
+  prefixSource?: BilledRequest["prefixSource"];
   /** D8：本次 fetch 的墙钟耗时（见 {@link BilledRequest.elapsedMs}）；未采集就不传 */
   elapsedMs?: number;
 }): void {
@@ -663,6 +678,9 @@ export function recordNonStreamingBilledRequest(req: {
       thinkingControl: req.thinkingControl,
       thinkingShown: req.thinkingShown,
       thinkingWireThinks: req.thinkingWireThinks,
+      toolsHash: req.toolsHash,
+      toolsCount: req.toolsCount,
+      prefixSource: req.prefixSource,
     });
   } catch {
     /* 计费上报绝不影响请求 */

@@ -43,6 +43,7 @@ export const grokOpenAIDialect: Dialect = {
     effortGatedByThinking: true,
     allowsMaxEffort: false,
     toolChoice: "full",
+    cacheKeyIncludesThinking: false,
   },
   applyToSendParams(params: SendParams, effort) {
     // 刻意不写 params.thinking：本族无思考开关，下发一个它不认的结构是白撞 400。
