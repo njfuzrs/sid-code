@@ -65,6 +65,26 @@ export interface ModelUsageStats {
    */
   endpointHost?: string;
   /**
+   * 该模型入账用到的**原始计价币种**（`resolvePricing` 返回值，**不是** `effectivePricing` 折算后的）。
+   *
+   * 用途：让展示层判断「这笔钱是不是按汇率折算出来的估算值」——折算过的金额在 Footer /
+   * /cost / /debug 前加 `≈`。判据必须看价格数据本身，不能看模型名：`/deepseek/i` 那种写法
+   * 在「别名指向 CNY 价」或「同名模型走美元网关价」两种真实场景里都会给出相反答案（D7）。
+   *
+   * 只记原始值：`effectivePricing` 折算后会把 `currency` 改写成 `"USD"`（防止二次折算，
+   * 见 cost-tracker.ts），拿折算后的值就永远判不出「换过汇」。
+   * undefined = 该模型的价没声明币种（隐含 USD，与改造前的假设一致）。
+   */
+  priceCurrency?: string;
+  /**
+   * `priceCurrency` 对应的原始换算率（1 单位本币 = 多少 USD），与 {@link priceCurrency} 同源。
+   *
+   * 只用于展示换算说明（`1 USD = 1/fxToUSD 本币`）。它同时是「真的换过汇」的第二半判据：
+   * 声明了非 USD 却没给汇率的价，`effectivePricing` 会**原样当 USD 用、不猜汇率**
+   * （见 cost-tracker.ts），那笔钱没经过换算，不该加 `≈`。
+   */
+  priceFxToUSD?: number;
+  /**
    * 作废尝试的次数（P0-2 C 组）：超时/流内错误后重试、响应被丢弃但 prompt 已发出并计费。
    *
    * 与 `requests` 的关系：`requests` 是**总记账次数**（含作废），此字段是其中作废的那部分。
@@ -121,8 +141,17 @@ export class SessionState {
   totalToolDuration: number = 0;
   /** 按模型分开的用量统计 */
   modelUsage: Record<string, ModelUsageStats> = {};
-  /** 入账观察者，见 setCostChangeListener */
+  /** 入账观察者（兼容旧接口：覆盖式单槽位），见 setCostChangeListener */
   private costChangeListener: ((effectiveCostUSD: number) => void) | null = null;
+  /**
+   * 追加式入账订阅者，见 addCostChangeListener。
+   *
+   * 为什么需要第二个通道：单槽位已被账本落盘占用，UI 想「每笔入账都刷新」就只能
+   * 再调一次 setCostChangeListener —— 那会把账本监听器挤掉，账本静默停止落盘。
+   * 两个消费方必须共存，且一个抛错不能牵连另一个（账本写盘失败不该阻断界面刷新，
+   * 反之亦然），所以各自独立 try/catch。
+   */
+  private costChangeSubscribers = new Set<(effectiveCostUSD: number) => void>();
   /** 入账版本号：每次 updateUsage / addSideCost +1。账本判脏用它而非成本（零成本 provider 也要落行）。 */
   private usageVersion = 0;
   /** 会话级别的临时数据存储（用于命令间共享状态） */
@@ -261,6 +290,15 @@ export class SessionState {
     const host = SessionState.hostOf(baseURL);
     if (host) stats.endpointHost = host;
 
+    // D7：记**原始**计价币种与换算率，供展示层判断金额是否按汇率折算过（`≈` 前缀的判据）。
+    // 必须取 `resolvePricing` 的原始值：`effectivePricing` 折算后会把 currency 改写成 "USD"
+    // （防二次折算，见 cost-tracker.ts），拿折算后的值永远判不出「换过汇」。
+    // 与 calculateCost 内部的解析重复一次是刻意的：那个函数是公开的重算入口
+    // （trace 对账也走它），把「记录展示字段」塞进去会污染纯计算职责。
+    const rawPricing = resolvePricing(model, this.availableModels, baseURL);
+    if (rawPricing?.currency) stats.priceCurrency = rawPricing.currency;
+    if (typeof rawPricing?.fxToUSD === "number") stats.priceFxToUSD = rawPricing.fxToUSD;
+
     // 累加 token
     // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
     // 累加会 N² 过计数。inputTokens 取最后一次（stock，provider 原始口径）；
@@ -393,11 +431,33 @@ export class SessionState {
    *
    * 为什么挂在这里而不是 query loop 的 AfterModel：账本要的是「钱已经记进 SessionState」
    * 这个时刻，主循环、子代理 usage-sink、side-call 三条入账路都汇到这两个方法；挂在任一
-   * 消费侧都只覆盖一条路。单观察者够用（只有 app 的账本节流刷新在听），异常一律吞掉 ——
-   * 账本刷新失败绝不能反过来打断入账。
+   * 消费侧都只覆盖一条路。
+   *
+   * ⚠️ 这是**覆盖式单槽位**：第二次调用会挤掉前一个监听器。多消费方共存（账本落盘 + UI
+   * 推送）必须用 {@link addCostChangeListener}，不要再调本方法。
    */
   setCostChangeListener(fn: ((effectiveCostUSD: number) => void) | null): void {
     this.costChangeListener = fn;
+  }
+
+  /**
+   * 追加一个入账订阅者，返回反注册函数（D1）。
+   *
+   * 与覆盖式 {@link setCostChangeListener} 并存而不是取代它：账本落盘那条线已按单槽位
+   * 接线并有源码断言锁着，改语义的收益为零、牵连却按跨层算。新增消费方一律走这里。
+   *
+   * 为什么需要它（D1 根因）：辅助调用（后台记忆 fork / 标题生成 / SessionEnd 前收尾）
+   * 只走 `addSideCost`，而 UI 的费用列此前只在「工具结束 / 一轮结束 / 中断」这五个固定
+   * 时机重新读值。一轮结束之后才入账的辅助费用于是永远推不到 Footer —— 实测一次会话
+   * Footer 少报 43%（$0.0856 vs 真实 $0.1501），且用户不再输入就永不更新。
+   *
+   * 返回的反注册函数是幂等的：重复调用无害，退出路径不必判重。
+   */
+  addCostChangeListener(fn: (effectiveCostUSD: number) => void): () => void {
+    this.costChangeSubscribers.add(fn);
+    return () => {
+      this.costChangeSubscribers.delete(fn);
+    };
   }
 
   /** 入账版本号（单调递增，rotate 不清零也无妨：判脏只比较是否相等）。 */
@@ -407,12 +467,24 @@ export class SessionState {
 
   private notifyCostChanged(): void {
     this.usageVersion++;
+    const cost = this.getEffectiveTotalCostUSD();
     const fn = this.costChangeListener;
-    if (!fn) return;
-    try {
-      fn(this.getEffectiveTotalCostUSD());
-    } catch {
-      /* 观察者异常不影响入账 */
+    if (fn) {
+      try {
+        fn(cost);
+      } catch {
+        /* 观察者异常不影响入账 */
+      }
+    }
+    // 追加订阅者：逐个独立 try/catch —— 账本落盘抛错不该阻断 UI 刷新，反之亦然。
+    // 不允许遍历时增删（回调里反注册自己）：Set 的 delete 在 for...of 中是安全的，
+    // 但为免受回调里 add 影响迭代，先拷一份。
+    for (const sub of [...this.costChangeSubscribers]) {
+      try {
+        sub(cost);
+      } catch {
+        /* 单个订阅者异常不影响其他订阅者与入账 */
+      }
     }
   }
 
@@ -476,6 +548,16 @@ export class SessionState {
           discardedPromptTokens: Number((s as ModelUsageStats).discardedPromptTokens) || 0,
           costUSD: Number((s as ModelUsageStats).costUSD) || 0,
           cacheSavingsUSD: Number((s as ModelUsageStats).cacheSavingsUSD) || 0,
+          // D7：币种/汇率必须一起回灌 —— 漏了它 resume 后 `≈$` 判据无声丢失，
+          // 同一笔换算过的钱在重启前后写法不一致（旧快照无这两个字段时保持 undefined）。
+          priceCurrency:
+            typeof (s as ModelUsageStats).priceCurrency === "string"
+              ? (s as ModelUsageStats).priceCurrency
+              : undefined,
+          priceFxToUSD:
+            typeof (s as ModelUsageStats).priceFxToUSD === "number"
+              ? (s as ModelUsageStats).priceFxToUSD
+              : undefined,
           provider:
             typeof (s as ModelUsageStats).provider === "string"
               ? (s as ModelUsageStats).provider
@@ -492,6 +574,49 @@ export class SessionState {
    */
   getEffectiveTotalCostUSD(): number {
     return this.totalCostUSD + this.sideCostUSD;
+  }
+
+  /**
+   * 本会话入账用到的价格里，是否发生过「非 USD 币种 → USD」的汇率折算（D7）。
+   *
+   * 展示层用它决定金额前写 `≈$` 还是 `$`。判据只看**价格数据本身**，与模型名无关：
+   * - 内置注册表里 DeepSeek 是 CNY 计价（`fxToUSD` 折算过）→ 该加 `≈`；
+   * - 网关 `billing_expr` 给的价已经是 USD（没折算）→ 不该加 `≈`；
+   * 两者模型名可能完全相同，按名字判必然有一边是错的（旧实现 `/deepseek/i.test(model)`
+   * 就踩在这上面：同名模型走美元网关价时也标 ≈）。
+   *
+   * 声明了非 USD 却**没有** `fxToUSD` 的价不算折算：`effectivePricing` 对这种情况
+   * 不猜汇率、原样当 USD 用（见 cost-tracker.ts），那笔钱没经过换算，加 `≈` 反而是误导。
+   */
+  isCostFxConverted(): boolean {
+    return Object.values(this.modelUsage).some(
+      (s) =>
+        typeof s.priceCurrency === "string" &&
+        s.priceCurrency !== "USD" &&
+        typeof s.priceFxToUSD === "number" &&
+        s.priceFxToUSD > 0,
+    );
+  }
+
+  /**
+   * 本会话真正折算过的币种及其换算率（按币种去重），供 /cost 写换算说明。
+   *
+   * 只收 {@link isCostFxConverted} 认定的那批（判据同源），返回 `perUSD` 是本币/USD
+   * 的比值（即展示用的「1 USD = perUSD ¥」），由 `1 / fxToUSD` 派生。
+   */
+  getCurrencyConversions(): Array<{ currency: string; perUSD: number }> {
+    const byCurrency = new Map<string, number>();
+    for (const s of Object.values(this.modelUsage)) {
+      if (
+        typeof s.priceCurrency === "string" &&
+        s.priceCurrency !== "USD" &&
+        typeof s.priceFxToUSD === "number" &&
+        s.priceFxToUSD > 0
+      ) {
+        byCurrency.set(s.priceCurrency, 1 / s.priceFxToUSD);
+      }
+    }
+    return [...byCurrency].map(([currency, perUSD]) => ({ currency, perUSD }));
   }
 
   /**
@@ -682,6 +807,24 @@ export class SessionState {
       total.promptTotal += n.promptTotal;
     }
     return total;
+  }
+
+  /**
+   * 全会话缓存命中率（0-100 整数），`undefined` = 没有缓存命中可算。
+   *
+   * **状态栏（Footer ⚡）的唯一取数源**。D18 之前 Footer 走的是另一套算法：
+   * 拿全会话合计 `usage` 配「当前模型」推断出的 provider 去 `normalizeCacheUsage`，
+   * 单模型会话看不出来，但只要会话里换过模型、或主模型与子代理协议族不同，
+   * anthropic 的 `inputTokens`（未命中余量）就会被当成 openai 的 `prompt_tokens`（含命中）
+   * 去减，反之亦然——命中率直接算错，而且和 /cost 是两个数。
+   *
+   * `undefined`（而不是 0）用于区分「无缓存数据」和「命中率确实是 0%」：
+   * 前者不渲染 ⚡ 列（避免对无缓存模型显示 0% 误导），后者如实显示。
+   */
+  getCacheHitRate(): number | undefined {
+    const view = this.getNormalizedCacheUsage();
+    if (view.cacheHitTokens <= 0 || view.promptTotal <= 0) return undefined;
+    return Math.round((view.cacheHitTokens / view.promptTotal) * 100);
   }
 
   /** 全会话累计缓存节省金额（美元） */

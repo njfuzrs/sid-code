@@ -12,8 +12,6 @@
 import { homedir } from "os";
 import { useMemo } from "react";
 import type { Usage } from "@sid-code/core/llm/types.ts";
-import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
-import { SessionState } from "@sid-code/core/session/state.ts";
 import { theme } from "../semantic-colors.ts";
 // 颜色一律用 ink 的 Color（`#hex` / `rgb()` / `ansi256()` / `ansi:*`）而不是 string：
 // 本 hook 派生出的每个 color 最终都直接喂给 Footer 的 <Text color=…>，而 Text.color
@@ -35,7 +33,6 @@ import {
   RETRY_MARK,
   ERROR_MARK,
 } from "../constants/figures.ts";
-import type { PricingModelEntry } from "@sid-code/core/api/cost-tracker.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级。导出供测试与 Footer 复用。 */
 export function shortenPath(p: string, maxLen = 25, home = homedir()): string {
@@ -179,14 +176,23 @@ export function deriveContext(input: {
   return { text, color: deriveContextColor(contextPercent, defaultColor, contextLevel) };
 }
 
-/** 费用 → 文本 + 语义色（≥95% 红 / ≥80% 黄）。DeepSeek 用 ≈$ 标注估算。 */
+/**
+ * 费用 → 文本 + 语义色（≥95% 红 / ≥80% 黄）。
+ *
+ * `fxConverted` = 本会话入账价是否发生过汇率折算（`SessionState.isCostFxConverted()`），
+ * 为真时金额前加 `≈`（表示「人民币按固定汇率换算成 USD 的估算值」）。
+ *
+ * 判据由调用方传入、**不再按模型名判**：旧实现是 `/deepseek/i.test(model)`，它把
+ * 「是不是 DeepSeek」当成了「价格有没有换过汇」，两件事只在一种渠道组合下恰好一致：
+ * DeepSeek 走网关 `billing_expr`（系数已是 USD/1M）时不该加 ≈ 却加了，
+ * 非 deepseek 的 CNY 计价模型（别名）该加却没加 —— 同一笔钱在 Footer 与 /cost 写法相反（D7）。
+ */
 export function deriveCost(
   costUSD: number,
   costLimit: number,
-  model: string,
+  fxConverted: boolean,
 ): { text: string; color: Color | undefined } {
-  const isExchangeRateConverted = /deepseek/i.test(model);
-  const prefix = isExchangeRateConverted ? "≈$" : "$";
+  const prefix = fxConverted ? "≈$" : "$";
   const text = costUSD > 0 ? `${prefix}${costUSD.toFixed(4)}` : `${prefix}0`;
   const color = (() => {
     if (costLimit <= 0 || costUSD <= 0) return undefined;
@@ -198,22 +204,28 @@ export function deriveCost(
   return { text, color };
 }
 
-/** 缓存命中率派生：命中 0 或无缓存字段时返回 null（不显示，避免对无缓存模型显示 0% 误导）。 */
+/**
+ * 缓存命中率列派生：只做「数字 → 文本 + 颜色」，**不再自己算命中率**。
+ *
+ * D18：命中率的协议族归一化必须按每个模型**自己记账时的 provider** 逐条做
+ * （`SessionState.getNormalizedCacheUsage()`）。此前这里拿全会话合计 `usage` 配
+ * 「当前模型」推断的 provider 去 `normalizeCacheUsage`：单模型会话看不出问题，但只要
+ * 会话里换过模型、或主模型与子代理协议族不同，anthropic 的 `input`（未命中余量）就会被
+ * 当成 openai 的 `prompt_tokens`（含命中）去减，反之亦然——命中率直接算错，而且和 /cost
+ * 是两个数。现在入参是 core 算好的那个整数（与 /cost 同一口径），UI 只负责呈现。
+ *
+ * `undefined` = 尚无缓存命中 → 返回 null（不显示，避免对无缓存模型显示 0% 误导）；
+ * `0` 是合法值（有 prompt 但基本没命中），如实显示 `⚡0%`。
+ */
 export function deriveCacheMetrics(
-  usage: Usage,
-  model: string,
-  availableModels?: PricingModelEntry[],
+  cacheHitRate?: number,
 ): { rate: number; text: string; color: Color } | null {
-  const n = normalizeCacheUsage(usage, SessionState.inferProvider(model, availableModels));
-  if (n.cacheHitTokens > 0 && n.promptTotal > 0) {
-    const rate = Math.round((n.cacheHitTokens / Math.max(1, n.promptTotal)) * 100);
-    return {
-      rate,
-      text: `⚡${rate}%`,
-      color: rate >= 50 ? theme.status.success : theme.ui.comment,
-    };
-  }
-  return null;
+  if (cacheHitRate === undefined) return null;
+  return {
+    rate: cacheHitRate,
+    text: `⚡${cacheHitRate}%`,
+    color: cacheHitRate >= 50 ? theme.status.success : theme.ui.comment,
+  };
 }
 
 /**
@@ -430,6 +442,13 @@ export interface StatusLineInput {
   stockInputTokens: number;
   costUSD: number;
   costLimit: number;
+  /**
+   * 本会话入账价是否发生过汇率折算（`SessionState.isCostFxConverted()`）。
+   *
+   * 由上游推送而不是在 UI 里按模型名推断：旧实现用 `/deepseek/i.test(model)`，
+   * 同名模型走美元网关价时会错误地加 `≈`（D7）。省略视为 false（无折算）。
+   */
+  costFxConverted?: boolean;
   contextPercent: number;
   /**
    * P1-2：压缩触发点对应的满窗口百分比（如 1M 窗口 ≈82）。
@@ -443,6 +462,11 @@ export interface StatusLineInput {
   scrollPercent?: number;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD?: number;
+  /**
+   * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
+   * `undefined` = 尚无命中 → ⚡ 列不渲染。**不在本 hook 里重算**，见 `deriveCacheMetrics`。
+   */
+  cacheHitRate?: number;
   /** true = contextPercent 未经真实 usage 校准（Footer 显示 ~ 前缀） */
   contextEstimated?: boolean;
   /**
@@ -481,8 +505,10 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     model,
     scrollPercent,
     cacheSavingsUSD,
+    cacheHitRate,
     totalRequests,
     discardedRequests,
+    costFxConverted,
   } = input;
 
   return useMemo<StatusLineData>(() => {
@@ -507,9 +533,9 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
           : {
               text: `${TOKEN_IN} ${formatLargeNumber(stockInputTokens)}  ${TOKEN_OUT} ${formatLargeNumber(usage.outputTokens)}`,
             },
-      cache: deriveCacheMetrics(usage, model, config.availableModels),
+      cache: deriveCacheMetrics(cacheHitRate),
       cacheSavings: deriveCacheSavings(cacheSavingsUSD ?? 0),
-      cost: deriveCost(costUSD, costLimit, model),
+      cost: deriveCost(costUSD, costLimit, costFxConverted ?? false),
       // 显示条件与 usage 解耦（deriveContext）：估算有值即显示——打开 TUI / 刚 /clear 时
       // usage 全零但常驻开销（system prompt + 工具 schema）已在，那正是用户要看的初始占用。
       context: deriveContext({
@@ -548,7 +574,9 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     model,
     scrollPercent,
     cacheSavingsUSD,
+    cacheHitRate,
     totalRequests,
     discardedRequests,
+    costFxConverted,
   ]);
 }

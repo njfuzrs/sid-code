@@ -1,25 +1,89 @@
+import { getBackgroundGateStats } from "@sid-code/core/agent/background-task-gate.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
+
+/** 后台闸门状态里 /cost 关心的三个字段（窄接口，便于测试注入假状态）。 */
+export interface PendingTasksView {
+  busy: boolean;
+  busyLabel: string | null;
+  pendingLabels: string[];
+}
+
+/**
+ * 后台任务仍在跑时的一行提示；空闲时返回 null（整段省略，不给正常路径加噪音）。
+ *
+ * ## 为什么需要这一行（D2）
+ *
+ * /cost 的输出交给 `CommandOutputDialog` 后是**静态文本**，打开那一刻的数字不会再变。
+ * 实测同一会话里 /cost 显示 $0.1447、/debug 显示 $0.1501，差额全部来自两次打开之间
+ * 入账的 5 次后台记忆 fork（逐笔对账见方案文档 2.3 节）。两者读的是同一个
+ * `getEffectiveTotalCostUSD()`，但面板当时**没有告诉用户"还有后台调用在跑"**，
+ * 用户只能怀疑两边是两套口径。
+ *
+ * ## 为什么不做实时刷新
+ *
+ * `CommandOutputDialog` 是通用组件，为一个纯展示命令加订阅机制不划算；
+ * 给一行状态提示，用户重开一次就能拿到最新值。
+ *
+ * ## 为什么把 pending（排队）也算进来
+ *
+ * 闸门语义是串行：当前任务跑完后会接着跑排队的那一笔（见 `background-task-gate.ts`）。
+ * 只报「进行中」而漏掉「排队中」，用户会以为当前这一笔结束数字就定了。
+ */
+export function formatPendingTasksNotice(view: PendingTasksView): string | null {
+  const parts: string[] = [];
+  if (view.busy) parts.push(`${view.busyLabel ?? "未知任务"} 进行中`);
+  // 防御性去重：闸门不会让同一 label 同时处于「在跑」和「待补」，但这里不依赖它。
+  const pending = view.pendingLabels.filter((label) => label !== view.busyLabel);
+  if (pending.length > 0) parts.push(`${pending.join("、")} 排队中`);
+  if (parts.length === 0) return null;
+  return `⚠ 后台任务 ${parts.join("、")}；费用可能还会增加，稍后重开 /cost 查看最新数字`;
+}
 
 /** /cost 命令 */
 export class CostCommand implements LocalCommandModule {
+  /**
+   * 后台闸门读取函数**可注入**：闸门是进程级单例，`bun test` 同批多文件跑在同一进程里，
+   * 测试若去占用/重置它会和 `packages/core/tests/agent/background-task-gate.test.ts`
+   * 互相干扰（两个文件并发跑时，一边的 drain 会清掉另一边的待补队列）。
+   * 生产路径用默认值读真实闸门，测试传假状态即可覆盖「进行中 / 排队 / 空闲」三个分支。
+   */
+  constructor(
+    private readonly readGateStats: () => PendingTasksView = () => getBackgroundGateStats(),
+  ) {}
+
   async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {
     const { SessionState } = await import("@sid-code/core/session/state.ts");
     const ss = ctx.sessionState;
     const totalUsage = ss.getTotalUsage();
 
+    // D7：`≈` 表示「金额由非 USD 币种按固定汇率折算成 USD」（估算值），判据看价格数据本身
+    // （SessionState.isCostFxConverted），不看模型名。同一笔钱在 Footer / /cost / /debug
+    // 三处必须同一写法，否则用户会误以为三处口径不同。
+    const fxConverted = ss.isCostFxConverted();
+    const cur = fxConverted ? "≈$" : "$";
+
     const lines = [
       `会话时长: ${SessionState.formatDuration(ss.getElapsedMs())}`,
-      `总费用: $${ss.getEffectiveTotalCostUSD().toFixed(4)}`,
+      `总费用: ${cur}${ss.getEffectiveTotalCostUSD().toFixed(4)}`,
       ...(ss.sideCostUSD > 0
-        ? [`  其中辅助调用: $${ss.sideCostUSD.toFixed(4)}（标题/记忆/分类/摘要等）`]
+        ? [`  其中辅助调用: ${cur}${ss.sideCostUSD.toFixed(4)}（标题/记忆/分类/摘要等）`]
         : []),
+    ];
+
+    // D2：费用几乎都是辅助调用在涨，所以提示紧跟在费用行之后。
+    // 无头模式（`/cost` 是 headless: true）也照样输出：脚本拿到的是同一份文本，
+    // 多一行提示不影响解析，反而能解释「为什么和上一次跑的数字不一样」。
+    const pendingNotice = formatPendingTasksNotice(this.readGateStats());
+    if (pendingNotice) lines.push(pendingNotice);
+
+    lines.push(
       `API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
       "",
       "Token 用量（汇总）:",
       `  输入: ${totalUsage.inputTokens}`,
       `  输出: ${totalUsage.outputTokens}`,
-    ];
+    );
 
     if (totalUsage.cacheCreationInputTokens) {
       lines.push(`  缓存创建: ${totalUsage.cacheCreationInputTokens}`);
@@ -33,7 +97,7 @@ export class CostCommand implements LocalCommandModule {
     if (cacheView.cacheHitTokens > 0 && cacheView.promptTotal > 0) {
       const rate = ((cacheView.cacheHitTokens / cacheView.promptTotal) * 100).toFixed(1);
       const savings = ss.getTotalCacheSavings();
-      lines.push("", `缓存命中率: ${rate}%   省钱: $${savings.toFixed(4)}`);
+      lines.push("", `缓存命中率: ${rate}%   省钱: ${cur}${savings.toFixed(4)}`);
       // P2-2：openai 协议路径为服务端隐式缓存（无客户端主动写入 cache_control，
       // cacheCreation 恒 0），命中率结构性上限约 60-70%，不同于 anthropic 族显式缓存的 90%+。
       // 对该族标注正常上限，避免用户把 60-70% 误判为 harness bug。以协议路径为准，非按模型名单。
@@ -72,8 +136,21 @@ export class CostCommand implements LocalCommandModule {
         // 两者口径不一致：分模型之和 ≪ 汇总（末次值只保留最后一次请求的 prompt 长度），
         // 用户会看到"汇总 input 远大于分模型 input 之和"的诡异对不上。统一为 flow 口径。
         lines.push(
-          `  ${model}: ${stats.requests} 次请求, $${stats.costUSD.toFixed(4)}, input=${stats.cumulativePromptTokens}, output=${stats.outputTokens}`,
+          `  ${model}: ${stats.requests} 次请求, ${cur}${stats.costUSD.toFixed(4)}, input=${stats.cumulativePromptTokens}, output=${stats.outputTokens}`,
         );
+      }
+    }
+
+    // D7：金额带 `≈` 时给出换算依据，让用户能自己验算「这个数怎么来的」。
+    // 汇率取入账时的原始 fxToUSD（1/fx = 每 1 USD 折多少本币），不写死 7.1：
+    // 用户配置或网关价可能用别的汇率，写死会和实际计价的汇率不一致。
+    if (fxConverted) {
+      const conv = ss.getCurrencyConversions();
+      if (conv.length > 0) {
+        const desc = conv
+          .map((c) => `1 USD = ${Number(c.perUSD.toFixed(4))} ${c.currency}`)
+          .join("，");
+        lines.push("", `币种换算: ${desc}（固定汇率；≈ 表示按此折算的估算值）`);
       }
     }
 

@@ -19,7 +19,6 @@ import {
   deriveRequests,
 } from "@sid-code/cli/ui/hooks/useStatusLineData.ts";
 import { theme } from "@sid-code/cli/ui/semantic-colors.ts";
-import type { Usage } from "@sid-code/core/llm/types.ts";
 
 describe("LY1 — shortenPath", () => {
   test("home 前缀替换为 ~", () => {
@@ -125,42 +124,51 @@ describe("LY1 — deriveContext", () => {
 });
 
 describe("LY1 — deriveCost", () => {
-  test("DeepSeek 用 ≈$ 前缀", () => {
-    expect(deriveCost(1.5, 0, "deepseek-chat").text.startsWith("≈$")).toBe(true);
+  // D7：判据从「模型名含 deepseek」改成「入账价有没有做过汇率折算」。
+  // 这两个用例锁住新判据的**两个方向**：真换过汇要加 ≈，没换过汇名字再像也不加。
+  test("价格折算过（CNY→USD）→ ≈$ 前缀", () => {
+    expect(deriveCost(1.5, 0, true).text.startsWith("≈$")).toBe(true);
   });
-  test("普通模型用 $ 前缀", () => {
-    expect(deriveCost(1.5, 0, "gpt-4").text.startsWith("$")).toBe(true);
+  test("价格就是 USD（没折算）→ $ 前缀，模型名不影响判据", () => {
+    // 旧实现 deriveCost(1.5, 0, "deepseek-chat") 会走 ≈$ 分支 —— 这里拿掉模型名参数后，
+    // 判据只剩 fxConverted，模型名再像 deepseek 也不会误标 ≈（网关 expr 价就是 USD 的场景）。
+    const text = deriveCost(1.5, 0, false).text;
+    expect(text.startsWith("$")).toBe(true);
+    expect(text.startsWith("≈")).toBe(false);
   });
   test("≥95% 限额红，≥80% 黄", () => {
-    expect(deriveCost(96, 100, "gpt-4").color).toBe(theme.status.error);
-    expect(deriveCost(85, 100, "gpt-4").color).toBe(theme.status.warning);
-    expect(deriveCost(50, 100, "gpt-4").color).toBeUndefined();
+    expect(deriveCost(96, 100, false).color).toBe(theme.status.error);
+    expect(deriveCost(85, 100, false).color).toBe(theme.status.warning);
+    expect(deriveCost(50, 100, false).color).toBeUndefined();
   });
   test("无限额或零费用时无颜色", () => {
-    expect(deriveCost(0, 100, "gpt-4").color).toBeUndefined();
-    expect(deriveCost(10, 0, "gpt-4").color).toBeUndefined();
+    expect(deriveCost(0, 100, false).color).toBeUndefined();
+    expect(deriveCost(10, 0, false).color).toBeUndefined();
   });
 });
 
 describe("LY1 — deriveCacheMetrics", () => {
-  test("无缓存命中返回 null（不显示）", () => {
-    const usage: Usage = { inputTokens: 100, outputTokens: 50 };
-    expect(deriveCacheMetrics(usage, "gpt-4")).toBeNull();
+  test("无命中数据（undefined）返回 null（不显示，避免对无缓存模型显示 0% 误导）", () => {
+    expect(deriveCacheMetrics(undefined)).toBeNull();
   });
 
-  test("有缓存命中返回命中率文本", () => {
-    const usage: Usage = {
-      inputTokens: 100,
-      outputTokens: 50,
-      cacheReadInputTokens: 80,
-    };
-    const r = deriveCacheMetrics(usage, "claude-3-5-sonnet");
-    if (r) {
-      expect(r.text.startsWith("⚡")).toBe(true);
-      expect(r.rate).toBeGreaterThan(0);
-    }
-    // 不同 provider 归一化策略不同，至少不抛错
-    expect(true).toBe(true);
+  test("有命中率 → `⚡N%`，≥50% 用绿色点睛", () => {
+    const r = deriveCacheMetrics(78);
+    expect(r).not.toBeNull();
+    expect(r!.rate).toBe(78);
+    expect(r!.text).toBe("⚡78%");
+    expect(r!.color).toBe(theme.status.success);
+  });
+
+  test("命中率 <50% → 暗色（如实呈现但不喊）", () => {
+    const r = deriveCacheMetrics(47);
+    expect(r!.color).toBe(theme.ui.comment);
+  });
+
+  test("0% 是合法值（有 prompt 但几乎没命中），与 `无数据` 区分开", () => {
+    const r = deriveCacheMetrics(0);
+    expect(r).not.toBeNull();
+    expect(r!.text).toBe("⚡0%");
   });
 });
 

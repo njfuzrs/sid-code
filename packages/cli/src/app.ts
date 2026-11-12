@@ -183,6 +183,7 @@ import {
 import {
   addBillingObserver,
   shouldChargeBilledRequest,
+  sideCallLabelOf,
   type BilledRequest,
 } from "@sid-code/core/llm/billing-sink.ts";
 import { sendNonStreamingSideCall } from "@sid-code/core/llm/side-call-nonstreaming.ts";
@@ -1364,7 +1365,10 @@ export class App {
         // （本文件此前的一版正是这个 bug）。这里只走 recordSideCall 一条路，
         // costUSD 显式传入（已按 (model, endpoint) 算过），避免 sink 再算一遍。
         recordSideCall({
-          label: req.callerLabel ?? (req.agentId ? `agent:${req.agentId}` : "provider-billed"),
+          // D10：fork 的 querySource 恒为 `agent:fork`，任务身份只在 `agentId` 里
+          // （`fork:memory-extract` 等）。原先优先取 callerLabel，byLabel 里只剩一个
+          // `agent:fork` 桶，辅助调用费用归因不出来。判据收在 sideCallLabelOf 一处。
+          label: sideCallLabelOf(req),
           model: req.model,
           inputTokens: req.usage.inputTokens ?? 0,
           outputTokens: req.usage.outputTokens ?? 0,
@@ -9762,7 +9766,11 @@ export class App {
       usage: { ...this.sessionState.getTotalUsage() },
       stockInputTokens: this.sessionState.getStockPromptTokens(),
       costUSD: this.sessionState.getEffectiveTotalCostUSD(),
+      costFxConverted: this.sessionState.isCostFxConverted(),
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+      // D18：首帧就要给命中率（resume 进来的会话 modelUsage 已有值），
+      // 之后由 subscribeCostToBridge 在每次入账时续推。
+      cacheHitRate: this.sessionState.getCacheHitRate(),
       totalRequests: this.sessionState.getTotalRequests(),
       discardedRequests: this.sessionState.getDiscardedRequests(),
       // B18：状态栏百分比的分母必须是真正会拦的那个上限。
@@ -9852,6 +9860,16 @@ export class App {
     const updateStreamingState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
       bridge.updateStreaming(patch);
     };
+
+    // ── D1：每一笔入账都推到状态栏（补上「一轮结束之后」的空档）──
+    //
+    // 此前费用列只在五个固定时机重新读值（tool_end / done / 轮末 finally / 中断 catch），
+    // 而辅助调用（后台记忆 fork、标题生成、SessionEnd 前的收尾调用）走的是 addSideCost，
+    // 不经过这五个时机。于是**一轮结束之后才入账的那部分永远推不到 UI**：实测一次会话
+    // Footer 停在 $0.0856、真实 $0.1501（少报 43%），且用户不再输入就永不更新。
+    // 接线细节（为什么不推 stockInputTokens、为什么用 updateStreaming）见 cost-bridge.ts。
+    const { subscribeCostToBridge } = await import("./ui/cost-bridge.ts");
+    const unsubscribeCostPush = subscribeCostToBridge(this.sessionState, bridge);
 
     // ── P1-2：补全列表随注册表变更自动刷新 ──
     //
@@ -11142,6 +11160,7 @@ export class App {
                 usage: { ...this.sessionState.getTotalUsage() },
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
+                costFxConverted: this.sessionState.isCostFxConverted(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
                 totalRequests: this.sessionState.getTotalRequests(),
                 discardedRequests: this.sessionState.getDiscardedRequests(),
@@ -11364,6 +11383,7 @@ export class App {
                 usage: { ...this.sessionState.getTotalUsage() },
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
+                costFxConverted: this.sessionState.isCostFxConverted(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
                 totalRequests: this.sessionState.getTotalRequests(),
                 discardedRequests: this.sessionState.getDiscardedRequests(),
@@ -11500,6 +11520,7 @@ export class App {
           usage: { ...this.sessionState.getTotalUsage() },
           stockInputTokens: this.sessionState.getStockPromptTokens(),
           costUSD: this.sessionState.getEffectiveTotalCostUSD(),
+          costFxConverted: this.sessionState.isCostFxConverted(),
           cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
           totalRequests: this.sessionState.getTotalRequests(),
           discardedRequests: this.sessionState.getDiscardedRequests(),
@@ -11852,6 +11873,7 @@ export class App {
             usage: { ...this.sessionState.getTotalUsage() },
             stockInputTokens: this.sessionState.getStockPromptTokens(),
             costUSD: this.sessionState.getEffectiveTotalCostUSD(),
+            costFxConverted: this.sessionState.isCostFxConverted(),
             cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
             totalRequests: this.sessionState.getTotalRequests(),
             discardedRequests: this.sessionState.getDiscardedRequests(),
@@ -12402,6 +12424,10 @@ export class App {
     }
 
     await app.waitUntilExit();
+
+    // D1 订阅在 TUI 卸载后反注册：SessionEnd 前的收尾调用仍会入账，但那时
+    // bridge 已不再渲染，继续 updateStreaming 只是往一个没人消费的状态里写。
+    unsubscribeCostPush();
 
     // 兜底退出：正常退出路径(Ctrl+C / /quit / Ctrl+D)此前无 failsafe，也无显式 process.exit——
     // 完全依赖事件循环自然 drain。任一清理 await(SessionEnd hook / MCP closeAll / 遥测 flush)
