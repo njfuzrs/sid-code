@@ -191,6 +191,7 @@ export type SystemRebuildTrigger =
   | "skill_reload"
   | "language"
   | "memory_reload"
+  | "memory_recall_fallback"
   | "session_memory";
 
 /**

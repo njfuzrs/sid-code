@@ -127,6 +127,12 @@ export interface ContextTokenBreakdown {
   completionBuffer: number;
   /** 是否已被真实 usage 校准（未校准时为纯启发式估算） */
   calibrated: boolean;
+  /**
+   * F5：固定开销来源（记忆索引 / `@` 导入文件逐项列出）。由 app 层补上
+   * （需要当前规则的导入清单，ContextManager 不持有）；未提供时 UI 不展示这一节。
+   * 都是「记忆/CLAUDE.md」分类的细目，**不进 total**。
+   */
+  fixedOverhead?: import("./fixed-overhead.ts").FixedOverheadReport;
 }
 
 /**
@@ -1895,6 +1901,14 @@ export class Manager {
    */
   isCalibrated(): boolean {
     return this.calibrated;
+  }
+
+  /**
+   * F5：/context 固定开销来源的校准系数（与 getTokenBreakdown 各分类同一口径）。
+   * 未校准时返回 1——此时细目就是纯启发式，UI 会如实标注「启发式估算」。
+   */
+  getCalibrationFactor(): number {
+    return this.calibrated ? this.calibrationFactor : 1;
   }
 
   /**

@@ -215,12 +215,13 @@ describe("接线层：语义召回不再是「防线全在、调用全零」", (
     expect(src.includes("drainRecalledMemories: this.deps.drainRecalledMemories")).toBe(true);
   });
 
-  test("app 层实现里查了 flag、调了 findRelevantMemories、也用了召回附件", async () => {
+  test("app 层实现里查了注入模式、调了 findRelevantMemories、也用了召回附件", async () => {
     const src = await Bun.file(join(import.meta.dir, "../../../cli/src/app.ts")).text();
     const has = (n: string) => src.includes(n);
     // 三者缺一，那条链路就还是断的：
     expect(has("drainRecalledMemories:")).toBe(true); // 接线点
-    expect(has("isMemoryRecallEnabled()")).toBe(true); // flag 真的被查询
+    // 模式真的被查询（F5 / PR-4 起由 inject-mode 判定，取代原 env flag）
+    expect(has("resolveMemoryInjectMode(memoryDir).mode")).toBe(true);
     expect(has("findRelevantMemories(")).toBe(true); // 召回真的被调用
     expect(has("generateRecalledMemoryAttachment(")).toBe(true); // 附件真的被使用
   });

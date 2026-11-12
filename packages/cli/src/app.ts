@@ -1961,25 +1961,28 @@ export class App {
           return null;
         }
       },
-      // ─── P0-3：语义召回接线（`SID_CODE_MEMORY_RECALL=1` 才真正干活）───
+      // ─── P0-3：语义召回接线 ───
       //
       // 修复前 recall.ts / freshness.ts / recalledMemories 三者构成一条**完整但零调用者**
       // 的链路：`isMemoryRecallEnabled()` 返回的 true 无人查询，`recalledMemories` 生产零赋值，
       // `PRIORITY.MEMORY_RECALLED = 32` 无附件使用。三个模块都「build 过 + 单测过」，
       // 都不满足 CLAUDE.md 北极星那条验收判据：「真实会话里被触发过」。
       //
-      // 这里是那条链路缺的**唯一一环**。默认仍关闭（与 cc 默认全量注入一致），
-      // 但打开 flag 后行为是真的：召回 → 附新鲜度警告 → 经 reminderParts 进 user 消息。
+      // F5 / PR-4（2026-11-12）：是否召回改由 `resolveMemoryInjectMode` 决定——项目索引
+      // 被截断时自动召回，同时 store.getIndexContent 不再把全量索引放进 system。两边读的是
+      // 同一个会话内锁定的结论，不会出现「全量索引 + 召回」双份注入。
       drainRecalledMemories: async (query: string) => {
         try {
-          const { isMemoryRecallEnabled, findRelevantMemories, makeSideQuery } =
+          const { findRelevantMemories, makeSideQuery } =
             await import("@sid-code/core/memory/recall.ts");
-          if (!isMemoryRecallEnabled()) return null;
+          const { resolveMemoryInjectMode, fallbackToFullInjection } =
+            await import("@sid-code/core/memory/inject-mode.ts");
 
           const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
           const memStore = new MemoryStore(getProjectRoot());
           const memoryDir = memStore.getProjectMemoryDir();
           if (!memoryDir) return null;
+          if (resolveMemoryInjectMode(memoryDir).mode !== "recall") return null;
 
           const sideQuery = makeSideQuery(this.provider, this.config.model);
           const recalled = await findRelevantMemories(query, memoryDir, sideQuery, {
@@ -1989,6 +1992,14 @@ export class App {
             recentTools: this.collectRecentToolUses(),
             // 缺陷 4：会话累计预算
             sessionBytesUsed: this.recalledMemoryBytes,
+            // F5 / PR-4：召回模式下 system 里没有全量索引，召回再失败模型就什么记忆都看不到。
+            // 回退粒度是「本会话起改回全量」并重建一次 system——逐条消息切换会每次失败都
+            // 击穿一次 prompt cache。fallbackToFullInjection 只在真的切换时返回 true，重建只发生一次。
+            onSideQueryError: () => {
+              if (fallbackToFullInjection(memoryDir)) {
+                void this.rebuildSystemPrompt("memory_recall_fallback");
+              }
+            },
           });
           if (recalled.length === 0) return null;
           for (const m of recalled) {
@@ -8377,6 +8388,32 @@ export class App {
   }
 
   /**
+   * F5 / PR-4：/context 的分类拆解 + 固定开销来源（记忆索引、`@` 导入文件逐项）。
+   *
+   * 来源细目从**实际发出的 system prompt** 里切，不读磁盘——被截断 / 作用域外 / 召回模式下
+   * 没注入的都不算；token 用与其它分类同一个校准系数。计算失败只丢细目，分类拆解照常返回。
+   */
+  private getContextBreakdownWithSources(): import("@sid-code/core/context/manager.ts").ContextTokenBreakdown {
+    const bd = this.ctxMgr.getTokenBreakdown(this.toolRegistry.size());
+    try {
+      const { computeFixedOverheadSources } =
+        require("@sid-code/core/context/fixed-overhead.ts") as typeof import("@sid-code/core/context/fixed-overhead.ts");
+      bd.fixedOverhead = computeFixedOverheadSources(
+        this.ctxMgr.getSystemPrompt(),
+        this.currentProjectRules?.importedFiles,
+        {
+          maxTokens: bd.maxTokens,
+          calibrationFactor: this.ctxMgr.getCalibrationFactor(),
+          projectRoot: getProjectRoot(),
+        },
+      );
+    } catch (err: any) {
+      getLogger().debug("APP", `固定开销来源计算失败（不影响 /context）: ${err?.message}`);
+    }
+    return bd;
+  }
+
+  /**
    * P1-7：记录启动期/重建期的记忆 token 基线，并立即把「基线 + JIT」的合计报给 ctxMgr。
    *
    * 所有 `onSectionTokens` 回调都必须经这里，不能裸调 `ctxMgr.setMemoryTokens` ——
@@ -12332,7 +12369,7 @@ export class App {
       // /export 面板：导出对话到剪贴板或文件
       onExportConversation: (target, format) => this.exportConversation(target, format),
       // /context 面板：实时读取上下文分类 token 拆解
-      getContextBreakdown: () => this.ctxMgr.getTokenBreakdown(this.toolRegistry.size()),
+      getContextBreakdown: () => this.getContextBreakdownWithSources(),
       // P2-1：Esc+Esc 回退选择器读取回退点列表（最新在前，投影为 UI 展示结构）。
       getRewindPoints: () => {
         const points = this.rewindManager?.listPoints() ?? [];
