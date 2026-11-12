@@ -34,6 +34,7 @@ import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import type { FallbackDecision } from "@sid-code/core/llm/fallback.ts";
 import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
 import { TokenEstimator } from "@sid-code/core/llm/token-estimator.ts";
+import { resolveRequestBudget } from "@sid-code/core/llm/output-budget.ts";
 import { ThinkingManager } from "@sid-code/core/llm/thinking.ts";
 import {
   lookupErrorMessage,
@@ -1161,19 +1162,17 @@ export class App {
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
     const estimator = new TokenEstimator();
-    const ctxWindow = estimator.getContextLimit(
-      opts.config.model,
-      opts.config.availableModels,
-      opts.config.baseURL,
-    );
+    const ctxWindow = estimator.getContextLimit(opts.config.model, opts.config.availableModels);
     // §12 P1-1：env（SID_CODE_AUTOCOMPACT_PCT / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE）解析出的使用率
     // 上限透传为 compactThreshold，接活这个此前从未被注入的死参数（见 manager 构造）。
     const autoCompactPct = resolveAutoCompactPctOverride() ?? undefined;
     this.ctxMgr = new ContextManager({
       maxTokens: ctxWindow,
       compactThreshold: autoCompactPct,
-      // §12 P3-2：完成缓冲区的输出预留分量（给当前 turn 的输出留空间，避免压缩打断任务）
-      maxOutputTokens: estimator.getMaxOutputTokens(opts.config.model, opts.config.availableModels),
+      // §12 P3-2 / F8：完成缓冲区的输出预留分量 = **本次请求的输出预算**，不是模型物理上限。
+      // 物理上限（如 DeepSeek 384k）从不会在一次回复里用完，拿它算缓冲会凭空多留 88k，
+      // 把 1M 窗口的 emergency 门槛抬到 140k（正确值 32,768 + 20k 摘要预留 = 约 52k）。
+      requestOutputBudget: resolveRequestBudget(opts.config._explicitMaxTokens),
     });
     this.ctxMgr.setSessionId(sessionId);
     // CG-1 / R4：bash 的 `cd` 跨出（或回到）工作区根时，把「旧说法作废」排进持久块。
@@ -1590,12 +1589,7 @@ export class App {
         // 保证主模型切换后仍按当前 model + availableModels 解析。
         resolveContextLimit: (model: string) => {
           try {
-            // D4：带上 baseURL，否则学到的已放行上限（按 (model, base_url) 存）在这里读不到
-            return new TokenEstimator().getContextLimit(
-              model,
-              this.config.availableModels,
-              this.config.baseURL,
-            );
+            return new TokenEstimator().getContextLimit(model, this.config.availableModels);
           } catch {
             return undefined;
           }
@@ -3012,11 +3006,9 @@ export class App {
     // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
     try {
       const est = new TokenEstimator();
-      // §12 P3-2：窗口与输出上限一起同步——完成缓冲区的输出预留分量依赖新模型的 maxOutputTokens。
-      this.ctxMgr.setMaxTokens(
-        est.getContextLimit(model, this.config.availableModels, this.config.baseURL),
-        est.getMaxOutputTokens(model, this.config.availableModels),
-      );
+      // F8：切模型只需同步窗口——输出预算是「本次请求打算写多少」，不随模型变；
+      // 之前把新模型的物理上限一起传进去，等于让缓冲随模型输出能力虚高。
+      this.ctxMgr.setMaxTokens(est.getContextLimit(model, this.config.availableModels));
     } catch {
       /* 窗口解析失败不影响切换，沿用旧窗口 */
     }
@@ -4261,6 +4253,7 @@ export class App {
       const { getSessionMemoryPath } = await import("@sid-code/core/memory/paths.ts");
       const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
       const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
+      const { getMainRequestShape } = await import("@sid-code/core/agent/fork-prefix.ts");
       // P0-4：按**逻辑会话 id** 分文件。用 getLogicalSessionId()（resume 时是被恢复
       // 的那个 id，否则是本进程新 id）——与 sidechain 持久化同源，这样 `--resume`
       // 拿回的是同一份笔记，而并发的两个会话各写各的，不再互相覆盖。
@@ -4271,6 +4264,9 @@ export class App {
         getMainContext: () => ({
           systemPrompt: this.ctxMgr.getSystemPrompt(),
           messages: this.ctxMgr.getMessages(),
+          // D16：发送前缀与请求形状对齐主循环最后一次实际发出的请求（缓存命中，见 agent/fork-prefix.ts）
+          sendMessages: this.ctxMgr.getForkPrefixMessages(),
+          mainRequestShape: getMainRequestShape(this.ctxMgr),
           provider: this.provider,
           toolRegistry: this.toolRegistry,
           model: this.config.model,
@@ -4764,7 +4760,6 @@ export class App {
           preferredLanguage: this.config.language,
           model: this.config.model,
           availableModels: this.config.availableModels,
-          baseURL: this.config.baseURL,
           // 缺口 E：CLAUDE.md 重建路径同样收集 skill 摘要，避免重建后丢失 skill 列表
           skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
           // 延迟工具呈现（见 core/config/deferred-tool-view.ts）：重建路径漏传会让
@@ -5335,6 +5330,7 @@ export class App {
       const { ensureAutoMemPath, isAutoMemoryEnabled } =
         await import("@sid-code/core/memory/paths.ts");
       const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
+      const { getMainRequestShape } = await import("@sid-code/core/agent/fork-prefix.ts");
       const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
 
       if (!isAutoMemoryEnabled(this.config.autoMemory)) {
@@ -5350,6 +5346,9 @@ export class App {
         getMainContext: () => ({
           systemPrompt: this.ctxMgr.getSystemPrompt(),
           messages: this.ctxMgr.getMessages(),
+          // D16：与 session-memory 同口径（见上方 initSessionMemory 处注释）
+          sendMessages: this.ctxMgr.getForkPrefixMessages(),
+          mainRequestShape: getMainRequestShape(this.ctxMgr),
           provider: this.provider,
           toolRegistry: this.toolRegistry,
           model: this.config.model,
@@ -5395,6 +5394,8 @@ export class App {
             getMainContext: () => ({
               systemPrompt: this.ctxMgr.getSystemPrompt(),
               messages: this.ctxMgr.getMessages(),
+              sendMessages: this.ctxMgr.getForkPrefixMessages(),
+              mainRequestShape: getMainRequestShape(this.ctxMgr),
               provider: this.provider,
               toolRegistry: this.toolRegistry,
               model: this.config.model,
@@ -6087,7 +6088,6 @@ export class App {
         preferredLanguage: this.config.language,
         model: this.config.model,
         availableModels: this.config.availableModels,
-        baseURL: this.config.baseURL,
         skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
         denyRulesSummary:
           this.permissionChecker &&
@@ -6502,14 +6502,9 @@ export class App {
           if (switched) {
             try {
               const est = new TokenEstimator();
-              // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
+              // F8：只同步窗口，输出预算不随模型变（理由见 /model 切换处）。
               this.ctxMgr.setMaxTokens(
-                est.getContextLimit(
-                  setting.model,
-                  this.config.availableModels,
-                  this.config.baseURL,
-                ),
-                est.getMaxOutputTokens(setting.model, this.config.availableModels),
+                est.getContextLimit(setting.model, this.config.availableModels),
               );
             } catch {
               /* 窗口解析失败沿用旧值，不阻断恢复 */
@@ -12276,11 +12271,8 @@ export class App {
         try {
           const { TokenEstimator } = require("@sid-code/core/llm/token-estimator.ts");
           const est = new TokenEstimator();
-          // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
-          this.ctxMgr.setMaxTokens(
-            est.getContextLimit(result.model, this.config.availableModels, this.config.baseURL),
-            est.getMaxOutputTokens(result.model, this.config.availableModels),
-          );
+          // F8：只同步窗口，输出预算不随模型变（理由见 /model 切换处）。
+          this.ctxMgr.setMaxTokens(est.getContextLimit(result.model, this.config.availableModels));
         } catch {
           /* 窗口解析失败不影响配置，沿用旧窗口 */
         }

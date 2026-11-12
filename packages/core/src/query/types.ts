@@ -353,9 +353,16 @@ export interface LoopState {
   promptReadonlyCount?: number;
   /** 最大轮次 */
   maxTurns: number;
-  /** max_output_tokens 恢复次数 */
-  maxOutputTokensRecoveryCount: number;
-  /** max_tokens 上限提升覆盖值（首次截断时提升到模型硬上限） */
+  /** Stage 1「截断升档」门禁计数：一次升档试过就置 1，**升档请求成功（未再截断）后归零**。
+   *
+   *  与下面的 `maxTokensContinuationCount` 刻意分开：旧实现是一个计数同时承担
+   *  「Stage 1 门禁」与「Stage 2 续写次数」，归零会把续写提示里的展示值一起重置。
+   *  默认请求预算是 32k 之后，这个门禁必须能复位 —— 否则一次截断升档到物理上限，
+   *  这条用户消息剩下的所有轮次都以物理上限发出，F1 原样复发。 */
+  maxTokensEscalateCount: number;
+  /** Stage 2「自动续写」次数：只增不减，用于续写提示文案「（自动续写 N 次）」。 */
+  maxTokensContinuationCount: number;
+  /** max_tokens 上限提升覆盖值（Stage 1 升档时写入，并经窗口钳制；未再截断后清掉）。 */
   maxOutputTokensOverride?: number;
   /**
    * Top 3（2026-07-07 约束型误伤修复）：max_tokens 续写递减收益检测命中后，是否已经做过
@@ -840,7 +847,8 @@ export function createInitialLoopState(maxTurns: number): LoopState {
   return {
     turnCount: 0,
     maxTurns,
-    maxOutputTokensRecoveryCount: 0,
+    maxTokensEscalateCount: 0,
+    maxTokensContinuationCount: 0,
     hasAttemptedReactiveCompact: false,
     timeoutRetryCount: 0,
     turnsConsumedWithoutAssistant: 0,

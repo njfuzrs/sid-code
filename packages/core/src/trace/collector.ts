@@ -1217,6 +1217,9 @@ export class TraceCollector {
       raw_messages: rawMessages,
       new_messages: newMessages,
     };
+    // V1-1：实际发出的 max_tokens。旧记录里完全没有这个字段，排查「输入 + max_tokens 撞窗口」
+    // 只能从 debug.log 抽查（2026-11-12 那份报告只有 6 条样本），不足做验收。
+    if (req.max_tokens !== undefined) requestSide.max_tokens = req.max_tokens;
 
     // P1-6：推理旋钮**每次请求都记**（不像 system/tools 只记首次）——它是逐轮可变的：
     // side-call 关思考、主循环开思考、用户中途 `/think off`，都会让同一会话里不同请求
@@ -1307,6 +1310,9 @@ export class TraceCollector {
           model: req.model,
           msg_count: rawMessages.length,
           estimated_input_tokens: totalTokensEst,
+          // V1-1：与完整记录同源，预写行也要能回答「这次打算发多少输出」——
+          // 请求没回来的那种失败（进程崩溃 / 断连）只有这一行可查。
+          ...(req.max_tokens !== undefined ? { max_tokens: req.max_tokens } : {}),
         }),
       );
     } catch {
@@ -1452,12 +1458,7 @@ export class TraceCollector {
 
     // 缺口分析五类：上下文占用率。used=完整 prompt 规模（promptTotal，厂商无关），
     // window=模型上下文窗口（TokenEstimator SSOT）。窗口未知则不落（不猜一个误导比率）。
-    const ctxUsage = this.computeContextUsage(
-      input.llm_request.model,
-      usage,
-      resp.provider,
-      resp.base_url,
-    );
+    const ctxUsage = this.computeContextUsage(input.llm_request.model, usage, resp.provider);
 
     // §3.2：AfterModelRaw 事件——processStream 返回即落盘，消除"有 Before 无 After"的诊断盲区。
     // 即使后续 pair 完成/raw.jsonl/traj 重建崩溃，排查者也能看到响应已到达。
@@ -3535,7 +3536,6 @@ export class TraceCollector {
       cacheCreationInputTokens?: number;
     },
     provider?: string,
-    baseURL?: string,
   ): { usedTokens: number; window: number; ratio: number } | null {
     try {
       // D6：AfterModel 已带 provider（主循环按产出 usage 的 provider 盖章，见 D5）；
@@ -3544,8 +3544,7 @@ export class TraceCollector {
       const normalized = normalizeCacheUsage(usage as Usage, prov);
       const usedTokens = normalized.promptTotal;
       if (!(usedTokens > 0)) return null;
-      // D4：带端点，学到的已放行上限才进得了占用率分母（否则比率按配置窗口算，偏低）
-      const window = this.tokenEstimator.getContextLimit(model, undefined, baseURL);
+      const window = this.tokenEstimator.getContextLimit(model);
       if (!(window > 0)) return null;
       // 比率封顶 1（极端情况下 prompt 超窗口时 clamp，避免 >1 的诡异值）
       const ratio = Math.min(1, usedTokens / window);

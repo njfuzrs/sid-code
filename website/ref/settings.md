@@ -73,7 +73,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `jitContext` | boolean | — | 是否启用 JIT 上下文发现（默认 true） |
 | `language` | enum | `zh` / `en` / `auto` | 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。 |
 | `maxThinkingTokens` | number | 整数 >0 | 思考 token 预算上限（settings.json maxThinkingTokens）。 env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先；此为 env 未设时的兜底。… |
-| `maxTokens` | number | ≥1000 | 单次响应最大输出 token 数（≥1000） |
+| `maxTokens` | number | ≥1000 | **本次请求的输出预算**（≥1000）——「打算预留多少输出」，不是模型的物理输出上限。 |
 | `mcpPolicy` | object | — | MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤， 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。（子键见[下文](#key-mcppolicy)） |
 | `mcpServers` | object | — | MCP 服务器 |
 | `memoryExtractInterval` | number | 整数 >0 | 记忆横向剖析 T2：后台记忆提取节流——每 N 个 end_turn 才跑一次（缺省 1 = 每轮都跑）。 优先级：env SID_CODE_MEMORY_EXTRACT_INTERVAL > settings memoryExtractInterval > 1。 被节流的轮次在会话收尾补跑一次，不会整段会话都不抽。 |

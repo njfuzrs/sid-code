@@ -80,15 +80,26 @@ export interface ToolCapabilityFields<Input = unknown> {
   /** 强制不进延迟加载（ToolSearch 启用时仍首轮可见） */
   alwaysLoad?: boolean;
 
-  /** 用户发新消息时的行为：cancel（取消）或 block（继续运行），默认 block */
+  /**
+   * 用户发新消息时的行为：cancel（取消）或 block（继续运行）。
+   *
+   * 当前生产零声明（2026-11-12）：消费端已接好，默认值即为现行行为 —— 未声明时
+   * tool-executor 的兄弟工具编排按 `"cancel"` 处理（`tool.interruptBehavior?.() ?? "cancel"`，
+   * 见 query/tool-executor.ts 的并发批次），即用户中断时跟着取消。
+   */
   interruptBehavior?: () => "cancel" | "block";
 
   /**
    * 工具结果最大字符数（超过则持久化到磁盘并返回摘要）。Infinity 表示不限制。
    *
+   * 当前生产零声明（2026-11-12）：消费端已接好，默认值即为现行行为 —— 未声明时回退到
+   * result-storage 的 TOOL_MAX_RESULT_SIZE 常量表（read/edit/write = Infinity，
+   * bash/grep/glob/ls/web_search = 30000，read_many/web_fetch = 50000），表里没有的
+   * 工具用 DEFAULT_MAX_RESULT_SIZE（30000）。
+   *
    * 执行器把它透传给 result-storage 的 processToolResult，优先于 storage 内置的
    * TOOL_MAX_RESULT_SIZE 常量表——让"落盘阈值"成为工具自身可控的接口字段。
-   * 未声明时回退到常量表 / 默认值。新旧两版接口共享。
+   * 新旧两版接口共享。
    */
   maxResultSizeChars?: number;
 
@@ -399,7 +410,11 @@ export interface LegacyTool extends ToolCapabilityFields {
   isConcurrencySafe?(input: unknown): boolean;
   /**
    * 是否破坏性操作（D16）。true → 权限层把确认当安全类确认，yesMode / auto / hook allow
-   * 不能静默放行。生产实现目前只有 MCP 工具（来自 Server 的 `destructiveHint`）。
+   * 不能静默放行。
+   *
+   * 当前生产零声明（2026-11-12）：内置工具没有一个实现它，消费端已接好，默认值即为现行行为 ——
+   * 未声明 / 返回 false 时 checker 的 Step 13.5 不升级为安全类确认，走常规权限判定。
+   * 生产实现目前只有 MCP 工具（来自 Server 的 `destructiveHint`，见 mcp/manager.ts）。
    */
   isDestructive?(input?: unknown): boolean;
   /**
@@ -558,7 +573,13 @@ export interface Tool<
   /** 是否并发安全（影响多工具并行执行） */
   isConcurrencySafe(input?: Input): boolean;
 
-  /** 是否破坏性操作（影响安全分类器风险评估） */
+  /**
+   * 是否破坏性操作（影响安全分类器风险评估）。
+   *
+   * 当前生产零声明（2026-11-12）：消费端已接好，默认值即为现行行为 —— `buildTool` 的
+   * TOOL_DEFAULTS 把它填成 `() => false`，未声明 = 非破坏性，checker 的 Step 13.5
+   * 不会升级为安全类确认，走常规权限判定。
+   */
   isDestructive?(input?: Input): boolean;
 
   /** 当前环境是否可用 */

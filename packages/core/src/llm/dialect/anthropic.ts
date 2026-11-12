@@ -88,6 +88,7 @@ export function createAnthropicNativeDialect(
       effortGatedByThinking: true,
       allowsMaxEffort: true,
       toolChoice: "full",
+      cacheKeyIncludesThinking: false,
     },
     applyToSendParams(params: SendParams, effort, thinking) {
       // 吃**真名**：此前喂 `params.model`（别名），与真名不同形的网关别名会 miss → 走 manual 路径，

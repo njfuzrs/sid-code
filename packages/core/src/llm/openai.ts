@@ -99,6 +99,7 @@ import {
   looksLikeReasoningReplayRejection,
 } from "./reasoning-replay.ts";
 import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
+import { observeRequestShape, type RequestShapeFields } from "./request-shape-observation.ts";
 import {
   parseResponsesStream,
   parseResponsesBody,
@@ -981,10 +982,13 @@ export class OpenAIProvider implements Provider {
    * 能力自愈包装 —— 「永不报错」的执行层。
    *
    * 未知模型的能力靠乐观假设（见 effort.ts resolveFromCapabilityCache），假设错了会 400。
-   * 这里捕获那类 400，从错误文本学到真值（写入能力缓存），剥掉冒犯字段重试一次。
-   * 用户看到的是一次正常完成的请求；下次起缓存已准，不再多这一跳。
+   * 这里捕获那类 400，按下面两类动作之一重发一次：
    *
-   * 只自愈**我们自己多发的能力字段**（当前：reasoning_effort / reasoning.effort）。
+   * - **effort**：剥掉字段重试一次，并把「这条路由不吃 effort」记进**进程内的端点表**
+   *   （不写能力缓存——一条网关路由的行为不等于模型属性）。
+   * - **max_tokens**：只把**本次请求**钳到服务端自报的 `[1, N]` 上界重发一次，
+   *   不写回 `maxOutputTokens`（那是模型的物理上限，不是这一次的合法区间）。
+   *
    * 其余错误（鉴权、限流、上下文超限、模型不存在）原样透出——那些不是能力误判，
    * 盲目重试只会掩盖真问题。
    *
@@ -1002,45 +1006,64 @@ export class OpenAIProvider implements Provider {
     // 属于那个真模型，不属于某条本地别名。用别名当 key 会让同一真模型的两个渠道各自
     // 重新踩一遍 400（学不到彼此的经验），也会污染 lookupCapability 的前缀/家族匹配。
     const model = pickWireModel(params, this._model);
-    let healed = false;
     // 首轮是谁触发的自愈：措辞点名才算强证据，结构兜底只重试、按进程内连续次数决定记不记账
     let trigger: CapabilityHealTrigger = "structural";
     let firstStatus: number | undefined;
+    /**
+     * 本次重试要做的动作；null = 不重试（错误原样透出）。
+     * 只在 attempt 0 判定一次：每条错误最多重发一次，重发后再失败就不再自愈。
+     */
+    let retryPlan: { dropEffort: boolean; clampMaxTokens?: number; error: string } | null = null;
 
     for (const attempt of [0, 1]) {
-      let capabilityError: string | null = null;
       // 本轮是否出过错。第二轮的错误是直接 yield 出去的（不再自愈），
-      // capabilityError 仍为 null——不单独记一个标志就会把「重试也失败」当成成功记账。
+      // 不单独记一个标志就会把「重试也失败」当成成功记账。
       let sawError = false;
+      let retryable = false;
 
       for await (const ev of this.sendMessageStreamInner(params, signal)) {
         if (ev.type === "error") sawError = true;
-        // 只在「首次尝试 + 尚未产出任何内容 + 我们确实发了 effort」的错误上考虑自愈；
+        // 只在「首次尝试 + 尚未产出任何内容」的错误上考虑自愈；
         // 已经开始输出就不能重发（会重复内容）。
-        if (attempt === 0 && ev.type === "error" && params.reasoningEffort !== undefined) {
+        if (attempt === 0 && ev.type === "error") {
           const msg = ev.error?.message ?? "";
-          // learnFromError 有副作用（把学到的档位写进缓存），无论是否重试都值得先跑一次。
           const advice = learnFromError(model, msg);
-          const structural = shouldRetryWithoutEffort({
-            statusCode: ev.error?.statusCode,
-            errorMessage: msg,
-          });
-          if (advice.dropEffort || structural) {
-            capabilityError = msg;
-            trigger = advice.dropEffort ? "wording" : "structural";
+          const clampTarget = advice.clampMaxTokens;
+
+          // ① max_tokens 超区间 → 只钳本次请求。**优先于 effort 自愈**：这条错误的
+          // 归因是输出预算，剥 effort 重发会带着同一个非法 max_tokens 再失败一次。
+          if (clampTarget !== undefined && params.maxTokens > clampTarget) {
+            retryable = true;
+            retryPlan = { dropEffort: false, clampMaxTokens: clampTarget, error: msg };
             firstStatus = ev.error?.statusCode;
             break;
+          }
+
+          // ② effort 自愈（措辞匹配或结构兜底），只在确实发了该字段时考虑。
+          if (params.reasoningEffort !== undefined) {
+            const structural = shouldRetryWithoutEffort({
+              statusCode: ev.error?.statusCode,
+              errorMessage: msg,
+            });
+            if (advice.dropEffort || structural) {
+              retryable = true;
+              retryPlan = { dropEffort: true, error: msg };
+              trigger = advice.dropEffort ? "wording" : "structural";
+              firstStatus = ev.error?.statusCode;
+              break;
+            }
           }
         }
         yield ev;
       }
 
-      if (capabilityError === null) {
-        // 第二轮（已剥掉 effort）：本轮**没有任何错误**才算重试成功。
+      if (!retryable) {
+        // 第二轮（已重发）：本轮**没有任何错误**才算重试成功。
         // 必须校 sawError：若剥掉仍失败，真因不是这个字段，记账会把一个支持 effort 的模型冤枉成不支持。
-        if (attempt === 1) {
+        if (attempt === 1 && retryPlan?.dropEffort) {
           const retryOk = !sawError;
-          const recorded = recordHealOutcome(model, trigger, retryOk);
+          // 记账落点是 (真名, baseURL) 的进程内表：同一条真名换一条网关路由是另一套行为。
+          const recorded = recordHealOutcome(model, trigger, retryOk, this.baseURL);
           recordCapabilityHealed({
             model,
             trigger,
@@ -1053,16 +1076,26 @@ export class OpenAIProvider implements Provider {
         return; // 正常完成或不可自愈的错误（已 yield 出去）
       }
 
-      // 剥掉 effort 字段重试。params 是调用方对象，不可原地改 → 浅拷贝。
-      getLogger().debug("LLM:OPENAI", `能力自愈：${model} 拒绝 reasoning_effort，剥离该字段重试`, {
-        error: capabilityError.slice(0, 160),
-      });
-      params = { ...params, reasoningEffort: undefined };
-      healed = true;
-    }
-
-    if (healed) {
-      getLogger().debug("LLM:OPENAI", `能力自愈完成：${model}`);
+      // 按 plan 改写本次重发的参数。params 是调用方对象，不可原地改 → 浅拷贝。
+      const plan = retryPlan!;
+      if (plan.clampMaxTokens !== undefined) {
+        getLogger().debug(
+          "LLM:OPENAI",
+          `能力自愈：${model} 的 max_tokens 超服务端区间，钳到 ${plan.clampMaxTokens} 重试（仅本次）`,
+          { error: plan.error.slice(0, 160) },
+        );
+        params = { ...params, maxTokens: plan.clampMaxTokens };
+      }
+      if (plan.dropEffort) {
+        getLogger().debug(
+          "LLM:OPENAI",
+          `能力自愈：${model} 拒绝 reasoning_effort，剥离该字段重试`,
+          {
+            error: plan.error.slice(0, 160),
+          },
+        );
+        params = { ...params, reasoningEffort: undefined };
+      }
     }
   }
 
@@ -1491,6 +1524,7 @@ export class OpenAIProvider implements Provider {
               this.baseURL,
               chatThinkingWireLabel(requestBody),
             ),
+            shape: observeRequestShape(params),
           },
           // D8：真实请求起点（不是 parseSSE 自己的解析起点），计费事件据此算墙钟耗时
           requestStartTime,
@@ -2048,6 +2082,7 @@ export class OpenAIProvider implements Provider {
           thinkingInResponse: responsesSawThinking || (accumulatedUsage?.reasoningTokens ?? 0) > 0,
           thinkingIntent: observedThinkingIntent(params),
           ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
+          ...observeRequestShape(params),
         });
       } catch {
         /* 计费上报绝不影响流 */
@@ -2083,19 +2118,36 @@ export class OpenAIProvider implements Provider {
     try {
       return await this.sendMessageNonStreamingInner(params, signal);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 与流式路径同一套判据与顺序：先算 advice（learnFromError 的档位学习有副作用，
+      // 无论是否重试都值得先跑一次），再按「max_tokens 钳制 > effort 剥离」决定动作。
+      const advice = learnFromError(model, msg);
+      const clampTarget = advice.clampMaxTokens;
+
+      // max_tokens 超区间：只钳**本次请求**重发一次，不写回模型属性（2026-11-12 F3-b）。
+      if (clampTarget !== undefined && params.maxTokens > clampTarget) {
+        getLogger().debug(
+          "LLM:OPENAI",
+          `能力自愈（非流式）：${model} 的 max_tokens 超服务端区间，钳到 ${clampTarget} 重试（仅本次）`,
+          { error: msg.slice(0, 160) },
+        );
+        return await this.sendMessageNonStreamingInner(
+          { ...params, maxTokens: clampTarget },
+          signal,
+        );
+      }
+
       // 只自愈「我们自己多发的能力字段」，且必须确实发了它——其余错误（鉴权、限流、
       // 上下文超限、模型不存在）原样抛出，盲目重试只会掩盖真问题。
       if (params.reasoningEffort === undefined) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
-      // 与流式路径同一套判据：措辞匹配（顺带学档位）**或** 结构匹配（HTTP 4xx 兜底）。
-      const advice = learnFromError(model, msg);
       const statusCode = extractHTTPStatus(err);
       const structural = shouldRetryWithoutEffort({ statusCode, errorMessage: msg });
       if (!advice.dropEffort && !structural) throw err;
       // 与流式同一套归因：措辞点名才立即记账，结构兜底按进程内连续次数决定
       const trigger: CapabilityHealTrigger = advice.dropEffort ? "wording" : "structural";
       const emitHealed = (retryOk: boolean): void => {
-        const recorded = recordHealOutcome(model, trigger, retryOk);
+        // 记账落点是 (真名, baseURL) 的进程内表，见 withCapabilityHealing 注释。
+        const recorded = recordHealOutcome(model, trigger, retryOk, this.baseURL);
         recordCapabilityHealed({
           model,
           trigger,
@@ -2394,6 +2446,7 @@ export class OpenAIProvider implements Provider {
             this.baseURL,
             chatThinkingWireLabel(requestBody),
           ),
+          ...observeRequestShape(params),
         });
       }
     }
@@ -2527,6 +2580,7 @@ export class OpenAIProvider implements Provider {
           thinkingInResponse: nonStreamSawThinking || (billedUsage?.reasoningTokens ?? 0) > 0,
           thinkingIntent: observedThinkingIntent(params),
           ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
+          ...observeRequestShape(params),
         });
       }
     }
@@ -2554,6 +2608,8 @@ export class OpenAIProvider implements Provider {
       effortWire?: string;
       intent?: boolean;
       fields?: ThinkingObservationFields;
+      /** D16：请求形状观测（tools_hash / tools_count / prefix_source） */
+      shape?: RequestShapeFields;
     },
     /**
      * D8：本次请求的发起时刻（`sendMessageStreamInner` 的 `requestStartTime`）。
@@ -3463,6 +3519,7 @@ export class OpenAIProvider implements Provider {
             thinkingInResponse: reasoningContent.length > 0 || (usage.reasoningTokens ?? 0) > 0,
             thinkingIntent: thinkingObs.intent,
             ...thinkingObs.fields,
+            ...thinkingObs.shape,
           }),
         });
       } catch {

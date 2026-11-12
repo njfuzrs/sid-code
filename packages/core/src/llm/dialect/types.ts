@@ -118,6 +118,18 @@ export interface WireDialect {
   allowsMaxEffort: boolean;
   /** 对 `tool_choice` 的约束 */
   toolChoice: ToolChoiceConstraint;
+  /**
+   * 服务端 prompt cache 的缓存键是否包含思考参数（thinking 开关 + 推理强度）。
+   *
+   * `true` 时，两次请求只要 thinking 开关或 effort 不同，**整条前缀都不命中**，
+   * 哪怕其余字节完全相同。fork（记忆提取 / 会话笔记）据此决定要不要照搬主循环的思考参数：
+   * 照搬就能读到主循环写好的缓存，代价是 fork 也要思考（D16，2026-11-12）。
+   *
+   * 只对**实测过**的族写 `true`。没测过的一律 `false`（保持 fork 关思考的现状）：
+   * 写错成 `true` 会让 fork 白付思考费却仍不命中，写错成 `false` 只是维持现状。
+   * 实测依据见 `deepseek.md`「缓存键含思考参数」一节。
+   */
+  cacheKeyIncludesThinking: boolean;
 }
 
 /** 该族的能力位（除 applier 外的描述字段，供状态栏/面板消费） */
