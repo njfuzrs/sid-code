@@ -12,8 +12,14 @@
  */
 
 import type { Config } from "../config/config.ts";
+import { resolveMaxOutputTokensForModel } from "../config/config.ts";
 import type { Message, SendParams } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
+import {
+  resolveRequestOutputBudget,
+  OUTPUT_BUDGET_SAFETY_BUFFER,
+  DEFAULT_REQUEST_MAX_TOKENS,
+} from "../llm/output-budget.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { fireStopFailure } from "./stop-failure.ts";
 import type { QuotaManager } from "../llm/quota.ts";
@@ -352,7 +358,6 @@ import {
   normalizeTurnStopReason,
   type TurnStopReason,
 } from "./turn-complete.ts";
-import { resolveRegistryMaxOutputTokens } from "../llm/model-lookup.ts";
 
 /**
  * 计算本轮请求真实携带的 beta headers（供 cache-break 检测器归因）。
@@ -2975,6 +2980,98 @@ async function* queryLoopBody(
         }
       }
 
+      // ─── 请求输出预算（F1）：物理上限只作钳制，窗口剩余决定本次能发多少 ───
+      // 两个概念必须分开：
+      //   · 物理上限（maxOutputTokens）= 模型 / 渠道「最多能输出多少」，属性，只进 min；
+      //   · 请求预算（config.maxTokens）= 本次请求「打算预留多少输出」，用户显式值或默认 32k。
+      // 旧实现把物理上限直接当 max_tokens 发（DeepSeek 384k），而 OpenAI 兼容族按
+      // 「输入 + max_tokens ≤ 窗口」校验 —— 输入过 664k 就被 400 拒绝，为一次也没用到的
+      // 384k 输出让出 37% 输入空间（2026-11-12 排查报告 F1 / §7.1 边界实测）。
+      //
+      // 输入估算必须在**这里**重取而不是复用循环顶部的 currentTokens：上面的压缩分支
+      // 可能刚改过历史，顶部的值已过期；窗口钳制要的是「发送这一刻」的历史。
+      // 校准系数与 lastActualInputTokens 锚点由 estimateTokens 内部兜住，不在这里另算一份
+      //（同一口径重实现一遍等于重踩一遍）。
+      const sendBudget = resolveRequestOutputBudget({
+        requestBudget: state.maxOutputTokensOverride ?? config.maxTokens,
+        modelMaxOutputTokens: resolveMaxOutputTokensForModel(config.model, config.availableModels),
+        contextWindow: ctxMgr.getMaxTokens(),
+        estimatedInputTokens: ctxMgr.estimateTokens(toolCount),
+        thinkingBudgetTokens: sendParams.thinking?.enabled
+          ? sendParams.thinking.budgetTokens
+          : undefined,
+      });
+      if (!sendBudget.ok) {
+        // 输入本身已逼近窗口（窗口剩余 < floor）：发任何 max_tokens 都是必然 400。
+        // 先给压缩一次机会（它只动历史，救得回来就继续）；救不回来如实终止 ——
+        // 不要发一个 0 / 负数换一次必然的 400。
+        log.warn(
+          "QUERY_LOOP",
+          `输出预算不足（窗口 ${sendBudget.contextWindow}、输入约 ${sendBudget.estimatedInputTokens}、` +
+            `剩余 ${sendBudget.windowLimitTokens} < floor ${sendBudget.floorTokens}），先压缩再试`,
+        );
+        const compactResult = reactiveCompact(ctxMgr);
+        const { banner, outcome } = settleCompaction(deps, sessionState.sessionId, compactScope, {
+          trigger: "context_overflow",
+          messageCountBefore: compactResult.messageCountBefore,
+          messageCountAfter: compactResult.messageCountAfter,
+          tokensBefore: compactResult.tokensBefore,
+          tokensAfter: compactResult.tokensAfter,
+          strategy: compactResult.strategy,
+        });
+        if (outcome === "applied") {
+          if (banner) yield banner;
+          markPostCompactReinject(state);
+          await deps.postCompactTail?.({
+            trigger: "reactive",
+            messagesBefore: compactResult.messageCountBefore,
+            tokensBefore: compactResult.tokensBefore,
+          });
+          yield {
+            kind: "system",
+            level: "info",
+            text: `上下文已压至可发送范围（${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息）`,
+          };
+          setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
+          continue;
+        }
+        // 压不动：与「压实仍撞窗口上限」同一出口，如实告知并结束本轮（不再空烧请求）。
+        yield {
+          kind: "system",
+          level: "error",
+          terminal: true,
+          text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
+            fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
+            totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
+            memoryTokens: ctxMgr.getMemoryTokens(),
+            maxTokens: ctxMgr.getMaxTokens(),
+            latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
+          }),
+        };
+        yield {
+          kind: "done",
+          turns: state.turnCount,
+          turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          incompleteReason: (state.incompleteReason = "context_window_exhausted"),
+        };
+        exitedViaReturn = true;
+        return;
+      }
+      sendParams.maxTokens = sendBudget.maxTokens;
+      if (sendParams.thinking) {
+        if (sendBudget.thinkingBudgetTokens !== undefined) {
+          // 窗口钳制可能把 max_tokens 压到 ≤ budget_tokens。不同步下调就违反
+          // Anthropic `budget_tokens < max_tokens` 的硬约束，必然 400。
+          sendParams.thinking = {
+            ...sendParams.thinking,
+            budgetTokens: sendBudget.thinkingBudgetTokens,
+          };
+        } else if (sendParams.thinking.enabled) {
+          // 窗口连「思考预算 + 正文余量」都放不下 → 关掉思考，而不是发一个非法组合。
+          sendParams.thinking = { ...sendParams.thinking, enabled: false };
+        }
+      }
+
       // ─── BeforeModel hook ───
       if (hookSystem) {
         const beforeModelResult = await hookSystem.fireBeforeModelEvent(
@@ -2985,6 +3082,9 @@ async function* queryLoopBody(
               content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
             })),
             config: { maxTokens: sendParams.maxTokens },
+            // V1-1：实际发出的 max_tokens 单独记一份。排查「输入 + max_tokens 撞窗口」时
+            // raw.jsonl 是唯一可靠的取数源（此前完全没有这个字段，只能从 debug.log 抽查）。
+            max_tokens: sendParams.maxTokens,
             raw_messages: sendParams.messages,
             system: sendParams.system,
             tools: sendParams.tools,
@@ -4760,6 +4860,29 @@ async function* queryLoopBody(
         hasToolUse: hasPendingToolUse,
         hasAnyContent: response.content.length > 0,
       });
+      // ─── Stage 1 升档复位（F1）───
+      // 升档只作用于「紧接着的那一次重试」：本次响应没有再截断就复位，让下一次截断
+      // 还能先走 Stage 1。否则一次截断之后，这条用户消息剩下的所有轮次都以升档后的
+      // 上限发出 —— 默认预算 32k 的意义荡然无存，F1 原样复发（旧实现因为默认值就是
+      // 物理上限，这个缺陷是隐形的；默认降到 32k 之后它就会显形）。
+      //
+      // ⚠ 位置必须在**所有 continue 分支之前**（紧贴 stopAction 分类）：工具轮、
+      // context_window 恢复等分支都会各自 continue，放在它们之后复位就永远轮不到。
+      //
+      // 计数器拆两个：escalate（Stage 1 门禁，成功即归零）与 continuation（Stage 2
+      // 续写次数，只增不减 —— 它同时是续写提示里「（自动续写 N 次）」的展示值，
+      // 归零会让模型看到的次数倒退）。
+      if (!(stopAction.kind === "recover" && stopAction.how === "max_tokens")) {
+        if (state.maxOutputTokensOverride !== undefined) {
+          log.info(
+            "QUERY_LOOP",
+            `输出未再截断，maxTokens 上限覆盖值复位: ${state.maxOutputTokensOverride} → ${config.maxTokens}`,
+          );
+          state.maxOutputTokensOverride = undefined;
+        }
+        state.maxTokensEscalateCount = 0;
+      }
+
       const isEndTurnLike = stopAction.kind === "finalize";
       const f2FallThrough = stopAction.kind === "execute_tools" && stopAction.why !== "tool_use";
       if (f2FallThrough) {
@@ -6465,35 +6588,41 @@ async function* queryLoopBody(
         }
 
         // Stage 1：首次截断且当前上限低于模型硬上限 → 提升上限重试，不注入续写提示
-        // 当用户显式设了较低 maxTokens 或 effort 模式压低输出时，直接提升上限通常一步解决
+        // 当用户显式设了较低 maxTokens 或 effort 模式压低输出时，直接提升上限通常一步解决。
         //
-        // ⚠ 必须按**真名**查：三段查询全按名匹配，喂本地别名
-        // （前缀式如 gw-claude-sonnet-4-6）必然 miss → modelMax=undefined → 下面
-        // `if (modelMax && ...)` 直接短路 → **Stage 1 整块永久跳过**，本该一步解决的
-        // 截断退化成反复走 Stage 2 续写。与 fallback.ts 两处同一类错误，
-        // 别名与真名相同时 resolveWireModel 原样返回，行为不变。
+        // 升档目标必须**再过一次窗口钳制**：物理上限（如 384k）在窗口只剩 200k 时不能直接发，
+        // 否则把「一次截断」换成「一次必然 400」。上限口径用 `resolveMaxOutputTokensForModel`
+        // （availableModels > 能力目录 > 注册表），而不是只查注册表——用户对这条渠道声明的
+        // 上限更紧时，Stage 1 不该越过它。
         //
-        // 三段是「registry 精确 → 采集精确 → registry 模糊」（见 model-lookup.ts）。
-        // 这里对模糊层的容忍度比别处高：拿到一个偏小的猜测值只会让 Stage 1 少抬一点上限，
-        // 然后照旧退到 Stage 2 续写（功能正确、多烧一轮）；而完全拿不到值是 Stage 1
-        // **整块跳过**。所以三段全查比只查 registry 严格更好，没有反方向的风险。
-        const modelMax = resolveRegistryMaxOutputTokens(
-          resolveWireModel(config.model, config.availableModels),
-        );
+        // `modelMax` 未知（自定义端点三层全 miss）时**不升档**：抬到一个未知上限只会制造
+        // 400，交给 Stage 2 续写更安全（与旧行为一致）。
+        const modelMax = resolveMaxOutputTokensForModel(config.model, config.availableModels);
+        const windowCeiling = contextMax - currentTokens - OUTPUT_BUDGET_SAFETY_BUFFER;
+        const escalateTarget =
+          modelMax !== undefined && modelMax > 0 ? Math.min(modelMax, windowCeiling) : undefined;
         const currentCeiling = state.maxOutputTokensOverride ?? config.maxTokens;
-        if (modelMax && currentCeiling < modelMax && state.maxOutputTokensRecoveryCount === 0) {
-          state.maxOutputTokensOverride = modelMax;
-          state.maxOutputTokensRecoveryCount++;
-          log.info("QUERY_LOOP", `输出截断，提升 maxTokens 上限: ${currentCeiling} → ${modelMax}`);
+        if (
+          escalateTarget !== undefined &&
+          escalateTarget > currentCeiling &&
+          state.maxTokensEscalateCount === 0
+        ) {
+          state.maxOutputTokensOverride = escalateTarget;
+          state.maxTokensEscalateCount++;
+          log.info(
+            "QUERY_LOOP",
+            `输出截断，提升 maxTokens 上限: ${currentCeiling} → ${escalateTarget}` +
+              `（模型上限 ${modelMax}，窗口允许 ${windowCeiling}）`,
+          );
           setTransition(state, { type: "max_tokens_escalate" }, deps, sessionState.sessionId);
           continue;
         }
 
-        // Stage 2：已至模型上限或提升无效 → 注入续写提示
-        state.maxOutputTokensRecoveryCount++;
+        // Stage 2：已至模型上限 / 窗口不允许再抬 / 提升无效 → 注入续写提示
+        state.maxTokensContinuationCount++;
         log.info(
           "QUERY_LOOP",
-          `输出达到 token 上限 (maxTokens=${state.maxOutputTokensOverride ?? config.maxTokens})，自动续写 #${state.maxOutputTokensRecoveryCount} (轮次 ${state.turnCount})`,
+          `输出达到 token 上限 (maxTokens=${state.maxOutputTokensOverride ?? config.maxTokens})，自动续写 #${state.maxTokensContinuationCount} (轮次 ${state.turnCount})`,
         );
 
         // 注入截断通知：告知模型上一次响应因输出长度上限被截断，请从中断处继续。
@@ -6508,7 +6637,7 @@ async function* queryLoopBody(
             `如果被截断时正在写代码或文本中途，直接从断点处接续。\n` +
             `如果你正在写入大文件或长内容，请改用分段策略：单次工具调用的参数（如 write 的 content）` +
             `不要超过输出上限，先写一部分，再用 edit / bash 追加剩余部分。\n` +
-            `（自动续写 ${state.maxOutputTokensRecoveryCount} 次）\n` +
+            `（自动续写 ${state.maxTokensContinuationCount} 次）\n` +
             `</system-reminder>`;
           ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: clipNotice }] });
           try {
@@ -6861,11 +6990,23 @@ async function* queryLoopBody(
     //
     // 修法就是补发这两个 hook，让它走与循环内完全相同的入账路径 —— 不另造一条统计口径
     //（本仓教训：仓库里已有的口径重实现一遍就是重踩一遍）。
+    // 收尾总结轮的 max_tokens 同样走请求预算（F1）：这一轮不传 tools，但仍受窗口钳制。
+    // 否则上下文已满时，收尾请求会带一个必然超窗的 max_tokens 发出去。
+    // 预算算不出来（窗口已放不下）时退到「默认预算与用户预算的较小者」——
+    // 宁可少给一点，也不要拿物理上限换一次必然 400。
+    const summaryBudget = resolveRequestOutputBudget({
+      requestBudget: config.maxTokens,
+      modelMaxOutputTokens: resolveMaxOutputTokensForModel(config.model, config.availableModels),
+      contextWindow: ctxMgr.getMaxTokens(),
+      estimatedInputTokens: ctxMgr.estimateTokens(0),
+    });
     const summaryParams = {
       model: config.model,
       messages: ctxMgr.getMessages(),
       system: ctxMgr.getSystemPrompt(),
-      maxTokens: config.maxTokens,
+      maxTokens: summaryBudget.ok
+        ? summaryBudget.maxTokens
+        : Math.min(config.maxTokens, DEFAULT_REQUEST_MAX_TOKENS),
       // 不传 tools，禁止模型继续调工具（对齐 agentic-loop.ts 强制总结轮的做法）。
     };
     if (hookSystem) {

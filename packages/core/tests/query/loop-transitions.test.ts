@@ -54,6 +54,16 @@ function normalResp(text = "完成"): AccumulatedResponse {
   } as AccumulatedResponse;
 }
 
+/** 一个「成功但不结束本轮」的轮次：工具轮。用来验证 Stage 1 升档在成功后复位。 */
+function toolUseResp(): AccumulatedResponse {
+  return {
+    role: "assistant",
+    content: [{ type: "tool_use", id: "tool-1", name: "read", input: { file_path: "/tmp/x" } }],
+    stopReason: "tool_use",
+    usage: { inputTokens: 100, outputTokens: 20 },
+  } as AccumulatedResponse;
+}
+
 interface SetupOpts {
   responses: AccumulatedResponse[];
   configOverrides?: Partial<Config>;
@@ -212,5 +222,59 @@ describe("queryLoop recovery transitions", () => {
     await drainLoop(loopConfig);
 
     expect(transitions).toContain("timeout_retry");
+  });
+
+  // ─── Stage 1 升档复位（F1）───
+  // 默认请求预算是 32k 之后，「升档后不复位」会显形：一次截断把上限抬到物理上限，
+  // 这条用户消息剩下的所有轮次都会以物理上限发出，F1 原样复发。
+  test("Stage 1 升档成功后复位：下一次截断仍先走 Stage 1，默认预算不被永久抬高", async () => {
+    const sent: number[] = [];
+    const { loopConfig, transitions } = setup({
+      // 截断 → 升档；工具轮成功（触发复位）；再截断 → 应能再次升档；最后正常结束
+      responses: [maxTokensResp(), toolUseResp(), maxTokensResp(), normalResp()],
+      configOverrides: { maxTokens: 8000 },
+      depsOverrides: {
+        sendWithRetry: (params) => {
+          sent.push(params.maxTokens);
+          return emptyStream();
+        },
+        executeTools: async () => ({
+          results: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }],
+        }),
+      },
+    });
+
+    await drainLoop(loopConfig);
+
+    // 第 1 轮发预算 8000 → 截断升档到模型上限 128000；
+    // 第 2 轮工具轮成功 → override 复位；
+    // 第 3 轮回到 8000 → 再次升档；第 4 轮 128000。
+    expect(sent).toEqual([8000, 128000, 8000, 128000]);
+    expect(transitions.filter((t) => t === "max_tokens_escalate").length).toBe(2);
+  });
+
+  test("Stage 1 升档后仍截断 → Stage 2 续写，续写次数不被升档门禁污染", async () => {
+    const { loopConfig, transitions, ctxMgr } = setup({
+      responses: [maxTokensResp(), maxTokensResp(), normalResp()],
+      configOverrides: { maxTokens: 8000 },
+    });
+
+    await drainLoop(loopConfig);
+
+    // 第 1 轮升档（escalateCount=1），第 2 轮仍截断 → 直接进 Stage 2（不再升档）
+    expect(transitions).toEqual(["max_tokens_escalate", "max_tokens_continuation"]);
+    // 续写提示里的次数是 #1：它来自独立的 continuation 计数，没有被 Stage 1 的门禁计数污染
+    const clip = ctxMgr
+      .getMessages()
+      .find(
+        (m) =>
+          m.role === "user" &&
+          Array.isArray(m.content) &&
+          m.content.some(
+            (b: any) =>
+              b.type === "text" && typeof b.text === "string" && b.text.includes("自动续写 1 次"),
+          ),
+      );
+    expect(clip).toBeDefined();
   });
 });

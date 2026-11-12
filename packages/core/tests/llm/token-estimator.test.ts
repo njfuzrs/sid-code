@@ -170,10 +170,11 @@ describe("TokenEstimator", () => {
     });
 
     test("EST-3：1M 窗口 deepseek 变体不回退到旧 128K 兜底", () => {
-      // 带后缀的 deepseek 变体命名，靠注册表前缀匹配 + 兜底 1M 命中
-      expect(estimator.getContextLimit("deepseek-v4-pro-1m")).toBe(1_000_000);
-      expect(estimator.getContextLimit("deepseek-v4-flash-20260101")).toBe(1_000_000);
-      // 完全未知的 deepseek 变体也按 1M 兜底（兜底值已从 128K 提至 1M）
+      // 带后缀的 deepseek 变体命名，靠注册表前缀匹配 + 兜底 1M 命中。
+      // 2026-11-12：在役 DeepSeek 条目改为官方精确值 1,048,576（原 1_000_000 取整）。
+      expect(estimator.getContextLimit("deepseek-v4-pro-1m")).toBe(1_048_576);
+      expect(estimator.getContextLimit("deepseek-v4-flash-20260101")).toBe(1_048_576);
+      // 完全未知的 deepseek 变体仍按兜底常量 1M（兜底值已从 128K 提至 1M，与注册表条目无关）
       expect(estimator.getContextLimit("deepseek-unknown-variant")).toBe(1_000_000);
     });
 
