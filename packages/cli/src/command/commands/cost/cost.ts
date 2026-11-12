@@ -105,9 +105,14 @@ export class CostCommand implements LocalCommandModule {
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
       "  （会话时长是墙钟：含思考与空闲；API 耗时只算主循环请求，子代理与辅助调用不含在内）",
       "",
-      "Token 用量（汇总）:",
-      `  输入: ${totalUsage.inputTokens}`,
-      `  输出: ${totalUsage.outputTokens}`,
+      "Token 用量:",
+      // D3：此处是 **flow（累计发送）** 口径 —— getTotalUsage().inputTokens 是
+      // ΣcumulativePromptTokens，即每次请求的 prompt 都计入。状态栏 ↑ 用的是另一个
+      // 口径（stock：最后一次请求的完整 prompt），两个数都对着同一个会话却必然不等，
+      // 不标口径用户会以为其中一个是错的。两行必须成对出现，不能只留一个。
+      `  输入（累计发送，flow）: ${totalUsage.inputTokens}  ← 全会话累加，每次请求的 prompt 都计入`,
+      `  当前上下文（stock）: ${ss.getStockPromptTokens()}  ← 最后一次请求的完整 prompt；状态栏 ↑ 显示的就是它`,
+      `  输出（累计）: ${totalUsage.outputTokens}`,
     );
 
     if (totalUsage.cacheCreationInputTokens) {
