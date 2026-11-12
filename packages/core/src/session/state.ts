@@ -10,9 +10,18 @@
 
 import type { Usage, NormalizedCacheUsage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
-import { inferProviderByModelName } from "../llm/provider-infer.ts";
+import {
+  inferProviderByModelName,
+  isLocalProvider as isLocalProviderName,
+} from "../llm/provider-infer.ts";
 import { getLogger } from "../debug/logger.ts";
-import { resolvePricing, effectivePricing, type PricingModelEntry } from "../api/cost-tracker.ts";
+import {
+  resolvePricing,
+  effectivePricing,
+  calculateCostBreakdown,
+  FALLBACK_PRICING,
+  type PricingModelEntry,
+} from "../api/cost-tracker.ts";
 // CG-2：/clear 要清的「本任务进展」键由 loop 侧定义，这里只消费常量（不复制字面量——
 // 复制会在改名时静默漏清）。两个模块都是纯数据/纯类型，不反向 import 本文件，无循环依赖。
 import { MEASURED_PROGRESS_KEY } from "../query/measured-progress.ts";
@@ -620,18 +629,19 @@ export class SessionState {
   }
 
   /**
-   * 计算单次 API 调用的成本（方案 §2.3 口径修复）。
+   * 计算单次 API 调用的成本（方案 §2.3 口径修复 / D20 公式合并）。
    *
    * **修复前的 bug**：旧实现用 `regularInput = inputTokens − cacheRead − cacheCreation`，
    * 对 Anthropic 会重复扣减——Anthropic 的 inputTokens 本就是未命中余量，再减一次导致
    * regularInput 偏小、费用算低。
    *
-   * **修复后**：统一经 {@link normalizeCacheUsage} 归一化为互斥三段后分别计价，不再做减法。
-   * 两家口径都正确：
-   * - 未命中：uncachedInputTokens × pricing.input（全价）
-   * - 命中：cacheHitTokens × pricing.cacheHit（DeepSeek 固定价 / Anthropic = input×0.1 兜底）
-   * - 写入：cacheWriteTokens × pricing.cacheWrite（DeepSeek=0 / Anthropic = input×1.25 兜底）
-   * - 输出：outputTokens × pricing.output
+   * **现在**：公式唯一实现在 `cost-tracker.ts` 的 {@link calculateCostBreakdown}
+   * （归一化为互斥三段后分别计价，不做减法），本函数只负责
+   * ① 按模型推断 provider；② 未知模型按模型去重告警；③ 返回合计。
+   *
+   * 为什么不再自己乘一遍（D20）：`calculateUSDCost`（轨迹重算 / digest 对账）走的是另一条
+   * 入口，两份等价公式在本地方案上已经分叉 —— 同一个 ollama 会话，界面上是 $0、
+   * 轨迹重算却按兜底价算出非零费用。判据只留一份才不会再次漂移。
    *
    * @param model 模型名
    * @param usage 原始用量
@@ -646,47 +656,13 @@ export class SessionState {
     at?: Date,
   ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
-
-    // 本地推理 provider（ollama 等）不产生真金白银费用，恒 0。
-    // 否则其模型名不在定价表 → 走 FALLBACK_PRICING 被算出虚高费用，
-    // 还会误触 costLimit 守卫中断本地会话（本地跑大上下文尤甚）。
-    if (SessionState.isLocalProvider(prov)) {
-      return 0;
-    }
-
-    // D1：分时段折扣 + 币种换算在这里统一应用（`effectivePricing` 是唯一解析入口）。
-    // 与 cost-tracker.ts 的 calculateUSDCost 同源 —— 两处若各写一份换算，
-    // 必然漂移，而漂移的症状是"两个地方对同一次请求给出不同费用"。
-    const rawPricing = resolvePricing(model, this.availableModels, baseURL);
-    const pricing = rawPricing ? effectivePricing(rawPricing, at) : null;
-    if (!pricing) {
-      // P1-4：未知模型不静默归零（否则换个模型名费用立刻变 0，costLimit 守卫被绕过，
-      // 用户以为"免费"实际在烧钱）。记 WARN 一次（按模型去重），用保守兜底价估算成本，
-      // 宁可高估也不归零，让预算守卫继续生效。
-      this.warnUnknownPricing(model);
-      const n = normalizeCacheUsage(usage, prov);
-      const fb = SessionState.FALLBACK_PRICING;
-      let cost = 0;
-      cost += (n.uncachedInputTokens / 1_000_000) * fb.input;
-      cost += (n.cacheHitTokens / 1_000_000) * fb.input * 0.1;
-      cost += (n.cacheWriteTokens / 1_000_000) * fb.input * 1.25;
-      cost += (n.outputTokens / 1_000_000) * fb.output;
-      return cost;
-    }
-
-    const n = normalizeCacheUsage(usage, prov);
-
-    // 命中/写入价：优先用定价表显式值，否则按 Anthropic 式近似派生（input×0.1 / input×1.25）
-    const cacheHitPrice = pricing.cacheRead ?? pricing.input * 0.1;
-    const cacheWritePrice = pricing.cacheWrite ?? pricing.input * 1.25;
-
-    let cost = 0;
-    cost += (n.uncachedInputTokens / 1_000_000) * pricing.input; // 未命中全价
-    cost += (n.cacheHitTokens / 1_000_000) * cacheHitPrice; // 命中
-    cost += (n.cacheWriteTokens / 1_000_000) * cacheWritePrice; // 写入
-    cost += (n.outputTokens / 1_000_000) * pricing.output; // 输出
-
-    return cost;
+    const breakdown = calculateCostBreakdown(model, usage, this.availableModels, prov, baseURL, at);
+    // P1-4：未知模型不静默归零（否则换个模型名费用立刻变 0，costLimit 守卫被绕过，
+    // 用户以为"免费"实际在烧钱）。记 WARN 一次（按模型去重），用保守兜底价估算成本，
+    // 宁可高估也不归零，让预算守卫继续生效。
+    // 判据取自计价结果的 source —— 不再自己 resolvePricing 一次（那会是第二份「有没有价」的判定）。
+    if (breakdown.source === "fallback") this.warnUnknownPricing(model);
+    return breakdown.totalUSD;
   }
 
   /**
@@ -720,9 +696,10 @@ export class SessionState {
     const rawPricing = resolvePricing(model, this.availableModels, baseURL);
     const pricing = rawPricing ? effectivePricing(rawPricing, at) : null;
     const n = normalizeCacheUsage(usage, prov);
-    // pricing 缺失时与 calculateCost 走同一套兜底价（该函数会记 WARN，此处不重复告警）
-    const inputPrice = pricing?.input ?? SessionState.FALLBACK_PRICING.input;
-    const outputPrice = pricing?.output ?? SessionState.FALLBACK_PRICING.output;
+    // pricing 缺失时与 calculateCost 走同一套兜底价（该函数会记 WARN，此处不重复告警）。
+    // 引用 cost-tracker 导出的唯一一份常量 —— 两处各写一份兜底价，改一处不会带着另一处走。
+    const inputPrice = pricing?.input ?? FALLBACK_PRICING.input;
+    const outputPrice = pricing?.output ?? FALLBACK_PRICING.output;
     // 全价成本：promptTotal 全按未命中输入 + 输出
     const hypothetical =
       (n.promptTotal / 1_000_000) * inputPrice + (n.outputTokens / 1_000_000) * outputPrice;
@@ -769,9 +746,9 @@ export class SessionState {
    * 把免费的本地推理算成真金白银、误触 costLimit。
    */
   static isLocalProvider(provider: string | undefined): boolean {
-    if (!provider) return false;
-    const p = provider.toLowerCase();
-    return p === "ollama" || p === "local" || p === "llamacpp" || p === "lmstudio";
+    // D20：判据唯一实现在 llm/provider-infer.ts，计价（calculateCostBreakdown）
+    // 与展示/节省（本文件）共用同一份，避免「界面免费、重算收费」再次分叉。
+    return isLocalProviderName(provider);
   }
 
   /**
@@ -845,20 +822,10 @@ export class SessionState {
     this.warnedUnknownModels.add(model);
     getLogger().warn(
       "SESSION",
-      `模型 "${model}" 不在定价表中，已用保守兜底价（input $${SessionState.FALLBACK_PRICING.input}/M、output $${SessionState.FALLBACK_PRICING.output}/M）估算成本。` +
+      `模型 "${model}" 不在定价表中，已用保守兜底价（input $${FALLBACK_PRICING.input}/M、output $${FALLBACK_PRICING.output}/M）估算成本。` +
         `如需精确计费，请在定价表或 availableModels 配置中补充该模型价格。`,
     );
   }
-
-  /**
-   * 未知模型的保守兜底价（USD/M）。不绑定任何特定模型品牌，取中位偏高值
-   * （input $2 / output $10），介于低价模型与高价模型之间。
-   * 命中按 input×0.1、写入按 input×1.25 派生。原则：宁可高估触发预算守卫，也不归零放任烧钱。
-   */
-  private static readonly FALLBACK_PRICING: { input: number; output: number } = {
-    input: 2,
-    output: 10,
-  };
 
   /**
    * 获取汇总的 Usage（兼容旧接口）。

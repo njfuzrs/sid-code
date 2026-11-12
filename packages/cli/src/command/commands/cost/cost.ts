@@ -1,4 +1,6 @@
 import { getBackgroundGateStats } from "@sid-code/core/agent/background-task-gate.ts";
+import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
+import { getSideStats } from "@sid-code/core/trace/side-call-sink.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 
 /** 后台闸门状态里 /cost 关心的三个字段（窄接口，便于测试注入假状态）。 */
@@ -105,7 +107,12 @@ export class CostCommand implements LocalCommandModule {
   async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {
     const { SessionState } = await import("@sid-code/core/session/state.ts");
     const ss = ctx.sessionState;
-    const totalUsage = ss.getTotalUsage();
+    // D5：token 段必须走归一化后的**互斥三段**（normalizeCacheUsage 的单一事实源），
+    // 不能直接贴 provider 原始的 `getTotalUsage().inputTokens` —— 同一个「输入」字段两族含义相反：
+    //   - openai 族：prompt_tokens **含**命中部分，与「缓存读取」并列会被读成「两者相加才是总量」；
+    //   - anthropic 族：input_tokens 是未命中余量，与缓存读/写互斥。
+    // 拆成 未命中 / 命中 / 写入 + 合计后两族语义一致，也和计价公式（calculateCost）一一对应。
+    const cacheView = ss.getNormalizedCacheUsage();
 
     // D7：`≈` 表示「金额由非 USD 币种按固定汇率折算成 USD」（估算值），判据看价格数据本身
     // （SessionState.isCostFxConverted），不看模型名。同一笔钱在 Footer / /cost / /debug
@@ -127,24 +134,55 @@ export class CostCommand implements LocalCommandModule {
     const pendingNotice = formatPendingTasksNotice(this.readGateStats());
     if (pendingNotice) lines.push(pendingNotice);
 
+    // D8：耗时三条线各自的范围必须写在标签里，否则用户会拿它们相加去对墙钟。
+    // - 「API 耗时」只含**主循环**请求（totalAPIDuration 只在 query/loop 的 updateUsage 累加）；
+    // - 辅助调用（fork / 标题生成 / 记忆召回等）的耗时单独一行，数据来自计费事件；
+    // - 「会话时长」是墙钟，含思考 / 空闲 / 等待，不等于上面任何两项之和。
+    //
+    // 辅助调用耗时用 getSideStats()（**进程维度**）：resume 回灌的基线只有汇总，
+    // 没有逐条耗时，所以这个数天然只覆盖「本次启动后」。文案里写明，
+    // 避免用户拿它和会话维度的 sideCostUSD 硬对。
+    const sideStats = getSideStats();
+    const sideDurationLine = (() => {
+      if (sideStats.apiCalls === 0) return null; // 没有辅助调用：整行省略
+      if (sideStats.durationCalls === 0) {
+        // 有调用但一次耗时都没采集到：写「—」，**不要写 0**。
+        // 写 0 会让用户以为辅助调用没花时间，而实际可能是计费通道没接计时。
+        return `辅助调用耗时: —（本次启动后 ${sideStats.apiCalls} 次调用均未采集耗时）`;
+      }
+      const base = `辅助调用耗时: ${SessionState.formatDuration(sideStats.durationMs)}`;
+      return sideStats.durationCalls < sideStats.apiCalls
+        ? `${base}（本次启动后 ${sideStats.durationCalls}/${sideStats.apiCalls} 次采集到耗时，其余未采集）`
+        : `${base}（本次启动后 ${sideStats.durationCalls} 次调用）`;
+    })();
+
     lines.push(
-      `API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
+      `API 耗时（主循环）: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
+      ...(sideDurationLine ? [sideDurationLine] : []),
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
+      "  （会话时长是墙钟：含思考与空闲；API 耗时只算主循环请求，子代理与辅助调用不含在内）",
       "",
-      "Token 用量（汇总）:",
-      `  输入: ${totalUsage.inputTokens}`,
-      `  输出: ${totalUsage.outputTokens}`,
+      "Token 用量:",
+      // D5：三段互斥。未命中 + 命中 + 写入 = 合计，命中/写入为 0 时整行省略
+      // （与旧「缓存创建/读取只在非 0 时显示」一致，0 不参与加法，用户照样能验算）。
+      `  输入·未命中: ${fmtNum(cacheView.uncachedInputTokens)}`,
+      ...(cacheView.cacheHitTokens > 0
+        ? [`  输入·缓存命中: ${fmtNum(cacheView.cacheHitTokens)}`]
+        : []),
+      ...(cacheView.cacheWriteTokens > 0
+        ? [`  输入·缓存写入: ${fmtNum(cacheView.cacheWriteTokens)}`]
+        : []),
+      // D3：合计行是 **flow（累计发送）** 口径 —— 每次请求的 prompt 都计入；
+      // 用的是归一化后的 promptTotal（三段之和）而不是 provider 原始 inputTokens：
+      // 后者对 anthropic 族只是未命中余量，会让三段加法对不上（D5）。
+      // D5 的千分位在这里也必须生效，否则同一面板两套数字长相。
+      `  输入·合计（累计发送，flow）: ${fmtNum(cacheView.promptTotal)}  ← 全会话累加，每次请求的 prompt 都计入`,
+      // D3：stock 与 flow 是两个口径，同一次会话里必然不等，不标清楚用户会以为其中一个是错的。
+      `  当前上下文（stock）: ${fmtNum(ss.getStockPromptTokens())}  ← 最后一次请求的完整 prompt；状态栏 ↑ 显示的就是它`,
+      `  输出（累计）: ${fmtNum(cacheView.outputTokens)}`,
     );
 
-    if (totalUsage.cacheCreationInputTokens) {
-      lines.push(`  缓存创建: ${totalUsage.cacheCreationInputTokens}`);
-    }
-    if (totalUsage.cacheReadInputTokens) {
-      lines.push(`  缓存读取: ${totalUsage.cacheReadInputTokens}`);
-    }
-
     // 模块 B：本会话缓存命中率 + 省钱（经归一化单一事实源）
-    const cacheView = ss.getNormalizedCacheUsage();
     if (cacheView.cacheHitTokens > 0 && cacheView.promptTotal > 0) {
       const hitRate = (cacheView.cacheHitTokens / cacheView.promptTotal) * 100;
       const savings = ss.getTotalCacheSavings();
@@ -159,14 +197,24 @@ export class CostCommand implements LocalCommandModule {
 
     const models = Object.entries(ss.modelUsage);
     if (models.length > 1) {
-      lines.push("", "按模型统计（input 为 flow 累计口径，与上方汇总一致）:");
+      lines.push("", "按模型统计（累计发送口径，与上方「输入·合计」一致）:");
       for (const [model, stats] of models) {
-        // ⚠️ 必须用 cumulativePromptTokens（flow 累计）而非 inputTokens（stock 末次值）。
-        // 汇总 input 走 getTotalUsage() = ΣcumulativePromptTokens（flow），若此处用末次 stock，
-        // 两者口径不一致：分模型之和 ≪ 汇总（末次值只保留最后一次请求的 prompt 长度），
-        // 用户会看到"汇总 input 远大于分模型 input 之和"的诡异对不上。统一为 flow 口径。
+        // ⚠️ 用归一化后的 promptTotal（由 cumulativePromptTokens 派生），不用 stock 的
+        // `stats.inputTokens`：末次值只保留最后一次请求的 prompt 长度，分模型之和会远小于汇总，
+        // 用户会看到"汇总远大于分模型之和"的诡异对不上。
+        // 也不能直接贴 cumulativePromptTokens：anthropic 族的它是未命中余量，openai 族含命中，
+        // 两族混用时分模型之和会对不上汇总「输入·合计」，所以逐模型过一遍 normalizeCacheUsage。
+        const promptTotal = normalizeCacheUsage(
+          {
+            inputTokens: stats.cumulativePromptTokens,
+            outputTokens: stats.outputTokens,
+            cacheReadInputTokens: stats.cacheReadInputTokens,
+            cacheCreationInputTokens: stats.cacheCreationInputTokens,
+          },
+          stats.provider,
+        ).promptTotal;
         lines.push(
-          `  ${model}: ${stats.requests} 次请求, ${cur}${stats.costUSD.toFixed(4)}, input=${stats.cumulativePromptTokens}, output=${stats.outputTokens}`,
+          `  ${model}: ${stats.requests} 次请求, ${cur}${stats.costUSD.toFixed(4)}, input=${fmtNum(promptTotal)}, output=${fmtNum(stats.outputTokens)}`,
         );
       }
     }
@@ -186,4 +234,14 @@ export class CostCommand implements LocalCommandModule {
 
     return { type: "text", value: lines.join("\n") };
   }
+}
+
+/**
+ * 数字千分位格式化（与 /debug、/stats 面板同款写法）。
+ *
+ * D5：/cost 的 token 数曾裸输出（`2398645`），/debug 却是 `2,398,645`，同一份数据两个长相。
+ * 显式指定 `en-US` 而不是用运行时默认 locale：/cost 输出会被脚本 grep，逗号位置必须稳定。
+ */
+function fmtNum(n: number): string {
+  return n.toLocaleString("en-US");
 }

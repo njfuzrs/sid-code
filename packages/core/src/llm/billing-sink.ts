@@ -101,6 +101,20 @@ export interface BilledRequest {
    */
   atMs?: number;
   /**
+   * 本次 fetch 的**墙钟耗时**（从发起请求到收口，含握手 / 首字节 / 生成 / 读流）。
+   *
+   * 为什么要它：`SessionState.totalAPIDuration` 只累加主循环（`query/loop.ts` 的
+   * `updateUsage`），辅助调用（fork / 标题生成 / 记忆召回）的耗时此前**哪里都看不到** ——
+   * `/cost` 的「API 耗时」只是主循环的数，用户会把它当成全部（D8，2026-11-10）。
+   * 消费侧（app.ts 的 billing 观察者）用它填 `SideCallRecord.durationMs`，
+   * `/cost` 才有「辅助调用耗时」可显示。
+   *
+   * `undefined` = **未采集**（不是 0 毫秒）：`flushInFlightBilledRequests` 补记的
+   * aborted 事件、以及任何没接计时的路径都属于这一类。显示层必须写「—」，
+   * 不能把它当 0 求和 —— 一次真实 LLM 调用不可能 0ms，把未知折成 0 会静默低估。
+   */
+  elapsedMs?: number;
+  /**
    * 本条是否**已由别的路径入账**。
    *
    * `true` = 主循环（它经 `sessionState.updateUsage` + `AfterModelRaw` 入账，
@@ -338,6 +352,9 @@ export function recordBilledRequest(req: BilledRequest): void {
       ...(req.accountedBy && { accounted_by: req.accountedBy }),
       charged: shouldChargeBilledRequest(req),
       ...(req.reason && { reason: req.reason }),
+      // D8：单次 fetch 的墙钟耗时。落盘而非只在内存传，是因为 `/cost` 上那个
+      // 「辅助调用耗时」必须能在轨迹里复算 —— 否则又是一个说不出取数源的数字。
+      ...(req.elapsedMs !== undefined && { elapsed_ms: req.elapsedMs }),
       input_tokens: req.usage.inputTokens ?? 0,
       output_tokens: req.usage.outputTokens ?? 0,
       ...(req.usage.cacheReadInputTokens !== undefined && {
@@ -621,6 +638,8 @@ export function recordNonStreamingBilledRequest(req: {
   thinkingControl?: BilledRequest["thinkingControl"];
   thinkingShown?: boolean;
   thinkingWireThinks?: boolean;
+  /** D8：本次 fetch 的墙钟耗时（见 {@link BilledRequest.elapsedMs}）；未采集就不传 */
+  elapsedMs?: number;
 }): void {
   try {
     const bctx = currentSseDumpContext();
@@ -634,6 +653,7 @@ export function recordNonStreamingBilledRequest(req: {
       agentId: bctx.agentId,
       callerLabel: bctx.callerLabel,
       atMs: Date.now(),
+      ...(req.elapsedMs !== undefined && { elapsedMs: req.elapsedMs }),
       accounted: !bctx.agentId && !bctx.callerLabel,
       thinkingWire: req.thinkingWire,
       effortWire: req.effortWire,
