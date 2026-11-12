@@ -353,7 +353,6 @@ import {
   type TurnStopReason,
 } from "./turn-complete.ts";
 import { resolveRegistryMaxOutputTokens } from "../llm/model-lookup.ts";
-import { recordContextOverflow } from "../llm/learned-window.ts";
 
 /**
  * 计算本轮请求真实携带的 beta headers（供 cache-break 检测器归因）。
@@ -1407,7 +1406,6 @@ async function* queryLoopBody(
     return resolveToolSearchEnabled(config.toolSearch, {
       model: config.model,
       availableModels: config.availableModels,
-      baseURL: config.baseURL,
       deferredDefinitions,
     });
   })();
@@ -3797,8 +3795,6 @@ async function* queryLoopBody(
         // 流式阶段的 prompt-too-long 错误恢复（与连接阶段逻辑一致）
         if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
           log.warn("QUERY_LOOP", "流式阶段检测到 prompt-too-long 错误，触发响应式压缩");
-          // S6：必须在 reactiveCompact **之前**——压缩会把 lastActualInputTokens 清零。
-          learnAdmittedCeilingOnOverflow(ctxMgr, config);
           const compactResult = reactiveCompact(ctxMgr);
           if (compactResult.success) {
             // P0-2：one-shot 标志位，只在此成功路径置真；不得在任何 continue 分支重置为
@@ -7465,48 +7461,6 @@ function extractLastUserInput(ctxMgr: ContextManager): string {
     }
   }
   return "";
-}
-
-/**
- * S6：prompt-too-long 时记录「已放行输入上限」，学到后**当场** `setMaxTokens`。
- *
- * 只写缓存不调 setMaxTokens 的话本会话阈值不变（`ctxMgr.maxTokens` 只在换模型 / 恢复 /
- * 引导时更新），「第二次撞墙之后同会话不再撞」必然失败。用户显式配置了 contextWindow 时
- * 不动——用户配置最高优先（与 resolveContextLimit 同口径）。全程 best-effort：
- * 学习失败绝不能影响随后的响应式压缩恢复。
- */
-export function learnAdmittedCeilingOnOverflow(
-  ctxMgr: Pick<ContextManager, "getLastActualInputTokens" | "getMaxTokens" | "setMaxTokens">,
-  config: Pick<Config, "model" | "baseURL" | "availableModels">,
-): void {
-  const log = getLogger();
-  try {
-    const mc = config.availableModels?.find((m) => m.name === config.model);
-    if (typeof mc?.contextWindow === "number" && mc.contextWindow > 0) return;
-    const result = recordContextOverflow({
-      model: config.model,
-      baseURL: mc?.baseURL ?? config.baseURL,
-      admittedTokens: ctxMgr.getLastActualInputTokens(),
-    });
-    if (result.status === "skipped") {
-      log.debug("CONTEXT_LEARN", `S6：跳过窗口学习（${result.reason}）`);
-      return;
-    }
-    if (result.status === "pending") {
-      log.info("CONTEXT_LEARN", `S6：记录第 ${result.overflows} 次溢出，满 2 次才写入已放行上限`);
-      return;
-    }
-    if (result.ceiling < ctxMgr.getMaxTokens()) {
-      log.warn(
-        "CONTEXT_LEARN",
-        `S6：学到本路由已放行输入上限 ${result.ceiling}（第 ${result.overflows} 次溢出），` +
-          `上下文窗口 ${ctxMgr.getMaxTokens()} → ${result.ceiling}，本会话即时生效`,
-      );
-      ctxMgr.setMaxTokens(result.ceiling);
-    }
-  } catch (e) {
-    log.debug("CONTEXT_LEARN", `S6：窗口学习失败（忽略）: ${(e as Error)?.message}`);
-  }
 }
 
 /**

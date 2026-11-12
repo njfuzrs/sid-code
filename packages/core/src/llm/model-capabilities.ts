@@ -1728,9 +1728,8 @@ export function learnFromError(model: string, errorMessage: string): HealAdvice 
   // 委托到 api/errors.ts::isPromptTooLong（全仓唯一事实源），不在此重复维护 pattern 列表。
   // 措辞跨供应商差异极大且无稳定错误码，三份各自维护的列表必然漂移——已出过事故，详见该处注释。
   //
-  // ⚠ 这里**不学**窗口（S6）：本函数只在 openai 的 effort 自愈路径被调用、Anthropic 族完全不经过，
-  // 且手里没有「已放行的输入 token」与 base_url 这两样学习必需的输入。学习的唯一接线点是
-  // query/loop.ts 的 prompt-too-long 分支（见 llm/learned-window.ts）；这里只给调用方一个信号。
+  // 这里**只给调用方一个信号**，不据此改写任何模型属性：能导致同一句 prompt-too-long 的原因
+  // 至少有三种（输入超窗、输入 + max_tokens 超窗、网关额外限制），无法在这里区分。
   if (isPromptTooLong(errorMessage)) {
     advice.contextExceeded = true;
   }
