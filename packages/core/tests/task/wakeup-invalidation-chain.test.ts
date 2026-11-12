@@ -129,8 +129,13 @@ const invalidatedEvents = () =>
 
 describe("D8 / S2：monitor 成功终态通知送达 → 撤销同 subject 的唤醒", () => {
   test("R6 真实入口：替身脚本 exit 0、通知送达 → 唤醒撤销 + 一条提示 + ScheduledInvalidated", async () => {
-    // 替身脚本：命令文本里含 `gh pr checks 662`（subjects 从这里抽），输出与退出码模拟成功终态
-    const mon = await startMonitor("盯 PR #662 CI", 'echo "gh pr checks 662: pass"; exit 0');
+    // 替身脚本：只把对象写成自然语言形态 `PR #662`，输出与退出码模拟成功终态。
+    //
+    // ⚠️ 曾经写成 `echo "gh pr checks 662: pass"`，靠旧 extractMonitorSubjects 的私有正则
+    // 从 echo 字符串里抽 subject。R1 把 monitor 的抽取统一到命令表后，`echo` 一个查询串
+    // 不再被认成「在查」（它不产生任何状态变化），所以替身必须改写成自然语言形态。
+    // 这与真实 monitor 脚本写 `gh pr checks 662` 指向同一个对象，本用例保护的行为不变。
+    const mon = await startMonitor("盯 PR #662 CI", 'echo "PR #662: pass"; exit 0');
     const wk = await armWakeup("检查 PR #662 的 CI 是否绿了，绿了就合并");
 
     await waitTerminal(mon);

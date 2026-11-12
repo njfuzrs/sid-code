@@ -18,7 +18,7 @@ import type {
 import { spawn } from "bun";
 import { platform } from "os";
 import { join, isAbsolute, relative, resolve as resolvePath } from "path";
-import { readFileSync, unlinkSync, existsSync, realpathSync } from "fs";
+import { readFileSync, unlinkSync, existsSync, realpathSync, statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { describeAbortReason } from "../llm/errors.ts";
 import type { Config } from "../config/config.ts";
@@ -1820,6 +1820,7 @@ export class BashTool implements Tool {
       taskState.id,
       params.command,
       params.wait_until_seconds,
+      cwd,
     );
 
     return {
@@ -1848,17 +1849,26 @@ export class BashTool implements Tool {
     taskId: string,
     command: string,
     rawSeconds: number | undefined,
+    cwd: string,
   ): string {
     if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return "";
     const clamped = Math.min(MAX_WAIT_UNTIL_S, Math.max(MIN_WAIT_UNTIL_S, Math.round(rawSeconds)));
     // 惰性 require：bash.ts 对 task 模块一贯如此（见 background-receipt.ts 的注释）
     const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    // R1：登记项必须带上「在等哪个对象」。缺了它，harness 回答不了「这个等待在等哪个 PR」，
+    // 后续的去重（R2）、同对象替换（R6）、P1 覆盖判定全部没有前提。
+    const sources = {
+      command,
+      scriptBodies: this.readWaitScriptBodies(task, command, cwd),
+    };
     const registered = task.registerWait({
       id: taskId,
       kind: "shell",
       promise: { kind: "deadline", deadlineAt: Date.now() + clamped * 1000 },
       description: command.slice(0, 60),
       registeredAt: Date.now(),
+      subjects: task.collectWaitSubjects(sources),
+      commandFamilies: task.collectWaitCommandFamilies(sources),
     });
     if (!registered) return "";
 
@@ -1883,5 +1893,37 @@ export class BashTool implements Tool {
       `\n已声明这是一次等待：最多等 ${clamped}s${clampNote}，期间不按「静默」判定；` +
       `到期仍在跑会被终止并以通知告知（不需要你轮询）。`
     );
+  }
+
+  /**
+   * R1：把命令调用到的脚本文件正文读出来，供等待登记抽对象签名。
+   *
+   * 为什么必须读文件：`bash /tmp/wait-pr-779.sh` 的命令行上一个字都没有，对象写在文件里
+   * （b0aa0f1e / 8b8d721f 的四个脚本全是这个形态）。不展开就等于没抽。
+   *
+   * 为什么读在这里而不是等待表里：只有这一侧知道解析后的 cwd，也只有这一侧该决定
+   * 「读不到就跳过」。而这个文件本来就要被 shell 执行，读它不扩大访问面。
+   *
+   * 四条保守边界（都是为了「抽不到就为空」这个方向）：读不到 / 不是普通文件 / 超过
+   * 64KB / 只认命令里字面出现的路径（不跟随 `source`、不递归进脚本里再调用的脚本）。
+   */
+  private readWaitScriptBodies(
+    task: typeof import("../task/index.ts"),
+    command: string,
+    cwd: string,
+  ): string[] {
+    const bodies: string[] = [];
+    for (const raw of task.extractScriptPaths(command)) {
+      try {
+        const abs = isAbsolute(raw) ? raw : resolvePath(cwd, raw);
+        const stat = statSync(abs);
+        if (!stat.isFile() || stat.size > task.MAX_SCRIPT_BODY_BYTES) continue;
+        bodies.push(readFileSync(abs, "utf8"));
+      } catch {
+        // 不存在 / 无权限 / 是目录：跳过。抽不到 subject 只是回到改造前，不是错误，
+        // 更不能因为它让一条本来能跑的命令登记失败。
+      }
+    }
+    return bodies;
   }
 }
