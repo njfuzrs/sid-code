@@ -99,6 +99,21 @@ describe("T-B1 时间构成", () => {
   });
 });
 
+describe("D16 进行中", () => {
+  test("墙钟快照滞后于 events 时，墙钟不小于活跃时间；标题写「进行中 · 截至」", () => {
+    const live = buildSessionPerf({
+      ...input,
+      ended: false,
+      snapshotAt: "2026-11-10T09:12:36.168Z",
+      wallMs: 1000,
+    });
+    expect(live.header.wallMs).toBe(live.header.activeMs);
+    const first = strip(renderSessionPerf(live, { width: 200, color: false })).split("\n")[0]!;
+    expect(first).toContain("进行中 · 截至");
+    expect(first).not.toContain("已结束");
+  });
+});
+
 describe("明细聚合（D8/D9/D10）", () => {
   test("工具按合计降序，失败数如实计", () => {
     expect(detail.tools[0]).toMatchObject({ name: "bash", n: 77, failed: 10 });
@@ -285,6 +300,14 @@ describe("T-B9 窄终端", () => {
     expect(strip(text)).not.toMatch(/[█▏▎▍▌▋▊▉]/);
     expect(strip(text)).not.toContain("P99");
     for (const line of strip(text).split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(60);
+  });
+
+  test("优先在空格处折行：英文命令与时刻不被拆开", () => {
+    // 16 列硬断会落在「18:0」之后；按空格断则整段时刻挪到续行
+    expect(wrapLines(["abc · 截至 18:05:26"], 16, 2)).toEqual(["abc · 截至", "  18:05:26"]);
+    const out = wrapLines(["进行中 · 截至 18:05:26 用 /trace --health 对比"], 24, 2);
+    expect(out.some((l) => l.includes("--health"))).toBe(true);
+    for (const l of out) expect(stringWidth(l)).toBeLessThanOrEqual(24);
   });
 
   test("折行把颜色在续行重放、断行末复位（<Ansi> 按行解析，颜色不跨行）", () => {

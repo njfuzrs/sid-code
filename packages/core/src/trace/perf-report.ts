@@ -340,7 +340,12 @@ export function buildSessionPerf(input: SessionPerfInput): SessionPerfReport {
     model: input.model,
     header: {
       shortId: input.sessionId.slice(-8),
-      wallMs: finite(input.wallMs),
+      // 墙钟来自 session.traj 快照（进行中时最多滞后 30s），活跃时间来自实时 events。
+      // 两者截至时刻不同，进行中会出现「墙钟 < 活跃」；墙钟不可能比活跃短，取两者大者（D16）
+      wallMs:
+        finite(input.wallMs) !== undefined || d?.timeSplit.activeMs
+          ? Math.max(finite(input.wallMs) ?? 0, d?.timeSplit.activeMs ?? 0)
+          : undefined,
       activeMs: d?.timeSplit.activeMs || undefined,
       mainCalls: d?.mainCalls ?? 0,
       live: input.ended === false,

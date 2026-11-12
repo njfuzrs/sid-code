@@ -87,9 +87,10 @@ export function table(
 const SGR_RE = /\x1b\[[0-9;]*m/y;
 
 /**
- * 超宽行按显示宽度折行，续行缩进 6 格。面板按行交给 `<Ansi>` 解析，颜色不跨行，
- * 所以折断处要把当前生效的 SGR 在续行开头重放一次、在断行末尾复位。
- * 不做「按词断」：中文没有空格，按列硬断是唯一一致的规则。
+ * 超宽行按显示宽度折行，续行缩进 `contIndent` 格。面板按行交给 `<Ansi>` 解析，颜色不跨行，
+ * 所以折断处要在断行末尾复位、在续行开头重放当时生效的 SGR。
+ * 优先在最近的空格处断（英文命令、`HH:MM:SS` 不被拆开）；一行里找不到空格才按列硬断 ——
+ * 中文没有空格，按列断是唯一一致的规则。
  */
 export function wrapLines(lines: string[], maxWidth: number, contIndent = 6): string[] {
   const out: string[] = [];
@@ -98,34 +99,69 @@ export function wrapLines(lines: string[], maxWidth: number, contIndent = 6): st
       out.push(line);
       continue;
     }
-    let cur = "";
-    let curW = 0;
-    let active: string[] = [];
-    const flush = () => {
-      out.push(cur + (active.length ? "\x1b[0m" : ""));
-      cur = " ".repeat(contIndent) + active.join("");
-      curW = contIndent;
-    };
+    // 先切成「可见字符 + 其前的 SGR 码」单元，折行只在单元边界上发生
+    const units: Array<{ sgr: string; ch: string; w: number }> = [];
+    let pending = "";
     let i = 0;
     while (i < line.length) {
       SGR_RE.lastIndex = i;
       const m = SGR_RE.exec(line);
       if (m) {
-        cur += m[0];
-        // 22/39/0 是复位码：清掉已记录的开启码；其余记为生效
-        if (/\x1b\[(0|22|39)m/.test(m[0])) active = [];
-        else active.push(m[0]);
+        pending += m[0];
         i += m[0].length;
         continue;
       }
       const ch = String.fromCodePoint(line.codePointAt(i)!);
-      const w = width(ch);
-      if (curW + w > maxWidth && curW > contIndent) flush();
-      cur += ch;
-      curW += w;
+      units.push({ sgr: pending, ch, w: width(ch) });
+      pending = "";
       i += ch.length;
     }
-    if (cur.trim()) out.push(cur);
+    const trailing = pending;
+
+    const applySgr = (active: string[], sgr: string): string[] => {
+      let next = active;
+      for (const code of sgr.match(/\x1b\[[0-9;]*m/g) ?? []) {
+        // 0/22/39 是复位码：清掉已记录的开启码；其余记为生效
+        next = /\x1b\[(0|22|39)m/.test(code) ? [] : [...next, code];
+      }
+      return next;
+    };
+
+    let start = 0;
+    let active: string[] = [];
+    let first = true;
+    while (start < units.length) {
+      const indent = first ? 0 : contIndent;
+      const budget = maxWidth - indent;
+      let w = 0;
+      let end = start;
+      let lastSpace = -1;
+      while (end < units.length && w + units[end]!.w <= budget) {
+        if (units[end]!.ch === " " && end > start) lastSpace = end;
+        w += units[end]!.w;
+        end++;
+      }
+      if (end < units.length && lastSpace > start) end = lastSpace;
+      if (end === start) end = start + 1; // 单个字符就超宽：至少前进一格
+      const prefix = (first ? "" : " ".repeat(contIndent)) + active.join("");
+      let body = "";
+      let act = active;
+      for (let k = start; k < end; k++) {
+        body += units[k]!.sgr + units[k]!.ch;
+        act = applySgr(act, units[k]!.sgr);
+      }
+      const last = end >= units.length;
+      if (last) body += trailing;
+      out.push((prefix + body).trimEnd() + (!last && act.length ? "\x1b[0m" : ""));
+      active = act;
+      // 断在空格处时跳过行首空格
+      start = end;
+      while (start < units.length && units[start]!.ch === " ") {
+        active = applySgr(active, units[start]!.sgr);
+        start++;
+      }
+      first = false;
+    }
   }
   return out;
 }
