@@ -88,7 +88,7 @@ export function emitOmissionRejected(data: {
  * PreToolUse 取签名。`stage` 区分管线哪一步（占位文案不同，重跑诱因也不同）。
  */
 export function emitToolResultCleared(data: {
-  stage: "tool_result_budget" | "microcompact";
+  stage: "tool_result_budget" | "microcompact" | "stale_clear";
   cleared: number;
   saved_chars: number;
   tool_use_ids: string[];
