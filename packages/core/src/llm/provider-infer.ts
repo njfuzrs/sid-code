@@ -55,3 +55,20 @@ export function inferProviderByModelName(
     : (lookupWireModelAlias(model) ?? model);
   return /^claude/i.test(wire) ? "anthropic" : "openai";
 }
+
+/**
+ * 判定是否本地推理 provider（不产生真金白银费用）。
+ *
+ * 为什么需要单独一份：仅凭模型名无法识别（ollama 跑 llama3 会被
+ * {@link inferProviderByModelName} 归为 "openai"），必须依赖显式传入的 provider 名。
+ *
+ * 为什么收口到这里（D20）：计价有两条入口 —— `SessionState.calculateCost` 与
+ * `calculateUSDCost`（轨迹重算 / digest 对账）。本地判断只写在其中一条上时，
+ * 同一个本地模型会话会得到「界面 $0、轨迹重算非零」的矛盾结果。判据只留一份，
+ * 两条入口都从这里取。
+ */
+export function isLocalProvider(provider: string | undefined): boolean {
+  if (!provider) return false;
+  const p = provider.toLowerCase();
+  return p === "ollama" || p === "local" || p === "llamacpp" || p === "lmstudio";
+}
