@@ -71,3 +71,82 @@ describe("W1.3 wait_until_seconds", () => {
     expect(getTask(parsed.task_id)?.status).toBe("killed");
   });
 });
+
+describe("R2 同一对象的第二个等待", () => {
+  test("同对象同命令的第二个等待不 spawn，回执给出 task_stop 出口", async () => {
+    // 命令文本决定 subject（注释里带 gh pr checks 779 即可，不需要真的跑 gh）
+    const command = "sleep 30  # gh pr checks 779";
+    const first = await tool.execute({
+      command,
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    const firstId = (JSON.parse(first.output) as { task_id: string }).task_id;
+    expect(firstId).toBeTruthy();
+
+    const second = await tool.execute({
+      command,
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    // 不是错误：已经有东西在盯它了
+    expect(second.isError).toBeFalsy();
+    expect(second.output).toContain("本次未重复启动");
+    expect(second.output).toContain(firstId);
+    expect(second.output).toContain(`task_stop ${firstId}`);
+    // 全程只有一条同对象等待（没有第二个进程，也没有第二条通知源）
+    expect(listWaits().filter((w) => w.subjects?.includes("gh:pr:779"))).toHaveLength(1);
+    killShellTask(firstId);
+  });
+
+  test("不同对象的等待都会启动（不误伤并行的无关等待）", async () => {
+    const a = await tool.execute({
+      command: "sleep 30  # gh pr checks 779",
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    const b = await tool.execute({
+      command: "sleep 30  # gh pr checks 741",
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    const aId = (JSON.parse(a.output) as { task_id: string }).task_id;
+    const bId = (JSON.parse(b.output) as { task_id: string }).task_id;
+    expect(aId).toBeTruthy();
+    expect(bId).toBeTruthy();
+    expect(aId).not.toBe(bId);
+    killShellTask(aId);
+    killShellTask(bId);
+  });
+
+  test("抽不出对象的第二个等待照常启动（抽不出就不参与去重）", async () => {
+    const a = await tool.execute({
+      command: "sleep 30",
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    const b = await tool.execute({
+      command: "sleep 30",
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    const aId = (JSON.parse(a.output) as { task_id: string }).task_id;
+    const bId = (JSON.parse(b.output) as { task_id: string }).task_id;
+    expect(bId).toBeTruthy();
+    expect(aId).not.toBe(bId);
+    killShellTask(aId);
+    killShellTask(bId);
+  });
+
+  test("不带 wait_until_seconds 的后台命令不参与去重（a7d1c888 的反例）", async () => {
+    const command = "sleep 30  # gh pr checks 779";
+    const a = await tool.execute({ command, run_in_background: true });
+    const b = await tool.execute({ command, run_in_background: true });
+    const aId = (JSON.parse(a.output) as { task_id: string }).task_id;
+    const bId = (JSON.parse(b.output) as { task_id: string }).task_id;
+    expect(bId).toBeTruthy();
+    expect(aId).not.toBe(bId);
+    killShellTask(aId);
+    killShellTask(bId);
+  });
+});

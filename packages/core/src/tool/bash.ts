@@ -89,6 +89,16 @@ const FACTORY_DEFAULT_TIMEOUT_MS = 120000;
 /** 出厂上限（未配 env 时）：10 分钟。 */
 const FACTORY_MAX_TIMEOUT_MS = 600000;
 
+/** R2 的等待准入计划：spawn 之前算好（判定要赶在起进程之前），spawn 之后复用它登记 */
+interface WaitPlan {
+  extraction: import("../task/index.ts").WaitSubjectExtraction;
+  decision: import("../task/index.ts").WaitAdmissionDecision;
+  /** 钳制后的等待秒数 */
+  clamped: number;
+  /** 调用方原样传入的秒数（钳制提示要说清「从多少钳到多少」） */
+  rawSeconds: number;
+}
+
 /**
  * `wait_until_seconds` 的钳制区间（秒）。
  *
@@ -97,7 +107,6 @@ const FACTORY_MAX_TIMEOUT_MS = 600000;
  */
 const MIN_WAIT_UNTIL_S = 60;
 const MAX_WAIT_UNTIL_S = 3600;
-
 /**
  * 解析 bash 超时的默认值与上限，支持 env 覆盖（对齐 CC 的
  * BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS）。
@@ -1793,7 +1802,8 @@ export class BashTool implements Tool {
     },
     signal?: AbortSignal,
   ): Promise<ToolResult> {
-    const { spawnShellTask } = require("../task/index.ts");
+    const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    const { spawnShellTask } = task;
     await this.snapshotReady;
     this.registerSnapshotToSandbox();
     const resolved = this.resolveCwd(params.cwd);
@@ -1809,6 +1819,21 @@ export class BashTool implements Tool {
       ? this.sandboxManager.wrapCommand(rawTaskCommand, getPlatformShell().shell)
       : rawTaskCommand;
 
+    // R2：显式等待先过「同一个对象只允许一个有效等待」的准入判定，而且必须在 spawn **之前**——
+    // 起了进程再 kill 会先产生一次输出与一条终态通知，与「本次未重复启动」的承诺自相矛盾
+    // （b0aa0f1e 正是四次 spawn、四条通知）。
+    const waitPlan = this.planWaitUntil(params.command, params.wait_until_seconds, cwd);
+    if (waitPlan?.decision.action === "duplicate") {
+      // isError 保持 false：这不是失败，是「已经有东西在盯它了」。
+      // 回执里必须带 task_stop 出口，否则模型改了脚本也挂不上新的（R2 §修法 2）。
+      return {
+        output: task.formatDuplicateWaitReceipt(
+          waitPlan.decision.existing,
+          waitPlan.extraction.subjects,
+        ),
+      };
+    }
+
     const taskState = spawnShellTask({
       command: commandString,
       displayCommand: params.command,
@@ -1816,11 +1841,7 @@ export class BashTool implements Tool {
       signal,
     });
 
-    const waitNote = this.registerWaitUntil(
-      taskState.id,
-      params.command,
-      params.wait_until_seconds,
-    );
+    const waitNote = this.registerWaitUntil(taskState.id, params.command, waitPlan);
 
     return {
       output: JSON.stringify({
@@ -1835,6 +1856,34 @@ export class BashTool implements Tool {
   }
 
   /**
+   * R2 的准入判定：把「这次等待盯的是哪个对象」抽出来，再问等待表能不能起。
+   *
+   * 判定放在 spawn 之前，而登记（`registerWaitUntil`）放在 spawn 之后——两者需要的信息不同：
+   * 判定只需要命令与目录，登记需要真实 task id。
+   *
+   * 不带 `wait_until_seconds` 的后台命令**完全不参与**：它是普通后台任务（承诺是「退出或静默
+   * 时回报」），不是模型声明的等待。把普通后台任务也纳入去重会误伤「等 PR + 跑 bun test」
+   * 这种合法组合（a7d1c888 的形态）。
+   */
+  private planWaitUntil(
+    command: string,
+    rawSeconds: number | undefined,
+    cwd: string,
+  ): WaitPlan | null {
+    if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return null;
+    const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    const clamped = Math.min(MAX_WAIT_UNTIL_S, Math.max(MIN_WAIT_UNTIL_S, Math.round(rawSeconds)));
+    const extraction = task.extractWaitSubjectsFor({ command, cwd });
+    const decision = task.decideWaitAdmission({
+      subjects: extraction.subjects,
+      command: extraction.normalizedCommand,
+      scriptHash: extraction.scriptHash,
+      deadlineAt: Date.now() + clamped * 1000,
+    });
+    return { extraction, decision, clamped, rawSeconds: Math.round(rawSeconds) };
+  }
+
+  /**
    * W1.3：`wait_until_seconds`——「这是一次等待」的显式声明。
    *
    * 为什么需要（G3）：CC 的分流规则是「只要一次通知就用后台 Bash + 会自己退出的循环」，
@@ -1844,13 +1893,9 @@ export class BashTool implements Tool {
    *
    * 不带这个参数的后台 bash 行为**与改动前完全相同**。
    */
-  private registerWaitUntil(
-    taskId: string,
-    command: string,
-    rawSeconds: number | undefined,
-  ): string {
-    if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return "";
-    const clamped = Math.min(MAX_WAIT_UNTIL_S, Math.max(MIN_WAIT_UNTIL_S, Math.round(rawSeconds)));
+  private registerWaitUntil(taskId: string, command: string, plan: WaitPlan | null): string {
+    if (!plan) return "";
+    const { clamped, extraction } = plan;
     // 惰性 require：bash.ts 对 task 模块一贯如此（见 background-receipt.ts 的注释）
     const task = require("../task/index.ts") as typeof import("../task/index.ts");
     const registered = task.registerWait({
@@ -1859,6 +1904,12 @@ export class BashTool implements Tool {
       promise: { kind: "deadline", deadlineAt: Date.now() + clamped * 1000 },
       description: command.slice(0, 60),
       registeredAt: Date.now(),
+      // R2：把对象签名与「同一件事」的判据一起登记。不登记的话，第二个等待来判准入时
+      // 只看得到 [[subjects]] 而看不到命令/脚本版本，`bash a.sh` 与 `bash b.sh` 等同一个
+      // PR 时永远判不出重复（8b8d721f 的形态）。
+      subjects: extraction.subjects.length > 0 ? extraction.subjects : undefined,
+      command: extraction.normalizedCommand,
+      scriptHash: extraction.scriptHash,
     });
     if (!registered) return "";
 
@@ -1876,9 +1927,7 @@ export class BashTool implements Tool {
     }
 
     const clampNote =
-      clamped !== Math.round(rawSeconds)
-        ? `（已从 ${Math.round(rawSeconds)}s 钳制到 ${clamped}s）`
-        : "";
+      clamped !== plan.rawSeconds ? `（已从 ${plan.rawSeconds}s 钳制到 ${clamped}s）` : "";
     return (
       `\n已声明这是一次等待：最多等 ${clamped}s${clampNote}，期间不按「静默」判定；` +
       `到期仍在跑会被终止并以通知告知（不需要你轮询）。`

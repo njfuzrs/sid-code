@@ -41,12 +41,9 @@ import {
 } from "../task/index.ts";
 import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
 import { getRunningTasks } from "../task/registry.ts";
-import {
-  registerWait,
-  findWaitBySubject,
-  extractWaitSubjects,
-  isWakeupRegistrationEnabled,
-} from "../task/wait-registry.ts";
+import { registerWait, isWakeupRegistrationEnabled } from "../task/wait-registry.ts";
+import { extractWaitSubjectsFor } from "../task/wait-subjects.ts";
+import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
 import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
 import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
@@ -78,16 +75,6 @@ type MonitorInput = {
   command?: unknown;
   timeout_ms?: unknown;
 };
-
-/** 从命令里抽取被监控对象的签名（S2 用）：`gh pr checks 662` → `gh:pr:662` */
-function extractMonitorSubjects(command: string): string[] {
-  const out = new Set<string>(extractWaitSubjects(command));
-  for (const m of command.matchAll(/\bgh\s+pr\s+(?:checks|view|status)\s+(\d+)/gi))
-    out.add(`gh:pr:${m[1]}`);
-  for (const m of command.matchAll(/\bgh\s+run\s+(?:view|watch)\s+(\d+)/gi))
-    out.add(`gh:run:${m[1]}`);
-  return [...out];
-}
 
 /** 当前运行中的 monitor 简要清单（并发上限错误里列给模型，它才知道该 task_stop 谁） */
 function listRunningMonitorBrief(): string {
@@ -270,15 +257,29 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       };
     }
 
-    // 同一被监控对象的提示（T-M1-15）：允许启动，但要点破已有同对象监控，
-    // 否则模型会为了「保险」再挂一个，两路事件重复叫醒主循环。
-    const subjects = extractMonitorSubjects(command);
-    const duplicate = subjects
-      .map((s) => findWaitBySubject(s))
-      .find((w) => w !== undefined && w.kind === "monitor");
-    const duplicateNote = duplicate
-      ? `\n注意：已有监控 ${duplicate.id}（${duplicate.description}）在盯同一个对象，两路事件会分别通知。`
-      : "";
+    // R2：同一个对象同时只允许一个**有效的显式等待**，且跨类（shell × monitor × wakeup）。
+    // 原来这里只在 monitor 之间比、且只追加一行提示就照常启动——b0aa0f1e 的四份同脚本进程
+    // 正是「每个入口只管自己那一类」的产物。现在走统一判定：重复则不 spawn，直接返回回执。
+    const extraction = extractWaitSubjectsFor({ command, cwd: getCwd() });
+    const admission = decideWaitAdmission({
+      subjects: extraction.subjects,
+      command: extraction.normalizedCommand,
+      deadlineAt: Date.now() + timeoutMs,
+    });
+    if (admission.action === "duplicate") {
+      return {
+        data: formatDuplicateWaitReceipt(admission.existing, extraction.subjects),
+        isError: false,
+      };
+    }
+    // replace：模型换了一种等法（改了脚本 / 从唤醒换成监控）。R2 只判不淘汰，
+    // 旧的仍在跑——不静默，否则模型会以为只剩自己这一路，收不到旧任务通知时又去前台查。
+    const replaceNote =
+      admission.action === "replace"
+        ? `\n注意：${
+            admission.existing[0]!.id
+          }（${admission.existing[0]!.description}）也在盯同一个对象，它仍会继续到结束或你 task_stop 它。`
+        : "";
 
     const taskState = spawnMonitorTask({
       description,
@@ -297,7 +298,10 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       promise: { kind: "deadline", deadlineAt: taskState.deadlineAt },
       description,
       registeredAt: taskState.startTime,
-      subjects,
+      subjects: extraction.subjects.length > 0 ? extraction.subjects : undefined,
+      // 登记命令与脚本哈希：下一个等待来判准入时要能认出「这是同一件事」
+      command: extraction.normalizedCommand,
+      scriptHash: extraction.scriptHash,
       commandFamilies: extractStatusQueryFamilies(command),
     });
 
@@ -322,7 +326,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
         `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
         waitNote +
-        `提前停止：task_stop ${taskState.id}${duplicateNote}`,
+        `提前停止：task_stop ${taskState.id}${replaceNote}`,
     };
   }
 }

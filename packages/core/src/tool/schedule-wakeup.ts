@@ -17,7 +17,9 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
-import { extractWaitSubjects, registerWait, releaseWait } from "../task/wait-registry.ts";
+import { registerWait, releaseWait } from "../task/wait-registry.ts";
+import { extractWaitSubjectsFor } from "../task/wait-subjects.ts";
+import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -121,6 +123,22 @@ export class ScheduleWakeupTool implements Tool {
       };
     }
 
+    // R2：同一个对象同时只允许一个有效的显式等待，且跨类（唤醒 × shell × monitor）。
+    // 判定必须放在 `replaceSessionTasksByOrigin` **之前**——先排上再判「重复」的话，
+    // 调度器里那条旧唤醒已经被删了，「保留旧的」就无从谈起（静默丢等待）。
+    const extraction = extractWaitSubjectsFor({ prompt: params.prompt });
+    const admission = decideWaitAdmission({
+      subjects: extraction.subjects,
+      command: extraction.normalizedCommand,
+      deadlineAt: now + clamped * 1000,
+    });
+    if (admission.action === "duplicate") {
+      return {
+        output: formatDuplicateWaitReceipt(admission.existing, extraction.subjects),
+        isError: false,
+      };
+    }
+
     // 与 cron_create / /loop 共用会话级上限（守卫在 scheduler.addSessionTask）。
     // 单链语义：同一会话同时只保留一个待触发的唤醒，新的替换旧的。并存多个唤醒
     // 没有合法用途，只会在会话空闲后连环触发（2026-11-07 实测一轮 5 次调用 → 4 轮空跑）。
@@ -142,7 +160,9 @@ export class ScheduleWakeupTool implements Tool {
       promise: { kind: "deadline", deadlineAt: task.fireAt! },
       description: firstLine(params.prompt, 60),
       registeredAt: now,
-      subjects: extractWaitSubjects(params.prompt),
+      subjects: extraction.subjects.length > 0 ? extraction.subjects : undefined,
+      // R2：登记命令与对象签名，下一个等待来判准入时要能认出「这是同一件事」
+      command: extraction.normalizedCommand,
     });
 
     const clampNote =
