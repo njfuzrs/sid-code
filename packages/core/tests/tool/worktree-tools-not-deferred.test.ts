@@ -58,31 +58,11 @@ describe("worktree 工具不得声明 shouldDefer", () => {
   });
 });
 
-describe("前缀碰撞面 — 当前应为零", () => {
-  /** 两个名字的公共前缀长度 */
-  function commonPrefixLen(a: string, b: string): number {
-    let i = 0;
-    while (i < a.length && i < b.length && a[i] === b[i]) i++;
-    return i;
-  }
-
-  test("live × deferred 且公共前缀 ≥4 的组合数为 0", () => {
-    const registry = new Registry();
-    registry.register(new EnterWorktreeTool() as any);
-    registry.register(new ExitWorktreeTool() as any);
-    registry.register(new EnterPlanModeTool(fakePlanManager) as any);
-    registry.register(new ExitPlanModeTool(fakePlanManager) as any);
-
-    const deferred = new Set(registry.deferredToolNames());
-    const all = registry.all().map((t) => t.name());
-    const live = all.filter((n) => !deferred.has(n));
-
-    const collisions: string[] = [];
-    for (const l of live) {
-      for (const d of deferred) {
-        if (commonPrefixLen(l, d) >= 4) collisions.push(`${l} vs ${d}`);
-      }
-    }
-    expect(collisions).toEqual([]);
-  });
-});
+// 「live × deferred 且公共前缀 ≥4 的组合数为 0」这条断言**已挪走**，见
+// 根 tests/tool/prefix-collision-gate.test.ts（T6 / D8）。
+//
+// 挪走的原因：它原来就写在上面这个 4 工具 Registry 上，而 deferredToolNames() 在该
+// Registry 里恒为空 —— 笛卡尔积退化成空集，断言从未红过（2026-11-12 之前）。
+// 真实注册表口径（42 个内置工具 + 延迟标记）由 --dump-tool-meta 提供，那边算。
+// 本文件保留的两条是**实例级**防线，和真实注册表互补：字段被加回去时这里先红，
+// 注册路径/分层变了（比如 alwaysLoad、keepLoaded）那边红。
