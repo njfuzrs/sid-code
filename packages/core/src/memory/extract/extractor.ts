@@ -20,6 +20,7 @@ import { logMemoryExtract } from "../../analytics/events.ts";
 import { indexTypeRank } from "../index-budget.ts";
 import { formatIndexCapacity, readIndexCapacity } from "../index-capacity.ts";
 import type { MemoryHeader } from "../types.ts";
+import { MEMORY_FORK_REQUIRED_TOOLS } from "../../agent/fork-prefix.ts";
 
 /**
  * 解析抽取节流间隔（横向剖析 T2）。优先级：env `SID_CODE_MEMORY_EXTRACT_INTERVAL` >
@@ -181,6 +182,8 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
       canUseTool: ctx.canUseTool,
       maxTurns: 5,
       querySource: "memory-extract",
+      // D16：轨迹里 forked 的工具调用 98% 落在这几个上（edit 4099 / save_memory 1429 / read 732）
+      requiredTools: MEMORY_FORK_REQUIRED_TOOLS,
       timeoutMs: 60_000,
     });
 

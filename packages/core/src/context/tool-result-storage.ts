@@ -167,6 +167,11 @@ export class ContentReplacementState {
     return value;
   }
 
+  /** 只读取已生成的占位文案（不存在时返回 undefined，**不生成**）。fork 前缀视图用 */
+  get(toolUseId: string): string | undefined {
+    return this.replacements.get(toolUseId);
+  }
+
   /** 该 tool_use_id 是否已经生成过稳定占位文案 */
   has(toolUseId: string): boolean {
     return this.replacements.has(toolUseId);
