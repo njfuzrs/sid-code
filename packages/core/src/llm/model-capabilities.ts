@@ -13,6 +13,11 @@
  * - 本模块采**能力**，按「模型名」单键（能力是模型固有属性，不因端点变化）。
  *   例外：`effortValues` 观测自具体端点，但记的是模型属性，跨端点复用是安全的近似。
  *
+ * ⚠ 上一条例外的边界（2026-11-12 收口，F3）：「某条路由明确拒绝 `reasoning_effort`」
+ * 不属于模型属性——它只说明那次请求的参数形态与那条路由不匹配。这类结论只记**进程内、
+ * 按 (真名, baseURL)** 的端点表（见 recordEndpointEffortRejected），不落盘、不进 `models`。
+ * 同一条真名走另一条网关路由时，本进程第一次请求仍会乐观下发 effort。
+ *
  * ── 三个数据来源（互补，全部可选、全部可失败） ──────────────────────
  *
  * 1. **外部目录同步**（syncExternalCatalogs）：models.dev 双镜像 + litellm + OpenRouter，
@@ -59,6 +64,8 @@ import { PublicFetchTimeoutError, fetchPublicUrl } from "../net/public-fetch.ts"
 import { isPromptTooLong } from "../api/errors.ts";
 // 「写哪些键」与「查哪些键」的唯一事实源（互为镜像，对称性由单测锁住）
 import { expandKeys, normalizeCandidates } from "./model-name-normalize.ts";
+// 端点级记账的键必须与计费/端点判定用同一套归一化（末尾斜杠、协议/host 大小写）
+import { normalizeBaseURL } from "./endpoint-key.ts";
 import { IS_DEV_MODE } from "../bootstrap/resolve-executable.ts";
 
 /**
@@ -170,45 +177,62 @@ function resolveCatalogTtlMs(): number {
 }
 
 /**
- * 运行时学到的能力（`source: "healed"` / `"probe"`）压过目录的有效期：**7 天**。
+ * 进程内：`(真名, baseURL)` → 这条路由拒绝过 `reasoning_effort`。
  *
- * 为什么需要：目录 TTL 是 1 天，原先 `mergeEntry` 是 `{...base, ...clean}` 不看来源，
- * 于是自愈刚学到的「不支持 effort」/「服务端自报的更严档位」，最多一天就被下一次目录同步
- * 冲回目录值，模型又撞一次 400 再学一遍（剖析 21/1 §5.3 场景 C、E）。
+ * 为什么不落盘、不写进 `models`（「运行时改写模型属性」的分界，2026-11-12 F3-c）：
+ * 「这条路由不吃 effort」是**端点级**的运行时事实，不是模型属性。同一条真名走另一条
+ * 网关路由可能完全正常；把它按模型名写进能力缓存，等于用一次 400 把模型锁 7 天。
  *
- * 为什么是 7 天、而不是永久：学到的东西也可能错（措辞点名但真因是档位），过期后目录
- * 重新说了算，这是「学错了能撤回」的唯一路径。取值 = 目录 TTL 的 7 倍，**没有实测依据**，
- * 只是让学到的结论至少活过几轮目录同步。
+ * 与 `strict-tool-budget.ts` 的端点上限同形态：端点级、仅内存、进程退出即失效。
+ * 代价是每个进程启动后第一次对这类路由仍会多一次 400 + 剥字段重发（约一个 TTFB，
+ * 用户无感）；换来的是不会把一次网关误报固化到磁盘、跨会话生效。要彻底消除这次重发，
+ * 正确入口是用户在 `availableModels[].compat` 里显式声明 `supportsReasoningEffort: false`。
+ *
+ * 原先这里是 `learnedOutranksCatalog`（healed/probe 7 天压过目录）。它随「自愈不再写回
+ * 模型属性」一并删除：学习字段的写入方只剩正向档位学习与主动探针，目录是它们的上游事实，
+ * 没有理由让一次运行时观测在 7 天内压过目录。
  */
-const LEARNED_PRECEDENCE_MS = 7 * 24 * 60 * 60 * 1000;
+const endpointEffortRejected = new Set<string>();
 
-/** 学习路径（自愈/探针）会写的字段 —— 有效期内目录不得覆盖它们，只能补空缺。 */
-const LEARNED_FIELDS = ["effortValues", "supportsReasoning", "maxOutputTokens"] as const;
-
-/**
- * 判断「已有条目是有效期内的学习结果、而进来的是目录数据」。
- * `persist()` 的跨进程合并与 `mergeEntry` 的进程内合并共用这一个判据，两处不得分叉。
- */
-function learnedOutranksCatalog(
-  prev: ModelCapabilityEntry | undefined,
-  incomingSource: ModelCapabilityEntry["source"],
-  now: number,
-): prev is ModelCapabilityEntry {
-  if (!prev || incomingSource !== "catalog") return false;
-  if (prev.source !== "healed" && prev.source !== "probe") return false;
-  return typeof prev.fetchedAt === "number" && now - prev.fetchedAt < LEARNED_PRECEDENCE_MS;
+/** 端点级记账的键：真名（小写，与能力缓存同一套归一化输入）+ 归一化 baseURL。 */
+function endpointEffortKey(model: string, baseURL?: string | null): string {
+  const m = model.trim().toLowerCase();
+  return m ? `${m}@${normalizeBaseURL(baseURL)}` : "";
 }
 
-/** 把学习字段与来源/时间戳从 prev 还原到 next（prev 没有的字段保留目录补上的值）。 */
-function restoreLearnedFields(next: ModelCapabilityEntry, prev: ModelCapabilityEntry): void {
-  const out = next as Record<string, unknown>;
-  const src = prev as Record<string, unknown>;
-  for (const f of LEARNED_FIELDS) {
-    if (src[f] !== undefined) out[f] = src[f];
-  }
-  next.source = prev.source;
-  // fetchedAt 保留学习时刻：有效期从学到的那一刻起算，不被目录同步续期
-  next.fetchedAt = prev.fetchedAt;
+/**
+ * 记下「这个 (真名, 端点) 不接受 `reasoning_effort`」—— 剥字段重试**成功之后**调用。
+ *
+ * 只在内存里生效、进程退出即失效。为什么不写 `supportsReasoning: false`：
+ * 一条网关路由拒绝 effort，推不出官方端点也拒绝；该字段一旦被将来的消费方读走，
+ * 影响面会从一个字段扩大到整个「是否支持推理」的判定（2026-11-12 排查 §2.4-c）。
+ *
+ * @returns 本次是否新记了一条（供轨迹事件的 `recorded` 字段）
+ */
+export function recordEndpointEffortRejected(model: string, baseURL?: string | null): boolean {
+  // 已有非空档位列表（来自用户配置/目录/探针的可信数据）→ 不覆盖。
+  // 那种情况下的 400 更可能是「我们发的那一档不在列表里」，而非「完全不支持」，
+  // 记成端点级不支持会把一个支持 effort 的模型降级。
+  const existing = lookupCapability(model);
+  if (existing?.effortValues && existing.effortValues.length > 0) return false;
+
+  const key = endpointEffortKey(model, baseURL);
+  if (!key || endpointEffortRejected.has(key)) return false;
+  endpointEffortRejected.add(key);
+  log().debug(
+    "MODEL-CAP",
+    `自愈记账：${model}@${normalizeBaseURL(baseURL) || "默认端点"} 不接受 reasoning_effort（仅本进程）`,
+  );
+  return true;
+}
+
+/**
+ * 这个 (真名, 端点) 是否已被本进程记为「不接受 effort」。
+ *
+ * 只读内存：不查目录、不触网、不写盘。`effort.ts` 的能力解析在每次请求前调用它。
+ */
+export function isEndpointEffortRejected(model: string, baseURL?: string | null): boolean {
+  return endpointEffortRejected.has(endpointEffortKey(model, baseURL));
 }
 
 /** 同步失败退避基数（指数退避，封顶 24h）——对齐 gateway-pricing 的负缓存策略。 */
@@ -518,12 +542,6 @@ function persist(): void {
       for (const [field, value] of Object.entries(mine)) {
         if (value !== undefined) merged[field] = value;
       }
-      // 「内存盖磁盘」对学习结果的例外（与 mergeEntry 同一判据）：别的进程刚自愈/探针学到、
-      // 写在磁盘上的结论，不能被本进程一份目录来源的旧条目在落盘时冲掉。
-      const diskEntry = models[key];
-      if (learnedOutranksCatalog(diskEntry, mine.source, Date.now())) {
-        restoreLearnedFields(merged as ModelCapabilityEntry, diskEntry);
-      }
       models[key] = merged as ModelCapabilityEntry;
     }
 
@@ -604,11 +622,9 @@ function mergeEntry(model: string, patch: ModelCapabilityEntry): void {
   }
   const next: ModelCapabilityEntry = { ...base, ...clean };
   next.fetchedAt = clean.fetchedAt ?? Date.now();
-  // 有效期内的学习结果压过目录：目录只能补学习字段的空缺，不改来源（见 LEARNED_PRECEDENCE_MS）。
-  // contextWindow 等学习路径不写的字段照常随目录更新。
-  if (learnedOutranksCatalog(memModels[key], clean.source, Date.now())) {
-    restoreLearnedFields(next, memModels[key]!);
-  }
+  // 学习结果不再享有「压过目录」的有效期：目录是模型属性的上游事实，运行时观测只能
+  // 影响本次请求（见文件头「例外」与 recordEndpointEffortRejected）。原先这里有一条
+  // learnedOutranksCatalog（healed/probe 7 天优先），已随 F3 一并删除。
   memModels[key] = next;
 }
 
@@ -1576,40 +1592,7 @@ export function shouldRetryWithoutEffort(opts: {
 }
 
 /**
- * 记下「该模型不接受 `reasoning_effort`」—— 剥字段重试**成功之后**调用。
- *
- * 为什么必需：`shouldRetryWithoutEffort` 的结构兜底不看措辞，因此也**学不到任何东西**
- * （措辞里没有档位列表可抽）。若只重试不记账，就会退化成「每次对话都先撞一次 400 再重试」——
- * 永久 2 倍请求数、2 倍首字延迟。自愈的承诺是「首次可能多一跳，之后就准了」，
- * 记账是「之后就准了」这半句的全部实现。
- *
- * 写 `effortValues: []` 而非删条目：空数组是「服务端明确不校验/不接受该字段」的既有语义
- * （见 probeModelCapability 的 200 分支），`effort.ts::resolveFromCapabilityCache` 读到空数组
- * 就会走 unknown 档、不再下发字段——正是我们想要的下一次行为。
- *
- * ⚠ 只在重试**成功**后调用。若剥掉 effort 仍失败，说明真因不是这个字段，
- * 记账就会冤枉它：那个模型可能明明支持 effort，却被永久标记为不支持。
- */
-export function recordEffortRejected(model: string): boolean {
-  // 已有非空档位列表（来自用户配置/目录/探针的可信数据）→ 不覆盖。
-  // 那种情况下的 400 更可能是「我们发的那一档不在列表里」，而非「完全不支持」，
-  // 抹成 [] 会把一个支持 effort 的模型永久降级。
-  const existing = lookupCapability(model);
-  if (existing?.effortValues && existing.effortValues.length > 0) return false;
-
-  mergeEntry(model, {
-    effortValues: [],
-    supportsReasoning: false,
-    source: "healed",
-    fetchedAt: Date.now(),
-  });
-  persist();
-  log().debug("MODEL-CAP", `自愈记账：${model} 不接受 reasoning_effort，后续不再下发`);
-  return true;
-}
-
-/**
- * 结构兜底连续成功多少次才升级为落盘记账。
+ * 结构兜底连续成功多少次才升级为**进程内端点记账**。
  *
  * 结构兜底只凭「HTTP 4xx + 我们发了 effort」触发，不看措辞，**归因证据是弱的**：
  * 轨迹里两例（glm-5.3-uniapi 的 MaaS 400、gpt-6-luna 的推理回放解密失败）都是与 effort
@@ -1627,23 +1610,29 @@ const structuralHealStreak = new Map<string, number>();
  *
  * - 措辞点名（`wording`）+ 重试成功 → 立即记账：服务端明说了字段，证据充分。
  * - 结构兜底（`structural`）+ 重试成功 → 只累加进程内计数，连续达到阈值才记账。
- * - 重试失败 → 不记账，并清零该模型的计数：真因不是这个字段，「连续」被打断。
+ * - 重试失败 → 不记账，并清零该端点的计数：真因不是这个字段，「连续」被打断。
  *
- * @returns 本次是否把「不支持 effort」写进了缓存（供轨迹事件的 `recorded` 字段）
+ * 记账落点是**进程内的端点表**（见 `recordEndpointEffortRejected`），不写能力缓存、
+ * 不落盘、不碰 `supportsReasoning`：一条网关路由的行为不等于模型属性。
+ *
+ * @param baseURL 出错请求实际使用的端点（`OpenAIProvider.baseURL`）。缺省为默认端点。
+ * @returns 本次是否新记了这个端点（供轨迹事件的 `recorded` 字段）
  */
 export function recordHealOutcome(
   model: string,
   trigger: "wording" | "structural",
   retryOk: boolean,
+  baseURL?: string | null,
 ): boolean {
-  const key = model.trim().toLowerCase();
+  // 「连续」按端点算：真名相同、端点不同的两条路由是两套行为，不能共享连击计数。
+  const key = endpointEffortKey(model, baseURL);
   if (!retryOk) {
     structuralHealStreak.delete(key);
     return false;
   }
   if (trigger === "wording") {
     structuralHealStreak.delete(key);
-    return recordEffortRejected(model);
+    return recordEndpointEffortRejected(model, baseURL);
   }
   const streak = (structuralHealStreak.get(key) ?? 0) + 1;
   if (streak < STRUCTURAL_HEALS_BEFORE_RECORD) {
@@ -1655,10 +1644,10 @@ export function recordHealOutcome(
     return false;
   }
   structuralHealStreak.delete(key);
-  return recordEffortRejected(model);
+  return recordEndpointEffortRejected(model, baseURL);
 }
 
-/** 自愈动作建议——调用方据此决定「剥掉哪个字段重试」。 */
+/** 自愈动作建议——调用方据此决定「剥掉哪个字段 / 钳制哪个参数后重试」。 */
 export interface HealAdvice {
   /**
    * 是否应剥掉 effort 字段后重试（该模型不接受我们发的档位）。
@@ -1672,6 +1661,14 @@ export interface HealAdvice {
   contextExceeded?: boolean;
   /** 学到的新能力（已写入缓存）。 */
   learned?: ModelCapabilityEntry;
+  /**
+   * 本次请求的 `max_tokens` 上限（服务端自报的 `[1, N]` 区间上界）。
+   *
+   * **只作用于本次重发，不写回 `maxOutputTokens`**：`[1, N]` 是这一次请求参数的合法
+   * 区间，可能来自网关配额档位或某个子路由的限制，推不出模型属性（2026-11-12 F3-b）。
+   * 调用方把 `max_tokens` 钳到它重发一次；下一次请求回到正常预算。
+   */
+  clampMaxTokens?: number;
 }
 
 /**
@@ -1681,7 +1678,7 @@ export interface HealAdvice {
  * 1. effort 值不被接受 → 记录服务端自报档位（若有），建议剥掉字段重试。
  *    这覆盖「探针拿到的是网关并集、模型级更严」的两级校验差异（实测 luna：
  *    字段级含 minimal，模型级拒 minimal）。
- * 2. max_tokens 超限 → 记录真实上限。
+ * 2. max_tokens 超区间 → 给出本次请求的钳制上限（不进缓存）。
  * 3. 上下文超限 → 标记 contextExceeded，让调用方走压缩而不是盲目重试。
  *
  * @param model 出错的模型名
@@ -1710,18 +1707,17 @@ export function learnFromError(model: string, errorMessage: string): HealAdvice 
     }
   }
 
-  // ── 2. max_tokens 上限 ──
+  // ── 2. max_tokens 超区间 ──
+  //
+  // ⚠ 这里**只给「本次请求怎么改」**，不写回 `maxOutputTokens`（2026-11-12 F3-b）。
+  // 反例是一个真实的结构缺陷：把网关一次 `[1, N]` 报错当成模型的物理输出上限写进缓存
+  // （`source: "healed"`、7 天内优先于目录），于是一次偶发的配额档位错误就能把模型
+  // 锁在更小的输出上限上，而且跨会话生效。F1（请求预算与物理上限拆分）修好后，
+  // 默认预算是 32k，这条路径基本不会再被触发。
   const maxOut = extractMaxTokensFromError(errorMessage);
   if (maxOut !== null && /max_tokens|max_output_tokens|max_completion_tokens/i.test(errorMessage)) {
-    const patch: ModelCapabilityEntry = {
-      maxOutputTokens: maxOut,
-      source: "healed",
-      fetchedAt: Date.now(),
-    };
-    mergeEntry(model, patch);
-    persist();
-    advice.learned = { ...(advice.learned ?? {}), ...patch };
-    log().debug("MODEL-CAP", `自愈：${model} maxOutputTokens 学习为 ${maxOut}`);
+    advice.clampMaxTokens = maxOut;
+    log().debug("MODEL-CAP", `自愈：${model} 本次请求 max_tokens 钳到 ${maxOut}（不写回模型属性）`);
   }
 
   // ── 3. 上下文超限 ──
@@ -1755,6 +1751,9 @@ export function __resetCapabilityCacheForTest(seed?: Record<string, ModelCapabil
   memModels = seed ? { ...seed } : {};
   memMeta = {};
   structuralHealStreak.clear();
+  // 端点级「拒绝 effort」表同样要清：它是进程内存态，跨用例泄漏会让后续用例
+  // 在同一个 (真名, 端点) 上误判「已知不支持」。
+  endpointEffortRejected.clear();
 }
 
 /** 读当前内存态（仅测试/诊断用）。 */

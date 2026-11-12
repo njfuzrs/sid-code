@@ -167,10 +167,12 @@ describe("learnFromError — 自愈建议", () => {
     expect(advice.dropEffort).toBeUndefined();
   });
 
-  test("max_tokens 超限 → 学到真实上限", () => {
+  test("max_tokens 超区间 → 只给本次请求的钳制上限，不写回模型属性", () => {
     const advice = learnFromError("qwen-x", "Range of max_tokens should be [1, 131072]");
-    expect(advice.learned?.maxOutputTokens).toBe(131072);
-    expect(lookupCapability("qwen-x")?.maxOutputTokens).toBe(131072);
+    expect(advice.clampMaxTokens).toBe(131072);
+    // 物理输出上限只来自注册表 / 能力目录 / 用户配置；一次网关报错不能改写它（F3-b）
+    expect(advice.learned).toBeUndefined();
+    expect(lookupCapability("qwen-x")).toBeNull();
   });
 
   test("无关错误（鉴权/限流）不产生任何自愈动作", () => {

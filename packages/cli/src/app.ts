@@ -34,6 +34,7 @@ import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import type { FallbackDecision } from "@sid-code/core/llm/fallback.ts";
 import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
 import { TokenEstimator } from "@sid-code/core/llm/token-estimator.ts";
+import { resolveRequestBudget } from "@sid-code/core/llm/output-budget.ts";
 import { ThinkingManager } from "@sid-code/core/llm/thinking.ts";
 import {
   lookupErrorMessage,
@@ -1168,8 +1169,10 @@ export class App {
     this.ctxMgr = new ContextManager({
       maxTokens: ctxWindow,
       compactThreshold: autoCompactPct,
-      // §12 P3-2：完成缓冲区的输出预留分量（给当前 turn 的输出留空间，避免压缩打断任务）
-      maxOutputTokens: estimator.getMaxOutputTokens(opts.config.model, opts.config.availableModels),
+      // §12 P3-2 / F8：完成缓冲区的输出预留分量 = **本次请求的输出预算**，不是模型物理上限。
+      // 物理上限（如 DeepSeek 384k）从不会在一次回复里用完，拿它算缓冲会凭空多留 88k，
+      // 把 1M 窗口的 emergency 门槛抬到 140k（正确值 32,768 + 20k 摘要预留 = 约 52k）。
+      requestOutputBudget: resolveRequestBudget(opts.config._explicitMaxTokens),
     });
     this.ctxMgr.setSessionId(sessionId);
     // CG-1 / R4：bash 的 `cd` 跨出（或回到）工作区根时，把「旧说法作废」排进持久块。
@@ -3003,11 +3006,9 @@ export class App {
     // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
     try {
       const est = new TokenEstimator();
-      // §12 P3-2：窗口与输出上限一起同步——完成缓冲区的输出预留分量依赖新模型的 maxOutputTokens。
-      this.ctxMgr.setMaxTokens(
-        est.getContextLimit(model, this.config.availableModels),
-        est.getMaxOutputTokens(model, this.config.availableModels),
-      );
+      // F8：切模型只需同步窗口——输出预算是「本次请求打算写多少」，不随模型变；
+      // 之前把新模型的物理上限一起传进去，等于让缓冲随模型输出能力虚高。
+      this.ctxMgr.setMaxTokens(est.getContextLimit(model, this.config.availableModels));
     } catch {
       /* 窗口解析失败不影响切换，沿用旧窗口 */
     }
@@ -6491,10 +6492,9 @@ export class App {
           if (switched) {
             try {
               const est = new TokenEstimator();
-              // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
+              // F8：只同步窗口，输出预算不随模型变（理由见 /model 切换处）。
               this.ctxMgr.setMaxTokens(
                 est.getContextLimit(setting.model, this.config.availableModels),
-                est.getMaxOutputTokens(setting.model, this.config.availableModels),
               );
             } catch {
               /* 窗口解析失败沿用旧值，不阻断恢复 */
@@ -12261,11 +12261,8 @@ export class App {
         try {
           const { TokenEstimator } = require("@sid-code/core/llm/token-estimator.ts");
           const est = new TokenEstimator();
-          // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
-          this.ctxMgr.setMaxTokens(
-            est.getContextLimit(result.model, this.config.availableModels),
-            est.getMaxOutputTokens(result.model, this.config.availableModels),
-          );
+          // F8：只同步窗口，输出预算不随模型变（理由见 /model 切换处）。
+          this.ctxMgr.setMaxTokens(est.getContextLimit(result.model, this.config.availableModels));
         } catch {
           /* 窗口解析失败不影响配置，沿用旧窗口 */
         }

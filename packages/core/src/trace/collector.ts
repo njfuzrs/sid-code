@@ -1217,6 +1217,9 @@ export class TraceCollector {
       raw_messages: rawMessages,
       new_messages: newMessages,
     };
+    // V1-1：实际发出的 max_tokens。旧记录里完全没有这个字段，排查「输入 + max_tokens 撞窗口」
+    // 只能从 debug.log 抽查（2026-11-12 那份报告只有 6 条样本），不足做验收。
+    if (req.max_tokens !== undefined) requestSide.max_tokens = req.max_tokens;
 
     // P1-6：推理旋钮**每次请求都记**（不像 system/tools 只记首次）——它是逐轮可变的：
     // side-call 关思考、主循环开思考、用户中途 `/think off`，都会让同一会话里不同请求
@@ -1307,6 +1310,9 @@ export class TraceCollector {
           model: req.model,
           msg_count: rawMessages.length,
           estimated_input_tokens: totalTokensEst,
+          // V1-1：与完整记录同源，预写行也要能回答「这次打算发多少输出」——
+          // 请求没回来的那种失败（进程崩溃 / 断连）只有这一行可查。
+          ...(req.max_tokens !== undefined ? { max_tokens: req.max_tokens } : {}),
         }),
       );
     } catch {

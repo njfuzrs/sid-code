@@ -313,8 +313,9 @@ describe("#11 resolvePromptMaxTokens（系统提示词预算动态化）", () =>
   });
 
   test("无显式值时按模型 contextWindow 的 90% 推导（1M 窗口不再卡 180K）", () => {
-    // deepseek 系 1M 窗口 → 0.9M，远大于历史写死的 180000
-    expect(resolvePromptMaxTokens({ tools: [], model: "deepseek-v4-pro" })).toBe(900_000);
+    // deepseek 系 1M 窗口 → 0.9 × 1,048,576 = 943,718（注册表 2026-11-12 起用官方精确值），
+    // 远大于历史写死的 180000
+    expect(resolvePromptMaxTokens({ tools: [], model: "deepseek-v4-pro" })).toBe(943_718);
     // Claude 200K → 180K（恰好与历史值一致，验证不退步）
     expect(resolvePromptMaxTokens({ tools: [], model: "claude-sonnet-4-20250514" })).toBe(180_000);
   });
