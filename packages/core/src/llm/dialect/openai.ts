@@ -30,6 +30,7 @@ export const oSeriesDialect: Dialect = {
     effortGatedByThinking: false,
     allowsMaxEffort: false,
     toolChoice: "full",
+    cacheKeyIncludesThinking: false,
   },
   applyToSendParams(params: SendParams, effort) {
     if (effort !== undefined) {
@@ -76,6 +77,7 @@ export const openAIResponsesDialect: Dialect = {
     effortGatedByThinking: false,
     allowsMaxEffort: true,
     toolChoice: "full",
+    cacheKeyIncludesThinking: false,
   },
   applyToSendParams(params: SendParams, effort) {
     if (effort !== undefined) {
@@ -137,6 +139,7 @@ export const unknownDialect: Dialect = {
     effortGatedByThinking: true,
     allowsMaxEffort: true,
     toolChoice: "full",
+    cacheKeyIncludesThinking: false,
   },
   applyToSendParams() {
     /**
