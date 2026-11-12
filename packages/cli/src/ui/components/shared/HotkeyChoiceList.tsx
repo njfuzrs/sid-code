@@ -59,6 +59,14 @@ export interface HotkeyChoiceListProps<T> {
    * 传 undefined 表示不处理 Esc（此时 Esc 交给外层）。
    */
   escapeValue?: T;
+  /**
+   * B21：每收到一个按键调用一次（含方向键与被忽略的键），只做观测不做决策。
+   *
+   * 为什么需要：排查「弹窗点不动」时最大的盲区是「按键到底有没有到组件」——
+   * 到了但被去重吞掉、和压根没到，在轨迹上长得一模一样。把「到达」这一层单独记下来，
+   * 两种故障才分得开（判读见 `permission/decision-telemetry.ts` 的 PromptObservation）。
+   */
+  onKeyObserved?: () => void;
 }
 
 export function HotkeyChoiceList<T>({
@@ -66,12 +74,17 @@ export function HotkeyChoiceList<T>({
   initialIndex = 0,
   onSelect,
   escapeValue,
+  onKeyObserved,
 }: HotkeyChoiceListProps<T>): React.JSX.Element {
   const [cursor, setCursor] = useState(initialIndex);
 
   // 键盘决策全部委托给 resolveChoiceKey（纯函数、可单测）。组件这里只做副作用：
   // 移光标 / 回灌选择。判定顺序的坑（导航必须先于 insertable 门禁）由那边的单测锁住。
   useKeypress(KeypressPriority.Critical, (key: Key) => {
+    // B21：「按键到了组件」这一层的独立观测。必须在 resolveChoiceKey 之前记——
+    // 它要回答的是「键有没有送进来」，而不是「键被怎么处理了」（后者由 decide 的
+    // keysDropped 记）。两者相减才能区分「没到」与「到了被吞」。
+    onKeyObserved?.();
     const action = resolveChoiceKey(choices, cursor, key, escapeValue !== undefined);
     switch (action.kind) {
       case "move":

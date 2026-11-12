@@ -825,6 +825,9 @@ export class TraceCollector {
       // 缺口分析补全：派生/采集类指标（逐轮更新）
       total_reasoning_tokens: 0,
       total_gen_elapsed_ms: 0,
+      // D17：辅助调用（fork / 旁路）的生成耗时单独累计，不进 total_gen_elapsed_ms
+      //（吞吐分母只计主循环，与分子 total_tokens_received 的口径对齐）。
+      side_gen_elapsed_ms: 0,
       gen_samples: 0,
       total_tool_duration_ms: 0,
       tool_duration_samples: 0,
@@ -1848,6 +1851,23 @@ export class TraceCollector {
       ...(e.guard ? { guard: e.guard } : {}),
       // A9：auto 档分类器回退人工的成因
       ...(e.autoClassifier ? { auto_classifier: e.autoClassifier } : {}),
+      // B21：弹窗生命周期观测。字段名用 prompt_lifecycle 而不是 prompt —— 后者与
+      // UserPromptSubmit 的 data.prompt（用户输入原文）重名，上传前的 LOCAL_ONLY 剥离
+      // 是按字段名匹配的，同名会把用户输入一起剥掉。
+      // 只进本地轨迹？不，这组字段不含隐私（全是计数与时长），但它只对本机排障有意义，
+      // 云端没有对应的消费方，所以同样登记进 LOCAL_ONLY 剥离，不发出去。
+      ...(e.prompt
+        ? {
+            prompt_lifecycle: {
+              ...(e.prompt.queueMs !== undefined ? { queue_ms: e.prompt.queueMs } : {}),
+              ...(e.prompt.shownMs !== undefined ? { shown_ms: e.prompt.shownMs } : {}),
+              mounts: e.prompt.mounts,
+              keys: e.prompt.keys,
+              keys_dropped: e.prompt.keysDropped,
+              resolve_dropped: e.prompt.resolveDropped,
+            },
+          }
+        : {}),
     });
   }
 
@@ -3599,14 +3619,19 @@ export class TraceCollector {
       // 所以 tok/s 的分母与 /perf 的生成耗时分位数是同一组样本。
       if (event.type === "stream_completed") {
         const elapsed = event.elapsedMs;
-        if (
-          typeof elapsed === "number" &&
-          elapsed > 0 &&
-          callScopeOf(event) === "main" &&
-          !isTruncatedStream(event)
-        ) {
-          this.metadata.total_gen_elapsed_ms += elapsed;
-          this.metadata.gen_samples += 1;
+        if (typeof elapsed === "number" && elapsed > 0) {
+          // D17（#767）+ /perf PR-A：分母只计主循环。分子 total_tokens_received 只在主循环 AfterModel
+          // 累加，fork / 旁路调用 / 子代理的生成耗时混进分母会让 tokens/sec 系统性偏低
+          //（/cost 取证会话低估 20%），且随辅助调用占比平移、跨版本不可比。
+          // 判据统一走 callScopeOf（与 #767 的 `agentId || caller !== undefined` 覆盖同一集合，
+          // 另外认 900_000+ 副段），非主循环的记 side_gen_elapsed_ms 供归因。
+          if (callScopeOf(event) !== "main") {
+            this.metadata.side_gen_elapsed_ms += elapsed;
+          } else if (!isTruncatedStream(event)) {
+            // 被打断 / 超时结束的主循环流不是「生成完」的耗时，不进分母（PR-A A3）
+            this.metadata.total_gen_elapsed_ms += elapsed;
+            this.metadata.gen_samples += 1;
+          }
         }
       }
       // 缺口分析六类·可靠性：重试 / 弃流会话级聚合。

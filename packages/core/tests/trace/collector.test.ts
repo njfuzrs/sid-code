@@ -1001,6 +1001,52 @@ describe("TraceCollector", () => {
       expect(meta.output_tokens_per_sec).toBeUndefined();
     });
 
+    // T-D1（D17）：吞吐分母只计主循环。
+    // 取证会话实测形态：fork 的 stream_completed 同时带 agentId + caller，
+    // 主循环两者皆无；旁路调用（标题生成）只带 caller。
+    test("tokens/sec 分母只计主循环：fork/旁路生成耗时进 side_gen_elapsed_ms（D17）", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, {
+        outputTokens: 17440,
+        provider: "openai",
+        model: "origin-deepseek-v4-1-flash",
+      });
+      // 主循环 stream_completed：1s
+      collector.writeRetryTelemetry({
+        type: "stream_completed",
+        provider: "openai",
+        totalEvents: 10,
+        elapsedMs: 1000,
+      });
+      // fork 的 stream_completed：带 agentId（取证会话 5 条 fork 均为此形态）
+      collector.writeRetryTelemetry({
+        type: "stream_completed",
+        provider: "openai",
+        totalEvents: 10,
+        elapsedMs: 500,
+        agentId: "fork:memory-extract",
+        caller: "agent:fork",
+      });
+      // 旁路调用（只有 caller、无 agentId，如标题生成）同样不进主循环分母
+      collector.writeRetryTelemetry({
+        type: "stream_completed",
+        provider: "openai",
+        totalEvents: 10,
+        elapsedMs: 300,
+        caller: "title_generation",
+      });
+
+      let meta = collector.getMetadata()!;
+      expect(meta.total_gen_elapsed_ms).toBe(1000);
+      expect(meta.gen_samples).toBe(1);
+      expect(meta.side_gen_elapsed_ms).toBe(800);
+
+      await hookSystem.fireSessionEndEvent("exit");
+      meta = collector.getMetadata()!;
+      // 吞吐分母只含主循环生成耗时：17440 tokens / 1s（而不是混入 800ms 后的 ~9686）
+      expect(meta.output_tokens_per_sec).toBeCloseTo(17440, 0);
+    });
+
     test("弃流/重试：会话级聚合计数（六类·可靠性）", async () => {
       await fireSessionStart(hookSystem);
       collector.writeRetryTelemetry({ type: "retry", provider: "openai", attempt: 1 });

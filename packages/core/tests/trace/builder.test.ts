@@ -76,6 +76,7 @@ function makeMetadata(overrides: Partial<TraceMetadata> = {}): TraceMetadata {
     // （src/trace/collector.ts:525 起），即一次调用都还没发生时的零态。
     total_reasoning_tokens: 0,
     total_gen_elapsed_ms: 0,
+    side_gen_elapsed_ms: 0,
     gen_samples: 0,
     total_tool_duration_ms: 0,
     tool_duration_samples: 0,

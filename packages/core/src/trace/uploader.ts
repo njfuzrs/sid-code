@@ -1150,6 +1150,11 @@ export const LOCAL_ONLY_EVENT_DATA_FIELDS = [
   // T5：SubagentStop 的 sidechain 路径（绝对路径，含用户名）。digest 靠它回答「失败子代理
   // 的成果在哪」，属于纯本地排障信息；云端有 agent_id 就能自己关联，不需要这条路径。
   "agent_transcript_path",
+  // B21：PermissionDecision 的弹窗生命周期（排队 / 显示 / 按键 / 去重吞的次数与时长）。
+  // 不含隐私，但只对本机排障有意义（云端没有消费方）：它回答的是「这台机器上这次为什么
+  // 点不动」，不是跨会话指标。字段名刻意不用 `prompt`——那个名字会与 UserPromptSubmit
+  // 的 data.prompt（用户输入原文）撞上，一并被这条按名剥离的机制误删。
+  "prompt_lifecycle",
 ] as const;
 
 const LOCAL_ONLY_NEEDLES = LOCAL_ONLY_EVENT_DATA_FIELDS.map((f) => `"${f}"`);
