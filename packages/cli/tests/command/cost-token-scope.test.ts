@@ -1,0 +1,111 @@
+/**
+ * D3（2026-11-10 成本口径核查）：stock 和 flow 两种 token 口径都没标注。
+ *
+ * ## 它防的是什么
+ *
+ * 同一个会话里，Footer 的 `↑` 是 **stock**（最后一次请求的完整 prompt = 当前上下文大小，
+ * 来自 `SessionState.getStockPromptTokens()`），而 `/cost`、`/debug` 的「输入」是 **flow**
+ * （Σ 每次请求的 prompt，来自 `getTotalUsage().inputTokens` = ΣcumulativePromptTokens）。
+ * 两个数都对，但界面上都只叫「输入」，用户必然以为其中一个算错了（取证会话里
+ * 99,126 vs 2,398,645，差 24 倍）。
+ *
+ * 修法是**两处都标明口径**并把它们连起来（「状态栏 ↑ 显示的就是它」），不是改数值。
+ * 所以测试的判据是：
+ * 1. 两行都存在且各自带上口径字样；
+ * 2. 两行取的是**不同的字段**（flow 大于 stock，且分别等于对应源字段）——
+ *    防「两行都读同一个字段」这种看起来标了、实际仍是同一口径的假修复；
+ * 3. /debug 与 /cost 用同一组数字、同一套说法（同一指标一种口径，不许两个入口两种措辞）。
+ */
+import { describe, test, expect } from "bun:test";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import { CostCommand } from "../../src/command/commands/cost/cost.ts";
+import debugCommand from "../../src/command/commands/debug/debug.ts";
+
+const IDLE = { busy: false, busyLabel: null, pendingLabels: [] as string[] };
+
+/**
+ * 两次 openai 族请求：flow = 30,000 + 40,000 = 70,000，stock = 末次 40,000。
+ * openai 族的 prompt_tokens 本就含命中，`normalizeCacheUsage` 的 promptTotal = inputTokens，
+ * 所以这组数字同时能验「stock 是末次值、flow 是累加值」这个区别本身。
+ */
+function sessionTwoRequests(): SessionState {
+  const ss = new SessionState("cost-token-scope-test");
+  ss.updateUsage(
+    "gpt-test",
+    { inputTokens: 30_000, outputTokens: 100, cacheReadInputTokens: 20_000 },
+    1,
+    "openai",
+  );
+  ss.updateUsage(
+    "gpt-test",
+    { inputTokens: 40_000, outputTokens: 200, cacheReadInputTokens: 30_000 },
+    1,
+    "openai",
+  );
+  return ss;
+}
+
+function ctxOf(ss: SessionState): any {
+  return {
+    sessionState: ss,
+    config: { model: "gpt-test", provider: "openai" },
+    cwd: process.cwd(),
+    traceCollector: undefined,
+  };
+}
+
+async function runCost(ss: SessionState): Promise<string> {
+  const result = (await new CostCommand(() => IDLE).call("", ctxOf(ss))) as { value: string };
+  return result.value;
+}
+
+async function runDebug(ss: SessionState): Promise<string> {
+  const result = (await debugCommand.call("", ctxOf(ss))) as { value: string };
+  return result.value;
+}
+
+describe("/cost 标注 stock / flow 两种 token 口径（D3）", () => {
+  test("flow 行用累计发送口径，stock 行用当前上下文口径，且指向状态栏 ↑", async () => {
+    const out = await runCost(sessionTwoRequests());
+    // flow：两次请求之和 70,000（不是末次 40,000）。D5 起该行是归一化三段之和 + 千分位。
+    expect(out).toContain("输入·合计（累计发送，flow）: 70,000");
+    // stock：末次请求 40,000（不是累加 70,000）；D5 起千分位
+    expect(out).toContain("当前上下文（stock）: 40,000");
+    // 两个口径的桥梁：用户看到 Footer 的 ↑ 时知道它对应哪一行
+    expect(out).toContain("状态栏 ↑");
+  });
+
+  test("两行取的不是同一个字段（防「都标了、读的是同一个值」）", async () => {
+    const ss = sessionTwoRequests();
+    const out = await runCost(ss);
+    const flow = ss.getTotalUsage().inputTokens;
+    const stock = ss.getStockPromptTokens();
+    expect(flow).toBe(70_000);
+    expect(stock).toBe(40_000);
+    expect(flow).not.toBe(stock);
+    // D5 有意改了输出格式（三段互斥 + 千分位），断言随契约同步更新：
+    // flow 行改读归一化 promptTotal（openai 族与 cumulativePromptTokens 相同）。
+    expect(out).toContain(`输入·合计（累计发送，flow）: ${flow.toLocaleString("en-US")}`);
+    expect(out).toContain(`当前上下文（stock）: ${stock.toLocaleString("en-US")}`);
+  });
+});
+
+describe("/debug 标注 stock / flow 两种 token 口径（D3）", () => {
+  test("入 标 flow、当前上下文标 stock，数字与 /cost 同源", async () => {
+    const ss = sessionTwoRequests();
+    const costOut = await runCost(ss);
+    const debugOut = await runDebug(ss);
+
+    expect(debugOut).toContain("入 70,000（累计发送, flow）");
+    expect(debugOut).toContain("当前上下文 : 40,000（stock");
+    expect(debugOut).toContain("状态栏 ↑");
+
+    // 两个入口同一指标同一数字：截图对账时不许出现「/cost 和 /debug 又对不上」
+    // D5 起 /cost 也带千分位，两个入口的写法终于一致（此前一个 70000 一个 70,000）。
+    const pick = (out: string, re: RegExp): string => out.match(re)?.[1] ?? "";
+    expect(pick(debugOut, /入 ([\d,]+)（累计发送/)).toBe("70,000");
+    expect(pick(costOut, /输入·合计（累计发送，flow）: ([\d,]+)/)).toBe("70,000");
+    expect(pick(debugOut, /当前上下文 : ([\d,]+)（stock/)).toBe("40,000");
+    expect(pick(costOut, /当前上下文（stock）: ([\d,]+)/)).toBe("40,000");
+  });
+});

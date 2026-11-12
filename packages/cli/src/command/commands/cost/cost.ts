@@ -86,9 +86,9 @@ export class CostCommand implements LocalCommandModule {
       `API 耗时: ${SessionState.formatDuration(ss.totalAPIDuration)}`,
       `工具耗时: ${SessionState.formatDuration(ss.totalToolDuration)}`,
       "",
-      "Token 用量（累计发送）:",
-      // 三段互斥：未命中 + 命中 + 写入 = 合计。命中/写入为 0 时整行省略（与旧
-      // 「缓存创建/读取只在非 0 时显示」一致），0 不参与加法，用户照样能验算。
+      "Token 用量:",
+      // D5：三段互斥。未命中 + 命中 + 写入 = 合计，命中/写入为 0 时整行省略
+      // （与旧「缓存创建/读取只在非 0 时显示」一致，0 不参与加法，用户照样能验算）。
       `  输入·未命中: ${fmtNum(cacheView.uncachedInputTokens)}`,
       ...(cacheView.cacheHitTokens > 0
         ? [`  输入·缓存命中: ${fmtNum(cacheView.cacheHitTokens)}`]
@@ -96,8 +96,14 @@ export class CostCommand implements LocalCommandModule {
       ...(cacheView.cacheWriteTokens > 0
         ? [`  输入·缓存写入: ${fmtNum(cacheView.cacheWriteTokens)}`]
         : []),
-      `  输入·合计: ${fmtNum(cacheView.promptTotal)}`,
-      `  输出: ${fmtNum(cacheView.outputTokens)}`,
+      // D3：合计行是 **flow（累计发送）** 口径 —— 每次请求的 prompt 都计入；
+      // 用的是归一化后的 promptTotal（三段之和）而不是 provider 原始 inputTokens：
+      // 后者对 anthropic 族只是未命中余量，会让三段加法对不上（D5）。
+      // D5 的千分位在这里也必须生效，否则同一面板两套数字长相。
+      `  输入·合计（累计发送，flow）: ${fmtNum(cacheView.promptTotal)}  ← 全会话累加，每次请求的 prompt 都计入`,
+      // D3：stock 与 flow 是两个口径，同一次会话里必然不等，不标清楚用户会以为其中一个是错的。
+      `  当前上下文（stock）: ${fmtNum(ss.getStockPromptTokens())}  ← 最后一次请求的完整 prompt；状态栏 ↑ 显示的就是它`,
+      `  输出（累计）: ${fmtNum(cacheView.outputTokens)}`,
     );
 
     // 模块 B：本会话缓存命中率 + 省钱（经归一化单一事实源）

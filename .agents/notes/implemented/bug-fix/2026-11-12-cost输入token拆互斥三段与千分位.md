@@ -21,6 +21,28 @@ Source: /cost 口径不一致与面板重做-修复与验收方案（2026-11-10�
 - 新增 `packages/cli/tests/command/cost-token-breakdown.test.ts`（4 条）：
   openai 族拆段、anthropic 族不重复计命中、0 值省略、多模型两族混用分模型之和等于汇总。
 
+**与 #760（D3，同批合入）的融合**：D3 给 token 段加了 stock/flow 口径标注
+（`输入（累计发送，flow）` / `当前上下文（stock）`），与 D5 改的是同一段代码。融合结果：
+
+```text
+Token 用量:
+  输入·未命中: 198,709
+  输入·缓存命中: 2,199,936
+  输入·合计（累计发送，flow）: 2,398,645  ← 全会话累加，每次请求的 prompt 都计入
+  当前上下文（stock）: 99,126  ← 最后一次请求的完整 prompt；状态栏 ↑ 显示的就是它
+  输出（累计）: 17,440
+```
+
+- **D5 的「合计」正好是 D3 的 flow 行**，合并成一行而不是各留一行（两行同值会引出
+  「为什么有两个累计发送」的新困惑）；stock 行原样保留，`状态栏 ↑` 的桥梁说明保留。
+- 合计行改读 `cacheView.promptTotal`（归一化三段之和），D3 原文读的是
+  `getTotalUsage().inputTokens`（ΣcumulativePromptTokens）。两者对 openai 族相同；
+  对 anthropic 族后者只是未命中余量，用它会让「三段之和 = 合计」的等式在 anthropic
+  族下不成立。这是 D5 修法的必然结果，也是 D3「标口径」在 anthropic 族下更准确的形式。
+- D3 的既有测试 `cost-token-scope.test.ts` 断言了旧字段名与非千分位，**属契约被有意
+  变更**（D5 明确要求改格式），已同步更新断言；其守护意图（flow/stock 取不同字段、
+  两处都标口径、指向状态栏 ↑）全部保留。
+
 没有新增 core 导出，也没有改任何计费/归一化逻辑——`normalizeCacheUsage` 与
 `getNormalizedCacheUsage()` 都是既有单一事实源，本次只是让展示层改用它。
 
