@@ -846,6 +846,24 @@ export class MCPManager {
     return client.readResource(uri);
   }
 
+  /**
+   * 是否存在任何暴露了资源的 server（MCP 资源工具的 isEnabled 判据）。
+   *
+   * 判据只能是运行时计数，不能是「配置里有没有 MCP server」：MCP 没有在握手阶段
+   * 声明 resources 能力的标准字段，一个 server 能不能列资源只能靠 `listResources()`
+   * 试一次（见 refreshResources），所以「真的有资源」就是 `resourceCount > 0`。
+   * 大多数 server 只暴露 tools，这个判据能把 `ListMcpResources` / `ReadMcpResource`
+   * 从常驻 schema 里挡出去（合计 883 字节 + 2 个 strict 名额）。
+   *
+   * 每轮都要被问一次，所以早退遍历，不构造数组。
+   */
+  hasResources(): boolean {
+    for (const state of this.serverStates.values()) {
+      if (state.resourceCount > 0) return true;
+    }
+    return false;
+  }
+
   /** 获取所有服务器的资源列表 */
   getAllResources(): Array<{ serverName: string; resource: MCPResource }> {
     const result: Array<{ serverName: string; resource: MCPResource }> = [];
