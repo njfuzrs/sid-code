@@ -44,10 +44,9 @@ import { getRunningTasks } from "../task/registry.ts";
 import {
   registerWait,
   findWaitBySubject,
-  extractWaitSubjects,
   isWakeupRegistrationEnabled,
 } from "../task/wait-registry.ts";
-import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
+import { collectWaitCommandFamilies, collectWaitSubjects } from "../task/wait-subjects.ts";
 import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
@@ -78,16 +77,6 @@ type MonitorInput = {
   command?: unknown;
   timeout_ms?: unknown;
 };
-
-/** 从命令里抽取被监控对象的签名（S2 用）：`gh pr checks 662` → `gh:pr:662` */
-function extractMonitorSubjects(command: string): string[] {
-  const out = new Set<string>(extractWaitSubjects(command));
-  for (const m of command.matchAll(/\bgh\s+pr\s+(?:checks|view|status)\s+(\d+)/gi))
-    out.add(`gh:pr:${m[1]}`);
-  for (const m of command.matchAll(/\bgh\s+run\s+(?:view|watch)\s+(\d+)/gi))
-    out.add(`gh:run:${m[1]}`);
-  return [...out];
-}
 
 /** 当前运行中的 monitor 简要清单（并发上限错误里列给模型，它才知道该 task_stop 谁） */
 function listRunningMonitorBrief(): string {
@@ -272,7 +261,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
 
     // 同一被监控对象的提示（T-M1-15）：允许启动，但要点破已有同对象监控，
     // 否则模型会为了「保险」再挂一个，两路事件重复叫醒主循环。
-    const subjects = extractMonitorSubjects(command);
+    const subjects = collectWaitSubjects({ command });
     const duplicate = subjects
       .map((s) => findWaitBySubject(s))
       .find((w) => w !== undefined && w.kind === "monitor");
@@ -298,7 +287,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       description,
       registeredAt: taskState.startTime,
       subjects,
-      commandFamilies: extractStatusQueryFamilies(command),
+      commandFamilies: collectWaitCommandFamilies({ command }),
     });
 
     getLogger().info(

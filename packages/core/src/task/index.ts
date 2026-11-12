@@ -137,6 +137,16 @@ export {
 
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 
+// 等待对象签名（R1）：bash / monitor / schedule_wakeup 三个入口共用同一把尺子。
+export {
+  type WaitSubjectSources,
+  MAX_SCRIPT_BODY_BYTES,
+  collectWaitSubjects,
+  collectWaitCommandFamilies,
+  extractNaturalLanguageSubjects,
+  extractScriptPaths,
+} from "./wait-subjects.ts";
+
 // 等待期外部状态查询守卫（P1）：判「在等 + 只读状态查询 + 结果没变」三条同时成立才拦。
 // 与 Q1 的 background-poll-guard 是同一类空转的两个入口，判据不同所以分模块。
 export {
