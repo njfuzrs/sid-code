@@ -421,3 +421,77 @@ describe("strictPriority 从工具定义传到 provider", () => {
     expect(body.tools.some((t: any) => "strictPriority" in t)).toBe(false);
   });
 });
+
+describe("D4：发前收口落 StrictToolsCapped 事件，并按组合去重", () => {
+  /**
+   * 捕获本段用例写出的事件。
+   * 单例是**同进程共享**的，每个用例必须自己 `resetStreamObserver()`（否则下一个用例
+   * 会继承上一个的 sessionId 与去重表，断言变成「上一条事件算不算」）。
+   */
+  function capture() {
+    const events: Array<{ event?: string; data?: Record<string, unknown> }> = [];
+    initStreamObserver("s-capped", "/tmp/s-capped", (e) => events.push(e as any));
+    return {
+      events,
+      capped: () => events.filter((e) => e.event === "StrictToolsCapped"),
+    };
+  }
+
+  test("流式：超限就发一条，同一组合的后续请求不再发", async () => {
+    const { capped } = capture();
+    try {
+      const { provider, sent } = makeProvider({ limit: 20, baseURL: "https://gw-j.example.com" });
+      // 三轮：发前收口每轮都会算出同一份名单，事件必须只有一条
+      for (let i = 0; i < 3; i++) await drain(provider.sendMessageStream(params(makeTools(24))));
+      expect(sent).toEqual([20, 20, 20]);
+    } finally {
+      resetStreamObserver();
+    }
+    const ev = capped();
+    expect(ev).toHaveLength(1);
+    // 工具名是 tool_0…tool_23，全为优先级 0：按列表顺序保留前 20 个，降后 4 个
+    expect(ev[0]!.data!.demoted).toEqual(["tool_20", "tool_21", "tool_22", "tool_23"]);
+    expect(ev[0]!.data!.limit).toBe(20);
+    // endpoint = 「真名模型@归一化端点」：同一网关不同模型的上限互不影响，事件也必须能区分
+    expect(String(ev[0]!.data!.endpoint)).toContain("claude-sonnet-5@");
+  });
+
+  test("非流式路径也发，且与流式共用同一份去重表（不会各发一条）", async () => {
+    const { capped } = capture();
+    try {
+      const { provider } = makeProvider({ limit: 20, baseURL: "https://gw-k.example.com" });
+      await drain(provider.sendMessageStream(params(makeTools(24))));
+      await provider.sendMessageNonStreaming(params(makeTools(24)));
+    } finally {
+      resetStreamObserver();
+    }
+    // 两条路径都必须接上事件（只测流式会漏掉非流式那条死接线），但组合相同 → 仍只有一条
+    expect(capped()).toHaveLength(1);
+  });
+
+  test("上限被学小 → 名单变长 → 追加一条（这才是新信息，不该被去重吃掉）", async () => {
+    const { capped } = capture();
+    try {
+      const { provider, sent } = makeProvider({ limit: 12, baseURL: "https://gw-l.example.com" });
+      await drain(provider.sendMessageStream(params(makeTools(24)))); // 20 → 400 → 学 12 → 重发 12
+      await drain(provider.sendMessageStream(params(makeTools(24)))); // 首发就按 12 收口
+      expect(sent).toEqual([20, 12, 12]);
+    } finally {
+      resetStreamObserver();
+    }
+    const ev = capped();
+    expect(ev.map((e) => e.data!.limit)).toEqual([20, 12]);
+    expect(ev[1]!.data!.demoted).toHaveLength(12);
+  });
+
+  test("不超限时零事件（不能把「没降级」也记成一次降级）", async () => {
+    const { capped } = capture();
+    try {
+      const { provider } = makeProvider({ limit: 20, baseURL: "https://gw-m.example.com" });
+      await drain(provider.sendMessageStream(params(makeTools(20))));
+    } finally {
+      resetStreamObserver();
+    }
+    expect(capped()).toHaveLength(0);
+  });
+});
