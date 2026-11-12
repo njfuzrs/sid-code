@@ -5,15 +5,27 @@
  * 跑 `scripts/northstar-snapshot.ts` 才看得到 —— 只装了二进制的用户**没有任何入口**。
  * 这里把「当前会话卡在哪一段」与「本机近 N 天变快还是变慢」做成纯函数，命令层只做分派。
  *
+ * 分层（PR-B）：取数在 cli `perf.ts`，**报告模型与瓶颈判定在这里（纯函数、不带格式）**，
+ * 渲染在 cli `command/commands/perf/render.ts`（要用 string-width 与 ANSI，core 不引这些依赖）。
+ * `--json` 输出的就是这里的报告结构，字段即契约。
+ *
  * 口径铁律（与 CLAUDE.md「更快」一节一致）：
- * - 只报 p50/p95，每个数都带 n；无样本渲染「无样本」，**绝不渲染 0**
+ * - 报 p50/p95/p99，每个数都带 n；n<5 直接列样本、n<100 不报 P99；无样本渲染「无样本」，**绝不渲染 0**
  * - TTFT 按 model 分组展示；TTFB 只在单 model 内展示，绝不跨 model 汇总
  * - 跨会话分位数回到「每会话一个值」的分布上取，不对分位数求平均
  * - 无版本号的历史行在按版本视图里显式报数，不静默丢弃
  */
-import { percentile as sortedPercentile } from "./digest.ts";
+import { percentile as sortedPercentile, TTFT_P95_WARN_MS } from "./digest.ts";
 import { isMainScopePerfRow, type SessionIndexEntry } from "./session-index.ts";
-import type { ModelLatencyStats } from "./latency-by-model.ts";
+import { ROUTE_BUFFERING_GAP_THRESHOLD, type ModelLatencyStats } from "./latency-by-model.ts";
+import {
+  MIN_PERCENTILE_SAMPLES,
+  type PerfDetail,
+  type PerfSideGroup,
+  type PerfSlowCall,
+  type PerfTimeSplit,
+  type PerfToolRow,
+} from "./perf-detail.ts";
 
 /** 未排序样本的分位数；空样本 → undefined（不是 0） */
 export function pct(values: number[], p: number): number | undefined {
@@ -38,73 +50,382 @@ function stat(values: Array<number | undefined>, p: number): PerfStat {
 
 // ───────────────────────────── 当前会话 ─────────────────────────────
 
+/**
+ * 一个延迟分布。`samples` 只在 n < MIN_PERCENTILE_SAMPLES 时给（降序），渲染层据此直接列样本、不写分位数（D5）。
+ */
+export interface Dist {
+  p50?: number;
+  p95?: number;
+  p99?: number;
+  n: number;
+  samples?: number[];
+}
+
 export interface SessionPerfInput {
   sessionId: string;
   model: string;
+  /** 会话是否已收尾（SessionEnd 已到）。false = 进行中，面板标「截至」 */
+  ended?: boolean;
+  /** session.traj 快照时刻（ISO），进行中时显示 */
+  snapshotAt?: string;
+  /** 会话墙钟（ms） */
+  wallMs?: number;
   /** digest.sessionMetrics 的子集 */
   metrics?: {
     ttft_p50?: number;
     ttft_p95?: number;
+    ttft_p99?: number;
     ttft_n: number;
+    main_headers_p50?: number;
+    main_headers_p95?: number;
+    main_headers_n?: number;
     e2e_p50?: number;
     e2e_p95?: number;
+    e2e_p99?: number;
     e2e_n: number;
+    e2e_interrupted_n?: number;
+    e2e_interrupted_max?: number;
+    gen_p50?: number;
     gen_p95?: number;
+    gen_p99?: number;
     gen_n?: number;
+    subagent_ttft_p50?: number;
+    subagent_ttft_n?: number;
   };
   /** 按 model 的 TTFT/TTFB（digest providerStats[].latencyByModel 合并） */
   latencyByModel?: Record<string, ModelLatencyStats>;
-  /** 模型整轮耗时累计（ms）= Σ AfterModelRaw.elapsed_ms（含握手+生成+重试） */
-  modelTimeMs?: number;
+  /** 缓存分桶（单 provider 时才给；多 provider 不汇总） */
+  ttftByCache?: {
+    hit: { count: number; p50?: number; p95?: number };
+    miss: { count: number; p50?: number; p95?: number };
+  };
+  /** digest.perfDetail */
+  detail?: PerfDetail;
   /** 来自 session.traj metadata */
   tps?: number;
-  toolDurationMs?: number;
+  reasoningShare?: number;
   contextPeakRatio?: number;
   contextPeakTokens?: number;
+  contextWindow?: number;
+}
+
+export type BottleneckPrimary = "ttfb" | "gen" | "tool" | "other" | "insufficient";
+
+export interface BottleneckVerdict {
+  primary: BottleneckPrimary;
+  /** primary 那一项占活跃时间的比例（insufficient 时无） */
+  share?: number;
+  /** 第一条是主结论之后的补充，能指回下面的数字，不写「可能」 */
+  reasons: string[];
+  /** 黄色警示：必须能行动（工具高失败率 / TTFT P95 过高）。后台被中止在「后台辅助」段自己标 */
+  warnings: string[];
 }
 
 export interface SessionPerfReport {
   sessionId: string;
   model: string;
-  ttft: { p50?: number; p95?: number; n: number };
+  header: {
+    shortId: string;
+    wallMs?: number;
+    activeMs?: number;
+    mainCalls: number;
+    live: boolean;
+    snapshotAt?: string;
+  };
+  verdict: BottleneckVerdict;
+  timeSplit?: PerfTimeSplit;
+  latency: {
+    ttft: Dist;
+    /**
+     * 主循环 TTFB。只在单 model 时给 —— 跨 model 汇总 TTFB 是假数（latency-by-model.ts 文件头）。
+     * 字段名不叫 ttfb：结构门禁（observability-d22-d30 缺陷 26）只许 latency-by-model.ts 声明 ttfb 分位键。
+     */
+    headers?: Dist;
+    gen: Dist;
+    tps?: number;
+    reasoningShare?: number;
+    /** 单模型时才有：(TTFT−TTFB)/TTFT 的中位数，路由缓冲指纹 */
+    gapRatioP50?: number;
+    ttftByCache?: { hit: Dist; miss: Dist };
+    e2e: Dist;
+    e2eInterrupted?: { n: number; maxMs?: number };
+  };
   /**
-   * 按 model 的延迟，**原样引用** `latency-by-model.ts` 的结构而不复制 TTFB 字段 ——
-   * 结构门禁（observability-d22-d30.test.ts 缺陷 26）禁止在那个模块之外定义 ttfb 分位字段，
-   * 防止有人在这里顺手做跨 model 汇总。
+   * 按 model 的延迟，**原样引用** `latency-by-model.ts` 的结构而不复制 TTFB 字段。只在 >1 个模型时渲染。
    */
-  ttftByModel: Array<{ model: string; stats: ModelLatencyStats }>;
-  e2e: { p50?: number; p95?: number; n: number };
-  gen: { p95?: number; n: number };
-  tps?: number;
-  /** 「慢在模型还是工具」：两者都是主动执行时间，不含等用户输入 */
-  split?: { modelMs: number; toolMs: number; toolShare: number };
-  contextPeak?: { ratio: number; tokens?: number };
+  byModel: Array<{ model: string; stats: ModelLatencyStats }>;
+  slowest: PerfSlowCall[];
+  events: { unpaired: number; stalls: number; timeouts: number; retries: number };
+  /** 主循环工具，按合计降序（全部；渲染截前 5） */
+  tools: PerfToolRow[];
+  side: {
+    groups: Array<{
+      key: string;
+      label: string;
+      n: number;
+      ttftP50?: number;
+      aborted: number;
+      abortedMaxMs?: number;
+    }>;
+    subagent?: { fetches: number; ttftP50?: number; genMs: number };
+  };
+  contextPeak?: { ratio: number; tokens?: number; window?: number };
+}
+
+// ── judgeBottleneck 阈值：规则只写在这一处，**不按模型名分档** ──
+/** 生成是瓶颈、且 reasoning 占输出 ≥ 它 → 提示降 effort */
+export const BOTTLENECK_REASONING_SHARE = 0.5;
+/**
+ * (TTFT−TTFB)/TTFT 中位数超过它 = 网关抢先回响应头。必须与 `northstar/README.md` 的「> 50%」、
+ * `latency-by-model.ts` 的 `ROUTE_BUFFERING_GAP_THRESHOLD` 同值（测试锁住，防漂移）。
+ */
+export const TTFB_BUFFER_GAP_RATIO = ROUTE_BUFFERING_GAP_THRESHOLD;
+/** 缓存未命中桶 P50 ÷ 命中桶 P50 ≥ 它 → 补「缓存未命中时首字慢 X 倍」 */
+export const CACHE_MISS_SLOWDOWN = 2;
+/** 工具失败率 ≥ 它且次数 ≥ TOOL_FAILURE_WARN_MIN_N → 黄色提示 */
+export const TOOL_FAILURE_WARN_RATIO = 0.5;
+export const TOOL_FAILURE_WARN_MIN_N = 3;
+/** 单会话 P99：n 小于它时 P99 ≈ 最大值，面板写「—」 */
+export const MIN_P99_SAMPLES = 100;
+
+/** 已知后台任务的中文名。未登记的原样显示 key —— 宁可显示英文也不猜 */
+const SIDE_LABEL: Record<string, string> = {
+  "fork:session-memory-update": "记忆 fork",
+  "fork:memory-extract": "记忆 fork",
+  title_generation: "标题生成",
+  "title-generation": "标题生成",
+};
+
+function sideLabel(key: string): string {
+  return SIDE_LABEL[key] ?? key;
+}
+
+function dist(
+  p50: number | undefined,
+  p95: number | undefined,
+  p99: number | undefined,
+  n: number | undefined,
+  samples?: number[],
+): Dist {
+  const nn = n ?? 0;
+  return {
+    p50,
+    p95,
+    p99,
+    n: nn,
+    ...(nn > 0 && nn < MIN_PERCENTILE_SAMPLES && samples?.length === nn ? { samples } : {}),
+  };
+}
+
+const finite = (v: number | undefined): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+
+/** 面板用的时长格式（D15-6）：<10s 一位小数，<60s 整秒，<1h `XmYYs`，≥1h `XhYYm` */
+export function fmtDuration(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  if (totalSec < 3600) {
+    const m = Math.floor(totalSec / 60);
+    return `${m}m${String(totalSec % 60).padStart(2, "0")}s`;
+  }
+  const totalMin = Math.round(ms / 60_000);
+  const h = Math.floor(totalMin / 60);
+  return `${h}h${String(totalMin % 60).padStart(2, "0")}m`;
+}
+
+const pctText = (r: number) => `${Math.round(r * 100)}%`;
+
+/**
+ * 瓶颈判定（D7）。规则：
+ * 1. 时间构成中占比最大的一项是 primary；
+ * 2. primary=生成 且 reasoning 占输出 ≥ 50% → 「thinking 占输出 X%，可考虑降低 effort」；
+ * 3. primary=等首字节：gapRatio < 50% → 网关缓冲；≥ 50% → 模型 prefill 慢；未命中桶慢 ≥2 倍 → 补一句；
+ * 4. primary=工具 → 列耗时前 2 的工具；
+ * 5. 任一工具失败率 ≥ 50% 且次数 ≥ 3 → 黄色提示（不论是否瓶颈）。
+ * 主循环调用 < 5 次不下结论（insufficient）。另一条警示：TTFT P95 > 30s（与 /trace 健康告警同阈值）。
+ */
+export function judgeBottleneck(r: Omit<SessionPerfReport, "verdict">): BottleneckVerdict {
+  const warnings: string[] = [];
+  for (const t of r.tools) {
+    if (t.n >= TOOL_FAILURE_WARN_MIN_N && t.failed / t.n >= TOOL_FAILURE_WARN_RATIO) {
+      warnings.push(`${t.name} 失败 ${t.failed}/${t.n} 次`);
+    }
+  }
+  // 后台调用被中止不进这里：「后台辅助」一段自己用黄色标出，结论区再写一遍是重复
+  if (r.latency.ttft.p95 !== undefined && r.latency.ttft.p95 > TTFT_P95_WARN_MS) {
+    warnings.push(
+      `首字 TTFT P95 ${fmtDuration(r.latency.ttft.p95)}，超过 ${TTFT_P95_WARN_MS / 1000}s`,
+    );
+  }
+
+  const split = r.timeSplit;
+  if (r.header.mainCalls < MIN_PERCENTILE_SAMPLES || !split || split.activeMs <= 0) {
+    return { primary: "insufficient", reasons: [], warnings };
+  }
+  const parts: Array<[Exclude<BottleneckPrimary, "insufficient">, number]> = [
+    ["ttfb", split.ttfbMs],
+    ["gen", split.genMs],
+    ["tool", split.toolMs],
+    ["other", split.otherMs],
+  ];
+  const [primary, ms] = parts.reduce((a, b) => (b[1] > a[1] ? b : a));
+  const share = ms / split.activeMs;
+  const reasons: string[] = [];
+  const lat = r.latency;
+
+  if (primary === "gen") {
+    if (lat.reasoningShare !== undefined && lat.reasoningShare >= BOTTLENECK_REASONING_SHARE) {
+      reasons.push(`thinking 占输出 ${pctText(lat.reasoningShare)}，可考虑降低 effort`);
+    } else if (lat.tps !== undefined) {
+      reasons.push(`生成速度 ${Math.round(lat.tps)} tok/s，输出越长越慢`);
+    }
+  } else if (primary === "ttfb") {
+    if (lat.gapRatioP50 !== undefined) {
+      reasons.push(
+        lat.gapRatioP50 >= TTFB_BUFFER_GAP_RATIO
+          ? `网关先回响应头（TTFT−TTFB 占 ${pctText(lat.gapRatioP50)}），慢在模型 prefill`
+          : `网关等模型出字才回响应头（TTFT≈TTFB），分不清排队还是 prefill，用 /trace --health 对比路由`,
+      );
+    }
+  } else if (primary === "tool") {
+    const top = r.tools.slice(0, 2).map((t) => `${t.name} ${fmtDuration(t.totalMs)}`);
+    if (top.length > 0) reasons.push(`最耗时：${top.join("、")}`);
+  } else {
+    reasons.push("轮间开销与权限确认等待，模型和工具都不是瓶颈");
+  }
+
+  // 首字等待不是主瓶颈时，占比 ≥15% 也值得一句（取证会话 19%）——指出缓冲形态
+  if (
+    primary !== "ttfb" &&
+    split.ttfbMs / split.activeMs >= 0.15 &&
+    lat.gapRatioP50 !== undefined
+  ) {
+    reasons.push(
+      `首字等待 ${pctText(split.ttfbMs / split.activeMs)}，` +
+        (lat.gapRatioP50 >= TTFB_BUFFER_GAP_RATIO
+          ? `网关先回响应头，慢在模型 prefill`
+          : `网关等模型出字才回响应头（TTFT≈TTFB），分不清是排队还是 prefill`),
+    );
+  }
+  const hit = lat.ttftByCache?.hit.p50;
+  const miss = lat.ttftByCache?.miss.p50;
+  if (
+    hit &&
+    miss &&
+    miss / hit >= CACHE_MISS_SLOWDOWN &&
+    (primary === "ttfb" || reasons.length < 3)
+  ) {
+    reasons.push(`缓存未命中时首字慢 ${(miss / hit).toFixed(1)}×`);
+  }
+  return { primary, share, reasons, warnings };
 }
 
 export function buildSessionPerf(input: SessionPerfInput): SessionPerfReport {
   const m = input.metrics;
+  const d = input.detail;
   const byModel = Object.entries(input.latencyByModel ?? {})
     .map(([model, stats]) => ({ model, stats }))
     .sort((a, b) => b.stats.n - a.stats.n);
-  const modelMs = input.modelTimeMs ?? 0;
-  const toolMs = input.toolDurationMs ?? 0;
-  return {
+  const single = byModel.length === 1 ? byModel[0]!.stats : undefined;
+  const cache = input.ttftByCache;
+  const cacheDist = (b: { count: number; p50?: number; p95?: number }): Dist =>
+    dist(b.p50, b.p95, undefined, b.count);
+  const subTtftP50 = m?.subagent_ttft_p50;
+
+  const base: Omit<SessionPerfReport, "verdict"> = {
     sessionId: input.sessionId,
     model: input.model,
-    ttft: { p50: m?.ttft_p50, p95: m?.ttft_p95, n: m?.ttft_n ?? 0 },
-    ttftByModel: byModel,
-    e2e: { p50: m?.e2e_p50, p95: m?.e2e_p95, n: m?.e2e_n ?? 0 },
-    gen: { p95: m?.gen_p95, n: m?.gen_n ?? 0 },
-    tps: input.tps && Number.isFinite(input.tps) && input.tps > 0 ? input.tps : undefined,
-    split:
-      modelMs + toolMs > 0
-        ? { modelMs, toolMs, toolShare: toolMs / (modelMs + toolMs) }
+    header: {
+      shortId: input.sessionId.slice(-8),
+      wallMs: finite(input.wallMs),
+      activeMs: d?.timeSplit.activeMs || undefined,
+      mainCalls: d?.mainCalls ?? 0,
+      live: input.ended === false,
+      snapshotAt: input.ended === false ? input.snapshotAt : undefined,
+    },
+    timeSplit: d && d.timeSplit.activeMs > 0 ? d.timeSplit : undefined,
+    latency: {
+      ttft: dist(m?.ttft_p50, m?.ttft_p95, m?.ttft_p99, m?.ttft_n, d?.smallSamples.ttft),
+      headers: single
+        ? dist(m?.main_headers_p50, m?.main_headers_p95, single.ttfb_p99, m?.main_headers_n)
         : undefined,
+      gen: dist(m?.gen_p50, m?.gen_p95, m?.gen_p99, m?.gen_n, d?.smallSamples.gen),
+      tps: finite(input.tps),
+      reasoningShare: finite(input.reasoningShare),
+      gapRatioP50: single?.gapRatioP50,
+      ttftByCache:
+        cache && cache.hit.count > 0 && cache.miss.count > 0
+          ? { hit: cacheDist(cache.hit), miss: cacheDist(cache.miss) }
+          : undefined,
+      e2e: dist(m?.e2e_p50, m?.e2e_p95, m?.e2e_p99, m?.e2e_n, d?.smallSamples.e2e),
+      e2eInterrupted: m?.e2e_interrupted_n
+        ? { n: m.e2e_interrupted_n, maxMs: m.e2e_interrupted_max }
+        : undefined,
+    },
+    byModel,
+    slowest: d?.slowest ?? [],
+    events: d?.events ?? { unpaired: 0, stalls: 0, timeouts: 0, retries: 0 },
+    tools: d?.tools ?? [],
+    side: {
+      groups: mergeSideGroups(d?.side ?? []),
+      subagent:
+        d && (d.subagent.fetches > 0 || d.subagent.ttfts.length > 0)
+          ? {
+              fetches: d.subagent.fetches,
+              ttftP50: subTtftP50 ?? pct(d.subagent.ttfts, 0.5),
+              genMs: d.subagent.genMs,
+            }
+          : undefined,
+    },
     contextPeak:
       input.contextPeakRatio && input.contextPeakRatio > 0
-        ? { ratio: input.contextPeakRatio, tokens: input.contextPeakTokens }
+        ? {
+            ratio: input.contextPeakRatio,
+            tokens: input.contextPeakTokens,
+            window: input.contextWindow,
+          }
         : undefined,
   };
+  return { ...base, verdict: judgeBottleneck(base) };
+}
+
+/** 同一中文名的后台任务合并成一行（记忆 fork 有两个 agent_id：update / extract） */
+function mergeSideGroups(groups: PerfSideGroup[]): SessionPerfReport["side"]["groups"] {
+  const merged = new Map<
+    string,
+    {
+      label: string;
+      keys: string[];
+      n: number;
+      ttfts: number[];
+      aborted: number;
+      abortedMaxMs?: number;
+    }
+  >();
+  for (const g of groups) {
+    const label = sideLabel(g.key);
+    const cur = merged.get(label) ?? { label, keys: [], n: 0, ttfts: [], aborted: 0 };
+    cur.keys.push(g.key);
+    cur.n += g.n;
+    cur.ttfts.push(...g.ttfts);
+    cur.aborted += g.aborted;
+    if (g.abortedMaxMs !== undefined)
+      cur.abortedMaxMs = Math.max(cur.abortedMaxMs ?? 0, g.abortedMaxMs);
+    merged.set(label, cur);
+  }
+  return [...merged.values()]
+    .map((g) => ({
+      key: g.keys.join(","),
+      label: g.label,
+      n: g.n,
+      ttftP50: pct(g.ttfts, 0.5),
+      aborted: g.aborted,
+      ...(g.abortedMaxMs !== undefined ? { abortedMaxMs: g.abortedMaxMs } : {}),
+    }))
+    .sort((a, b) => b.n - a.n);
 }
 
 // ───────────────────────────── 跨会话趋势 ─────────────────────────────
@@ -187,7 +508,7 @@ export function windowStats(rows: SessionIndexEntry[]): WindowStats {
 }
 
 /** 两侧都至少这么多样本才下「变好/变差」结论；少于它只报数不判 */
-export const MIN_TREND_SAMPLES = 5;
+export const MIN_TREND_SAMPLES = MIN_PERCENTILE_SAMPLES;
 /** 相对变化超过它才算「变了」，否则标 ≈（单机样本噪声大） */
 export const TREND_NOISE_RATIO = 0.1;
 /** 退步超过它加 ⚠ */
@@ -306,7 +627,12 @@ export function buildTrend(
 }
 
 export interface VersionReport {
-  versions: Array<{ version: string } & WindowStats>;
+  /**
+   * `incompleteSessions`（D12）：该版本被 `settled()` 剔除的 `incomplete` 行数。0.1.606–0.1.611 有约 140 行
+   * 实际已收尾却仍标 incomplete（当时写入路径的缺陷），渲染时占比 >30% 加一行说明「样本偏少」。
+   * 不回填历史索引：latest-wins 语义 + 用户本机数据，改写风险大于收益。
+   */
+  versions: Array<{ version: string; incompleteSessions: number } & WindowStats>;
   /** 没有 app_version 的行数 —— 显式报，不静默丢 */
   rowsWithoutVersion: number;
 }
@@ -322,8 +648,16 @@ function cmpSemver(a: string, b: string): number {
   return 0;
 }
 
+/** 某版本 incomplete 行占比超过它，按版本视图加脚注（D12） */
+export const VERSION_INCOMPLETE_NOTE_RATIO = 0.3;
+
 export function buildByVersion(index: SessionIndexEntry[], limit: number): VersionReport {
   const rows = settled(index);
+  const incomplete = new Map<string, number>();
+  for (const r of index) {
+    if (r.exit_status === "incomplete" && r.app_version)
+      incomplete.set(r.app_version, (incomplete.get(r.app_version) ?? 0) + 1);
+  }
   const groups = new Map<string, SessionIndexEntry[]>();
   let rowsWithoutVersion = 0;
   for (const r of rows) {
@@ -338,178 +672,10 @@ export function buildByVersion(index: SessionIndexEntry[], limit: number): Versi
   const versions = [...groups.keys()]
     .sort(cmpSemver)
     .slice(-limit)
-    .map((version) => ({ version, ...windowStats(groups.get(version)!) }));
+    .map((version) => ({
+      version,
+      incompleteSessions: incomplete.get(version) ?? 0,
+      ...windowStats(groups.get(version)!),
+    }));
   return { versions, rowsWithoutVersion };
-}
-
-// ───────────────────────────── 渲染 ─────────────────────────────
-
-/** 无值统一渲染「—」；由调用方决定要不要附「无样本」字样 */
-export function fmtValue(v: number | undefined, unit: PerfUnit): string {
-  if (v === undefined) return "—";
-  switch (unit) {
-    case "ms":
-      return v >= 10_000
-        ? `${(v / 1000).toFixed(0)}s`
-        : v >= 1000
-          ? `${(v / 1000).toFixed(1)}s`
-          : `${Math.round(v)}ms`;
-    case "tps":
-      return `${v.toFixed(0)} tok/s`;
-    case "ratio":
-      return `${(v * 100).toFixed(0)}%`;
-    case "usd":
-      return `$${v.toFixed(v < 1 ? 3 : 2)}`;
-    case "count":
-      return `${Math.round(v)}`;
-  }
-}
-
-function fmtStat(s: PerfStat, unit: PerfUnit): string {
-  return s.value === undefined ? "无样本" : `${fmtValue(s.value, unit)} (n=${s.n})`;
-}
-
-function shortModel(model: string): string {
-  return model.split("/").pop() || model;
-}
-
-export function renderSessionPerf(r: SessionPerfReport): string {
-  const lines: string[] = [`性能 · 本会话 ${r.sessionId}`, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
-  const ms = (v: number | undefined) => fmtValue(v, "ms");
-  if (r.ttft.n === 0) {
-    lines.push("  首字延迟 TTFT   无样本");
-  } else {
-    lines.push(`  首字延迟 TTFT   P50 ${ms(r.ttft.p50)}  P95 ${ms(r.ttft.p95)}  (n=${r.ttft.n})`);
-  }
-  // 多 model（fallback / 切模型）时必须分开看：跨 model 的 TTFT 汇总是假数
-  if (r.ttftByModel.length > 1 || r.ttftByModel.some((m) => m.stats.ttfb_p50 !== undefined)) {
-    for (const { model, stats } of r.ttftByModel) {
-      // TTFB 只在单 model 内展示：跨路由语义不同，见 latency-by-model.ts 头注释
-      const ttfb = stats.ttfb_p50 !== undefined ? `  TTFB P50 ${ms(stats.ttfb_p50)}` : "";
-      lines.push(
-        `    ${shortModel(model)}: TTFT P50 ${ms(stats.ttft_p50)} / P95 ${ms(stats.ttft_p95)} (n=${stats.n})${ttfb}`,
-      );
-    }
-  }
-  lines.push(
-    r.gen.n === 0
-      ? "  生成耗时        无样本"
-      : `  生成耗时        P95 ${ms(r.gen.p95)}  (n=${r.gen.n}，响应头→流结束，单次请求)`,
-  );
-  lines.push(`  生成速度        ${r.tps !== undefined ? fmtValue(r.tps, "tps") : "无样本"}`);
-  lines.push(
-    r.e2e.n === 0
-      ? "  端到端          无样本"
-      : `  端到端          P50 ${ms(r.e2e.p50)}  P95 ${ms(r.e2e.p95)}  (n=${r.e2e.n}，回车→最终答复)`,
-  );
-  if (r.split) {
-    const toolPct = Math.round(r.split.toolShare * 100);
-    lines.push(
-      `  时间花在哪      模型 ${100 - toolPct}% (${ms(r.split.modelMs)}) / 工具 ${toolPct}% (${ms(r.split.toolMs)})`,
-    );
-  } else {
-    lines.push("  时间花在哪      无样本");
-  }
-  if (r.contextPeak) {
-    const tok = r.contextPeak.tokens
-      ? `（${Math.round(r.contextPeak.tokens / 1000)}k tokens）`
-      : "";
-    lines.push(`  上下文峰值      ${fmtValue(r.contextPeak.ratio, "ratio")}${tok}`);
-  }
-  lines.push("", "跨会话趋势：/perf --days 7    按版本：/perf --by-version    排障：/trace");
-  return lines.join("\n");
-}
-
-const VERDICT_MARK: Record<Verdict, string> = {
-  better: "改善",
-  worse: "变差",
-  same: "≈",
-  insufficient: "样本不足",
-};
-
-function fmtChange(row: TrendRow): string {
-  if (row.verdict === "insufficient") return VERDICT_MARK.insufficient;
-  if (row.verdict === "same") return "≈";
-  const sign = row.change! > 0 ? "▲" : "▼";
-  return `${sign} ${Math.abs(row.change! * 100).toFixed(0)}% ${VERDICT_MARK[row.verdict]}${row.warn ? " ⚠" : ""}`;
-}
-
-function pad(s: string, w: number): string {
-  // 中文按 2 列宽估算，保证表格大致对齐
-  let width = 0;
-  for (const ch of s) width += /[^\x00-\xff]/.test(ch) ? 2 : 1;
-  return s + " ".repeat(Math.max(1, w - width));
-}
-
-export function renderTrend(t: TrendReport): string {
-  const lines: string[] = [
-    `性能趋势 · 近 ${t.days} 天 vs 前 ${t.days} 天`,
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-    `  会话数：本期 ${t.current.sessions} / 上期 ${t.previous.sessions}（不含还在跑或崩溃未收尾的会话；中断、报错收尾的仍计入）`,
-  ];
-  if (t.current.sessions === 0) {
-    lines.push("", "  本期没有已收尾的会话。");
-    return lines.join("\n");
-  }
-  lines.push("");
-  lines.push(`  ${pad("指标", 20)}${pad("本期", 18)}${pad("上期", 18)}变化`);
-  for (const row of t.rows) {
-    lines.push(
-      `  ${pad(row.label, 20)}${pad(fmtStat(row.current, row.unit), 18)}${pad(fmtStat(row.previous, row.unit), 18)}${fmtChange(row)}`,
-    );
-  }
-  if (t.ttftByModel.length > 0) {
-    lines.push("", "  TTFT 按模型（本期，每会话 P50 的中位数）：");
-    for (const m of t.ttftByModel.slice(0, 6)) {
-      lines.push(
-        `    ${pad(shortModel(m.model), 28)}${m.p50 !== undefined ? fmtValue(m.p50, "ms") : "无样本"}  (${m.n}/${m.sessions} 会话有样本)`,
-      );
-    }
-  }
-  // PR-A（A8）：新老口径混合窗口。不换算（老行无从重算），只把混了多少摆出来。
-  const legacyNotes: string[] = [];
-  if (t.current.legacyScopeSessions > 0)
-    legacyNotes.push(`本期含 ${t.current.legacyScopeSessions} 个`);
-  if (t.previous.legacyScopeSessions > 0)
-    legacyNotes.push(`上期含 ${t.previous.legacyScopeSessions} 个`);
-  if (legacyNotes.length > 0) {
-    lines.push(
-      "",
-      `  口径：${legacyNotes.join("、")}旧口径会话（TTFT / 生成耗时含后台调用，偏慢），新旧对比会显得变快。`,
-    );
-  }
-  lines.push(
-    "",
-    `  判读：两侧都 ≥${MIN_TREND_SAMPLES} 个样本才下结论；变化 <${TREND_NOISE_RATIO * 100}% 记 ≈；退步 ≥${TREND_WARN_RATIO * 100}% 标 ⚠。`,
-    "  P95 = 每会话 P95 的 P95，分位数不做平均。模型混用时 TTFT 总数只作参考，以按模型那几行为准。",
-  );
-  return lines.join("\n");
-}
-
-export function renderByVersion(v: VersionReport): string {
-  const lines: string[] = ["性能 · 按版本", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
-  if (v.versions.length === 0) {
-    lines.push("  没有带版本号的已收尾会话。");
-  } else {
-    lines.push(
-      `  ${pad("版本", 12)}${pad("会话", 6)}${pad("TTFT P50", 16)}${pad("TTFT P95", 16)}${pad("tok/s P50", 18)}端到端 P95`,
-    );
-    for (const ver of v.versions) {
-      const m = ver.metrics;
-      lines.push(
-        `  ${pad(ver.version, 12)}${pad(String(ver.sessions), 6)}${pad(fmtStat(m.ttft_p50, "ms"), 16)}${pad(fmtStat(m.ttft_p95, "ms"), 16)}${pad(fmtStat(m.tps_p50, "tps"), 18)}${fmtStat(m.e2e_p95, "ms")}`,
-      );
-    }
-  }
-  if (v.rowsWithoutVersion > 0) {
-    lines.push("", `  另有 ${v.rowsWithoutVersion} 个会话缺版本号（早期版本写的行），未计入上表。`);
-  }
-  // PR-A（A8）：哪些版本行是旧口径。按行判（perf_scope），不按版本号硬编码切换点 ——
-  // dev 构建与正式版共用版本号，按号切会把同一版本的新老行判错。
-  const legacy = v.versions.filter((ver) => ver.legacyScopeSessions > 0);
-  if (legacy.length > 0) {
-    const names = legacy.map((ver) => ver.version).join("、");
-    lines.push("", `  ${names} 含旧口径会话：TTFT / 生成耗时含后台调用，与之后的版本不可直接比。`);
-  }
-  return lines.join("\n");
 }
