@@ -63,6 +63,8 @@
  * 得出的结论是假的" —— 那里已经刻意拒绝按 index 关联，本模块沿用同一条纪律。
  */
 
+import { callScopeOf, type CallScope } from "./call-scope.ts";
+
 /** 事件的最小形状 —— 两个消费方的事件类型不同，这里只约束用到的字段 */
 interface LatencyEvent {
   event?: string;
@@ -121,12 +123,16 @@ export const ROUTE_BUFFERING_GAP_THRESHOLD = 0.5;
  *                         这里不重复扫，避免两处各建一份映射后漂移）
  * @param percentileFn  分位数函数由调用方注入（与 `ttft-cache-buckets.ts` 同样的
  *                      理由：不 import `digest.ts` 以免制造反向依赖）
+ * @param scope         只累加该调用来源的样本，缺省 `"main"`（/perf PR-A）。
+ *                      原先配对键里带了 agent_id（防错配），但配完照样计进同一个 model 桶，
+ *                      于是后台 fork / 子代理的 TTFT 混进了主循环的分位数。
  * @returns model → 分位数。**无跨 model 汇总项**，见文件头 ⚠️ 那段。
  */
 export function aggregateLatencyByModel(
   events: LatencyEvent[],
   resolveProvider: (model: string) => string,
   percentileFn: (sorted: number[], p: number) => number | undefined,
+  scope: CallScope = "main",
 ): Map<string, ModelLatencyStats> {
   /** 分组键：与 `ttft-cache-buckets.ts` 的 `bucketKey` 同构 —— **必须含 agent_id**，
    * 子代理与主循环共享 index 空间，不分开会把子代理的 ttfb 配到主循环的 ttft 上。 */
@@ -164,6 +170,9 @@ export function aggregateLatencyByModel(
 
   for (const e of events) {
     if (e.event !== "StreamPhase" || !e.data) continue;
+    // 在配对之前过滤：headers_received 与 first_content 来自同一次 fetch，scope 必然相同，
+    // 提前滤掉不会拆散任何一对；滤在配对之后则 unpairedHeaders 会混进别的 scope 的计数。
+    if (callScopeOf(e.data) !== scope) continue;
     const phase = e.data.phase;
     const key = pairKey(e);
 

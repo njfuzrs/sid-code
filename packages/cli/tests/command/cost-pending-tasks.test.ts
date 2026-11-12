@@ -96,13 +96,13 @@ describe("/cost 后台任务提示（D2）：接进真实命令输出", () => {
   test("busy 时提示出现在费用块之后、耗时块之前", async () => {
     const out = await runCost(view({ busy: true, busyLabel: "memory-extract" }));
     const lines = out.split("\n");
-    // D15 版式后首行是「本次会话花费 $X」（总花费），耗时行在分区内带两格缩进。
-    const costIdx = lines.findIndex((l) => l.includes("本次会话花费"));
+    // D15 版式：首行由「总费用:」改成「本次会话花费」，耗时段整体缩进两格——
+    // 提示仍然紧跟费用块（首行之后）、早于耗时块，这条相对顺序是 D2 的契约。
+    const costIdx = lines.findIndex((l) => l.startsWith("本次会话花费"));
     const noticeIdx = lines.findIndex((l) => l.includes("后台任务 memory-extract 进行中"));
     // D8：标签改成「API 耗时（主循环）」——数值只含主循环请求，不再叫「API 耗时」
-    const apiIdx = lines.findIndex((l) => l.trim().startsWith("API 耗时（主循环）:"));
+    const apiIdx = lines.findIndex((l) => l.trimStart().startsWith("API 耗时（主循环）:"));
     expect(costIdx).toBeGreaterThanOrEqual(0);
-    expect(apiIdx).toBeGreaterThanOrEqual(0);
     expect(noticeIdx).toBeGreaterThan(costIdx);
     expect(noticeIdx).toBeLessThan(apiIdx);
   });

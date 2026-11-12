@@ -17,7 +17,7 @@ import { normalizeCacheUsage } from "../llm/types.ts";
 import { lookupRegistryExact, lookupRegistryFuzzy } from "../llm/model-registry.ts";
 import { sameEndpoint } from "../llm/endpoint-key.ts";
 import { lookupGatewayPricing } from "../llm/gateway-pricing.ts";
-import { inferProviderByModelName } from "../llm/provider-infer.ts";
+import { inferProviderByModelName, isLocalProvider } from "../llm/provider-infer.ts";
 
 /**
  * 模型定价（每百万 token，USD）。
@@ -178,14 +178,15 @@ export function effectivePricing(p: ModelPricing, at: Date = new Date()): ModelP
 export const MODEL_PRICING: Record<string, ModelPricing> = {};
 
 /**
- * 未知模型的保守兜底价（USD/M）。不绑定任何特定模型品牌，取中位偏高值（input $2 / output $10），
+ * 未知模型的保守兜底价（USD/M）—— **全仓唯一一份**。
+ *
+ * 不绑定任何特定模型品牌，取中位偏高值（input $2 / output $10），
  * 介于低价模型（DeepSeek ~$0.14/$0.28）与高价模型（Claude Opus ~$15/$75）之间。
  * 原则：宁可高估触发预算守卫，也不归零放任烧钱。
  *
- * 导出（PR-B / D20）：这是**全仓唯一**一份兜底价。session/state.ts 曾维护过第二份
- * （`{input: 2, output: 10}` 再按 0.1 / 1.25 派生 cacheRead / cacheWrite），数值与这里
- * 等价但各写各的——改一处另一处不会跟着变。计价公式抽进 calculateCostBreakdown 之后，
- * 两条路径共用这一份，派生关系（0.2 = 2×0.1、2.5 = 2×1.25）也不再需要两处对齐。
+ * 命中/写入价直接写出（0.2 / 2.5 = input 的 0.1 / 1.25 倍）。**不要再在调用方用
+ * `input × 0.1` 派生一份** —— D20 之前 `SessionState` 正是那样写的，两处数值当时相等，
+ * 但改一处不会带着另一处走，属于典型的「两条实现等价的假象」。
  */
 export const FALLBACK_PRICING: ModelPricing = {
   input: 2,
@@ -193,117 +194,6 @@ export const FALLBACK_PRICING: ModelPricing = {
   cacheRead: 0.2,
   cacheWrite: 2.5,
 };
-
-/**
- * 判定是否本地推理 provider（不产生 API 费用）。
- *
- * 导出（PR-B / D20）：此前唯一实现是 `SessionState.isLocalProvider`（私有静态），
- * 导致 `calculateUSDCost`（轨迹重算 / digest 用）**判不到本地 provider**——同一个
- * 会话 /cost 显示 $0、轨迹重算却按兜底价算出非零费用，「轨迹 vs 界面」对不上。
- * 收口到这里后两条计价路径共用同一判断；SessionState.isLocalProvider 委托本函数。
- */
-export function isLocalPricingProvider(provider: string | undefined): boolean {
-  if (!provider) return false;
-  const p = provider.toLowerCase();
-  return p === "ollama" || p === "local" || p === "llamacpp" || p === "lmstudio";
-}
-
-/** 单次请求按价格项拆开的费用（USD）与这条价的来源。四项之和 = 该次请求总费用。 */
-export interface CostBreakdown {
-  uncachedUSD: number;
-  hitUSD: number;
-  writeUSD: number;
-  outputUSD: number;
-  /**
-   * 这条价从哪来：`"local"`（本地 provider，恒 0）/ `"fallback"`（兜底价估算）/
-   * 其余为 `ModelPricing.source` 原值（如 `"gateway:expr"`），无 source 时为 `"pricing"`。
-   *
-   * `"fallback"` 是消费方**必须**特殊处理的信号：那是「宁可高估」的编造价，
-   * /cost 要对它亮黄警告（D11），不能和真实价混着展示。
-   */
-  source: string;
-  /**
-   * 本次计价落的时段（PR-B / D11）：`"offpeak"` = 空闲折扣价，`"peak"` = 高峰价，
-   * `"none"` = 该价无分时段政策（也覆盖 fallback / local）。
-   *
-   * 入账方靠它把 costUSD 拆进 `peakCostUSD` / `offpeakCostUSD`——会话跨高峰与空闲时
-   * 一个模型实际用了两档价，不拆的话「单价 × token ≠ 费用」无法解释。
-   * 判据必须与计价同一个函数（`priceTierAt`），两份实现会漂成「账本说 offpeak、成本按 peak 算」。
-   */
-  tier: PriceTier;
-}
-
-/**
- * 按价格项拆分计算单次请求费用 — **全仓唯一的四段计价公式**（PR-B / D12）。
- *
- * 抽出来之前，`SessionState.calculateCost` 与 {@link calculateUSDCost} 各写一份
- * 同形公式，两处已经有漂移（本地 provider 判断、兜底价记法，见 D20）。
- * 抽出来之后：
- * - `calculateUSDCost` = 对本函数求和；
- * - `SessionState.calculateCost` = 对本函数求和 + fallback 告警；
- * - `SessionState.updateUsage` 直接用四段入账 `ModelUsageStats`（D12），
- *   从根上保证「四段之和 === costUSD」是同一行代码算出来的，而不是两处算完碰巧相等。
- *
- * @param at 计价时刻（分时段定价输入）。缺省"现在"；重算历史会话须传请求发生时刻。
- */
-export function calculateCostBreakdown(
-  model: string,
-  usage: Usage,
-  availableModels?: PricingModelEntry[],
-  provider?: string,
-  baseURL?: string,
-  at?: Date,
-): CostBreakdown {
-  const prov = provider ?? inferPricingProvider(model, availableModels);
-  // 本地推理（ollama 等）不产生真金白银费用，恒 0。放在 resolvePricing 之前：
-  // 本地模型名必然不在定价表，先判价再判 local 会对着兜底价算出一笔虚高费用。
-  if (isLocalPricingProvider(prov)) {
-    return { uncachedUSD: 0, hitUSD: 0, writeUSD: 0, outputUSD: 0, source: "local", tier: "none" };
-  }
-  const raw = resolvePricing(model, availableModels, baseURL);
-  const isFallback = raw === null;
-  // D1：先按时刻求生效价（时段折扣 + 币种换算），再计价 —— effectivePricing 是唯一解析入口。
-  const p = effectivePricing(raw ?? FALLBACK_PRICING, at);
-  const n = normalizeCacheUsage(usage, prov);
-  const M = 1_000_000;
-  return {
-    uncachedUSD: (n.uncachedInputTokens * p.input) / M,
-    hitUSD: (n.cacheHitTokens * (p.cacheRead ?? p.input * 0.1)) / M,
-    writeUSD: (n.cacheWriteTokens * (p.cacheWrite ?? p.input * 1.25)) / M,
-    outputUSD: (n.outputTokens * p.output) / M,
-    source: isFallback ? "fallback" : (raw?.source ?? "pricing"),
-    // tier 必须在 effectivePricing **之前**的 raw 上判：折算后的 p 已把 peakWindows 清空
-    // （防二次折算），拿 p 判永远得 "none"，空闲时段的入账就全被记进 peak 桶。
-    // 判据与计价同一个 priceTierAt —— 账本说的时段就是计价用的时段。
-    tier: raw && raw.peakWindows && raw.peakWindows.length > 0 ? priceTierAt(raw, at) : "none",
-  };
-}
-
-/**
- * 计算单次请求的 USD 成本（方案 §2.3 口径统一）。
- *
- * **修复后**：统一经 {@link normalizeCacheUsage} 按 provider 归一化为互斥三段
- * （hit / write / uncached）后分别计价，不再手工做减法，与 session/state.ts 同口径。
- * PR-B 起它是对 {@link calculateCostBreakdown} 求和的薄封装 —— 公式只剩一份。
- */
-export function calculateUSDCost(
-  model: string,
-  usage: Usage,
-  availableModels?: PricingModelEntry[],
-  provider?: string,
-  baseURL?: string,
-  /**
-   * D1：计价时刻 —— 分时段定价的输入。缺省"现在"。
-   *
-   * 显式可传是为了让 `cost-recompute.ts` 重算历史会话时能用**那次请求发生的时刻**
-   * 取价。用"现在"重算一个跑在空闲时段的历史会话，会得到高峰价（差 2 倍），
-   * 而那个错数看起来完全正常 —— 没有任何东西会报红。
-   */
-  at?: Date,
-): number {
-  const b = calculateCostBreakdown(model, usage, availableModels, provider, baseURL, at);
-  return b.uncachedUSD + b.hitUSD + b.writeUSD + b.outputUSD;
-}
 
 /** availableModels 中一项的简化类型（仅 resolvePricing / inferProvider 需要的字段） */
 export interface PricingModelEntry {
@@ -429,6 +319,130 @@ export function inferPricingProvider(model: string, availableModels?: PricingMod
   // D6：收口到唯一实现（配置 provider > 真名锚定匹配），见 llm/provider-infer.ts。
   // 原先这里与 SessionState.inferProvider 各写一份、可观测侧另有三份且判据不同。
   return inferProviderByModelName(model, availableModels);
+}
+
+/** 单次请求的费用分项（USD）。四项之和恒等于 `totalUSD`。 */
+export interface CostBreakdown {
+  /** 未命中输入费用（全价） */
+  uncachedInputUSD: number;
+  /** 缓存命中费用 */
+  cacheHitUSD: number;
+  /** 缓存写入费用 */
+  cacheWriteUSD: number;
+  /** 输出费用（openai 族含推理 token，推理是 output 的子集，不重复计价） */
+  outputUSD: number;
+  /** 四项之和 */
+  totalUSD: number;
+  /**
+   * 本次取价来源：
+   * - `pricing`：命中定价表且该价没有更细的 `source`（注册表 / 用户手写）
+   * - `gateway:*`：命中网关采集价，冒号后是采集口径（原样透传 `ModelPricing.source`）
+   * - `fallback`：未知模型，按 {@link FALLBACK_PRICING} 估算（调用方应告警）
+   * - `local`：本地推理 provider（ollama 等），不产生费用，四项均为 0
+   *
+   * 保留细粒度原值而不是压成三档：/cost 要告诉用户「这条价是从网关同步来的」，
+   * 压成 `pricing` 之后那句来源就只能写死「注册表」，与实际取价不符（PR-B / D11）。
+   * 判 fallback 的消费方用 `=== "fallback"` 仍然成立，两种口径可以共存。
+   */
+  source: string;
+  /**
+   * 本次计价落的时段（D11）：`"offpeak"` = 空闲折扣价，`"peak"` = 高峰价，
+   * `"none"` = 该价无分时段政策（也覆盖 fallback / local）。
+   *
+   * 入账方靠它把 costUSD 拆进 `peakCostUSD` / `offpeakCostUSD`——会话跨高峰与空闲时
+   * 一个模型实际用了两档价，不拆的话「单价 × token ≠ 费用」无法解释。
+   * 判据必须与计价同一个函数（{@link priceTierAt}），两份实现会漂成「账本说 offpeak、成本按 peak 算」。
+   */
+  tier: PriceTier;
+}
+
+/**
+ * 单次请求的费用分项 —— **计价公式的唯一实现**（D20）。
+ *
+ * `SessionState.calculateCost` 与 `calculateUSDCost` 都只调它并对四项求和。
+ * 这两条入口以前各写一份等价公式，后果不是「重复代码不好看」，而是行为已经分叉：
+ * 本地 provider 判断只写在其中一条上，同一个 ollama 会话在界面上是 $0、
+ * 在轨迹重算 / digest 对账里却按兜底价算出真金白银（方案 D20）。
+ *
+ * 兜底价也只有一份（{@link FALLBACK_PRICING}）—— 以前一处写 `{input, output}` 再派生
+ * 0.1 / 1.25，另一处直接写 cacheRead/cacheWrite，数值当时相等，改一处却不会带着另一处走。
+ */
+export function calculateCostBreakdown(
+  model: string,
+  usage: Usage,
+  availableModels?: PricingModelEntry[],
+  provider?: string,
+  baseURL?: string,
+  /**
+   * 计价时刻 —— 分时段定价的输入。缺省"现在"。
+   *
+   * 显式可传是为了让 `cost-recompute.ts` 重算历史会话时能用**那次请求发生的时刻**
+   * 取价。用"现在"重算一个跑在空闲时段的历史会话，会得到高峰价（差 2 倍），
+   * 而那个错数看起来完全正常 —— 没有任何东西会报红。
+   */
+  at?: Date,
+): CostBreakdown {
+  const prov = provider ?? inferPricingProvider(model, availableModels);
+  // 本地推理不产生真金白银费用，恒 0。否则其模型名不在定价表 → 走 FALLBACK_PRICING
+  // 被算出虚高费用，还会误触 costLimit 守卫中断本地会话（本地跑大上下文尤甚）。
+  if (isLocalProvider(prov)) {
+    return {
+      uncachedInputUSD: 0,
+      cacheHitUSD: 0,
+      cacheWriteUSD: 0,
+      outputUSD: 0,
+      totalUSD: 0,
+      source: "local",
+      tier: "none",
+    };
+  }
+
+  const rawPricing = resolvePricing(model, availableModels, baseURL);
+  // 先按时刻求生效价（时段折扣 + 币种换算），再计价。
+  // 不做这一步的后果是双向的：人民币价当美元算（低估 7 倍）、空闲时段收高峰价（高估 2 倍）。
+  const p = rawPricing ? effectivePricing(rawPricing, at) : FALLBACK_PRICING;
+  // 统一经 normalizeCacheUsage 按 provider 归一化为互斥三段（hit / write / uncached），
+  // 不再手工做减法：Anthropic 的 inputTokens 是未命中余量，OpenAI 族含命中，减法会算错一边。
+  const n = normalizeCacheUsage(usage, prov);
+  const M = 1_000_000;
+  const uncachedInputUSD = (n.uncachedInputTokens * p.input) / M;
+  const cacheHitUSD = (n.cacheHitTokens * (p.cacheRead ?? p.input * 0.1)) / M;
+  const cacheWriteUSD = (n.cacheWriteTokens * (p.cacheWrite ?? p.input * 1.25)) / M;
+  const outputUSD = (n.outputTokens * p.output) / M;
+  return {
+    uncachedInputUSD,
+    cacheHitUSD,
+    cacheWriteUSD,
+    outputUSD,
+    totalUSD: uncachedInputUSD + cacheHitUSD + cacheWriteUSD + outputUSD,
+    // 细粒度来源（PR-B / D11）：网关采集价要能显示「网关同步（表达式）」，
+    // 压成 "pricing" 会让 /cost 把网关价说成注册表价。fallback / local 仍是明确信号。
+    source: rawPricing ? (rawPricing.source ?? "pricing") : "fallback",
+    // tier 必须在 effectivePricing **之前**的 raw 上判：折算后的 p 已把 peakWindows 清空
+    // （防二次折算），拿 p 判永远得 "none"，空闲时段的入账就全被记进 peak 桶。
+    // 判据与计价同一个 priceTierAt —— 账本说的时段就是计价用的时段。
+    tier:
+      rawPricing && rawPricing.peakWindows && rawPricing.peakWindows.length > 0
+        ? priceTierAt(rawPricing, at)
+        : "none",
+  };
+}
+
+/**
+ * 计算单次请求的 USD 成本（方案 §2.3 口径统一）。
+ *
+ * 公式唯一实现在 {@link calculateCostBreakdown}，本函数只取合计 —— 与
+ * `SessionState.calculateCost` 逐位相同（T-B11 的判据），不再有第二份乘法。
+ */
+export function calculateUSDCost(
+  model: string,
+  usage: Usage,
+  availableModels?: PricingModelEntry[],
+  provider?: string,
+  baseURL?: string,
+  at?: Date,
+): number {
+  return calculateCostBreakdown(model, usage, availableModels, provider, baseURL, at).totalUSD;
 }
 
 /** 单模型用量统计 */

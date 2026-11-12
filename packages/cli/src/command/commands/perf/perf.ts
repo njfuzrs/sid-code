@@ -93,13 +93,21 @@ const mod: LocalCommandModule = {
 
     const { buildSessionPerf, renderSessionPerf } =
       await import("@sid-code/core/trace/perf-report.ts");
+    // PR-A（A4）：会话进行中 session.traj 是中途快照。新版 builder 已在快照里写 tok/s，
+    // 但旧二进制写出的快照没有 —— 用同一个公式现算兜底，避免「索引里有 tps、面板上没有」。
+    const { deriveOutputTps } = await import("@sid-code/core/trace/builder.ts");
     const report = buildSessionPerf({
       sessionId: digest.sessionId,
       model: digest.model,
       metrics: digest.sessionMetrics,
       latencyByModel,
       modelTimeMs: modelTimeMs > 0 ? modelTimeMs : undefined,
-      tps: num(meta.output_tokens_per_sec),
+      tps:
+        num(meta.output_tokens_per_sec) ??
+        deriveOutputTps({
+          total_tokens_received: num(meta.total_tokens_received),
+          total_gen_elapsed_ms: num(meta.total_gen_elapsed_ms),
+        }),
       toolDurationMs: num(meta.total_tool_duration_ms),
       contextPeakRatio: num(meta.context_usage_peak_ratio),
       contextPeakTokens: num(meta.context_usage_peak_tokens),

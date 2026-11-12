@@ -170,10 +170,12 @@ function buildModelRow(
   ss: SessionState,
   now: Date,
 ): CostModelRow {
+  // 字段名跟 ModelUsageStats 的落盘名（uncachedInputUSD/cacheHitUSD/cacheWriteUSD），
+  // 不在这里换名：D12 的「四段之和 === costUSD」要能一眼对上，中间改一次名字就多一处漂移点。
   const breakdown = {
-    uncachedUSD: stats.uncachedUSD ?? 0,
-    hitUSD: stats.hitUSD ?? 0,
-    writeUSD: stats.writeUSD ?? 0,
+    uncachedUSD: stats.uncachedInputUSD ?? 0,
+    hitUSD: stats.cacheHitUSD ?? 0,
+    writeUSD: stats.cacheWriteUSD ?? 0,
     outputUSD: stats.outputUSD ?? 0,
   };
   const breakdownSum =
@@ -324,7 +326,14 @@ export function buildCostReport(ss: SessionState, opts: BuildCostReportOptions):
       reasoningTokens: sumReasoning(ss),
       promptTotal,
       contextNow: ss.getStockPromptTokens(),
-      cacheHitRate: ss.getCacheHitRate(),
+      // 不复用 `ss.getCacheHitRate()`：那个接口刻意返回 0-100 的**整数**（Footer/状态栏的契约，
+      // `cache-usage.test.ts` 锁着 78 这样的整数值）。面板版式要 1 位小数（D15 的 91.7%），
+      // 用整数会把它显示成 92%，与「命中率偏低」提示的阈值判断也不同源。
+      // 这里用同一份 cacheView 精确算一次，判据仍然是「命中 / 三段之和」。
+      cacheHitRate:
+        cacheView.cacheHitTokens > 0 && promptTotal > 0
+          ? (cacheView.cacheHitTokens / promptTotal) * 100
+          : undefined,
       savingsUSD: ss.getTotalCacheSavings(),
     },
     byModel,

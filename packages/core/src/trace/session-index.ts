@@ -263,6 +263,20 @@ export interface SessionIndexEntry {
   tool_duration_ms?: number;
   /** 上下文占用峰值 used ÷ window（0–1） */
   context_peak_ratio?: number;
+  /**
+   * /perf PR-A（A8）：性能字段的口径标记。`"main"` = `ttft_*` / `gen_*` / `tps` / `tool_duration_ms`
+   * 只含主循环（后台 fork、子代理不在内），`e2e_*` 不含中断轮。**键不存在 = 旧口径**（0.1.616 之前），
+   * TTFT / 生成耗时混有后台调用，跨会话对比偏乐观（2.4 节实测：45/178 会话 TTFT P95 虚高 >20%）。
+   *
+   * 为什么不重算历史：轨迹会被 LRU 清掉，索引行没法从原始事件重算；部分重算会让同一窗口里
+   * 混两套口径而且无从分辨，比统一标注更糟。消费侧按这个键分辨新老行。
+   */
+  perf_scope?: "main";
+}
+
+/** /perf PR-A（A8）：索引行是否为新口径（只含主循环）。消费侧统一用它判断，别各自读键 */
+export function isMainScopePerfRow(row: Pick<SessionIndexEntry, "perf_scope">): boolean {
+  return row.perf_scope === "main";
 }
 
 /** 应用 `SID_CODE_SESSION_INDEX` 重定向。语义与 `applyLedgerPathOverride` 一致 */
@@ -531,6 +545,8 @@ export function buildSessionIndexEntry(
         }
       : {}),
     ...perfFields(extra.perf),
+    // PR-A（A8）：两条写入路径（SessionEnd 权威行 / 增量行）都走这里，新代码写的行一律是新口径。
+    perf_scope: "main",
   };
 }
 

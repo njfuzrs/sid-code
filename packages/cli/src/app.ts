@@ -142,6 +142,13 @@ import { isBridgeSession, setBridgeSessionFlag } from "@sid-code/core/trace/sess
 // 人工确认通道（bridge / sdk / tui / headless）：记进本地轨迹的 PermissionDecision.confirm_via。
 // 只进本地轨迹，不扩外发遥测的 PermissionSource 闭集。
 import { setConfirmVia } from "@sid-code/core/permission/decision-telemetry.ts";
+// B21：确认弹窗的生命周期观测（排队 / 显示 / 按键到达 / 去重吞）。只进本地轨迹，
+// 用来区分「弹窗没显示 / 按键没到 / 按键被去重吞 / resolve 被去重吞」四种故障——
+// 这四种在 PermissionDecision 的终态字段上长得一模一样（都是五分钟后 timeout）。
+import {
+  beginPromptObservation,
+  notePromptResolveDropped,
+} from "@sid-code/core/permission/decision-telemetry.ts";
 import {
   armForceExit,
   installTeardownSignalHandlers,
@@ -10630,9 +10637,15 @@ export class App {
     // 所有交互式确认经 interactionQueue 串行显示：state 里每类只有一个格子，
     // 并发到达时直接写 state 会让后一个盖掉前一个（前一个的 resolve 永远没人调）。
     this.setTUIConfirmCallback(async (toolName, toolInput, desc, shadowedRules, signal) => {
+      // B21：请求**产生**时刻（含排队）。必须放在 run 之前取，`queue_ms` 才量得出
+      // 「等了多久才轮到显示」——`duration_ms` 含这段，分不出卡在队列还是卡在弹窗。
+      const requestedAt = Date.now();
       return this.interactionQueue.run(
         () =>
           new Promise<"yes" | "no" | "always" | "always-persist">((resolve) => {
+            // B21：拿到显示权才开始观测。放在这里而不是回调入口：并发请求在排队时
+            // 不该覆盖正在显示的那个的观测单例（interactionQueue 保证串行）。
+            beginPromptObservation(requestedAt);
             log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
             // H7：settled 去重 + onAbort 清理，防止「用户作答」与「signal abort」双触发 resolve
             // 或 abort 后残留监听器泄漏。对齐已修的 askUserQuestion handler（signal.addEventListener("abort")）。
@@ -10645,7 +10658,13 @@ export class App {
               resolve("no"); // 中断 = 不放行（保守）：既解除孤儿弹窗，又不误放行未确认的工具
             };
             const wrappedResolve = (answer: "yes" | "no" | "always" | "always-persist") => {
-              if (settled) return;
+              if (settled) {
+                // B21：按键走到了 resolve，但 app 层已 settled（第 ④ 种故障：
+                // 弹窗显示了、也答了，但结论被静默丢弃）。与「按键被 resolvedRef 吞」
+                // 分属两层，各记一个计数才能定位是哪一层丢了。
+                notePromptResolveDropped();
+                return;
+              }
               settled = true;
               if (signal) signal.removeEventListener("abort", onAbort);
               log.info("TUI:PERM", `权限对话框响应: ${answer}`);

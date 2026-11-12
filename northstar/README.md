@@ -30,6 +30,14 @@
 | | **TTFT 按缓存命中分桶** —— 缓存到底让首字快了多少的唯一对照口径 | ✅ `ttftByCache.hit/miss` |
 | 缺口 | **TPOT / ITL**（token 间隔，决定打字流畅感）、**Goodput**（满足 SLO 的有效吞吐） | ❌ 全仓零命中；goodput 还需先定义 SLO |
 
+**⚠️ 2026-11-12 口径变更（/perf PR-A，0.1.616 起）：TTFT / 生成耗时 / tok/s / 工具耗时只算主循环**。
+此前后台记忆 fork、compact 等辅助调用与子代理的 `first_content` / `stream_completed` 混在同一组分位数里，
+子代理内部的工具耗时还被重复计入（主循环 `sub_agent` 工具的 `duration_ms` 已含它）。判据收在
+`packages/core/src/trace/call-scope.ts` 一处；端到端同时把中断轮（`stop_reason=abort`）单列出来。
+**跨这个版本不可直接连线**：曲线会整体下移一截，那是口径变化不是变快。实测影响面（11-01 后 178 个会话，主循环 TTFT 样本 ≥5）：
+158 个（89%）混有后台或子代理样本；单会话 TTFT P95 虚高中位数 +6%、P95 +72%，45 个会话虚高 >20%；
+「每会话 P95 的 P95」22.8s → 21.5s。索引行用 `perf_scope: "main"` 标新口径，`/perf --days` / `--by-version` 混窗时会提示。
+
 **TTFT 的口径铁律**（这条有 P0 bug 教训）：必须是**首个任意内容 chunk**（含 thinking / tool_use），
 且**每次 fetch 单独计、不跨重试累计**。只在可视文本上计 → 对 thinking 模型和纯工具调用轮系统性虚高数十秒。
 

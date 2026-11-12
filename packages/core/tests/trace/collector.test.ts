@@ -925,6 +925,67 @@ describe("TraceCollector", () => {
       expect(meta.output_tokens_per_sec).toBeCloseTo(500, 0);
     });
 
+    // /perf PR-A（T-A6）：生成耗时累加器与 digest 的 gens 同一谓词 —— 只算主循环、跳过截断流。
+    // 变异自证：去掉 writeRetryTelemetry 里的 callScopeOf / isTruncatedStream 条件 → 2000 变 2000+各项。
+    test("/perf PR-A：total_gen_elapsed_ms 跳过 fork / 子代理 / aborted / timedOut 的流", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, {
+        outputTokens: 1000,
+        provider: "openai",
+        model: "glm-5.2",
+      });
+      const sc = (extra: Record<string, unknown>) =>
+        collector.writeRetryTelemetry({ type: "stream_completed", provider: "openai", ...extra });
+      sc({ elapsedMs: 2000, turnIndex: 1 }); // 主循环
+      // 以下形态抄自真实轨迹 20261110-152006-77684ab7 / 20261105-191455-9d34a035
+      sc({
+        elapsedMs: 29526,
+        turnIndex: 900002,
+        caller: "agent:fork",
+        agentId: "fork:session-memory-update",
+      });
+      sc({
+        elapsedMs: 96,
+        turnIndex: 10001,
+        caller: "agent:builtin",
+        agentId: "subagent-a1djevi0k",
+      });
+      sc({ elapsedMs: 2647, turnIndex: 2, aborted: true }); // 被 ESC 打断
+      sc({ elapsedMs: 5000, turnIndex: 3, timedOut: true }); // 超时结束
+
+      const meta = collector.getMetadata()!;
+      expect(meta.total_gen_elapsed_ms).toBe(2000);
+      expect(meta.gen_samples).toBe(1);
+    });
+
+    // /perf PR-A（T-A8）：子代理内部工具调用已含在主循环 sub_agent 工具的 duration_ms 里。
+    // 变异自证：去掉 handlePostToolUse 里的 `if (input.agent_id)` 分支 → 合计变 1300。
+    test("/perf PR-A：子代理的 PostToolUse 不累加 total_tool_duration_ms，另记 subagent_tool_duration_ms", async () => {
+      await fireSessionStart(hookSystem);
+      await hookSystem.firePostToolUseEvent("sub_agent", {}, { output: "x" }, false, "t1", {
+        duration_ms: 1000,
+      });
+      await hookSystem.firePostToolUseEvent(
+        "bash",
+        { command: "ls" },
+        { output: "a" },
+        false,
+        "t2",
+        {
+          duration_ms: 300,
+          agent: { agent_id: "subagent-abc", agent_type: "explore" },
+        },
+      );
+      const meta = collector.getMetadata()!;
+      expect(meta.total_tool_duration_ms).toBe(1000);
+      expect(meta.tool_duration_samples).toBe(1);
+      expect(meta.subagent_tool_duration_ms).toBe(300);
+      // 事件照常落盘（带 agent_id），按工具聚合时由消费方过滤
+      const post = readEvents().filter((e) => e.event === "PostToolUse");
+      expect(post).toHaveLength(2);
+      expect(post[1].data.agent_id).toBe("subagent-abc");
+    });
+
     test("tokens/sec：无纯生成耗时样本时 output_tokens_per_sec 为 undefined（不落误导 0）", async () => {
       await fireSessionStart(hookSystem);
       await fireModelRound(hookSystem, {
@@ -938,6 +999,52 @@ describe("TraceCollector", () => {
       const meta = collector.getMetadata()!;
       expect(meta.gen_samples).toBe(0);
       expect(meta.output_tokens_per_sec).toBeUndefined();
+    });
+
+    // T-D1（D17）：吞吐分母只计主循环。
+    // 取证会话实测形态：fork 的 stream_completed 同时带 agentId + caller，
+    // 主循环两者皆无；旁路调用（标题生成）只带 caller。
+    test("tokens/sec 分母只计主循环：fork/旁路生成耗时进 side_gen_elapsed_ms（D17）", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, {
+        outputTokens: 17440,
+        provider: "openai",
+        model: "origin-deepseek-v4-1-flash",
+      });
+      // 主循环 stream_completed：1s
+      collector.writeRetryTelemetry({
+        type: "stream_completed",
+        provider: "openai",
+        totalEvents: 10,
+        elapsedMs: 1000,
+      });
+      // fork 的 stream_completed：带 agentId（取证会话 5 条 fork 均为此形态）
+      collector.writeRetryTelemetry({
+        type: "stream_completed",
+        provider: "openai",
+        totalEvents: 10,
+        elapsedMs: 500,
+        agentId: "fork:memory-extract",
+        caller: "agent:fork",
+      });
+      // 旁路调用（只有 caller、无 agentId，如标题生成）同样不进主循环分母
+      collector.writeRetryTelemetry({
+        type: "stream_completed",
+        provider: "openai",
+        totalEvents: 10,
+        elapsedMs: 300,
+        caller: "title_generation",
+      });
+
+      let meta = collector.getMetadata()!;
+      expect(meta.total_gen_elapsed_ms).toBe(1000);
+      expect(meta.gen_samples).toBe(1);
+      expect(meta.side_gen_elapsed_ms).toBe(800);
+
+      await hookSystem.fireSessionEndEvent("exit");
+      meta = collector.getMetadata()!;
+      // 吞吐分母只含主循环生成耗时：17440 tokens / 1s（而不是混入 800ms 后的 ~9686）
+      expect(meta.output_tokens_per_sec).toBeCloseTo(17440, 0);
     });
 
     test("弃流/重试：会话级聚合计数（六类·可靠性）", async () => {

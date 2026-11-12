@@ -146,7 +146,10 @@ describe("T-B1：四段费用之和 === 总额（同一行代码保证，D12）"
     const usage = { inputTokens: 121_908, outputTokens: 416, cacheReadInputTokens: 120_320 };
     const b = calculateCostBreakdown(MODEL, usage, ss.getAvailableModels(), "openai", GW_BASE_URL);
     const total = ss.calculateCost(MODEL, usage, "openai", GW_BASE_URL);
-    expect(b.uncachedUSD + b.hitUSD + b.writeUSD + b.outputUSD).toBeCloseTo(total, 12);
+    expect(b.uncachedInputUSD + b.cacheHitUSD + b.cacheWriteUSD + b.outputUSD).toBeCloseTo(
+      total,
+      12,
+    );
   });
 
   test("anthropic 族（input 是未命中余量 + 有写入）", () => {
@@ -159,8 +162,11 @@ describe("T-B1：四段费用之和 === 总额（同一行代码保证，D12）"
     };
     const b = calculateCostBreakdown("claude-test", usage, [], "anthropic", undefined);
     const total = ss.calculateCost("claude-test", usage, "anthropic", undefined);
-    expect(b.uncachedUSD + b.hitUSD + b.writeUSD + b.outputUSD).toBeCloseTo(total, 12);
-    expect(b.writeUSD).toBeGreaterThan(0); // 写入项有值——变异「漏掉写入项」时这条红
+    expect(b.uncachedInputUSD + b.cacheHitUSD + b.cacheWriteUSD + b.outputUSD).toBeCloseTo(
+      total,
+      12,
+    );
+    expect(b.cacheWriteUSD).toBeGreaterThan(0); // 写入项有值——变异「漏掉写入项」时这条红
   });
 
   test("兜底价（未知模型，source=fallback）", () => {
@@ -169,7 +175,10 @@ describe("T-B1：四段费用之和 === 总额（同一行代码保证，D12）"
     const b = calculateCostBreakdown("totally-unknown-model-zzz", usage, [], "openai", undefined);
     const total = ss.calculateCost("totally-unknown-model-zzz", usage, "openai", undefined);
     expect(b.source).toBe("fallback");
-    expect(b.uncachedUSD + b.hitUSD + b.writeUSD + b.outputUSD).toBeCloseTo(total, 12);
+    expect(b.uncachedInputUSD + b.cacheHitUSD + b.cacheWriteUSD + b.outputUSD).toBeCloseTo(
+      total,
+      12,
+    );
     // 入账侧也记下了 source=fallback（/cost 亮黄警告的判据）
     ss.updateUsage("totally-unknown-model-zzz", usage, 0, "openai", undefined);
     expect(ss.modelUsage["totally-unknown-model-zzz"]?.pricingSource).toBe("fallback");
@@ -208,7 +217,10 @@ describe("T-B1：四段费用之和 === 总额（同一行代码保证，D12）"
         at,
       );
       const total = ss.calculateCost("tiered-model", usage, "openai", undefined, at);
-      expect(b.uncachedUSD + b.hitUSD + b.writeUSD + b.outputUSD).toBeCloseTo(total, 12);
+      expect(b.uncachedInputUSD + b.cacheHitUSD + b.cacheWriteUSD + b.outputUSD).toBeCloseTo(
+        total,
+        12,
+      );
     }
     // 高峰价是空闲价的两倍（tier 判据参与计价本身）
     const bp = calculateCostBreakdown(
@@ -227,7 +239,7 @@ describe("T-B1：四段费用之和 === 总额（同一行代码保证，D12）"
       undefined,
       atOff,
     );
-    expect(bp.uncachedUSD).toBeCloseTo(bo.uncachedUSD * 2, 10);
+    expect(bp.uncachedInputUSD).toBeCloseTo(bo.uncachedInputUSD * 2, 10);
     expect(bo.tier).toBe("offpeak");
     expect(bp.tier).toBe("peak");
   });
@@ -347,9 +359,9 @@ describe("T-B3：取证会话真实数字端到端对账（人工核过的轨迹
     const ss = replayForensicSession();
     const stats = ss.modelUsage[MODEL]!;
     const sum =
-      (stats.uncachedUSD ?? 0) +
-      (stats.hitUSD ?? 0) +
-      (stats.writeUSD ?? 0) +
+      (stats.uncachedInputUSD ?? 0) +
+      (stats.cacheHitUSD ?? 0) +
+      (stats.cacheWriteUSD ?? 0) +
       (stats.outputUSD ?? 0);
     expect(sum).toBeCloseTo(stats.costUSD, 12);
     expect(sum).toBeCloseTo(0.085_608, 6);
@@ -469,9 +481,9 @@ describe("resume 回灌：新增字段跨 restart 不丢（D11/D12）", () => {
     );
     const stats = ss.modelUsage["tiered-model"]!;
     const before = {
-      uncachedUSD: stats.uncachedUSD,
-      hitUSD: stats.hitUSD,
-      writeUSD: stats.writeUSD,
+      uncachedInputUSD: stats.uncachedInputUSD,
+      cacheHitUSD: stats.cacheHitUSD,
+      cacheWriteUSD: stats.cacheWriteUSD,
       outputUSD: stats.outputUSD,
       peakCostUSD: stats.peakCostUSD,
       offpeakCostUSD: stats.offpeakCostUSD,
@@ -479,15 +491,15 @@ describe("resume 回灌：新增字段跨 restart 不丢（D11/D12）", () => {
       pricingBaseURL: stats.pricingBaseURL,
       pricingSource: stats.pricingSource,
     };
-    expect(before.uncachedUSD).toBeGreaterThan(0);
+    expect(before.uncachedInputUSD).toBeGreaterThan(0);
     expect(before.reasoningTokens).toBe(40);
 
     const restored = new SessionState("hydrate-dst");
     restored.hydrateUsage(ss.serializeUsageSnapshot());
     const rs = restored.modelUsage["tiered-model"]!;
-    expect(rs.uncachedUSD).toBeCloseTo(before.uncachedUSD!, 12);
-    expect(rs.hitUSD).toBeCloseTo(before.hitUSD!, 12);
-    expect(rs.writeUSD).toBeCloseTo(before.writeUSD!, 12);
+    expect(rs.uncachedInputUSD).toBeCloseTo(before.uncachedInputUSD!, 12);
+    expect(rs.cacheHitUSD).toBeCloseTo(before.cacheHitUSD!, 12);
+    expect(rs.cacheWriteUSD).toBeCloseTo(before.cacheWriteUSD!, 12);
     expect(rs.outputUSD).toBeCloseTo(before.outputUSD!, 12);
     expect((rs.peakCostUSD ?? 0) + (rs.offpeakCostUSD ?? 0)).toBeCloseTo(rs.costUSD, 12);
     expect(rs.reasoningTokens).toBe(40);

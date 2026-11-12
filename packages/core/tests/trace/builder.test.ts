@@ -76,6 +76,7 @@ function makeMetadata(overrides: Partial<TraceMetadata> = {}): TraceMetadata {
     // （src/trace/collector.ts:525 起），即一次调用都还没发生时的零态。
     total_reasoning_tokens: 0,
     total_gen_elapsed_ms: 0,
+    side_gen_elapsed_ms: 0,
     gen_samples: 0,
     total_tool_duration_ms: 0,
     tool_duration_samples: 0,
@@ -895,5 +896,41 @@ describe("buildTrajectory", () => {
     // harness_turn_context 不影响输出结构
     const finalAnswer = result.trajectory.find((s) => (s as any).action === "final_answer");
     expect(finalAnswer).toBeDefined();
+  });
+});
+
+// /perf PR-A（A4/T-A7）：会话进行中写出的快照原先没有 output_tokens_per_sec（只在 SessionEnd 派生），
+// /perf 读快照时恒显示「无样本」。
+// 变异自证：把 builder 里的 `?? deriveOutputTps(metadata)` 去掉 → 第一条红。
+describe("/perf PR-A：中途快照也写 output_tokens_per_sec", () => {
+  test("未收尾、metadata 无 tps 但有生成耗时 → 快照按同一公式现算", () => {
+    const result = buildTrajectory(
+      [],
+      makeMetadata({
+        total_tokens_received: 1000,
+        total_gen_elapsed_ms: 2000,
+        gen_samples: 1,
+        output_tokens_per_sec: undefined,
+      }),
+    );
+    expect(result.metadata.output_tokens_per_sec).toBeCloseTo(500, 5);
+  });
+
+  test("SessionEnd 已派生的权威值优先，不被现算覆盖", () => {
+    const result = buildTrajectory(
+      [],
+      makeMetadata({
+        total_tokens_received: 1000,
+        total_gen_elapsed_ms: 2000,
+        gen_samples: 1,
+        output_tokens_per_sec: 123,
+      }),
+    );
+    expect(result.metadata.output_tokens_per_sec).toBe(123);
+  });
+
+  test("无生成耗时样本 → 不落字段（不落 0 或 ∞）", () => {
+    const result = buildTrajectory([], makeMetadata({ total_tokens_received: 1000 }));
+    expect(result.metadata.output_tokens_per_sec).toBeUndefined();
   });
 });

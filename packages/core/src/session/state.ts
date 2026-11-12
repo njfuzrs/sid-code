@@ -10,14 +10,16 @@
 
 import type { Usage, NormalizedCacheUsage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
-import { inferProviderByModelName } from "../llm/provider-infer.ts";
+import {
+  inferProviderByModelName,
+  isLocalProvider as isLocalProviderName,
+} from "../llm/provider-infer.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   resolvePricing,
   effectivePricing,
   calculateCostBreakdown,
   FALLBACK_PRICING,
-  isLocalPricingProvider,
   type PricingModelEntry,
 } from "../api/cost-tracker.ts";
 // CG-2：/clear 要清的「本任务进展」键由 loop 侧定义，这里只消费常量（不复制字面量——
@@ -128,12 +130,13 @@ export interface ModelUsageStats {
   /**
    * 该模型「输入·未命中」累计费用（USD，D12）。四段之和恒等于 `costUSD` ——
    * 四段在 `updateUsage` 里由**同一个** `calculateCostBreakdown` 结果拆出，不是两处各算。
+   * 字段名与 `CostBreakdown` 同构（uncachedInputUSD/...），读写两头不换名。
    */
-  uncachedUSD?: number;
+  uncachedInputUSD?: number;
   /** 「输入·缓存命中」累计费用（USD，D12）。 */
-  hitUSD?: number;
+  cacheHitUSD?: number;
   /** 「输入·缓存写入」累计费用（USD，D12）。 */
-  writeUSD?: number;
+  cacheWriteUSD?: number;
   /** 「输出」累计费用（USD，D12，已含推理）。 */
   outputUSD?: number;
   /**
@@ -408,11 +411,13 @@ export class SessionState {
     // source 字段就是判据，不需要再 resolvePricing 一次。
     const b = calculateCostBreakdown(model, usage, this.availableModels, prov, baseURL);
     if (b.source === "fallback") this.warnUnknownPricing(model);
-    const cost = b.uncachedUSD + b.hitUSD + b.writeUSD + b.outputUSD;
+    // totalUSD 由 calculateCostBreakdown 内部求和，这里不再加一遍（加一遍会双计）。
+    const cost = b.totalUSD;
     stats.costUSD += cost;
-    stats.uncachedUSD = (stats.uncachedUSD ?? 0) + b.uncachedUSD;
-    stats.hitUSD = (stats.hitUSD ?? 0) + b.hitUSD;
-    stats.writeUSD = (stats.writeUSD ?? 0) + b.writeUSD;
+    // D12：四段字段名与 CostBreakdown 完全同构（uncachedInputUSD/...），读写两头不用换名。
+    stats.uncachedInputUSD = (stats.uncachedInputUSD ?? 0) + b.uncachedInputUSD;
+    stats.cacheHitUSD = (stats.cacheHitUSD ?? 0) + b.cacheHitUSD;
+    stats.cacheWriteUSD = (stats.cacheWriteUSD ?? 0) + b.cacheWriteUSD;
     stats.outputUSD = (stats.outputUSD ?? 0) + b.outputUSD;
     // D11：按时段拆分（tier 与计价同一个 priceTierAt，见 cost-tracker.ts）。
     // "none"（无分时段政策）归 peak 桶 —— 该模型只有一档价，peak 桶就是它的全额。
@@ -423,6 +428,8 @@ export class SessionState {
     }
     // D11：记端点（剥 query，见 sanitizedBaseURL）与价格来源，/cost 按「模型 + 端点」
     // 取到和计费同一条价。会话中途 /model 切换后，这里的端点跟着换。
+    // pricingSource 直接取 breakdown.source：它已经是细粒度值（`gateway:expr` / `pricing` /
+    // `fallback` / `local`），CostBreakdown 上没有第二个来源字段可回退。
     if (baseURL) stats.pricingBaseURL = SessionState.sanitizedBaseURL(baseURL);
     stats.pricingSource = b.source;
 
@@ -685,9 +692,9 @@ export class SessionState {
           // 自相矛盾正是 D12 要消灭的。旧快照（PR-B 之前）无这些字段 → 0，
           // /cost 显示时按「无拆分」处理（见 cost-report.ts 的 carriedBreakdown 标记）。
           reasoningTokens: Number((s as ModelUsageStats).reasoningTokens) || 0,
-          uncachedUSD: Number((s as ModelUsageStats).uncachedUSD) || 0,
-          hitUSD: Number((s as ModelUsageStats).hitUSD) || 0,
-          writeUSD: Number((s as ModelUsageStats).writeUSD) || 0,
+          uncachedInputUSD: Number((s as ModelUsageStats).uncachedInputUSD) || 0,
+          cacheHitUSD: Number((s as ModelUsageStats).cacheHitUSD) || 0,
+          cacheWriteUSD: Number((s as ModelUsageStats).cacheWriteUSD) || 0,
           outputUSD: Number((s as ModelUsageStats).outputUSD) || 0,
           // D11：时段拆分同上；peak + offpeak 之和 === costUSD 的等式跨 resume 必须成立。
           peakCostUSD: Number((s as ModelUsageStats).peakCostUSD) || 0,
@@ -763,18 +770,19 @@ export class SessionState {
   }
 
   /**
-   * 计算单次 API 调用的成本（方案 §2.3 口径修复）。
+   * 计算单次 API 调用的成本（方案 §2.3 口径修复 / D20 公式合并）。
    *
    * **修复前的 bug**：旧实现用 `regularInput = inputTokens − cacheRead − cacheCreation`，
    * 对 Anthropic 会重复扣减——Anthropic 的 inputTokens 本就是未命中余量，再减一次导致
    * regularInput 偏小、费用算低。
    *
-   * **修复后**：统一经 {@link normalizeCacheUsage} 归一化为互斥三段后分别计价，不再做减法。
-   * 两家口径都正确：
-   * - 未命中：uncachedInputTokens × pricing.input（全价）
-   * - 命中：cacheHitTokens × pricing.cacheHit（DeepSeek 固定价 / Anthropic = input×0.1 兜底）
-   * - 写入：cacheWriteTokens × pricing.cacheWrite（DeepSeek=0 / Anthropic = input×1.25 兜底）
-   * - 输出：outputTokens × pricing.output
+   * **现在**：公式唯一实现在 `cost-tracker.ts` 的 {@link calculateCostBreakdown}
+   * （归一化为互斥三段后分别计价，不做减法），本函数只负责
+   * ① 按模型推断 provider；② 未知模型按模型去重告警；③ 返回合计。
+   *
+   * 为什么不再自己乘一遍（D20）：`calculateUSDCost`（轨迹重算 / digest 对账）走的是另一条
+   * 入口，两份等价公式在本地方案上已经分叉 —— 同一个 ollama 会话，界面上是 $0、
+   * 轨迹重算却按兜底价算出非零费用。判据只留一份才不会再次漂移。
    *
    * PR-B 起：公式本体收口到 cost-tracker.ts 的 {@link calculateCostBreakdown}（全仓唯一一份），
    * 本方法保留为**公开重算入口**（trace 对账 / calculateSavings 走它），
@@ -793,10 +801,13 @@ export class SessionState {
     at?: Date,
   ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
-    // P1-4：fallback 兜底价在此告警（本地 provider 在 breakdown 内部判，返回 source: "local" 恒 0）。
-    const b = calculateCostBreakdown(model, usage, this.availableModels, prov, baseURL, at);
-    if (b.source === "fallback") this.warnUnknownPricing(model);
-    return b.uncachedUSD + b.hitUSD + b.writeUSD + b.outputUSD;
+    const breakdown = calculateCostBreakdown(model, usage, this.availableModels, prov, baseURL, at);
+    // P1-4：未知模型不静默归零（否则换个模型名费用立刻变 0，costLimit 守卫被绕过，
+    // 用户以为"免费"实际在烧钱）。记 WARN 一次（按模型去重），用保守兜底价估算成本，
+    // 宁可高估也不归零，让预算守卫继续生效。
+    // 判据取自计价结果的 source —— 不再自己 resolvePricing 一次（那会是第二份「有没有价」的判定）。
+    if (breakdown.source === "fallback") this.warnUnknownPricing(model);
+    return breakdown.totalUSD;
   }
 
   /**
@@ -821,7 +832,7 @@ export class SessionState {
   ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 本地 provider 无费用 → 无"节省"概念，恒 0（判据收口在 cost-tracker，D20）
-    if (isLocalPricingProvider(prov)) return 0;
+    if (isLocalProviderName(prov)) return 0;
     // D1：全价假设必须与实际成本走**同一份生效价**。
     //
     // 不折算的后果是本函数末尾那个减法两边口径不同：`hypothetical` 用高峰价、
@@ -830,7 +841,8 @@ export class SessionState {
     const rawPricing = resolvePricing(model, this.availableModels, baseURL);
     const pricing = rawPricing ? effectivePricing(rawPricing, at) : null;
     const n = normalizeCacheUsage(usage, prov);
-    // pricing 缺失时与 calculateCost 走同一套兜底价（该函数会记 WARN，此处不重复告警）
+    // pricing 缺失时与 calculateCost 走同一套兜底价（该函数会记 WARN，此处不重复告警）。
+    // 引用 cost-tracker 导出的唯一一份常量 —— 两处各写一份兜底价，改一处不会带着另一处走。
     const inputPrice = pricing?.input ?? FALLBACK_PRICING.input;
     const outputPrice = pricing?.output ?? FALLBACK_PRICING.output;
     // 全价成本：promptTotal 全按未命中输入 + 输出
@@ -901,7 +913,9 @@ export class SessionState {
    * 等既有调用方不感知。
    */
   static isLocalProvider(provider: string | undefined): boolean {
-    return isLocalPricingProvider(provider);
+    // D20：判据唯一实现在 llm/provider-infer.ts，计价（calculateCostBreakdown）
+    // 与展示/节省（本文件）共用同一份，避免「界面免费、重算收费」再次分叉。
+    return isLocalProviderName(provider);
   }
 
   /**
@@ -984,7 +998,8 @@ export class SessionState {
    * D13：逐次入账明细的只读视图（/cost 的轮次分析从这里取数）。
    *
    * 返回浅拷贝数组而不是内部引用：消费方排序/切片不会改动环形缓冲；
-   * entry 本身是纯数据，浅拷贝足够。
+   * entry 本身是纯数据，浅拷贝足够。不落盘（serializeUsageSnapshot 不含），
+   * resume 后只有本进程的部分——/cost 显示时写明「本进程 N 次」。
    */
   getRequestLog(): RequestLogEntry[] {
     return [...this.requestLog];

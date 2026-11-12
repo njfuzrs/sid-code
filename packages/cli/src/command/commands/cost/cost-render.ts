@@ -208,12 +208,16 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
   }
   if (narrow) {
     lines.push(`  ${p.secondary("token / 费用 / 占比")}`);
-    lines.push(
-      `  ${padEndWidth("输入·未命中", 14)} ${fmtInt(r.main.uncachedTokens)}`,
-      `  ${padEndWidth("输入·缓存命中", 14)} ${fmtInt(r.main.cacheHitTokens)}`,
-      `  ${padEndWidth("输入·缓存写入", 14)} ${fmtInt(r.main.cacheWriteTokens)}`,
-      `  ${padEndWidth("输出", 14)} ${fmtInt(r.main.outputTokens)}`,
-    );
+    // 0 值的命中/写入行整行省略（D5 的既有契约）：0 不参与加法，用户照样能验算；
+    // 每行都列一遍 0 会让面板被无成本项填满，反而盖住真正的成本来源。
+    lines.push(`  ${padEndWidth("输入·未命中", 14)} ${fmtInt(r.main.uncachedTokens)}`);
+    if (r.main.cacheHitTokens > 0) {
+      lines.push(`  ${padEndWidth("输入·缓存命中", 14)} ${fmtInt(r.main.cacheHitTokens)}`);
+    }
+    if (r.main.cacheWriteTokens > 0) {
+      lines.push(`  ${padEndWidth("输入·缓存写入", 14)} ${fmtInt(r.main.cacheWriteTokens)}`);
+    }
+    lines.push(`  ${padEndWidth("输出", 14)} ${fmtInt(r.main.outputTokens)}`);
   } else {
     const c1 = padEndWidth("token", 12);
     const c2 = padEndWidth("单价", 10);
@@ -230,7 +234,8 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
     ) =>
       `  ${padEndWidth(label, 14)} ${padStartWidth(fmtInt(tokens), 12)} ${padStartWidth(unitPrice === undefined ? "—" : fmtUnitPrice(unitPrice), 10)} ${padStartWidth(`${cur}${fmtUSD(usd)}`, 11)}  ${Math.round(share * 100)}%`;
     const sumUSD = Math.max(1e-12, r.totals.mainCostUSD);
-    // 单模型时单价来自那一条；多模型时该行是聚合值没有单一单价 → 显示 "—"
+    // 单模型时单价来自那一条；多模型时该行是聚合值没有单一单价 → 显示 "—"。
+    // 0 值的命中/写入行同窄列一样整行省略：三段互斥的加法只依赖出现的行。
     lines.push(
       tableRow(
         "输入·未命中",
@@ -239,20 +244,28 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
         single ? single.breakdown.uncachedUSD : 0,
         (single ? single.breakdown.uncachedUSD : 0) / sumUSD,
       ),
-      tableRow(
-        "输入·缓存命中",
-        r.main.cacheHitTokens,
-        single?.pricing?.cacheRead,
-        single ? single.breakdown.hitUSD : 0,
-        (single ? single.breakdown.hitUSD : 0) / sumUSD,
-      ),
-      tableRow(
-        "输入·缓存写入",
-        r.main.cacheWriteTokens,
-        single?.pricing?.cacheWrite,
-        single ? single.breakdown.writeUSD : 0,
-        (single ? single.breakdown.writeUSD : 0) / sumUSD,
-      ),
+      ...(r.main.cacheHitTokens > 0
+        ? [
+            tableRow(
+              "输入·缓存命中",
+              r.main.cacheHitTokens,
+              single?.pricing?.cacheRead,
+              single ? single.breakdown.hitUSD : 0,
+              (single ? single.breakdown.hitUSD : 0) / sumUSD,
+            ),
+          ]
+        : []),
+      ...(r.main.cacheWriteTokens > 0
+        ? [
+            tableRow(
+              "输入·缓存写入",
+              r.main.cacheWriteTokens,
+              single?.pricing?.cacheWrite,
+              single ? single.breakdown.writeUSD : 0,
+              (single ? single.breakdown.writeUSD : 0) / sumUSD,
+            ),
+          ]
+        : []),
       tableRow(
         "输出",
         r.main.outputTokens,
@@ -279,7 +292,9 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
   // ── 缓存 ──
   if (r.main.cacheHitRate !== undefined || r.main.savingsUSD > 0) {
     lines.push(p.accent("缓存"));
-    const rate = r.main.cacheHitRate !== undefined ? `${r.main.cacheHitRate}%` : "—";
+    // 1 位小数（D15 版式 91.7%）：数据层给的是精确百分比，取整会让 91.7 变成 92，
+    // 与「命中率偏低」的阈值判断（同一份数值）产生肉眼可见的不一致。
+    const rate = r.main.cacheHitRate !== undefined ? `${r.main.cacheHitRate.toFixed(1)}%` : "—";
     // 缓存断裂另起一行：并排写同一行约 75+ 显示列（断裂原因是人类可读句），70 列终端全折行。
     lines.push(
       `  命中率 ${p.primary(rate)}   省下 ${p.success(`${cur}${fmtUSD(r.main.savingsUSD)}`)}`,
@@ -289,34 +304,17 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
         `  ${p.secondary(`缓存断裂 ${r.cacheBreaks.count} 次（${r.cacheBreaks.latestReason}）`)}`,
       );
     }
-    // P2-2：openai 协议路径为服务端隐式缓存（cacheCreation 恒 0），命中率结构性上限
-    // 约 60-70%，不同于 anthropic 族显式缓存的 90%+。对该族标注正常上限，避免用户把
-    // 60-70% 误判为 harness bug。以协议路径为准，非按模型名单。
+    // D6：只在实测命中率确实偏低且样本足够时提示，且给的是可行动作（/cache --breaks）。
     //
-    // 判据必须与命中率同源：上面的命中率是全会话跨模型聚合（buildCostReport 遍历
-    // modelUsage），所以这里也遍历 byModel（同一批数据），按每条记账时的 provider 判断。
-    // 不能用「当前模型」+ 全会话 cacheCreation：先 anthropic 后 /model 切 openai、或主模型
-    // openai + anthropic 子代理时，anthropic 那部分的写入量会让条件恒假，提示要防的
-    // 「60-70% 误判成 bug」恰好在多协议会话里重新暴露（见 cost-protocol-hint.test.ts）。
-    // 写入量也只看 openai 族自己的那几条：该族恒 0（见 llm/openai-usage.ts），
-    // 非 0 说明走了显式缓存，结构性上限的解释不再适用。
-    const implicitCacheUsage = r.byModel.filter(
-      (m) => m.provider === "openai" && m.cacheHitTokens > 0,
-    );
-    const hasImplicitOnly =
-      implicitCacheUsage.length > 0 && implicitCacheUsage.every((m) => m.cacheWriteTokens === 0);
-    if (hasImplicitOnly) {
-      // 混了别的协议族时，整体命中率是两族加权的结果，不能直接拿 60-70% 去套。
-      // 两版提示都拆成两行：合写一行约 76 列（混合版 96 列），70 列终端会折行挤乱。
-      const mixed = r.byModel.some((m) => m.provider !== "openai" && m.cacheHitTokens > 0);
-      const hintLines = mixed
-        ? [
-            "  （本会话混用多个协议族：openai 协议部分为隐式缓存，60-70% 属正常上限；",
-            "  上面的命中率是各族加权结果，不能直接套单一族的标准）",
-          ]
-        : ["  （openai 协议为隐式缓存，60-70% 属正常上限；", "  90%+ 需 anthropic 族显式缓存）"];
-      lines.push(...hintLines.map((s) => p.secondary(s)));
-    }
+    // 旧实现写死「openai 族 60-70% 属正常上限」，**完全不看实际数值** —— 取证会话
+    // （20261110-142303-21c3a481）里命中率 91.7%，下一行却是「60-70% 属正常上限」，
+    // 自相矛盾；而实测主流 openai 兼容渠道命中率 80–95%（阈值依据见
+    // LOW_CACHE_HIT_RATE_THRESHOLD），旧口径本身就不成立。
+    //
+    // 判据与命中率同源：两边都来自 buildCostReport 的 r.main（同一批 modelUsage 数据），
+    // 不再按「当前模型 provider」拼条件 —— 那种判据在多协议会话里会漏提示。
+    const hint = formatCacheHitHint(r.main.cacheHitRate ?? 0, r.main.requests);
+    if (hint) lines.push(p.secondary(hint));
   }
 
   lines.push("");
@@ -436,4 +434,58 @@ export function formatPendingTasksNotice(view: PendingTasksView): string | null 
   if (pending.length > 0) parts.push(`${pending.join("、")} 排队中`);
   if (parts.length === 0) return null;
   return `⚠ 后台任务 ${parts.join("、")}；费用可能还会增加，稍后重开 /cost 查看最新数字`;
+}
+
+/**
+ * 命中率低于该值（百分比）视为偏低，触发提示。
+ *
+ * 阈值依据是 2026-11-10 对本机 `~/.sid-code/usage-ledger.jsonl` 的实测
+ * （筛 provider=openai、单会话 promptTotal ≥ 20 万，太短的会话缓存还没热起来）：
+ *
+ * | 模型 | 会话数 | 加权命中 | p50 | p90 |
+ * | --- | --- | --- | --- | --- |
+ * | origin-deepseek-v4-1-flash | 473 | 91.4% | 89.6% | 96.2% |
+ * | glm-5.2 | 157 | 85.5% | 81.0% | 93.3% |
+ * | glm-5.3-uniapi | 51 | 83.8% | 79.8% | 91.3% |
+ * | kimi-k3 | 7 | 81.9% | 80.0% | 85.6% |
+ * | gpt-5.6-luna | 19 | 2.2% | 0.0% | 0.0% |
+ *
+ * openai 族的命中率按厂商/网关差别很大：主流渠道稳定在 80–95%，有的渠道几乎为 0。
+ * 所以旧口径「openai 族结构性上限约 60–70%」不成立（那是早期某个模型的样本）。
+ * 阈值取 50% 既能抓住「渠道不支持缓存」这类真问题，又不会误伤正常渠道。
+ *
+ * 刻意**不按模型名/协议族分档**（CLAUDE.md：禁按模型硬编码分级）：同一族里既有 91%
+ * 的渠道也有 2% 的渠道，按族给「正常上限」只会让前者看到无意义提示、后者被放过。
+ */
+export const LOW_CACHE_HIT_RATE_THRESHOLD = 50;
+
+/**
+ * 少于这么多次请求时不提示。
+ *
+ * 会话刚开始时缓存还没热起来（前几次请求几乎必然低命中），此时提示「偏低」是噪音：
+ * 取证会话里最贵的 3 次请求正是缓存没热起来的前 3 次。
+ */
+export const LOW_CACHE_HIT_RATE_MIN_REQUESTS = 5;
+
+/**
+ * 命中率偏低时的提示行；不偏低或样本太少时返回 null（整段省略，不给正常路径加噪音）。
+ *
+ * ## 为什么改成按实测值判断（D6）
+ *
+ * 旧实现是「会话里有 openai 族命中、且该族没有缓存写入 → 输出写死的一句
+ * 『openai 协议为隐式缓存，60-70% 属正常上限』」，**完全不看实际数值**。
+ * 取证会话（`~/.sid-code/trajectories/sessions/20261110-142303-21c3a481`）里
+ * `/cost` 显示命中率 91.7%，下一行却写「60-70% 属正常上限」，自相矛盾。
+ *
+ * 现在只在实测值低于 {@link LOW_CACHE_HIT_RATE_THRESHOLD} 且请求数达到
+ * {@link LOW_CACHE_HIT_RATE_MIN_REQUESTS} 时提示，且提示内容是可行动的动作
+ * （`/cache --breaks` 能看本会话每次缓存中断的归因）。
+ *
+ * 判据只吃数值，不吃协议族 —— 调它的渲染层与命中率同源（都来自 CostReport.main），
+ * 不用「当前模型 provider」拼条件，多协议会话里也不会漏提示。
+ */
+export function formatCacheHitHint(hitRatePercent: number, requests: number): string | null {
+  if (requests < LOW_CACHE_HIT_RATE_MIN_REQUESTS) return null;
+  if (hitRatePercent >= LOW_CACHE_HIT_RATE_THRESHOLD) return null;
+  return `  ⚠ 缓存命中率偏低（低于 ${LOW_CACHE_HIT_RATE_THRESHOLD}%）：可能是前缀被改动或渠道不支持缓存，可运行 /cache --breaks 查看本会话的中断原因`;
 }

@@ -19,6 +19,13 @@ import { renderCostReport, type PendingTasksView } from "./cost-render.ts";
 // 实现已随渲染层拆到 cost-render.ts，这里 re-export 保持导入路径稳定。
 export { formatPendingTasksNotice } from "./cost-render.ts";
 export type { PendingTasksView } from "./cost-render.ts";
+// D6：命中率提示的判据（按实测值，不按协议族）也住在渲染层；
+// cost-protocol-hint.test.ts 从本模块导入它们，路径同样保持不变。
+export {
+  formatCacheHitHint,
+  LOW_CACHE_HIT_RATE_MIN_REQUESTS,
+  LOW_CACHE_HIT_RATE_THRESHOLD,
+} from "./cost-render.ts";
 
 /** /cost 命令 */
 export class CostCommand implements LocalCommandModule {

@@ -36,7 +36,11 @@ import { PROTECTED_PREFIX } from "./privacy.ts";
 import { asVerified } from "./types.ts";
 import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
 import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
-import { recordPermissionDecision, consumeConfirmVia } from "../permission/decision-telemetry.ts";
+import {
+  recordPermissionDecision,
+  consumeConfirmVia,
+  consumePromptObservation,
+} from "../permission/decision-telemetry.ts";
 import { getPluginMarketplace, type PluginToolOrigin } from "./plugin-attribution.ts";
 import { emitMemoryGuard } from "../query/guidance-events.ts";
 
@@ -375,11 +379,17 @@ export function logPermissionAllow(
   // 那次并没有人真的被问（见 tool-executor 的记录点注释），它们的 source 不是 user。
   // consume 而非 read：一次确认只对应一条决策，否则值会串到后续「没人被问」的决策上。
   const confirmVia = opts.needsPrompt && opts.source === "user" ? consumeConfirmVia() : null;
+  // B21：弹窗生命周期观测（排队 / 显示 / 按键到达 / 去重吞）。同样 consume 而非 read。
+  // 只在 prompted 决策上取：规则直放行的决策没有弹窗，取到的是 null，但**不能**把
+  // 上一条弹窗的残留带出来——`beginPromptObservation` 每次弹窗显示时重置，所以残留
+  // 只可能出现在「弹窗开了但决策没报」的异常路径，那种情况宁可空着也不要错配。
+  const prompt = opts.needsPrompt ? consumePromptObservation() : null;
   recordPermissionDecision({
     tool: toolName,
     outcome: "allow",
     prompted: opts.needsPrompt,
     source: opts.source,
+    ...(prompt ? { prompt } : {}),
     ...(confirmVia ? { confirmVia } : {}),
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
     context: opts.context,
@@ -455,11 +465,16 @@ export function logPermissionDeny(
   });
   // 同 allow：两个条件缺一不可（prompted + source=user），consume 保证一次确认只对应一条决策。
   const confirmVia = opts.needsPrompt && opts.source === "user" ? consumeConfirmVia() : null;
+  // B21：弹窗生命周期观测。**超时分支是它最重要的消费者**——`source=timeout` 时
+  // `duration_ms` 只能说明「等了 5 分钟」，这组字段才能区分「弹窗没显示 / 按键没到 /
+  // 按键被 resolvedRef 吞 / resolve 被 settled 吞」（判读见 PromptObservation 注释）。
+  const prompt = opts.needsPrompt ? consumePromptObservation() : null;
   recordPermissionDecision({
     tool: toolName,
     outcome: "deny",
     prompted: opts.needsPrompt,
     source: opts.source,
+    ...(prompt ? { prompt } : {}),
     ...(confirmVia ? { confirmVia } : {}),
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
     context: opts.context,

@@ -12,7 +12,7 @@
  * - 无版本号的历史行在按版本视图里显式报数，不静默丢弃
  */
 import { percentile as sortedPercentile } from "./digest.ts";
-import type { SessionIndexEntry } from "./session-index.ts";
+import { isMainScopePerfRow, type SessionIndexEntry } from "./session-index.ts";
 import type { ModelLatencyStats } from "./latency-by-model.ts";
 
 /** 未排序样本的分位数；空样本 → undefined（不是 0） */
@@ -127,6 +127,11 @@ export type PerfUnit = (typeof TREND_METRICS)[number]["unit"];
 
 export interface WindowStats {
   sessions: number;
+  /**
+   * PR-A（A8）：其中旧口径行数（`perf_scope` 不是 `"main"`，TTFT / 生成耗时含后台调用）。
+   * 不做换算，只报数：消费侧据此提示「对比偏乐观」。
+   */
+  legacyScopeSessions: number;
   metrics: Record<TrendKey, PerfStat>;
 }
 
@@ -137,6 +142,7 @@ export interface WindowStats {
 export function windowStats(rows: SessionIndexEntry[]): WindowStats {
   return {
     sessions: rows.length,
+    legacyScopeSessions: rows.filter((r) => !isMainScopePerfRow(r)).length,
     metrics: {
       ttft_p50: stat(
         rows.map((r) => r.ttft_p50),
@@ -460,6 +466,18 @@ export function renderTrend(t: TrendReport): string {
       );
     }
   }
+  // PR-A（A8）：新老口径混合窗口。不换算（老行无从重算），只把混了多少摆出来。
+  const legacyNotes: string[] = [];
+  if (t.current.legacyScopeSessions > 0)
+    legacyNotes.push(`本期含 ${t.current.legacyScopeSessions} 个`);
+  if (t.previous.legacyScopeSessions > 0)
+    legacyNotes.push(`上期含 ${t.previous.legacyScopeSessions} 个`);
+  if (legacyNotes.length > 0) {
+    lines.push(
+      "",
+      `  口径：${legacyNotes.join("、")}旧口径会话（TTFT / 生成耗时含后台调用，偏慢），新旧对比会显得变快。`,
+    );
+  }
   lines.push(
     "",
     `  判读：两侧都 ≥${MIN_TREND_SAMPLES} 个样本才下结论；变化 <${TREND_NOISE_RATIO * 100}% 记 ≈；退步 ≥${TREND_WARN_RATIO * 100}% 标 ⚠。`,
@@ -485,6 +503,13 @@ export function renderByVersion(v: VersionReport): string {
   }
   if (v.rowsWithoutVersion > 0) {
     lines.push("", `  另有 ${v.rowsWithoutVersion} 个会话缺版本号（早期版本写的行），未计入上表。`);
+  }
+  // PR-A（A8）：哪些版本行是旧口径。按行判（perf_scope），不按版本号硬编码切换点 ——
+  // dev 构建与正式版共用版本号，按号切会把同一版本的新老行判错。
+  const legacy = v.versions.filter((ver) => ver.legacyScopeSessions > 0);
+  if (legacy.length > 0) {
+    const names = legacy.map((ver) => ver.version).join("、");
+    lines.push("", `  ${names} 含旧口径会话：TTFT / 生成耗时含后台调用，与之后的版本不可直接比。`);
   }
   return lines.join("\n");
 }

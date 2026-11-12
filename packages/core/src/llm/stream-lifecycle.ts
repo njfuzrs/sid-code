@@ -822,6 +822,13 @@ async function* streamLifecycleImpl<T>(
       // 但流以「正常结束」呈现 —— 这个字段让下游能把「超时结束」与「真正常结束」分开，
       // 不必靠时间窗倒推。
       ...(snapshot.timedOut ? { timedOut: true } : {}),
+      // /perf PR-A（A3）：源没有正常耗尽、也不是超时 —— 被消费方放弃（用户 ESC 后消费循环 throw、
+      // fork 墙钟 abort、源报错后上层弃流）。此前事件上分不出「源耗尽」与「被打断」
+      // （sourceExhausted 是局部变量），被打断那条的 elapsedMs 进了生成耗时分位数与 tok/s 分母。
+      // ⚠️ 判据不能用 `signal?.aborted`：三个 provider 都刻意不把外部 signal 交给 lifecycle
+      // （T7，见 anthropic.ts 同名注释），那样写在生产里恒为假、字段永远落不下来。
+      // 只在未正常结束时落字段，正常结束不落 —— 与 timedOut 同风格；超时由 timedOut 表达，不重复。
+      ...(!sourceExhausted && !snapshot.timedOut ? { aborted: true } : {}),
     });
   }
 }

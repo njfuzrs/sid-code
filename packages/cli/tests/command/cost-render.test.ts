@@ -78,10 +78,12 @@ describe("T-B7：版式（行宽 / 对齐 / 窄列自适应）", () => {
     }
   });
 
-  test("主循环表四行的金额列起始列号相同（对齐成列）", () => {
+  test("主循环表各行的金额列起始列号相同（对齐成列）", () => {
     const out = render(baseSession());
     const lines = out.split("\n");
-    // 主循环表的四行：金额以 `$` 开头，列号 = 金额串首次出现的显示位置
+    // 主循环表的行：金额以 `$` 开头，列号 = 金额串首次出现的显示位置。
+    // 基线会话的缓存写入为 0，那一行按 D5 契约整行省略（0 不参与加法），
+    // 所以这里是 3 行（未命中 / 缓存命中 / 输出）而不是 4 行。
     const idxs = lines
       .filter((l) => /^\s+输入·(未命中|缓存命中|缓存写入)\s|^\s+输出\s/.test(l))
       .map((l) => {
@@ -89,7 +91,7 @@ describe("T-B7：版式（行宽 / 对齐 / 窄列自适应）", () => {
         if (!m) throw new Error(`金额列未找到: ${JSON.stringify(l)}`);
         return stringWidth(l.slice(0, m.index ?? 0));
       });
-    expect(idxs.length).toBe(4);
+    expect(idxs.length).toBe(3);
     expect(new Set(idxs).size).toBe(1);
   });
 
