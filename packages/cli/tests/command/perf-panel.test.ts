@@ -21,6 +21,8 @@ import {
   type SessionPerfReport,
 } from "@sid-code/core/trace/perf-report.ts";
 import {
+  bar,
+  distCells,
   renderSessionPerf,
   wrapLines,
   NARROW_WIDTH,
@@ -117,6 +119,19 @@ describe("明细聚合（D8/D9/D10）", () => {
     expect(forks.reduce((a, g) => a + g.aborted, 0)).toBe(4);
   });
 
+  test("走到 completed 的后台调用不算中止（只有没收尾的才算）", () => {
+    const sp = (phase: string, extra: Record<string, unknown> = {}) => ({
+      event: "StreamPhase",
+      data: { index: 900007, phase, attempt: 1, caller: "goal_eval", ...extra },
+    });
+    const d = aggregatePerfDetail([
+      sp("fetch_sent"),
+      sp("first_content", { ttft_ms: 1200 }),
+      sp("completed"),
+    ]);
+    expect(d.side).toEqual([{ key: "goal_eval", n: 1, ttfts: [1200], aborted: 0 }]);
+  });
+
   test("n<5 时给原始样本，且与 sessionMetrics 的 n 对得上", () => {
     expect(detail.smallSamples.e2e).toEqual([5_179_216, 872_246]);
     expect(report.latency.e2e.n).toBe(2);
@@ -195,6 +210,18 @@ describe("T-B4 样本规则", () => {
     const text = strip(renderSessionPerf(report, { width: 120, color: false }));
     const hitLine = text.split("\n").find((l) => l.includes("缓存命中"))!;
     expect(hitLine).toMatch(/13s\s+—\s+151/);
+  });
+});
+
+describe("P99 与横条细节", () => {
+  test("n<100 时即使有 p99 值也显示 —；n≥100 才显示", () => {
+    expect(distCells({ p50: 1000, p95: 2000, p99: 3000, n: 99 }, false)[2]).toBe("—");
+    expect(distCells({ p50: 1000, p95: 2000, p99: 3000, n: 100 }, false)[2]).toBe("3.0s");
+  });
+
+  test("占比 >0 但不足 1/8 格时也画一格细线，与 0% 区分", () => {
+    expect(bar(0.001, 30)).toBe("▏");
+    expect(bar(0, 30)).toBe("");
   });
 });
 
