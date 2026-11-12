@@ -69,7 +69,11 @@ const mod: LocalCommandModule = {
       `对话轮次   : ${turnCount} 轮 (用户提问 ${promptCount} 次${subAgentCount > 0 ? ` / 子代理 ${subAgentCount}` : ""})`,
     );
     lines.push(
-      `Token 用量 : 入 ${fmtNum(usage.inputTokens)} / 出 ${fmtNum(usage.outputTokens)}${cacheRead > 0 ? ` (缓存命中 ${fmtNum(cacheRead)})` : ""}`,
+      // D3：`入` 与 /cost 同为 **flow（累计发送）** 口径（getTotalUsage().inputTokens =
+      // ΣcumulativePromptTokens）。状态栏 ↑ 用的是 **stock** 口径（末次请求的完整 prompt），
+      // 两个数在同一个会话里天然不等，各自标清才不会让用户以为其中一个算错了。
+      `Token 用量 : 入 ${fmtNum(usage.inputTokens)}（累计发送, flow）/ 出 ${fmtNum(usage.outputTokens)}（累计）${cacheRead > 0 ? ` (缓存命中 ${fmtNum(cacheRead)})` : ""}`,
+      `当前上下文 : ${fmtNum(ctx.sessionState.getStockPromptTokens())}（stock，末次请求的完整 prompt；状态栏 ↑ 同一口径）`,
     );
     // D7：与 Footer / /cost 同一判据 —— 金额是否按汇率折算过，而不是看模型名。
     // 三处写法必须一致，否则同一笔钱在三个入口长得不一样。
