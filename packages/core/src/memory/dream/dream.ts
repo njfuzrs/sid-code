@@ -25,6 +25,7 @@ import { buildDreamPrompt } from "./prompts.ts";
 import { getLogger } from "../../debug/logger.ts";
 import { join } from "path";
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { MEMORY_FORK_REQUIRED_TOOLS } from "../../agent/fork-prefix.ts";
 
 /** dream 触发配置 */
 export interface DreamConfig {
@@ -195,6 +196,7 @@ export function initAutoDream(ctx: DreamContext): AutoDreamHandle {
         canUseTool: ctx.canUseTool,
         // 不设 maxTurns（对齐 CC autoDream）：巩固要逐条 review → 合并 / 删除，条目多时 10 轮不够。
         querySource: "auto-dream",
+        requiredTools: MEMORY_FORK_REQUIRED_TOOLS,
         timeoutMs: 120_000, // 2 分钟——巩固是重活
       });
       log.info("DREAM", `记忆巩固完成（${result.turns} 轮，${result.deniedToolCalls} 次工具拒绝）`);
