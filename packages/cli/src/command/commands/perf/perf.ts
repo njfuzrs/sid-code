@@ -1,8 +1,8 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 
 /**
- * /perf 命令实现（按需加载）。计算与渲染全在 `@sid-code/core/trace/perf-report.ts`，
- * 这里只做参数分派与取数。
+ * /perf 命令实现（按需加载）。三层：取数在这里；报告模型与瓶颈判定在
+ * `@sid-code/core/trace/perf-report.ts`（纯函数）；渲染在同目录 `render.ts`（string-width + 颜色）。
  *
  * 用法：
  *   /perf                     当前会话（轨迹未落盘时回退到最近一次会话）
@@ -22,6 +22,9 @@ const mod: LocalCommandModule = {
       value: json ? JSON.stringify(obj, null, 2) : text,
     });
 
+    const render = await import("./render.ts");
+    const env = renderEnv(ctx);
+
     const daysIdx = tokens.indexOf("--days");
     if (daysIdx >= 0 || tokens.includes("--by-version")) {
       const { readSessionIndex } = await import("@sid-code/core/trace/session-index.ts");
@@ -29,7 +32,7 @@ const mod: LocalCommandModule = {
       const index = readSessionIndex();
       if (tokens.includes("--by-version")) {
         const report = perf.buildByVersion(index, 10);
-        return out(report, perf.renderByVersion(report));
+        return out(report, render.renderByVersion(report, env));
       }
       const raw = tokens[daysIdx + 1];
       // 严格解析：parseInt("7d") 静默得 7 会把错字当有效参数
@@ -40,7 +43,7 @@ const mod: LocalCommandModule = {
         days: parseInt(raw, 10),
         nowSec: Math.floor(Date.now() / 1000),
       });
-      return out(report, perf.renderTrend(report));
+      return out(report, render.renderTrend(report, env));
     }
 
     const { resolvePaths, listSessions, resolveSession, buildDigest } =
@@ -88,33 +91,54 @@ const mod: LocalCommandModule = {
 
     const providers = digest.providerStats ?? [];
     const latencyByModel = Object.assign({}, ...providers.map((p) => p.latencyByModel ?? {}));
-    // avgLatencyMs 是 Σ elapsed_ms ÷ requests 的四舍五入，乘回来误差 <1ms/轮
-    const modelTimeMs = providers.reduce((a, p) => a + p.avgLatencyMs * p.requests, 0);
+    // 缓存分桶按 provider 分；多 provider 时不汇总（跨路由的命中/未命中不可比）
+    const ttftByCache = providers.length === 1 ? providers[0]!.ttftByCache : undefined;
 
-    const { buildSessionPerf, renderSessionPerf } =
-      await import("@sid-code/core/trace/perf-report.ts");
+    const { buildSessionPerf } = await import("@sid-code/core/trace/perf-report.ts");
     // PR-A（A4）：会话进行中 session.traj 是中途快照。新版 builder 已在快照里写 tok/s，
     // 但旧二进制写出的快照没有 —— 用同一个公式现算兜底，避免「索引里有 tps、面板上没有」。
-    const { deriveOutputTps } = await import("@sid-code/core/trace/builder.ts");
+    const { deriveOutputTps, deriveReasoningShare } =
+      await import("@sid-code/core/trace/builder.ts");
     const report = buildSessionPerf({
       sessionId: digest.sessionId,
       model: digest.model,
+      // 进行中判据与 digest 同源：没收尾 = durationInProgress（快照值）
+      ended: !digest.durationInProgress,
+      snapshotAt: typeof meta.snapshot_at === "string" ? meta.snapshot_at : undefined,
+      wallMs: digest.durationMs,
       metrics: digest.sessionMetrics,
       latencyByModel,
-      modelTimeMs: modelTimeMs > 0 ? modelTimeMs : undefined,
+      ttftByCache,
+      detail: digest.perfDetail,
       tps:
         num(meta.output_tokens_per_sec) ??
         deriveOutputTps({
           total_tokens_received: num(meta.total_tokens_received),
           total_gen_elapsed_ms: num(meta.total_gen_elapsed_ms),
         }),
-      toolDurationMs: num(meta.total_tool_duration_ms),
+      reasoningShare: deriveReasoningShare({
+        total_tokens_received: num(meta.total_tokens_received),
+        total_reasoning_tokens: num(meta.total_reasoning_tokens),
+      }),
       contextPeakRatio: num(meta.context_usage_peak_ratio),
       contextPeakTokens: num(meta.context_usage_peak_tokens),
+      contextWindow: num(meta.context_window_at_peak),
     });
     const prefix = (warning ? `提示: ${warning}\n` : "") + note;
-    return out(report, prefix + renderSessionPerf(report));
+    return out(report, prefix + render.renderSessionPerf(report, env));
   },
 };
+
+/**
+ * 渲染环境。颜色只在交互 TUI 里开：无头（`-p` / stream-json / Bridge）的 stdout 是给下游解析的，
+ * 混进 ANSI 会破坏它；`NO_COLOR` 按约定一律关。宽度取终端列数减去面板左右内边距（paddingX=1 ×2）。
+ */
+function renderEnv(ctx: CommandContext): { width: number; color: boolean } {
+  const headless = ctx.config?.print === true;
+  const color = !headless && !process.env.NO_COLOR && process.stdout.isTTY === true;
+  // 非 TTY（管道 / 无头）时 columns 为 undefined：退到 COLUMNS，再退到 100
+  const cols = process.stdout.columns ?? parseInt(process.env.COLUMNS ?? "", 10);
+  return { width: Number.isFinite(cols) && cols > 0 ? cols - 4 : 100, color };
+}
 
 export default mod;
