@@ -12,13 +12,35 @@
  */
 
 import type { LegacyTool } from "./types.ts";
-import { normalizeStrictNulls } from "./nullish-normalize.ts";
+import { getDef, normalizeStrictNulls, unwrap } from "./nullish-normalize.ts";
 import { normalizeNumericStrings } from "./numeric-coerce.ts";
-import { normalizeInputAliases } from "./input-alias.ts";
-import { emitToolInputAliasApplied, emitToolInputCoerced } from "../trace/stream-observer.ts";
+import { isIgnorableUnknownKey, normalizeInputAliases } from "./input-alias.ts";
+import {
+  emitToolInputAliasApplied,
+  emitToolInputCoerced,
+  emitToolInputUnknownKeys,
+} from "../trace/stream-observer.ts";
 
-/** 校验结果 */
-export type ToolInputValidation = { ok: true; data: unknown } | { ok: false; message: string };
+/** 校验结果。`ignoredKeys` 是「模型传了、但 schema 没声明」的顶层键（已扣掉 hook 键与无影响键名单）。 */
+export type ToolInputValidation =
+  | { ok: true; data: unknown; ignoredKeys?: string[] }
+  | { ok: false; message: string };
+
+/** 校验选项 */
+export interface ValidateToolInputOptions {
+  /**
+   * 模型**原始发出**的顶层键（hook 改参之前，即 `block.input` 的键）。
+   *
+   * 为什么需要：`validateToolInput` 收到的是 `effectiveInput`，也就是 hook 改参之后的参数。
+   * hook 往参数里注入额外字段是合法用法，那些键不是模型传的；不区分的话模型会收到
+   * 「`xxx` 不是本工具的参数」，而它根本没传过这个键。
+   *
+   * 传了本参数时：只有**交集**里的未知键会进 `ignoredKeys`（模型可见提示），
+   * hook 注入的未知键只发事件（`source: "hook"`）。
+   * 不传 = 全部视为模型传的（fork 子代理等没有 hook 改参链路的调用方）。
+   */
+  modelKeys?: ReadonlySet<string>;
+}
 
 /**
  * 「schema 未发送」补救提示（对标 claude-code buildSchemaNotSentHint）。
@@ -58,7 +80,11 @@ export function buildSchemaNotSentHint(
  * 工具未提供 zodSchema 时返回 { ok: true, data: input } 原样放行（回退到工具内部
  * 的手工检查），保证迁移期间未升级的工具不受影响。
  */
-export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputValidation {
+export function validateToolInput(
+  tool: LegacyTool,
+  input: unknown,
+  opts: ValidateToolInputOptions = {},
+): ToolInputValidation {
   const schema = tool.zodSchema;
   if (!schema) {
     return { ok: true, data: input };
@@ -96,14 +122,134 @@ export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputVa
     emitToolInputCoerced({ tool: tool.name(), layer: "numeric", ...hit });
   }
 
+  // T2（D1）：未声明的顶层键不再静默剥离。
+  //
+  // 放在三层归一**之后**：别名层可能已经把 CC 风格的键改成了协议字段（`-C` → `context`），
+  // 在归一之前算会把「已经被接住的键」误报成未知键（T1 合入后这一条才真正生效）。
+  // 归一失败时（返回值不是对象）由 findUnknownTopLevelKeys 自己早退。
+  const ignoredKeys = reportUnknownKeys(tool.name(), schema, numeric.value, opts.modelKeys);
+
   const result = schema.safeParse(numeric.value);
   if (result.success) {
-    return { ok: true, data: result.data };
+    return ignoredKeys.length > 0
+      ? { ok: true, data: result.data, ignoredKeys }
+      : { ok: true, data: result.data };
   }
 
   // 传入 numeric.value（而非原始 input）：它是真正交给 safeParse 的那份，
   // issue.path 与它一一对应；用原始 input 会在归一改过结构时错位。
   return { ok: false, message: formatZodError(tool.name(), result.error, numeric.value) };
+}
+
+/**
+ * schema 顶层声明的参数名（给「本工具的参数：a、b、c」提示用）。
+ * 非顶层 object（record / union / passthrough）返回空数组。
+ */
+export function declaredTopLevelKeys(schema: unknown): string[] {
+  const shape = topLevelShape(schema);
+  return shape ? Object.keys(shape) : [];
+}
+
+/**
+ * 顶层的 `z.object` shape；不满足「未知键会被剥离」的前提时返回 undefined。
+ *
+ * 三种不报的情况：
+ * - **`.passthrough()`**（`catchall` 是 `ZodUnknown`）：未知键会被**保留**进 safeParse 的
+ *   data，报「已被忽略」是假信息；
+ * - `z.record` / `z.union`：没有顶层 shape，未知键语义由子 schema 决定，
+ *   一次性做全的风险大于收益（边界见 Agent Note）；
+ * - `.strict()` 不会走到这里：它在 safeParse 阶段直接报 `unrecognized_keys`，
+ *   模型已经能看到 zod 错误，不需要再来一条「已忽略」。
+ */
+function topLevelShape(schema: unknown): Record<string, unknown> | undefined {
+  const { inner } = unwrap(schema);
+  const def = getDef(inner) as { type?: string; shape?: unknown; catchall?: unknown } | undefined;
+  if (!def || def.type !== "object" || !def.shape || typeof def.shape !== "object") {
+    return undefined;
+  }
+  const catchallType = (getDef(def.catchall) as { type?: string } | undefined)?.type;
+  if (catchallType === "unknown") return undefined;
+  return def.shape as Record<string, unknown>;
+}
+
+/**
+ * 找出模型传了、但 schema 没声明的**顶层**键。
+ *
+ * 为什么必须自己做：zod v4 的 `z.object()` 默认对未知键**静默剥离**
+ * （`safeParse` 成功、data 里没有它、也不报 `unrecognized_keys`），于是「传了但丢了」
+ * 与「根本没传」在结果上完全一样。同文件 `findNearMissKey` 处理的正是同一条机制的
+ * 另一个后果（必填字段因为键名写错而报「缺失」）。
+ *
+ * 只看顶层：嵌套对象（`todos[]`、`questions[]`）的形态有数组、联合、record 多种，
+ * 一次做全的风险大于收益；边界写在 Agent Note 里，等 `ToolInputUnknownKeys`
+ * 的数据出来再决定。
+ *
+ * `_` 开头的内部字段不算：它们由 `stripInternalFields` 在执行前统一剥离，
+ * 模型伪造它们有独立的防线（见 internal-fields.ts），不该混进「参数名写错」的提示。
+ */
+export function findUnknownTopLevelKeys(schema: unknown, input: unknown): string[] {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return [];
+  const shape = topLevelShape(schema);
+  if (!shape) return [];
+  return Object.keys(input as Record<string, unknown>).filter(
+    (key) => !Object.hasOwn(shape, key) && !key.startsWith("_"),
+  );
+}
+
+/**
+ * 未知键 → 事件 + 模型可见的提示键。
+ *
+ * 区分 model / hook（见 `ValidateToolInputOptions.modelKeys`）：hook 注入的未知键
+ * 只发事件，不进返回值——否则模型会收到「`xxx` 不是参数」，而它根本没传过这个键。
+ * 返回的是**扣除名单后**、需要提示模型的键。
+ */
+function reportUnknownKeys(
+  toolName: string,
+  schema: unknown,
+  input: unknown,
+  modelKeys: ReadonlySet<string> | undefined,
+): string[] {
+  const unknown = findUnknownTopLevelKeys(schema, input);
+  if (unknown.length === 0) return [];
+
+  const fromModel = modelKeys ? unknown.filter((k) => modelKeys.has(k)) : unknown;
+  const fromHook = modelKeys ? unknown.filter((k) => !modelKeys.has(k)) : [];
+
+  const reportable: string[] = [];
+  if (fromModel.length > 0) {
+    const silenced = fromModel.filter((k) => isIgnorableUnknownKey(toolName, k));
+    reportable.push(...fromModel.filter((k) => !isIgnorableUnknownKey(toolName, k)));
+    // 静默行为在轨迹上必须有存在形式：名单里的键也进事件，只是在 silenced 字段里。
+    emitToolInputUnknownKeys({ tool: toolName, keys: fromModel, source: "model", silenced });
+  }
+  if (fromHook.length > 0) {
+    const silenced = fromHook.filter((k) => isIgnorableUnknownKey(toolName, k));
+    emitToolInputUnknownKeys({ tool: toolName, keys: fromHook, source: "hook", silenced });
+  }
+  return reportable;
+}
+
+/** 提示里最多列出几个参数名：长 schema（todo_write 等）全列出来会把结果开头撑成一段噪音 */
+const MAX_LISTED_PARAMS = 10;
+
+/**
+ * 「参数不是本工具的」提示（模型可见，由执行器拼在 tool_result 正文开头）。
+ *
+ * 为什么只是提示、不报错：报错会让 `-n` 这类「丢了也不影响结果」的调用白花一轮往返
+ * （30 天 105 次），而且会把 `is_error` 率抬成「实现写错了」的假信号。
+ * 提示的写法要让模型**下一次**不再带这个键，而不是**这一次**重来。
+ */
+export function buildUnknownKeysNotice(
+  toolName: string,
+  unknownKeys: readonly string[],
+  declaredKeys: readonly string[],
+): string {
+  if (unknownKeys.length === 0) return "";
+  const keys = unknownKeys.map((k) => `\`${k}\``).join("、");
+  const shown = declaredKeys.slice(0, MAX_LISTED_PARAMS);
+  const more = declaredKeys.length > shown.length ? "、…" : "";
+  const params = shown.length > 0 ? `\n${toolName} 的参数：${shown.join("、")}${more}` : "";
+  return `⚠️ 参数 ${keys} 不是 ${toolName} 的参数，已被忽略（本次调用按其余参数执行）。${params}`;
 }
 
 /**

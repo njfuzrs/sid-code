@@ -1643,3 +1643,39 @@ export function emitToolInputCoerced(data: {
     /* 可观测性不影响正常流程 */
   }
 }
+
+// ─── ToolInputUnknownKeys 事件（未声明参数的度量） ───
+
+/**
+ * 一次调用带了 schema 未声明的**顶层**键（zod 会静默剥离，不报 `unrecognized_keys`）。
+ *
+ * 为什么要单独一类事件：这个行为此前**完全静默**——模型以为传了、工具按默认值跑，
+ * 轨迹上看不出任何区别（30 天 170 次，其中 47 次真的丢了意图）。发事件是为了回答
+ * 三个问题：哪个工具的参数最常被写错、哪些键是跨产品的通用习惯（该走别名归一）、
+ * 提示上线后「同一个键在同一会话里的复发率」有没有降下来。
+ *
+ * - `keys`：本次调用里未声明的顶层键（**只记键名，不记值**——值已经在 messages 里）
+ * - `source`：`model` = 模型原始发出的键（会给模型提示）；`hook` = hook 改参注入的键
+ *   （合法用法，只留痕、不提示，否则模型会收到「你没传过的键」）
+ * - `silenced`：其中「已知无影响」（进 IGNORABLE_UNKNOWN_KEYS 名单）的键，
+ *   这些键不提示、只在这里留痕
+ */
+export function emitToolInputUnknownKeys(data: {
+  tool: string;
+  keys: string[];
+  source: "model" | "hook";
+  silenced: string[];
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "ToolInputUnknownKeys",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { ...data },
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
