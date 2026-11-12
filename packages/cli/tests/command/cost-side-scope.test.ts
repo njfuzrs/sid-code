@@ -87,8 +87,8 @@ describe("D4 · 辅助调用 token 段（纯函数）", () => {
     const text = lines.join("\n");
     expect(text).toContain("辅助调用 Token 用量（6 次调用");
     expect(text).toContain("不计入上面的主循环数字");
-    expect(text).toContain("输入: 547419");
-    expect(text).toContain("输出: 4152");
+    expect(text).toContain("输入: 547,419");
+    expect(text).toContain("输出: 4,152");
   });
 });
 
@@ -132,18 +132,18 @@ describe("D4 · 两块 token 互不包含", () => {
   test("有辅助调用：辅助段出现，且数字来自统计快照", async () => {
     const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
     expect(out).toContain("辅助调用 Token 用量（6 次调用");
-    expect(out).toContain("输入: 547419");
-    expect(out).toContain("输出: 4152");
+    expect(out).toContain("输入: 547,419");
+    expect(out).toContain("输出: 4,152");
   });
 
   test("主循环输入与辅助输入分开显示，不会相加成一个数", async () => {
     const out = await runCost(mainLoopSession(), SIDE_SAMPLE);
     // 主循环段 = modelUsage 的累计 prompt（10000，D3 合并后行标签带 flow 口径）；
     // 辅助段 = side-call-sink 的发送量（547419）
-    expect(out).toContain("输入（累计发送，flow）: 10000");
-    expect(out).toContain("输入: 547419");
+    expect(out).toContain("输入·合计（累计发送，flow）: 10,000");
+    expect(out).toContain("输入: 547,419");
     // 相加值绝不能出现——出现就说明有人把两块合并了，D4 会以另一种形态复发
-    expect(out).not.toContain("输入: 557419");
+    expect(out).not.toContain("输入: 557,419");
   });
 
   test("辅助段排在主循环各块之后（范围切换只发生一次）", async () => {
