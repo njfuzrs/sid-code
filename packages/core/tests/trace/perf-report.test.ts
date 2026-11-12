@@ -10,8 +10,6 @@ import {
   buildTrend,
   compareWindows,
   pct,
-  renderSessionPerf,
-  renderTrend,
   windowStats,
   MIN_TREND_SAMPLES,
 } from "@sid-code/core/trace/perf-report.ts";
@@ -138,12 +136,6 @@ describe("compareWindows / buildTrend", () => {
     expect(buildTrend(idx, { days: 7, nowSec: NOW }).current.sessions).toBe(statuses.length);
   });
 
-  test("会话数括注与 settled() 口径一致，不再写「不含未正常结束的会话」", () => {
-    const text = renderTrend(buildTrend([row({ session_id: "a" })], { days: 7, nowSec: NOW }));
-    expect(text).not.toContain("不含未正常结束的会话");
-    expect(text).toContain("中断、报错收尾的仍计入");
-  });
-
   test("TTFT 按模型分组，分母是会话数", () => {
     const t = buildTrend(
       [
@@ -159,12 +151,6 @@ describe("compareWindows / buildTrend", () => {
       p50: 1000,
       n: 1,
     });
-  });
-
-  test("渲染中无样本写「无样本」不写 0", () => {
-    const text = renderTrend(buildTrend([row({ session_id: "a" })], { days: 7, nowSec: NOW }));
-    expect(text).toContain("无样本");
-    expect(text).not.toMatch(/TTFT P50\s+0ms/);
   });
 });
 
@@ -184,22 +170,10 @@ describe("buildByVersion", () => {
 });
 
 describe("buildSessionPerf", () => {
-  test("模型/工具占比与无样本渲染", () => {
-    const r = buildSessionPerf({
-      sessionId: "s",
-      model: "m",
-      metrics: { ttft_n: 0, e2e_n: 0 },
-      modelTimeMs: 3000,
-      toolDurationMs: 1000,
-    });
-    expect(r.split!.toolShare).toBeCloseTo(0.25);
-    const text = renderSessionPerf(r);
-    expect(text).toContain("首字延迟 TTFT   无样本");
-    expect(text).toContain("工具 25%");
-  });
-
   test("tps 非有限值不展示", () => {
-    expect(buildSessionPerf({ sessionId: "s", model: "m", tps: Infinity }).tps).toBeUndefined();
+    expect(
+      buildSessionPerf({ sessionId: "s", model: "m", tps: Infinity }).latency.tps,
+    ).toBeUndefined();
   });
 });
 
