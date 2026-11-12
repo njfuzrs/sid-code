@@ -20,7 +20,14 @@ export interface SideCallRecord {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
-  durationMs: number;
+  /**
+   * 本次调用的墙钟耗时。
+   *
+   * **`undefined` = 未采集**，与「0 毫秒」不是同一件事：D8（2026-11-10）修复前
+   * 13 个调用点全部写死 `0`，把「不知道」折成了 0 —— 于是任何汇总要么低估、
+   * 要么只能假称「辅助调用没花时间」。显示层遇到 undefined 必须写「—」。
+   */
+  durationMs?: number;
   costUSD: number;
   /** T13.2：调用是否成功（默认 true，向后兼容） */
   success: boolean;
@@ -40,12 +47,18 @@ export interface SideCallStats {
   costUSD: number;
   tokensSent: number;
   tokensReceived: number;
+  /** 已采集到耗时的调用之和（不含未采集的那些，口径见 durationMs 的注释）。 */
+  durationMs: number;
+  /** 有多少次调用采集到了耗时。`apiCalls > durationCalls` 时汇总值只是下界。 */
+  durationCalls: number;
   details: Array<{
     label: string;
     model: string;
     inputTokens: number;
     outputTokens: number;
     costUSD: number;
+    /** undefined = 未采集（不是 0） */
+    durationMs?: number;
   }>;
   /** T13.4：失败统计 */
   failed: number;
@@ -145,6 +158,8 @@ export function getSideStats(): SideCallStats {
   let costUSD = 0;
   let tokensSent = 0;
   let tokensReceived = 0;
+  let durationMs = 0;
+  let durationCalls = 0;
   let failed = 0;
   let timedOut = 0;
   let usageMissing = 0;
@@ -155,12 +170,20 @@ export function getSideStats(): SideCallStats {
     costUSD += c.costUSD;
     tokensSent += c.inputTokens;
     tokensReceived += c.outputTokens;
+    // 只累加**采集到**的耗时。未采集的条目（durationMs === undefined）不进分母，
+    // 同时把条数报出去（durationCalls），让显示层能写「N 次调用中 M 次有耗时采集」——
+    // 直接当成 0 求和会把「不知道」伪装成「没花时间」（D8 修复前的形态）。
+    if (c.durationMs !== undefined) {
+      durationMs += c.durationMs;
+      durationCalls++;
+    }
     details.push({
       label: c.label,
       model: c.model,
       inputTokens: c.inputTokens,
       outputTokens: c.outputTokens,
       costUSD: c.costUSD,
+      ...(c.durationMs !== undefined && { durationMs: c.durationMs }),
     });
     // T13.4：累计失败统计
     if (!c.success) {
@@ -178,6 +201,8 @@ export function getSideStats(): SideCallStats {
     costUSD,
     tokensSent,
     tokensReceived,
+    durationMs,
+    durationCalls,
     details,
     failed,
     timedOut,

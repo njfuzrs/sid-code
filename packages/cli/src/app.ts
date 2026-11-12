@@ -1374,7 +1374,10 @@ export class App {
           outputTokens: req.usage.outputTokens ?? 0,
           cacheReadTokens: req.usage.cacheReadInputTokens ?? 0,
           cacheCreationTokens: req.usage.cacheCreationInputTokens ?? 0,
-          durationMs: 0,
+          // D8：耗时从计费事件带过来。此前这里写死 0，于是 /cost 的「辅助调用耗时」
+          // 永远是 0 —— 而 fork / 记忆抽取这些后台调用实际花了 20 秒以上。
+          // 事件没带耗时（未采集）时**不传**，别用 0 冒充「没花时间」。
+          ...(req.elapsedMs !== undefined && { durationMs: req.elapsedMs }),
           costUSD: cost,
         });
       } catch {
@@ -9961,7 +9964,6 @@ export class App {
             outputTokens: 0,
             cacheReadTokens: 0,
             cacheCreationTokens: 0,
-            durationMs: 0,
             success: false,
             error: err?.message ?? String(err),
             timedOut: /timeout|超时|timed out/i.test(err?.message ?? ""),
