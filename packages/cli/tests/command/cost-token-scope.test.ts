@@ -67,10 +67,10 @@ async function runDebug(ss: SessionState): Promise<string> {
 describe("/cost 标注 stock / flow 两种 token 口径（D3）", () => {
   test("flow 行用累计发送口径，stock 行用当前上下文口径，且指向状态栏 ↑", async () => {
     const out = await runCost(sessionTwoRequests());
-    // flow：两次请求之和 70,000（不是末次 40,000）
-    expect(out).toContain("输入（累计发送，flow）: 70000");
-    // stock：末次请求 40,000（不是累加 70,000）
-    expect(out).toContain("当前上下文（stock）: 40000");
+    // flow：两次请求之和 70,000（不是末次 40,000）。D5 起该行是归一化三段之和 + 千分位。
+    expect(out).toContain("输入·合计（累计发送，flow）: 70,000");
+    // stock：末次请求 40,000（不是累加 70,000）；D5 起千分位
+    expect(out).toContain("当前上下文（stock）: 40,000");
     // 两个口径的桥梁：用户看到 Footer 的 ↑ 时知道它对应哪一行
     expect(out).toContain("状态栏 ↑");
   });
@@ -83,8 +83,10 @@ describe("/cost 标注 stock / flow 两种 token 口径（D3）", () => {
     expect(flow).toBe(70_000);
     expect(stock).toBe(40_000);
     expect(flow).not.toBe(stock);
-    expect(out).toContain(`输入（累计发送，flow）: ${flow}`);
-    expect(out).toContain(`当前上下文（stock）: ${stock}`);
+    // D5 有意改了输出格式（三段互斥 + 千分位），断言随契约同步更新：
+    // flow 行改读归一化 promptTotal（openai 族与 cumulativePromptTokens 相同）。
+    expect(out).toContain(`输入·合计（累计发送，flow）: ${flow.toLocaleString("en-US")}`);
+    expect(out).toContain(`当前上下文（stock）: ${stock.toLocaleString("en-US")}`);
   });
 });
 
@@ -99,10 +101,11 @@ describe("/debug 标注 stock / flow 两种 token 口径（D3）", () => {
     expect(debugOut).toContain("状态栏 ↑");
 
     // 两个入口同一指标同一数字：截图对账时不许出现「/cost 和 /debug 又对不上」
+    // D5 起 /cost 也带千分位，两个入口的写法终于一致（此前一个 70000 一个 70,000）。
     const pick = (out: string, re: RegExp): string => out.match(re)?.[1] ?? "";
     expect(pick(debugOut, /入 ([\d,]+)（累计发送/)).toBe("70,000");
-    expect(pick(costOut, /输入（累计发送，flow）: (\d+)/)).toBe("70000");
+    expect(pick(costOut, /输入·合计（累计发送，flow）: ([\d,]+)/)).toBe("70,000");
     expect(pick(debugOut, /当前上下文 : ([\d,]+)（stock/)).toBe("40,000");
-    expect(pick(costOut, /当前上下文（stock）: (\d+)/)).toBe("40000");
+    expect(pick(costOut, /当前上下文（stock）: ([\d,]+)/)).toBe("40,000");
   });
 });
