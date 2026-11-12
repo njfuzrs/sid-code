@@ -181,6 +181,15 @@ export function stopCommand(src: WaitSource): string {
  * 等待方式**，换一种等法意味着旧的那种不再有信息量。agent / workflow 是模型要等的**产出**，
  * 换等法不该顺手杀掉一个正在干活的子代理，所以即便将来它们进入 `existing` 也保持不动。
  *
+ * ## 唤醒是兜底，不淘汰任何主动等待
+ *
+ * `newKind === "wakeup"` 时本函数直接返回空。唤醒的语义是「过一会儿回来看看」，它天然与
+ * 正在跑的 monitor / 后台等待**互补**——S2 的设计就是「monitor 盯对象 + 唤醒兜底」，
+ * monitor 成功终态后撤销唤醒（`invalidateWakeupsForDeliveredTask`）。把新起唤醒当成
+ * 「换了一种等法」去 kill 掉 monitor，会拆掉这条链：monitor 被 kill 后通知不入队，
+ * 兜底唤醒反而永远撤不掉（`wakeup-invalidation-chain` 的真实入口用例实测红）。
+ * 反方向不受影响：新起 shell / monitor 仍淘汰旧的唤醒（方案 §R6 验收 2）。
+ *
  * ## 顺序：先标记、再释放、最后 kill
  *
  * - `supersededBy` 必须在 kill **之前**写进任务状态：`killShellTask` 在同一个函数里完成
@@ -190,7 +199,12 @@ export function stopCommand(src: WaitSource): string {
  *
  * 返回实际被淘汰的源，供回执列出（`agent`/`workflow` 不淘汰，不能出现在回执里）。
  */
-export function supersedeReplacedWaits(existing: WaitSource[], newId: string): WaitSource[] {
+export function supersedeReplacedWaits(
+  existing: WaitSource[],
+  newId: string,
+  newKind: WaitSource["kind"],
+): WaitSource[] {
+  if (newKind === "wakeup") return [];
   const stopped: WaitSource[] = [];
   for (const src of existing) {
     if (src.id === newId) continue;

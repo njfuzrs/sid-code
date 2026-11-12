@@ -145,7 +145,7 @@ describe("R6 修法 1/2：replace 淘汰旧等待且不送通知", () => {
       subjects: ["gh:pr:780"],
       command: "while true; do gh pr checks 780; sleep 30; done",
     });
-    const stopped = supersedeReplacedWaits(decision.existing, "new1");
+    const stopped = supersedeReplacedWaits(decision.existing, "new1", "shell");
 
     expect(stopped.map((s) => s.id)).toEqual(["old1"]);
     const oldTask = getTask("old1")!;
@@ -166,7 +166,7 @@ describe("R6 修法 1/2：replace 淘汰旧等待且不送通知", () => {
       deadlineAt: Date.now() + 3_600_000,
     });
     addShellWait("new1", { subjects: ["gh:pr:780"], command: "bash wait-merged-v2.sh" });
-    supersedeReplacedWaits(decision.existing, "new1");
+    supersedeReplacedWaits(decision.existing, "new1", "shell");
 
     const pending = dequeuePendingNotifications();
     expect(pending.map((n) => n.structured?.taskId)).not.toContain("old1");
@@ -180,7 +180,7 @@ describe("R6 修法 1/2：replace 淘汰旧等待且不送通知", () => {
       deadlineAt: Date.now() + 3_600_000,
     });
     addShellWait("new1", { subjects: ["gh:pr:780"], command: "bash wait-merged-v2.sh" });
-    const stopped = supersedeReplacedWaits(decision.existing, "new1");
+    const stopped = supersedeReplacedWaits(decision.existing, "new1", "shell");
 
     const note = formatReplaceNote(stopped, "new1");
     expect(note).toContain("已替换此前在盯同一对象的等待");
@@ -204,7 +204,7 @@ describe("R6 修法 1：跨类替换（唤醒 〉 shell / monitor）", () => {
     expect(decision.action).toBe("replace");
 
     addShellWait("s1", { subjects: ["gh:pr:780"], command: "bash wait-merged.sh" });
-    const stopped = supersedeReplacedWaits(decision.existing, "s1");
+    const stopped = supersedeReplacedWaits(decision.existing, "s1", "shell");
 
     expect(stopped.map((s) => s.id)).toEqual(["wake1"]);
     expect(listWaits().map((w) => w.id)).toEqual(["s1"]);
@@ -229,9 +229,27 @@ describe("R6 修法 1：跨类替换（唤醒 〉 shell / monitor）", () => {
         },
       ],
       "new1",
+      "shell",
     );
     expect(stopped).toEqual([]);
     expect(formatReplaceNote(stopped, "new1")).toBe("");
+  });
+
+  test("新等待是唤醒时不淘汰主动等待（S2 的 monitor + 唤醒兜底组合）", () => {
+    // 唤醒的语义是「过一会儿回来看看」的兜底，与正在跑的 monitor / 后台等待互补。
+    // S2 的设计就是靠这个组合：monitor 成功终态后撤销唤醒。若这里把 monitor 淘汰掉，
+    // monitor 的通知不入队，兜底唤醒反而永远撤不掉（wakeup-invalidation-chain 实测红）。
+    const mon = {
+      id: "mon1",
+      kind: "monitor" as const,
+      promise: { kind: "deadline" as const, deadlineAt: Date.now() + 600_000 },
+      description: "盯 PR 780",
+      registeredAt: Date.now(),
+      subjects: ["gh:pr:780"],
+    };
+    const stopped = supersedeReplacedWaits([mon], "wake1", "wakeup");
+    expect(stopped).toEqual([]);
+    expect(formatReplaceNote(stopped, "wake1")).toBe("");
   });
 });
 

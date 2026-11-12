@@ -1873,7 +1873,7 @@ export class BashTool implements Tool {
     if (plan?.decision.action !== "replace") return "";
     const task = require("../task/index.ts") as typeof import("../task/index.ts");
     return task.formatReplaceNote(
-      task.supersedeReplacedWaits(plan.decision.existing, newTaskId),
+      task.supersedeReplacedWaits(plan.decision.existing, newTaskId, "shell"),
       newTaskId,
     );
   }

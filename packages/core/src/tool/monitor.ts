@@ -317,7 +317,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     // 判成「没人会回来」而强推模型继续干活（ca8d7e5c 的形态）。
     const superseded =
       admission.action === "replace"
-        ? supersedeReplacedWaits(admission.existing, taskState.id)
+        ? supersedeReplacedWaits(admission.existing, taskState.id, "monitor")
         : [];
 
     const endAt = formatClockWithSeconds(taskState.deadlineAt);

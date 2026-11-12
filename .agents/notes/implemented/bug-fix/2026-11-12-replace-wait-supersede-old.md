@@ -35,6 +35,12 @@ R6 把 `replace` 从「建议」变成「执行」，三处改动：
   而那条路径不会有测试覆盖。淘汰与判定放在同一模块，回执文案也只有一份。
 - **不顺带淘汰 agent / workflow**：它们是模型要等的**产出**，不是「等法」。
   「换了等法」不该顺手杀掉一个正在干活的子代理。显式 switch 穷尽处留了注释。
+- **新等待是唤醒时不淘汰任何主动等待**（`supersedeReplacedWaits` 的 `newKind === "wakeup"`
+  直接返回空）：唤醒的语义是「过一会儿回来看看」的兜底，天然与正在跑的 monitor / 后台等待
+  **互补**。S2 的设计就是「monitor 盯对象 + 唤醒兜底，monitor 成功终态后撤销唤醒」；
+  第一版无条件淘汰，把 `wakeup-invalidation-chain` 的真实入口用例跑红了——
+  monitor 被 kill 后通知不入队，兜底唤醒反而永远撤不掉。反方向不受影响：
+  新起 shell / monitor 仍淘汰旧的唤醒（方案 §R6 验收 2）。
 - **不在 `releaseWait(terminal)` 里直接撤销唤醒**（S2 就否决过）：判据是
   「成功终态 **且通知已投递**」，通知没进上下文就撤销，一旦投递链路出问题，
   模型既不知道结果也不会再被叫醒（#642 的静默中断）。修法 3 沿用了送达侧驱动。
@@ -45,10 +51,13 @@ R6 把 `replace` 从「建议」变成「执行」，三处改动：
 
 ## 拿什么证明它生效了
 
-- `bun test ./packages/core/tests/task/wait-supersede.test.ts` → **8 pass / 0 fail**（新增）：
+- `bun test ./packages/core/tests/task/wait-supersede.test.ts` → **9 pass / 0 fail**（新增）：
   验收 1（旧 shell 进 killed、`supersededBy` 指向新任务、等待表只剩新的、通知队列里没有旧任务）、
   验收 2（唤醒被后台循环替换，`WaitReleased{reason:"superseded"}`）、
-  验收 3（shell-deadline exit 0 撤销唤醒 / exit 1 不撤销 / 普通后台 shell 不撤销）。
+  验收 3（shell-deadline exit 0 撤销唤醒 / exit 1 不撤销 / 普通后台 shell 不撤销）、
+  边界（新等待是唤醒时不淘汰 monitor，保住 S2 的 monitor + 兜底组合）。
+- `bun test ./packages/core/tests/task/wakeup-invalidation-chain.test.ts` → **6 pass / 0 fail**：
+  S2 的既有真实入口用例（含「monitor 成功终态 + 唤醒兜底」）未被 R6 误伤。
 - `bun run smoke replace-wait-same-subject` → **PASS（0.5s）**：2 个 shell 启动、
   1 条 `TaskLifecycle{completed, reason:"superseded"}`、**0 条** `delivered(killed)`、
   1 条 `delivered(completed)` 对照，回执含「已替换此前在盯同一对象的等待」与「不再送终态通知」。

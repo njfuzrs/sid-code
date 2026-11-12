@@ -177,7 +177,7 @@ export class ScheduleWakeupTool implements Tool {
     // （否则新唤醒会被自己的「替换」删掉），所以这里把它们从回执里滤掉，避免同一 id 列两遍。
     const superseded =
       admission.action === "replace"
-        ? supersedeReplacedWaits(admission.existing, task.id).filter(
+        ? supersedeReplacedWaits(admission.existing, task.id, "wakeup").filter(
             (src) => !replaced.includes(src.id),
           )
         : [];
