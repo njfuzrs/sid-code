@@ -137,6 +137,24 @@ export class ProviderRegistry {
   }
 
   /**
+   * 获取模型（缺省主模型）的**物理输出上限**（tokens）。
+   *
+   * undefined = 未知。**绝不编一个数字**：编出来的值会被当成「已知事实」参与
+   * 请求预算的 min 钳制，比明确的 undefined 更危险（同 `TokenEstimator.getMaxOutputTokens`
+   * 的口径）。spawn 出的子代理靠这个值算本次请求的 `max_tokens`，它不读配置，
+   * 只能由父进程经 init 传过去。
+   *
+   * 接受 model 参数而不是只取主模型：spawn 路径的实际模型可能是 `task.model` 或
+   * `subAgentModels` 映射的结果，物理上限必须按**最终生效的模型**取。
+   */
+  getMaxOutputTokens(model?: string): number | undefined {
+    return new TokenEstimator().getMaxOutputTokens(
+      model ?? this.config.model,
+      this.config.availableModels,
+    );
+  }
+
+  /**
    * 获取输出语言偏好（含 auto 档；子代理侧由 resolveEffectiveLanguage 归一化）。
    *
    * 读的是 `this.config`——与 App 共享**同一个对象引用**，所以 `/language` 运行时
