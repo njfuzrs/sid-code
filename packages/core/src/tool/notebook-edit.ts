@@ -96,6 +96,18 @@ function findCellIndex(cells: NotebookCell[], cellId: string): number {
 }
 
 export class NotebookEditTool implements Tool {
+  /**
+   * zod schema：执行器据此做运行时校验（别名 / null 回填 / 数字归一 / safeParse），
+   * registry 据此生成发给 LLM 的 JSON Schema。
+   *
+   * D2：此前只在 `inputSchema()` 里就地转 JSON Schema，实例上没挂 `zodSchema`，
+   * 于是 `validateToolInput()` 走 `!schema` 早退——`edit_mode: "bogus"` 这类非法枚举
+   * 直接进了 `execute()` 里的事后手工检查，没有结构化中文错误、也没有归一层的兜底。
+   * 与 `inputSchema()` 共用同一份 schema（lazySchema 保证引用稳定），
+   * 运行时校验器与发给模型的描述因此同源，不会漂移。
+   */
+  readonly zodSchema = notebookEditSchema();
+
   /** D11：编辑类：漏 required 字段会改错 notebook，strict 超限时优先保留（见 ToolCapabilityFields.strictPriority） */
   readonly strictPriority = 50;
 
@@ -150,7 +162,10 @@ export class NotebookEditTool implements Tool {
   }
 
   inputSchema(): Record<string, unknown> {
-    return z.toJSONSchema(notebookEditSchema()) as Record<string, unknown>;
+    // 与上方 zodSchema 共用同一对象（lazySchema 缓存保证引用稳定）：registry 优先用
+    // zodSchema 生成 LLM 定义，这条只在 zodSchema→JSON Schema 失败时作为回退路径；
+    // 同源保证两条路径的产物逐字节相同，`docs:gen-reference --check` 不会因此漂移。
+    return z.toJSONSchema(this.zodSchema) as Record<string, unknown>;
   }
 
   async execute(input: unknown): Promise<ToolResult> {
