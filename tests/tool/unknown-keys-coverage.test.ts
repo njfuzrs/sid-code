@@ -12,8 +12,9 @@
  * - 实例从各工具模块直接构造，不依赖 cli 的注册路径（core 不能 import cli）。
  *   构造函数参数只在**执行时**才被用到，这里只取 `zodSchema`，传空对象即可。
  *
- * 豁免只有一条：`notebook_edit` 没有 `zodSchema`（`hasZodSchema === false`），
- * 它整条校验链都不走，由 T3 补——补完之后这条豁免必须删掉，否则本门禁会替它兜底。
+ * 全部 42 个内置工具都有 `zodSchema`（T3 已给 `notebook_edit` 补上，`hasZodSchema` 全为
+ * true），所以**没有豁免名单**：任何一个工具检不出未知键都是失败。这比「允许登记豁免」
+ * 更强——豁免是给「确实是联合类型」留的口子，而口子一旦留下就会被用来消除噪音。
  */
 
 import { describe, expect, test } from "bun:test";
@@ -116,12 +117,6 @@ const FACTORIES: Record<string, () => LegacyTool> = {
   write: () => new WriteTool() as unknown as LegacyTool,
 };
 
-/**
- * 豁免名单：**只允许「没有 zodSchema」的工具**（整条校验链都不走，T3 会补）。
- * 不允许用豁免掩盖 passthrough / record / union —— 那正是本门禁要拦的东西（见 T2「停下来」条件）。
- */
-const EXEMPT_NO_ZOD_SCHEMA = new Set(["notebook_edit"]);
-
 const meta = builtinToolMeta();
 const metaNames = meta.map((t) => t.name);
 const factoryNames = Object.keys(FACTORIES);
@@ -152,14 +147,6 @@ describe("全工具门禁：未知键在每一个工具上都能被检出", () =
   const PROBE = "zz_unknown_probe";
 
   for (const t of meta) {
-    if (EXEMPT_NO_ZOD_SCHEMA.has(t.name)) {
-      test(`${t.name}：没有 zodSchema，明确豁免（T3 补完后删掉这条豁免）`, () => {
-        const instance = FACTORIES[t.name]();
-        expect((instance as { zodSchema?: unknown }).zodSchema).toBeUndefined();
-      });
-      continue;
-    }
-
     test(`${t.name}：未知键 ${PROBE} 能被检出`, () => {
       const instance = FACTORIES[t.name]();
       const schema = (instance as { zodSchema?: unknown }).zodSchema;
@@ -172,12 +159,4 @@ describe("全工具门禁：未知键在每一个工具上都能被检出", () =
       ).toContain(PROBE);
     });
   }
-
-  test("豁免名单只允许「没有 zodSchema」的工具，不允许用来掩盖 schema 形态问题", () => {
-    for (const name of EXEMPT_NO_ZOD_SCHEMA) {
-      const t = meta.find((x) => x.name === name);
-      expect(t, `豁免名单里的 ${name} 不在真实注册表里`).toBeDefined();
-      expect(t?.hasZodSchema, `${name} 有 zodSchema，不该在豁免名单里`).toBe(false);
-    }
-  });
 });
