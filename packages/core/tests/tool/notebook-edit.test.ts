@@ -7,7 +7,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { z } from "zod/v4";
 import { NotebookEditTool } from "@sid-code/core/tool/notebook-edit.ts";
+import { validateToolInput } from "@sid-code/core/tool/input-validator.ts";
 
 let tmpDir: string;
 let nbPath: string;
@@ -229,5 +231,66 @@ describe("NotebookEditTool", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("不是 .ipynb");
+  });
+});
+
+/**
+ * D2：工具必须挂 `zodSchema`，否则 `validateToolInput()` 走 `!schema` 早退，
+ * 别名 / null 回填 / 数字归一 / safeParse 整条链全部跳过（畸形参数直接进 `execute()`）。
+ *
+ * 这里测的是「执行器边界」而非 `execute()`：`execute()` 内部的手工检查仍在（纵深防御），
+ * 但模型拿到的错误从「工具内部兜底的自由文本」变成结构化中文 zod 错误。
+ */
+describe("NotebookEditTool 的 zodSchema 校验链（D2）", () => {
+  test("实例上挂了 zodSchema，且 inputSchema() 与它同源", () => {
+    expect(tool.zodSchema).toBeDefined();
+    // registry 优先用 zodSchema 生成 LLM 定义；inputSchema() 只是转换失败时的回退。
+    // 两者不同源会让「发给模型的契约」与「运行时校验器」漂移，所以逐字段比对。
+    expect(tool.inputSchema()).toEqual(z.toJSONSchema(tool.zodSchema!));
+  });
+
+  test("strict 契约的 null 能被回填：cell_id / cell_type 传 null 也通过", () => {
+    // OpenAI strict 模式把所有 optional 字段塞进 required 并用 null 表达「未提供」，
+    // 模型遵约传 null。没有 zodSchema 时这层归一被整条跳过。
+    const r = validateToolInput(tool, {
+      notebook_path: nbPath,
+      new_source: "print(1)",
+      edit_mode: "replace",
+      cell_id: null,
+      cell_type: null,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const data = r.data as Record<string, unknown>;
+      // null 回填后等于「未提供」：字段不该以 null 的形态留下
+      expect(data.cell_id).toBeUndefined();
+      expect(data.cell_type).toBeUndefined();
+      expect(data.edit_mode).toBe("replace");
+    }
+  });
+
+  test("非法 edit_mode：返回带中文翻译的 zod 错误，而不是进 execute() 后手工兜底", () => {
+    const r = validateToolInput(tool, {
+      notebook_path: nbPath,
+      new_source: "x",
+      edit_mode: "bogus",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain("参数校验失败");
+      expect(r.message).toContain("notebook_edit");
+      expect(r.message).toContain("edit_mode");
+      // invalid_value 的中文翻译会列出合法取值，便于模型下一次直接改对
+      expect(r.message).toContain("取值非法");
+      expect(r.message).toContain("replace");
+    }
+  });
+
+  test("缺必填 new_source：在工具边界拦下并点名字段", () => {
+    const r = validateToolInput(tool, { notebook_path: nbPath });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain("new_source");
+    }
   });
 });
