@@ -5,7 +5,7 @@
  * 每条工具一个 ⏺ bullet（状态色），组本身不画框。
  */
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { Box } from "../../render-port/components.ts";
 import { Text } from "../../render-port/components.ts";
 import { ToolMessage } from "./ToolMessage.tsx";
@@ -18,6 +18,8 @@ import {
   getThinkThought,
 } from "../../ui-utils.ts";
 import { useOverflowState } from "../../contexts/OverflowContext.tsx";
+import { useUIState } from "../../contexts/UIStateContext.tsx";
+import { shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
 import { theme } from "../../semantic-colors.ts";
 
 export interface ToolCallDisplay {
@@ -70,6 +72,21 @@ interface ToolGroupMessageProps {
 
 const TOOL_MESSAGE_HORIZONTAL_MARGIN = 4;
 
+/**
+ * compact 折叠态的「还能展开」引导提示。
+ *
+ * 为什么必须单独给一次：compact 卡片刻意不渲染 `ToolResultDisplay`，因而**不登记溢出**，
+ * 下面那行 `isExpandable && hasOverflow` 的提示永远不会为它出现。折叠了却没有任何线索
+ * 说明正文还在，就等于把「省地方」做成了「藏信息」——`src/ui/CLAUDE.md` L3.3 明文要求
+ * 折叠时给摘要 + 可展开提示，正是防这个。
+ *
+ * 为什么是 3 次而不是常显：这是一条 onboarding 提示，`ctrl+o` 学会之后每轮多一行就是纯噪音，
+ * 会把折叠省下来的行又还回去。按 L4-C 的渐进衰减接 `app-config` 的通用计数器
+ * （`shouldShowHint` / `markHintShown`），看满 3 次收敛。
+ */
+const COMPACT_EXPAND_HINT_KEY = "toolResultCompactExpand";
+const COMPACT_EXPAND_HINT_MAX_SHOWS = 3;
+
 export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   tools,
   terminalWidth,
@@ -100,8 +117,33 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   const overflowState = useOverflowState();
   const hasOverflow = overflowState ? overflowState.overflowingIds.size > 0 : false;
 
-  // 是否显示展开提示
-  const showExpandHint = isExpandable && hasOverflow;
+  const { expandLevel } = useUIState();
+
+  // 组内有没有「被折成零行正文」的卡片。它们刻意不登记溢出（早退分支不渲染
+  // ToolResultDisplay，见 ToolMessage），所以下面那句 `isExpandable && hasOverflow`
+  // 永远不会为它们出现——折叠了却不告诉用户能展开，正文就等于被藏掉了
+  // （`src/ui/CLAUDE.md` L3.3：折叠时给摘要 + 可展开提示）。
+  //
+  // 展开态（expandLevel ≥ 1）不提示：此时正文已经在屏幕上，再提示就是噪音。
+  const hasCompactCollapsed =
+    expandLevel === 0 &&
+    visibleTools.some((t) => t.displayMode === "compact" && t.status === "success" && !t.isError);
+
+  // L4-C 接线套路：在「提示首次出现」时锁定形态并记一次，避免每帧重复计数。
+  // 本组件在 `<Static>` 里每组只渲染一次，ref 初始化即那一次的结果。
+  const compactHintRef = useRef<boolean | null>(null);
+  if (compactHintRef.current === null) {
+    compactHintRef.current =
+      hasCompactCollapsed && shouldShowHint(COMPACT_EXPAND_HINT_KEY, COMPACT_EXPAND_HINT_MAX_SHOWS);
+  }
+  const showCompactHint = hasCompactCollapsed && compactHintRef.current === true;
+  useEffect(() => {
+    if (showCompactHint) markHintShown(COMPACT_EXPAND_HINT_KEY);
+  }, [showCompactHint]);
+
+  // 溢出提示（普通工具结果被截断）与 compact 提示共用同一行文案：对用户来说都是
+  // 「按 ctrl+o 把正文调出来」，分成两句反而要分别理解。
+  const showExpandHint = (isExpandable && hasOverflow) || showCompactHint;
 
   if (visibleTools.length === 0) return null;
 

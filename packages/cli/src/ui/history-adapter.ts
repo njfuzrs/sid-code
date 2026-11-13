@@ -575,6 +575,16 @@ export function messagesToHistoryItemsWithMap(
  * `split("\n")` 会算成 2 行，降级就不发生了——折叠态标题行显示「2 行输出」，用户还得按
  * `ctrl+o` 才能看到那一句结论。用 trim 后再切，`""` 得 0、`"a\n"` 得 1，符合直觉。
  */
+/**
+ * compact 档「不值得折叠」的行数上限：≤ 这个行数就降级回原样展示。
+ *
+ * 取 5 的依据：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条这类结果
+ * 一眼看完、几乎不占地方，折成「3 个结果」反而把用户要的信息（文件名 / 命中行）藏起来，
+ * 还逼他去按 ctrl+o——而 ctrl+o 是全局档位，一按会把整屏所有 compact 卡片一起展开。
+ * 折叠只在「真的会淹没消息流」时才有收益，5 行大致是「一眼看完」与「需要滚动」的分界。
+ */
+const COMPACT_MAX_INLINE_LINES = 5;
+
 function countEffectiveLines(text: string): number {
   const trimmed = text.trim();
   return trimmed === "" ? 0 : trimmed.split("\n").length;
@@ -614,15 +624,21 @@ export function buildCompletedToolCall(
   // 错误结果不受管辖：执行器不会给错误 block 打这个标记，此处再守一道，
   // 防御未来有人手工构造 block（错误必须可见，见 tool/types.ts 硬约束 ②）。
   //
-  // compact 的**空/单行降级**：正文只有零星几行时，折叠态标题行的「N 行输出」比正文本身
+  // compact 的**少量行降级**：正文只有零星几行时，折叠态标题行的「N 行输出」比正文本身
   // 还长，用户还得按 ctrl+o 才能看到「未找到匹配的内容」这种一句话结论——折叠是负收益。
   // 故按正文行数降级回原样展示（等价于工具没声明档位）。判据用**有效行数**（去掉首尾空行后
   // 按换行切分）：工具输出常带尾部换行，用 content.length 或 split 直接取长度都会算多一行。
+  //
+  // 阈值是 5 行而不是 1 行：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline`
+  // 5 条——这类结果**一眼看完且几乎不占地方**，折起来反而逼用户去按 ctrl+o，而 ctrl+o 是
+  // 全局档位，一按会把屏幕上所有 compact 卡片一起展开。折叠只在「真的会淹没消息流」时
+  // 才有收益，5 行大致是「一眼看完」与「需要滚动」的分界。
+  //
   // 降级发生在数据层而非渲染层，是为了让 `displayMode` 这一字段的含义保持单一：
   // 「带 compact 的卡片 = 默认折叠有收益」，渲染层不需要再重复判一次行数。
   const rawDisplayMode = isError ? undefined : block.resultDisplayMode;
   const displayMode =
-    rawDisplayMode === "compact" && countEffectiveLines(block.content) <= 1
+    rawDisplayMode === "compact" && countEffectiveLines(block.content) <= COMPACT_MAX_INLINE_LINES
       ? undefined
       : rawDisplayMode;
   const suppressBody = displayMode === "summary" || displayMode === "hidden";

@@ -146,8 +146,15 @@ function makeInstances() {
  * 静态扫描源码里自报 `resultDisplayMode` 的工具名。
  *
  * 与实例对账互补：防"新工具声明了字段，但本测试忘了 import 进实例列表"的二次漂移。
- * 同时容纳常量形态（`resultDisplayMode = "hidden" as const`）与函数形态
- * （`resultDisplayMode(input): ... {`）两种写法。
+ * 同时容纳三种写法：
+ *   - 类字段常量：`readonly resultDisplayMode = "hidden" as const`
+ *   - 属性/字面量常量：`resultDisplayMode: "compact"`（对象字面量与带类型标注的类字段）
+ *   - 函数形态：`resultDisplayMode(input): ... {` / `resultDisplayMode = (input, result) => ...`
+ *
+ * ⚠️ 匹配字符集必须含 `:`。漏掉它的后果不是报错，是**静默漏扫**：写成
+ * `resultDisplayMode: "compact"` 的工具不会被收进 `found`，「无遗漏」断言于是认为
+ * 没有多余项——正好是本审计最该防的那种失效（文件头与下方回退逻辑各强调过一遍）。
+ * 可选标记 `resultDisplayMode?: T` 不会误命中（`?` 挡住了 `:`）。
  */
 function scanSourceForDisplayModeTools(): Map<string, string> {
   const found = new Map<string, string>();
@@ -161,10 +168,10 @@ function scanSourceForDisplayModeTools(): Map<string, string> {
     for (const file of entries) {
       if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
       const src = readFileSync(join(dir, file), "utf8");
-      // 常量形态：resultDisplayMode = "hidden" / "summary" / "compact"
-      const constMatch = src.match(/resultDisplayMode\s*=\s*["'](hidden|summary|compact)["']/);
+      // 常量形态：resultDisplayMode = "hidden" / resultDisplayMode: "compact"
+      const constMatch = src.match(/resultDisplayMode\s*[:=]\s*["'](hidden|summary|compact)["']/);
       // 函数形态：resultDisplayMode(input...) { }  或  resultDisplayMode = (input, result) => ...
-      const fnMatch = /resultDisplayMode\s*(?:=|\()/.test(src);
+      const fnMatch = /resultDisplayMode\s*[:=(]/.test(src);
       if (!constMatch && !fnMatch) continue;
       const mode = constMatch ? constMatch[1] : "function";
       const nameRegex = /name\s*\(\s*\)\s*:?\s*(?:string\s*)?\{\s*return\s*["'`]([^"'`]+)["'`]/g;
@@ -360,8 +367,16 @@ describe("函数形态：bash 按退出码分档", () => {
   });
 });
 
-describe("行为回归：compact 档保留正文 / 空与单行降级", () => {
-  const BODY = "src/a.ts:1:1\nsrc/b.ts:2:2\nsrc/c.ts:3:3";
+describe("行为回归：compact 档保留正文 / 少量行降级", () => {
+  // 6 行：超过 COMPACT_MAX_INLINE_LINES(5)，是「真该折叠」的最小样本。
+  const BODY = [
+    "src/a.ts:1:1",
+    "src/b.ts:2:2",
+    "src/c.ts:3:3",
+    "src/d.ts:4:4",
+    "src/e.ts:5:5",
+    "src/f.ts:6:6",
+  ].join("\n");
 
   test("硬约束①：compact 档正文**不置空**（与 summary 的分界就在这一条）", () => {
     // 这是全套改动里最容易写错、且错了之后无法补救的一条：一旦 compact 也走 suppressBody，
@@ -392,11 +407,23 @@ describe("行为回归：compact 档保留正文 / 空与单行降级", () => {
     }
   });
 
-  test("两行正文不降级（降级判据是「≤1 行」，不是「不够长」）", () => {
-    const twoLines = "第一行结果\n第二行结果";
-    const card = buildCompletedToolCall(resultBlock("c5", twoLines, { mode: "compact" }), "grep");
+  test("≤5 行降级：一眼看完的少量结果不该被折起来", () => {
+    // `glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条——这类结果一眼看完、
+    // 几乎不占地方，折成「5 行输出」反而把用户要的文件名/命中行藏起来，还得按 ctrl+o。
+    // ctrl+o 是全局档位，一按会把整屏所有 compact 卡片一起展开，代价比省下的几行大得多。
+    for (const lineCount of [2, 3, 5]) {
+      const body = Array.from({ length: lineCount }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
+      const card = buildCompletedToolCall(resultBlock("c5", body, { mode: "compact" }), "grep");
+      expect(card.resultDisplay?.displayMode, `${lineCount} 行不该折叠`).toBeUndefined();
+      expect(card.resultDisplay?.content).toBe(body);
+    }
+  });
+
+  test("6 行才折叠（越过「一眼看完」的分界）", () => {
+    const sixLines = Array.from({ length: 6 }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
+    const card = buildCompletedToolCall(resultBlock("c7", sixLines, { mode: "compact" }), "grep");
     expect(card.resultDisplay?.displayMode).toBe("compact");
-    expect(card.resultDisplay?.content).toBe(twoLines);
+    expect(card.resultDisplay?.content).toBe(sixLines);
   });
 
   test("硬约束②：错误结果即使带 compact 也照常展示、不折叠", () => {
