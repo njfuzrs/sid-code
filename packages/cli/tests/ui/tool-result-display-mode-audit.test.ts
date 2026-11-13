@@ -49,6 +49,12 @@ import { MonitorTool } from "@sid-code/core/tool/monitor.ts";
 import { ReadTool } from "@sid-code/core/tool/read.ts";
 import { GrepTool } from "@sid-code/core/tool/grep.ts";
 import { GlobTool } from "@sid-code/core/tool/glob.ts";
+import { LsTool } from "@sid-code/core/tool/ls.ts";
+import { ReadManyTool } from "@sid-code/core/tool/read-many.ts";
+import { WebFetchTool } from "@sid-code/core/tool/web-fetch.ts";
+import { WebSearchTool } from "@sid-code/core/tool/web-search.ts";
+import { LSPTool } from "@sid-code/core/tool/lsp.ts";
+import type { SearchBackend } from "@sid-code/core/tool/search-backends/types.ts";
 import { bashResultDisplayMode } from "@sid-code/core/tool/bash.ts";
 import { toLegacyTool } from "@sid-code/core/tool/bridge.ts";
 import { PlanModeManager } from "@sid-code/core/plan/state.ts";
@@ -107,6 +113,68 @@ const EXPECTED_COMPACT = [
   "read", // 正文是文件内容，一次常几百行
   "grep", // 正文是搜索结果列表
   "glob", // 正文是文件路径列表
+  // 2026-11-13 补：与上面三个同属「一次输出远大于一屏」的检索型工具，此前漏声明 →
+  // ls 实测 85 行、web_fetch 上限 100000 字符全部原样铺满主屏。
+  "ls", // 正文是目录条目列表（实测 packages/core/src/tool 85 行 / 2185 字符）
+  "read_many", // 正文是多个文件的完整内容（总上限 100000 字符）
+  "web_fetch", // 正文是网页正文 / 提炼结果（上限 100000 字符）
+  "web_search", // 正文是搜索结果列表（每条 4 行，一次 5~10 条）
+  "lsp", // 正文是引用 / 符号列表（最多 50 条）
+].sort();
+
+/**
+ * 期望**不声明** `resultDisplayMode` 的工具清单（显式白名单，双向对账）。
+ *
+ * ## 为什么需要这份清单
+ *
+ * 上面三个 `EXPECTED_*` 做的是「已声明的必须对上」，对「新工具压根没声明」是**静默通过**的。
+ * 这正是本仓漏掉 `ls` / `read_many` / `web_fetch` / `web_search` / `lsp` 的机制原因——
+ * 它们的输出规模早就远超一屏（`ls` 实测 85 行、`web_fetch` 上限 100000 字符），
+ * 却因为审计里没有它们的位置，一直没人评估「该不该折」。
+ *
+ * 把「未声明」也变成需要显式表态的事：新增工具若不声明档位，本条断言会挂。
+ * 加进这里**不等于**判定它永远不该折叠——真觉得该折，就去工具自身声明档位，
+ * 再从本清单删掉（而不是在这里留个"待办"）。
+ *
+ * ## 当前不折的判据（逐个记，避免下一个人重新论证）
+ *
+ * - 短回执 / 交互卡片：`edit` `write` `notebook_edit`（走 diff 专用渲染，有
+ *   `DIFF_COLLAPSE_MAX_LINES`）、`ask_user_question`、`save_memory`、`send_message`、
+ *   `schedule_wakeup`、`task_stop`、`cron_*`、`team_*`、`enter_worktree` / `exit_worktree`、
+ *   `hypothesis_*`（默认关闭的实验工具）。
+ * - 已由专用渲染 / header 摘要承担：`task_output`（`extractTaskOutputDisplay`）、
+ *   `bg_task_list`（`extractTaskListDisplay`）、`bg_task_get`、`task_get`、`task_list`。
+ * - **待评估**（输出确实可能很长，但当前有专属摘要或结果形态尚未核）：`sub_agent`、
+ *   `workflow`、`ListMcpResources`、`ReadMcpResource`、`StructuredOutput`。
+ */
+const EXPECTED_UNDECLARED = [
+  "ListMcpResources",
+  "ReadMcpResource",
+  "StructuredOutput",
+  "ask_user_question",
+  "bg_task_get",
+  "bg_task_list",
+  "cron_create",
+  "cron_delete",
+  "cron_list",
+  "edit",
+  "enter_worktree",
+  "exit_worktree",
+  "hypothesis_challenge",
+  "hypothesis_register",
+  "notebook_edit",
+  "save_memory",
+  "schedule_wakeup",
+  "send_message",
+  "sub_agent",
+  "task_get",
+  "task_list",
+  "task_output",
+  "task_stop",
+  "team_create",
+  "team_message",
+  "workflow",
+  "write",
 ].sort();
 
 /**
@@ -119,6 +187,13 @@ const EXPECTED_COMPACT = [
  * 本审计首次运行时就是拿小写写错了、被「无多余」断言挂出来的。
  */
 const FUNCTION_FORM_TOOLS = ["Skill", "bash"];
+
+/** WebSearchTool 的档位是常量字段（与 backend 无关），构造只要求一个实例；给最小桩避免真连后端。 */
+const stubSearchBackend: SearchBackend = {
+  name: "stub",
+  isAvailable: () => true,
+  search: async () => ({ results: [], durationMs: 0, backend: "stub" }),
+};
 
 function makeInstances() {
   const planManager = new PlanModeManager();
@@ -139,6 +214,15 @@ function makeInstances() {
     new ReadTool(),
     new GrepTool(),
     new GlobTool(),
+    // 2026-11-13 补：与上面三个同属「输出远大于一屏」的检索型工具。
+    // 此前漏声明 → ls 实测 85 行、web_fetch 上限 100000 字符全部原样铺满主屏。
+    new LsTool(),
+    new ReadManyTool(),
+    new WebFetchTool(),
+    new LSPTool(),
+    // WebSearchTool 的档位是常量字段（与 backend 无关），构造只需要一个实例桩。
+    // 它是旧版工具形态（`name()` 方法），与 read/grep/glob 一样直接进列表，不经 bridge。
+    new WebSearchTool(stubSearchBackend),
   ];
 }
 
@@ -203,6 +287,61 @@ function scanSourceForDisplayModeTools(): Map<string, string> {
           const constRegex = new RegExp(`${refMatch[1]}\\s*=\\s*["'\`]([^"'\`]+)["'\`]`);
           const valMatch = src.match(constRegex);
           if (valMatch) found.set(valMatch[1], mode);
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * 扫描源码里**全部**工具名（不筛是否声明档位）。
+ *
+ * 与 `scanSourceForDisplayModeTools` 的分工：那个回答「谁声明了档位」，这个回答
+ * 「一共有哪些工具」——两者相减就是「没声明的工具」，供 `EXPECTED_UNDECLARED` 对账。
+ *
+ * 只认 `implements Tool` / `implements LegacyTool` 的文件：同目录下还有错误类
+ * （`RipgrepTimeoutError`）和 skill loader，它们的 `name` 不是工具名，扫进来只会制造噪音。
+ * 模板字符串形式的动态名（`agent__${this.def.name}`）同样跳过——它不是可枚举的静态工具。
+ */
+function scanAllToolNames(): Set<string> {
+  const found = new Set<string>();
+  for (const dir of TOOL_SRC_DIRS) {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const file of entries) {
+      if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
+      const src = readFileSync(join(dir, file), "utf8");
+      if (!/implements\s+(?:Legacy)?Tool\b/.test(src)) continue;
+      const nameRegex = /name\s*\(\s*\)\s*:?\s*(?:string\s*)?\{\s*return\s*["'`]([^"'`]+)["'`]/g;
+      const propNameRegex = /(?<![A-Za-z0-9_$])name\s*=\s*["'`]([^"'`]+)["'`]/g;
+      let m: RegExpExecArray | null;
+      let matched = false;
+      while ((m = nameRegex.exec(src)) !== null) {
+        // 动态拼接的名字不是静态可枚举的工具，跳过（否则白名单里会出现 `${...}`）
+        if (!m[1].includes("${")) {
+          found.add(m[1]);
+          matched = true;
+        }
+      }
+      while ((m = propNameRegex.exec(src)) !== null) {
+        if (!m[1].includes("${")) {
+          found.add(m[1]);
+          matched = true;
+        }
+      }
+      if (!matched) {
+        const refMatch = src.match(
+          /name\s*\(\s*\)\s*:?\s*(?:string\s*)?\{\s*return\s+([A-Z_][A-Z0-9_]*)\s*;?\s*\}/,
+        );
+        if (refMatch) {
+          const constRegex = new RegExp(`${refMatch[1]}\\s*=\\s*["'\`]([^"'\`]+)["'\`]`);
+          const valMatch = src.match(constRegex);
+          if (valMatch) found.add(valMatch[1]);
         }
       }
     }
@@ -282,6 +421,22 @@ describe("工具结果呈现档位对账审计", () => {
       orphan,
       `以下名字在期望名单里、但没有任何工具源码自报 resultDisplayMode（拼错/工具已删？）：${orphan.join(", ")}`,
     ).toEqual([]);
+  });
+
+  test("【源码扫描·未声明清单】未声明档位的工具集合 === EXPECTED_UNDECLARED（双向相等）", () => {
+    const allNames = scanAllToolNames();
+    // 防正则/目录漂移扫空后假绿：真实工具数远大于 40，扫空或扫残都会在这里挂
+    expect(allNames.size).toBeGreaterThanOrEqual(40);
+
+    const declared = new Set([...scanSourceForDisplayModeTools().keys(), ...FUNCTION_FORM_TOOLS]);
+    const actual = [...allNames].filter((n) => !declared.has(n)).sort();
+    expect(
+      actual,
+      `工具清单变了：新增工具若不声明 resultDisplayMode，请先评估「它的输出该不该折叠」——` +
+        `该折就在工具自身声明 compact（并加进 EXPECTED_COMPACT），不该折再加进 EXPECTED_UNDECLARED。` +
+        `\n未在 EXPECTED_UNDECLARED 里的新工具：${actual.filter((n) => !EXPECTED_UNDECLARED.includes(n)).join(", ")}` +
+        `\n已从清单消失的工具：${EXPECTED_UNDECLARED.filter((n) => !actual.includes(n)).join(", ")}`,
+    ).toEqual(EXPECTED_UNDECLARED);
   });
 
   test("summary 档工具都有 header 摘要（否则卡片只剩光秃秃一个工具名）", () => {
@@ -424,6 +579,54 @@ describe("行为回归：compact 档保留正文 / 少量行降级", () => {
     const card = buildCompletedToolCall(resultBlock("c7", sixLines, { mode: "compact" }), "grep");
     expect(card.resultDisplay?.displayMode).toBe("compact");
     expect(card.resultDisplay?.content).toBe(sixLines);
+  });
+
+  test("单行超长正文照样折叠：逻辑行 1 ≠ 视觉行 1（真实 grep JSON 形态）", () => {
+    // 这次漏掉的**直接原因**：grep 的 output 是 `JSON.stringify` 出来的**一行紧凑 JSON**
+    // （`core/tool/grep.ts` 的 `formatStructuredOutput`）。实测命中 23 个文件时 3081 字符 /
+    // 逻辑行 1 —— 按逻辑行判 `<= 5` 恒成立，于是 grep **永不折叠**，而它在终端里会 wrap 成几十行。
+    // 判据改用视觉行数（countVisualLines）后必须折叠。
+    const realGrepShape = JSON.stringify({
+      mode: "files_with_matches",
+      numFiles: 23,
+      filenames: Array.from({ length: 23 }, (_, i) => `packages/core/src/tool/tool-${i}.ts`),
+    });
+    const card = buildCompletedToolCall(
+      resultBlock("c-json", realGrepShape, { mode: "compact" }),
+      "grep",
+    );
+    expect(card.resultDisplay?.displayMode).toBe("compact");
+    // 正文不丢：折叠只是渲染层默认收起，ctrl+o 仍能拿回原文（硬约束①）
+    expect(card.resultDisplay?.content).toBe(realGrepShape);
+    // 折叠态标题行是唯一信息出口，不能是按逻辑行算出的假指标「1 个结果」
+    expect(card.resultSummary).toBe("23 个文件");
+  });
+
+  test("单行短结论仍降级：视觉行口径没有矫枉过正", () => {
+    const shortSingleLine = '{"mode":"files_with_matches","numFiles":0}';
+    const card = buildCompletedToolCall(
+      resultBlock("c-short", shortSingleLine, { mode: "compact" }),
+      "grep",
+    );
+    expect(card.resultDisplay?.displayMode).toBeUndefined();
+  });
+
+  test("read 单行大文件：视觉行口径同样生效（minified 文件不再是漏网）", () => {
+    const oneLineFile = `{"k":"${"x".repeat(2000)}"}`;
+    const card = buildCompletedToolCall(
+      resultBlock("c-oneline", oneLineFile, { mode: "compact" }),
+      "read",
+    );
+    expect(card.resultDisplay?.displayMode).toBe("compact");
+  });
+
+  test("bash 单行超长输出：超出 1 个视觉行就折叠", () => {
+    const longSingleLine = "x".repeat(300);
+    const card = buildCompletedToolCall(
+      resultBlock("c-bash-long", longSingleLine, { mode: "compact" }),
+      "bash",
+    );
+    expect(card.resultDisplay?.displayMode).toBe("compact");
   });
 
   test("shell 类工具用更严的阈值：2 行起就折叠", () => {

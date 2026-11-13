@@ -85,6 +85,16 @@ export class LsTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = lsSchema();
 
+  /**
+   * 呈现档位 `"compact"`：目录列表是真实工作内容，但大目录一次列举可达近百行
+   * （实测 `packages/core/src/tool` 85 行 / 2185 字符）。与 `glob` 同属「文件清单」型，
+   * 默认折成零行正文、标题行给「N 项」，按 ctrl+o 展开——正文始终留在
+   * `resultDisplay.content` 里，没丢。
+   *
+   * 「空目录」这类单行结论由 UI 侧（history-adapter）按视觉行数降级回原样展示。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
   /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
   jitAffectedPaths(input: unknown): string[] {
     return pickPaths(input, "dir_path");

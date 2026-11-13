@@ -25,7 +25,7 @@ import {
   extractTaskOutputDisplay,
   extractTaskListDisplay,
   isShellTool,
-  countEffectiveLines,
+  countVisualLines,
 } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
@@ -631,8 +631,13 @@ export function buildCompletedToolCall(
   //
   // compact 的**少量行降级**：正文只有零星几行时，折叠态标题行的「N 行输出」比正文本身
   // 还长，用户还得按 ctrl+o 才能看到「未找到匹配的内容」这种一句话结论——折叠是负收益。
-  // 故按正文行数降级回原样展示（等价于工具没声明档位）。判据用**有效行数**（去掉首尾空行后
-  // 按换行切分）：工具输出常带尾部换行，用 content.length 或 split 直接取长度都会算多一行。
+  // 故按正文行数降级回原样展示（等价于工具没声明档位）。判据用**视觉行数**
+  // （`countVisualLines`：去掉首尾空行后按换行切分，再把超宽单行按终端列宽折开）：
+  // 只数逻辑行会漏掉「逻辑行 1、实际 wrap 成几十行」这一类，而它恰恰最该折——
+  // 最典型的是 `grep`：它把结果 `JSON.stringify` 成一行紧凑 JSON
+  // （`core/tool/grep.ts` 的 `formatStructuredOutput`），实测命中 23 个文件时 3081 字符 /
+  // 逻辑行 1，`<= 5` 恒成立 → **永不折叠**（PR #808 / #810 的真实漏网）。
+  // `read` 读 minified/单行文件、`bash` 的单行超长输出同型。
   //
   // 阈值**按工具类型分两档**，不是一个数通吃（PR #808 合入后实测发现的不统一）：
   //   - 默认 5 行：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条——
@@ -650,7 +655,7 @@ export function buildCompletedToolCall(
     ? COMPACT_MAX_INLINE_LINES_SHELL
     : COMPACT_MAX_INLINE_LINES;
   const displayMode =
-    rawDisplayMode === "compact" && countEffectiveLines(block.content) <= maxInlineLines
+    rawDisplayMode === "compact" && countVisualLines(block.content) <= maxInlineLines
       ? undefined
       : rawDisplayMode;
   const suppressBody = displayMode === "summary" || displayMode === "hidden";

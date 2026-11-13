@@ -132,6 +132,35 @@ export function countEffectiveLines(text: string): number {
 }
 
 /**
+ * 估算折行宽度（终端列）。数据层拿不到真实 `terminalWidth`，用 80 列这个通用默认值。
+ *
+ * 为什么不在渲染层用真实宽度判：`history-adapter.ts` 的降级发生在数据层，是为了让
+ * `displayMode` 的含义保持单一（见该处注释），搬回渲染层会让「数据层说折叠 / 渲染层
+ * 说不折」两处判据分裂。这里只需要识别「逻辑行很少但视觉上很长」这一型，不需要精确。
+ */
+const ESTIMATE_WRAP_COLUMNS = 80;
+
+/**
+ * 正文的**视觉行数**估算：把超宽的单行按 80 列折开后再计行数。
+ *
+ * 为什么需要它：`countEffectiveLines` 按 `\n` 切分，对**单行超长输出**完全失效——
+ * 逻辑行数 1、实际在终端里 wrap 成几十行。最典型的是 `grep`：它把结构化结果
+ * `JSON.stringify` 成一行紧凑 JSON（`tool/grep.ts` 的 `formatStructuredOutput`），
+ * 实测命中 23 个文件时是 3081 字符 / 逻辑行 1，于是 `<= 5 行` 的降级判据永远成立 →
+ * grep **永不折叠**。`read` 读 minified/单行文件、`bash` 的单行超长输出同型。
+ *
+ * 中文/emoji 的宽度由 `stringWidth` 算（L2.3 铁律：算列宽一律用它，不用 `.length`），
+ * 所以宽字符不会被低估——同一条 grep JSON 里含中文文件路径时也能正确折行。
+ */
+export function countVisualLines(text: string, columns = ESTIMATE_WRAP_COLUMNS): number {
+  const trimmed = text.trim();
+  if (trimmed === "") return 0;
+  return trimmed
+    .split("\n")
+    .reduce((sum, line) => sum + Math.max(1, Math.ceil(stringWidth(line) / columns)), 0);
+}
+
+/**
  * 判定是否子代理类工具名（供 header 摘要 / 权限框详情共用）。
  * 真实工具名是 `sub_agent`（带下划线，见 agent/tool.ts name()）——此前只判 `startsWith("subagent")`
  * （无下划线）→ `getToolSummary("sub_agent", …)` 恒返回 `""`，导致 sub_agent 卡片 header 光秃秃
@@ -169,6 +198,16 @@ export function getToolSummary(name: string, input: unknown): string {
   }
   if (lower === "grep") return `"${inp?.pattern || ""}"`;
   if (lower === "glob") return inp?.pattern || "";
+  // ls / read_many / web_fetch / web_search：2026-11-13 给它们补 compact 档时同步补的
+  // header 摘要。折叠后正文默认收起，header + 结果摘要是用户唯一能扫到的「这一步在干什么」
+  // ——没有分支就只剩光秃秃的 `⏺ ls`（本文件已发作过多次的同一病灶）。
+  if (lower === "ls") return shortenPathForDisplay(inp?.dir_path || inp?.dirPath || "");
+  if (lower === "read_many") {
+    const patterns = Array.isArray(inp?.pattern) ? inp.pattern : [];
+    return truncateSummary(patterns.join(", "), SUMMARY_MAX_CHARS);
+  }
+  if (lower === "web_fetch") return inp?.url || "";
+  if (lower === "web_search") return `"${inp?.query || ""}"`;
   // think：header 直接给出思考首句，让用户扫一眼就知道"这次在想什么"。
   // 此前无此分支 → 返回 "" → header 恒为光秃秃的 `⏺ think`，配上结果区那句
   // 无信息的「已记录思考。」，用户完全不知道记了什么、有什么用。
@@ -449,13 +488,7 @@ export function getResultSummary(name: string, content: string, isError?: boolea
   if (lower === "edit") return "替换完成";
   if (lower === "write") return `${content.length} 字符`;
   if (lower === "bash") return `${countEffectiveLines(content)} 行输出`;
-  if (lower === "grep")
-    return `${
-      content
-        .trim()
-        .split("\n")
-        .filter((l) => l.length > 0).length
-    } 个结果`;
+  if (lower === "grep") return grepResultSummary(content);
   if (lower === "glob")
     return `${
       content
@@ -463,6 +496,22 @@ export function getResultSummary(name: string, content: string, isError?: boolea
         .split("\n")
         .filter((l) => l.length > 0).length
     } 个文件`;
+  // ls / read_many / web_search：与 2026-11-13 补的 compact 档配套——折叠后标题行是
+  // 唯一的规模信息，不能退回 `N 字符` 这种量长度的假指标（`ls` 会显示「2185 字符」，
+  // 而用户想知道的是「几个文件」）。三个都在输出首/末行自带真实计数，优先采信它；
+  // 解析不到（异常输出）才退回行数。
+  if (lower === "ls") {
+    const total = content.match(/共\s*(\d+)\s*项/);
+    return total ? `${total[1]} 项` : `${countEffectiveLines(content)} 行`;
+  }
+  if (lower === "read_many") {
+    const files = content.match(/成功读取\s*(\d+)\s*个文件/);
+    return files ? `${files[1]} 个文件` : `${countEffectiveLines(content)} 行`;
+  }
+  if (lower === "web_search") {
+    const hits = content.match(/（(\d+)\s*条/);
+    return hits ? `${hits[1]} 条结果` : `${countEffectiveLines(content)} 行`;
+  }
   // think：工具 content 是无信息确认语「已记录思考。」——兜底会算出"6 字符"这种
   // 描述确认语本身、与思考内容无关的假指标。think 的真实内容在 input 里，由
   // header 摘要 + 结果区正文（getThinkThought）承担展示，此处不给冗余摘要。
@@ -481,6 +530,37 @@ export function getResultSummary(name: string, content: string, isError?: boolea
   // bg_task_list：「N 字符」量的是标签块长度；用户关心的是有几个在跑
   if (lower === "bg_task_list") return taskListResultSummary(content);
   return `${content.length} 字符`;
+}
+
+/**
+ * grep 结果摘要：从结构化 JSON 里取真实计数。
+ *
+ * 不能按行数数——grep 的 output 是**一行紧凑 JSON**（`core/tool/grep.ts` 的
+ * `formatStructuredOutput`），`split("\n")` 恒为 1，于是命中 23 个文件也显示
+ * 「1 个结果」。与折叠判据是同一个「逻辑行 ≠ 实际规模」的病灶。
+ * 三个 mode 用户关心的量不同：files_with_matches 关心文件数，content 关心命中行数，
+ * count 关心总匹配数。
+ */
+function grepResultSummary(content: string): string {
+  try {
+    const parsed = JSON.parse(content.trim()) as {
+      mode?: string;
+      numFiles?: number;
+      numLines?: number;
+      numMatches?: number;
+    };
+    if (parsed.mode === "files_with_matches") return `${parsed.numFiles ?? 0} 个文件`;
+    if (parsed.mode === "count") return `${parsed.numMatches ?? 0} 处匹配`;
+    return `${parsed.numLines ?? 0} 行匹配`;
+  } catch {
+    // 错误信息 / 旧轨迹里的非 JSON 输出：退回按非空行数兜底
+    return `${
+      content
+        .trim()
+        .split("\n")
+        .filter((l) => l.length > 0).length
+    } 个结果`;
+  }
 }
 
 /**
