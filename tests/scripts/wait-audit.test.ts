@@ -256,7 +256,10 @@ describe("指标口径", () => {
         bashPoll("2026-01-01T00:00:20.000Z", "git log --oneline"),
         bashOk("2026-01-01T00:00:20.000Z"),
         // 含 gh 但不是纯只读命令表形态：gh_queries 算，fg_status_polls 不算
-        bashPoll("2026-01-01T00:00:30.000Z", "gh pr view 662 && echo done"),
+        // ⚠️ 这个例子原来是 `gh pr view 662 && echo done`。R4 之后「末尾无害段可跳过」
+        // 成了明确契约（`; echo done` / `; date` 是两次事故会话的主力写法），那条命令
+        // 已经算命中，守住这条判据要换成真正的写操作。
+        bashPoll("2026-01-01T00:00:30.000Z", "gh pr merge 662 --auto"),
         bashOk("2026-01-01T00:00:30.000Z"),
       ],
     });
