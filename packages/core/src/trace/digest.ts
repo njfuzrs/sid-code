@@ -1171,10 +1171,18 @@ export interface TodoDigestStats {
   advanceRatio?: number;
   /** 相邻两次推进间隔了多少轮（按 absoluteTurn 差），用于看"是否前松后紧" */
   advanceGaps: number[];
-  /** todo 通道回注次数（`NoProgressNagInjected` 且 kind=todo） */
+  /** todo 通道回注次数（`NoProgressNagInjected` 且 kind=todo、且不是被等待态压掉的那条） */
   reminders: number;
   /** 其中因压缩旁路强制重注的次数（afterCompact=true） */
   remindersAfterCompact: number;
+  /**
+   * R5：todo 通道因「纯等待态」被压掉的次数（`suppressed_by_wait=true`）。
+   *
+   * 与 `reminders` **分开计数**：那些事件代表「本可以催、但按判据没催」，把它们算进
+   * 回注次数会让「回注次数」这条曲线整体虚高，而这正是本改动最需要可观测的那个数
+   * ——压掉了多少次，就是这条修法生效了多少次。
+   */
+  suppressedByWait: number;
   /**
    * 回注时"距上次 todo_write"的最大轮数。
    * 它是**停滞深度**：这个数很大说明模型长时间没碰清单，阈值可能过松。
@@ -6524,13 +6532,25 @@ export function aggregateTodoStats(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
 ): TodoDigestStats | null {
   const advanced = events.filter((e) => e.event === "TodoProgressAdvanced" && e.data);
-  const todoNags = events.filter(
+  // R5：`suppressed_by_wait=true` 的事件代表「本可以催、但按等待态判据没催」，
+  // 它不是一次回注。混进 `reminders` 会让「回注次数」曲线整体虚高——而那正是本改动
+  // 最需要可观测的数，必须分开计数。
+  const todoNagEvents = events.filter(
     (e) => e.event === "NoProgressNagInjected" && e.data && e.data.kind === "todo",
   );
+  const todoNags = todoNagEvents.filter((e) => e.data!.suppressed_by_wait !== true);
+  const suppressedByWait = todoNagEvents.filter((e) => e.data!.suppressed_by_wait === true).length;
   const gateRetries = events.filter(
     (e) => e.event === "LoopTransition" && e.data && e.data.type === "todo_gate_retry",
   );
-  if (advanced.length === 0 && todoNags.length === 0 && gateRetries.length === 0) return null;
+  if (
+    advanced.length === 0 &&
+    todoNags.length === 0 &&
+    suppressedByWait === 0 &&
+    gateRetries.length === 0
+  ) {
+    return null;
+  }
 
   // 终态取**最后一条** advance 事件：它携带的 total/completed/unfinished 就是会话结束时
   // 清单的样子（每次 writeVersion 变化都会重新落一条，末条最新）。
@@ -6578,6 +6598,7 @@ export function aggregateTodoStats(
     advanceGaps,
     reminders: todoNags.length,
     remindersAfterCompact: todoNags.filter((e) => e.data!.afterCompact === true).length,
+    suppressedByWait,
     maxTurnsSinceWrite: sinceWrites.length > 0 ? Math.max(...sinceWrites) : undefined,
     gateRetries: gateRetries.length,
   };
