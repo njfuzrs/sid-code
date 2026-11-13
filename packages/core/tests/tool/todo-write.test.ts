@@ -159,6 +159,32 @@ describe("TodoWriteTool", () => {
     expect(result.output).toContain("尚未");
     // 锁死旧的无条件祈使句不再出现
     expect(result.output).not.toContain("请汇总执行结果并告知用户");
+    // 首次说明只在第一次成功写入时附（2026-11-13 T9）：这次是第二次调用，不该再附
+    expect(result.output).not.toContain("本会话只提示这一次");
+  });
+
+  it("首次成功写入附一次用法说明，之后不再附，reset 后重新附", async () => {
+    const tool = new TodoWriteTool();
+    // 校验失败不算「成功写入」，不附说明，也不消耗这一次
+    const bad = await tool.execute({ todos: "不是数组" });
+    expect(bad.isError).toBe(true);
+    expect(bad.output).not.toContain("本会话只提示这一次");
+
+    const first = await tool.execute({ todos: [makeTodo("任务1", "in_progress")] });
+    expect(first.output).toContain("本会话只提示这一次");
+    // 说明在结果之后：diff 在前
+    expect(first.output.indexOf("任务清单已更新")).toBeLessThan(
+      first.output.indexOf("本会话只提示这一次"),
+    );
+
+    const second = await tool.execute({
+      todos: [makeTodo("任务1", "completed"), makeTodo("任务2", "in_progress")],
+    });
+    expect(second.output).not.toContain("本会话只提示这一次");
+
+    tool.reset();
+    const afterReset = await tool.execute({ todos: [makeTodo("任务3", "in_progress")] });
+    expect(afterReset.output).toContain("本会话只提示这一次");
   });
 
   it("单 in_progress 正常工作", async () => {
