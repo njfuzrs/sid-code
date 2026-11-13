@@ -105,6 +105,33 @@ export function getThinkThought(name: string, input: unknown): string | undefine
 }
 
 /**
+ * 判断是否为 Shell/Bash 工具。
+ *
+ * 定义放在这个**纯 TS 模块**而不是 `components/messages/ToolShared.tsx`，是因为调用方跨了两层：
+ * 渲染层（ToolMessage / ToolGroupMessage 选 command 区样式）与数据层
+ * （`history-adapter.ts` 的 compact 降级判据要给 shell 类用不同阈值）。数据层不能 import
+ * React 组件，而复制一份判据又会漂移（`danger-detect.ts` 那个正则就是历史教训）。
+ * `ToolShared.tsx` 保留同名导出（re-export），既有引用点无需改动。
+ */
+export function isShellTool(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === "bash" || lower === "shell" || lower === "execute_command";
+}
+
+/**
+ * 正文的**有效行数**（去掉首尾空行后按换行切分）。
+ *
+ * 工具输出常带尾部换行，用朴素 `split("\n")` 会**多算一行**：`"未找到匹配的内容\n"` 数成 2 行，
+ * `""` 数成 1 行。两个消费方都受此影响，故口径收口在这里：
+ *   - `getResultSummary` 的「N 行输出」文案（曾把 86 行真实的 `ls` 输出报成 87 行）；
+ *   - `history-adapter.ts` 的 compact 少量行降级（多算一行会让该降级的卡片被折叠）。
+ */
+export function countEffectiveLines(text: string): number {
+  const trimmed = text.trim();
+  return trimmed === "" ? 0 : trimmed.split("\n").length;
+}
+
+/**
  * 判定是否子代理类工具名（供 header 摘要 / 权限框详情共用）。
  * 真实工具名是 `sub_agent`（带下划线，见 agent/tool.ts name()）——此前只判 `startsWith("subagent")`
  * （无下划线）→ `getToolSummary("sub_agent", …)` 恒返回 `""`，导致 sub_agent 卡片 header 光秃秃
@@ -415,10 +442,13 @@ export function getToolDetailFull(name: string, input: unknown): string {
 export function getResultSummary(name: string, content: string, isError?: boolean): string {
   if (isError) return truncateSummary(content, 60);
   const lower = name.toLowerCase();
-  if (lower === "read") return `${content.split("\n").length} 行`;
+  // 行数一律走 countEffectiveLines（trim 后再切）：工具输出常带尾部换行，朴素 split 会把
+  // 86 行的 `ls` 输出报成「87 行输出」，read 同理。文案与降级判据必须是同一口径，
+  // 否则会出现「标题说 6 行、卡片却没折叠」这种自相矛盾的卡片。
+  if (lower === "read") return `${countEffectiveLines(content)} 行`;
   if (lower === "edit") return "替换完成";
   if (lower === "write") return `${content.length} 字符`;
-  if (lower === "bash") return `${content.split("\n").length} 行输出`;
+  if (lower === "bash") return `${countEffectiveLines(content)} 行输出`;
   if (lower === "grep")
     return `${
       content
