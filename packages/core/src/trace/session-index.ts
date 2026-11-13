@@ -244,6 +244,26 @@ export interface SessionIndexEntry {
   end_turn_n?: number;
 
   /**
+   * R9：等待源口径（重复等待拦了几次 / 并存几个 / 换代几次 / 误读几次）。
+   *
+   * **键不存在 = 本会话没有等待事件**（R1/R2 埋点上线前的版本，或整场没起过显式等待），
+   * 不是「0 次重复等待」。北极星「更省」辅助口径 `max_concurrent_waits_per_subject`
+   * 的 p95 与分母都从这里取（分母 = 有 `wait` 键的会话数）。
+   */
+  wait?: {
+    /** 同一对象同时并存的最大等待数；> 1 就是 b0aa0f1e 那种「同一件事挂了多份」 */
+    max_concurrent?: number;
+    /** `WaitRegistered` 条数（并存数的分子来源，也是「真起过等待」的证据） */
+    registered?: number;
+    /** `WaitAdmission` 判成 duplicate 的次数（R2 拦下的重复等待） */
+    duplicates_blocked?: number;
+    /** `WaitAdmission` 判成 replace 的次数（换了一种等法） */
+    replacements?: number;
+    /** R3 误读：起完等待就声称它又被杀/又超时的次数。缺 history 时不存在（不是 0） */
+    stale_claims?: number;
+  };
+
+  /**
    * /perf：会话级性能派生量。**此前只落在 session.traj**，而轨迹会被 LRU 清掉、
    * 索引不会 —— 于是这几项一清理就没了，跨会话趋势无从画起。
    *
@@ -448,6 +468,8 @@ export function buildSessionIndexEntry(
     /** S1 L1：传了才落盘（见 SessionIndexEntry.short_text_end_turns） */
     short_text_end_turns?: number;
     end_turn_n?: number;
+    /** R9：传了才落盘（见 SessionIndexEntry.wait；键不存在 ≠ 0 次重复等待） */
+    wait?: SessionIndexEntry["wait"];
     perf?: {
       tps?: number;
       gen_p95?: number;
@@ -491,6 +513,11 @@ export function buildSessionIndexEntry(
     ...(typeof extra.is_audit === "boolean" ? { is_audit: extra.is_audit } : {}),
     ...(extra.short_text_end_turns !== undefined
       ? { short_text_end_turns: extra.short_text_end_turns, end_turn_n: extra.end_turn_n ?? 0 }
+      : {}),
+    // R9：同上「有值才写」。全部字段都是 undefined 时整个键不落 ——
+    // 消费侧（北极星）用「有 wait 键的会话数」当分母，落一个空对象会让分母虚高。
+    ...(extra.wait && Object.values(extra.wait).some((v) => v !== undefined)
+      ? { wait: extra.wait }
       : {}),
     // traj_corrupt 与 defense_triggered 的处理**刻意相反**，别顺手改成 `=== true`：
     //

@@ -136,6 +136,7 @@ export class ScheduleWakeupTool implements Tool {
     const subjects = collectWaitSubjects({ prompt: params.prompt });
     const normalizedCommand = normalizeWaitCommand(params.prompt);
     const admission = decideWaitAdmission({
+      kind: "wakeup",
       subjects,
       command: normalizedCommand,
       deadlineAt: now + clamped * 1000,

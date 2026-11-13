@@ -291,6 +291,8 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     const subjects = collectWaitSubjects({ command });
     const normalizedCommand = normalizeWaitCommand(command);
     const admission = decideWaitAdmission({
+      kind: "monitor",
+      toolUseId: (params as { _toolUseId?: unknown })._toolUseId as string | undefined,
       subjects,
       command: normalizedCommand,
       deadlineAt: Date.now() + timeoutMs,

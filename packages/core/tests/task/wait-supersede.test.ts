@@ -134,6 +134,7 @@ describe("R6 修法 1/2：replace 淘汰旧等待且不送通知", () => {
 
     // 真实入口的顺序：判定在 spawn 之前（此时新任务还没有 id / 登记项）
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:780"],
       command: "while true; do gh pr checks 780; sleep 30; done",
       deadlineAt: Date.now() + 3_600_000,
@@ -161,6 +162,7 @@ describe("R6 修法 1/2：replace 淘汰旧等待且不送通知", () => {
     dequeuePendingNotifications();
 
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:780"],
       command: "bash wait-merged-v2.sh",
       deadlineAt: Date.now() + 3_600_000,
@@ -175,6 +177,7 @@ describe("R6 修法 1/2：replace 淘汰旧等待且不送通知", () => {
   test("替换回执写明已替换的旧 id 与描述（模型据此知道旧的那条不再回报）", () => {
     addShellWait("old1", { subjects: ["gh:pr:780"], command: "bash wait-merged.sh" });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:780"],
       command: "bash wait-merged-v2.sh",
       deadlineAt: Date.now() + 3_600_000,
@@ -197,6 +200,7 @@ describe("R6 修法 1：跨类替换（唤醒 〉 shell / monitor）", () => {
 
     addWakeupWait("wake1", { subjects: ["gh:pr:780"], deadlineAt: Date.now() + 600_000 });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:780"],
       command: "bash wait-merged.sh",
       deadlineAt: Date.now() + 3_600_000,

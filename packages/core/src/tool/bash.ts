@@ -1866,7 +1866,15 @@ export class BashTool implements Tool {
     const sidWait = task.parseSidWaitCommand(params.command);
     const effectiveWaitSeconds =
       params.wait_until_seconds ?? (sidWait ? task.DEFAULT_SID_WAIT_DEADLINE_S : undefined);
-    const waitPlan = this.planWaitUntil(params.command, effectiveWaitSeconds, cwd);
+    // R9：toolUseId 一并透传，WaitAdmission 事件据此把准入判定与那次 tool_use 对上号。
+    // R7 的 sid-wait 也走同一条准入判定（它天然产出 `gh:pr:<n>` 对象签名），
+    // 所以这里的透传对两个来源都成立，不需要分支。
+    const waitPlan = this.planWaitUntil(
+      params.command,
+      effectiveWaitSeconds,
+      cwd,
+      params.toolUseId,
+    );
     if (waitPlan?.decision.action === "duplicate") {
       // isError 保持 false：这不是失败，是「已经有东西在盯它了」。
       // 回执里必须带 task_stop 出口，否则模型改了脚本也挂不上新的（R2 §修法 2）。
@@ -1982,6 +1990,7 @@ export class BashTool implements Tool {
     command: string,
     rawSeconds: number | undefined,
     cwd: string,
+    toolUseId?: string,
   ): WaitPlan | null {
     if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return null;
     const task = require("../task/index.ts") as typeof import("../task/index.ts");
@@ -1993,6 +2002,8 @@ export class BashTool implements Tool {
     const normalizedCommand = task.normalizeWaitCommand(command);
     const scriptHash = task.hashScriptBodies(scriptBodies);
     const decision = task.decideWaitAdmission({
+      kind: "shell",
+      ...(toolUseId !== undefined ? { toolUseId } : {}),
       subjects,
       command: normalizedCommand,
       scriptHash,

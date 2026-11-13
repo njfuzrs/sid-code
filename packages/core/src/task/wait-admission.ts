@@ -32,8 +32,14 @@
  * 模型改了脚本也挂不上新的，只能去前台轮询，那就把 R2 的收益又赔回去了。
  */
 
-import type { WaitSource } from "./wait-registry.ts";
-import { isDeclaredExternalWait, listWaits, releaseWait } from "./wait-registry.ts";
+import type { WaitSource, WaitSourceKind } from "./wait-registry.ts";
+import {
+  WAIT_ADMISSION_EVENT_NAME,
+  isDeclaredExternalWait,
+  listWaits,
+  recordWaitTraceEvent,
+  releaseWait,
+} from "./wait-registry.ts";
 import { updateTask } from "./registry.ts";
 import { killShellTask } from "./shell-task.ts";
 import { killMonitorTask } from "./monitor-task.ts";
@@ -47,6 +53,14 @@ export type WaitAdmissionAction = "start" | "duplicate" | "replace";
 export interface WaitAdmissionInput {
   /** 即将登记的任务 id（可能尚未生成；生成后用于排除自身的旧登记） */
   id?: string;
+  /**
+   * 本次等待来自哪个入口。**必填**，因为它同时是 `WaitAdmission` 事件的来源标注：
+   * 让它可选的话，新入口漏传时事件里只会少一个字段（digest 读出来是 unknown），
+   * 而「来源不明的等待」对审计没有价值——R9 修的正是「口径看不见」这类缺陷。
+   */
+  kind: WaitSourceKind;
+  /** 触发本次等待的工具调用 id（把准入判定与那次 tool_use 对上号） */
+  toolUseId?: string;
   /** 等待对象的签名，来自 `extractWaitSubjectsFor` */
   subjects?: string[];
   /** 归一化前的原始命令 / 唤醒 prompt */
@@ -79,16 +93,46 @@ export function findActiveWaitsBySubjects(subjects: string[], now = Date.now()):
 }
 
 /**
- * 判定本次等待该怎么处理。纯函数（除了读等待表），三入口共用。
+ * 判定本次等待该怎么处理。除读等待表外不再有副作用，**唯一的例外是写一条
+ * `WaitAdmission` 轨迹事件**（R9）。
  *
  * `id` 用于排除自身：同一个任务重复登记（例如 monitor 的 adopt 路径会二次登记）不该
  * 把自己当成「已有的同对象等待」而判成 duplicate。
+ *
+ * ## 埋点为什么放在判定函数里，而不是三个入口各埋一次
+ *
+ * 三入口共用这一个判定点是 R2 的核心设计；埋点跟着复用走，新增入口时**不可能漏埋**。
+ * 反过来（各入口各埋一次）漏一个入口不会有任何测试变红——那正是 R9 要修的那类
+ * 观测缺口：判成 duplicate 的调用根本登记不到等待表，轨迹里就什么都不剩。
+ *
+ * `action: "start"` 只代表「准入判定放行」，不代表进程一定 spawn 成功（spawn 失败在
+ * 入口处另有错误回执）。`wait_duplicates_blocked` / `wait_replacements` 数的是判定，
+ * 「实际并存了几个等待」由 `WaitRegistered` / `WaitReleased` 这对事实事件回答——
+ * 两组口径分开，正是为了让「判了但没启动」也能被看见。
  */
 export function decideWaitAdmission(
   input: WaitAdmissionInput,
   now = Date.now(),
 ): WaitAdmissionDecision {
   const subjects = input.subjects ?? [];
+  const decision = decideWaitAdmissionCore(input, subjects, now);
+  recordWaitTraceEvent(WAIT_ADMISSION_EVENT_NAME, {
+    action: decision.action,
+    kind: input.kind,
+    ...(subjects.length > 0 ? { subjects } : {}),
+    ...(decision.existing.length > 0
+      ? { existing_ids: decision.existing.map((src) => src.id) }
+      : {}),
+    ...(input.toolUseId !== undefined ? { tool_use_id: input.toolUseId } : {}),
+  });
+  return decision;
+}
+
+function decideWaitAdmissionCore(
+  input: WaitAdmissionInput,
+  subjects: string[],
+  now: number,
+): WaitAdmissionDecision {
   // R2 修法 4：抽不出对象签名 → 不参与去重，行为与改动前一致
   if (subjects.length === 0) return { action: "start", existing: [] };
 
