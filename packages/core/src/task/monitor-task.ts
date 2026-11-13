@@ -874,12 +874,179 @@ function stopMonitorProcess(taskId: string, reason: "timeout" | "rate_burst" | "
 }
 
 /**
+ * 内置 monitor 任务的取消句柄（无子进程）。
+ *
+ * 与 shell 那边同构：内置等待原语（`sid-wait`）没有子进程，`activeMonitors` 里的
+ * `pid` / `splitter` / 限流阀全都不适用，所以取消与终态文案另存一份。**不塞进
+ * `activeMonitors`**：那里的每个字段都为「读子进程输出」服务，塞个假 ctl 进让
+ * `killMonitorProcessGroup` 去猜 pid 是否存在，比另存一份更容易出错。
+ */
+interface ActiveBuiltinMonitor {
+  cancel: () => void;
+  /** 到期 / 被停时的终态摘要：内置原语的结论比通用 monitor 文案准确 */
+  describeStop: (reason: "timeout" | "kill") => string;
+}
+
+const activeBuiltinMonitors = new Map<string, ActiveBuiltinMonitor>();
+
+/** 内置 monitor 的运行结果：code 映射终态，summary 覆盖通知文案 */
+export interface BuiltinMonitorOutcome {
+  code: number;
+  summary?: string;
+}
+
+/**
+ * 启动内置 monitor 任务：没有子进程，`run()` 在 harness 进程内跑，每行输出直接投递为事件。
+ *
+ * 为什么不复用 `spawnMonitorTask` 的管道读法：那条路径的全部复杂度都在「读一个外部进程的
+ * stdout、限流、批处理、进程组清理」上，内置原语的输出由我们自己产生（每轮最多一两行），
+ * 只借它的任务形态与终态出口，不借它的管道。
+ */
+export function spawnBuiltinMonitorTask(opts: {
+  description: string;
+  command: string;
+  timeoutMs: number;
+  toolUseId?: string;
+  describeStop?: (reason: "timeout" | "kill") => string;
+  run: (ctx: {
+    emit: (line: string) => void;
+    signal: AbortSignal;
+  }) => Promise<BuiltinMonitorOutcome>;
+}): LocalMonitorTaskState {
+  const taskId = generateTaskId("local_monitor");
+  const output = initTaskOutput(taskId);
+  const controller = new AbortController();
+  const deadlineAt = Date.now() + opts.timeoutMs;
+  const description = opts.description.slice(0, 100);
+
+  const taskState: LocalMonitorTaskState = {
+    id: taskId,
+    type: "local_monitor",
+    status: "running",
+    description,
+    toolUseId: opts.toolUseId,
+    startTime: Date.now(),
+    outputFile: output.filePath,
+    outputOffset: 0,
+    notified: false,
+    command: opts.command,
+    deadlineAt,
+    eventCount: 0,
+    outputLines: 0,
+    isBackgrounded: true,
+  };
+  registerTask(taskState);
+
+  let finished = false;
+  const describeStop =
+    opts.describeStop ??
+    ((reason) =>
+      reason === "timeout"
+        ? `监控到期：${description}（${Math.max(1, Math.round(opts.timeoutMs / 60_000))} 分钟内投递 ${
+            (getTask(taskId) as LocalMonitorTaskState | undefined)?.eventCount ?? 0
+          } 条通知）`
+        : `监控已停止：${description}`);
+
+  const deadlineTimer = setTimeout(() => {
+    if (finished) return;
+    finished = true;
+    activeBuiltinMonitors.delete(taskId);
+    controller.abort();
+    finalizeMonitorStop(taskId, "timeout", describeStop("timeout"));
+  }, opts.timeoutMs);
+  deadlineTimer.unref?.();
+
+  const emit = (line: string): void => {
+    try {
+      output?.append(`${line}\n`);
+    } catch {
+      /* 落盘失败不影响事件（与 spawnMonitorTask 同口径） */
+    }
+    // 事件计数与轨迹落点都走同一个出口，不自己再数一遍
+    enqueueMonitorEvent(taskId, line);
+    updateTask<LocalMonitorTaskState>(taskId, (t) =>
+      isTerminalStatus(t.status) ? t : { ...t, outputLines: t.outputLines + 1 },
+    );
+  };
+
+  activeBuiltinMonitors.set(taskId, {
+    cancel: () => controller.abort(),
+    describeStop,
+  });
+
+  void (async () => {
+    try {
+      const outcome = await opts.run({ emit, signal: controller.signal });
+      if (finished) return;
+      finished = true;
+      activeBuiltinMonitors.delete(taskId);
+      finalizeBuiltinMonitorEnd(taskId, outcome.code, outcome.summary ?? describeStop("kill"));
+    } catch (err) {
+      if (finished) return;
+      finished = true;
+      activeBuiltinMonitors.delete(taskId);
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        output?.append(`[内置监控异常] ${message}\n`);
+      } catch {
+        /* 同上 */
+      }
+      finalizeMonitorError(taskId, message);
+    } finally {
+      clearTimeout(deadlineTimer);
+    }
+  })();
+
+  return taskState;
+}
+
+/**
+ * 内置 monitor 跑完的终态。
+ *
+ * 与 `finalizeMonitorExit` 的差别只有文案：内置原语的 exit 1 是「等到了坏消息」，
+ * 不是「监控脚本坏了」，说成「监控异常退出」会让模型去查脚本而不是处理 CI。
+ */
+function finalizeBuiltinMonitorEnd(taskId: string, code: number, summary: string): void {
+  const task = getTask(taskId) as LocalMonitorTaskState | undefined;
+  if (!task || isTerminalStatus(task.status)) return;
+  const ok = code === 0;
+  updateTask<LocalMonitorTaskState>(taskId, (t) =>
+    isTerminalStatus(t.status)
+      ? t
+      : {
+          ...t,
+          status: ok ? "completed" : "failed",
+          exitCode: code,
+          endTime: Date.now(),
+          notified: true,
+        },
+  );
+  enqueueTaskNotification({
+    taskId,
+    toolUseId: task.toolUseId,
+    outputFile: task.outputFile,
+    status: ok ? "completed" : "failed",
+    summary,
+  });
+}
+
+/**
  * 主动停止 monitor（`task_stop` / Ctrl+F / 会话退出）。
  *
  * 与 `killShellTask` 的差异：终态文案要说明「是谁停的」——模型 `task_stop` 之后
  * 还看到「到期」会以为期限到了而重新挂一个同样的 monitor。
  */
 export function killMonitorTask(taskId: string): void {
+  // 内置 monitor 没有子进程，先走这一支：abort 轮询 + 用原语自己的文案写 killed 终态。
+  // 放最前面是因为 activeMonitors 里**永远不会有**内置任务的 id，落到下面的兜底分支
+  // 只会写状态、不会停轮询，等待会在后台继续打 REST。
+  const builtin = activeBuiltinMonitors.get(taskId);
+  if (builtin) {
+    activeBuiltinMonitors.delete(taskId);
+    builtin.cancel();
+    finalizeMonitorKill(taskId);
+    return;
+  }
   const ctl = activeMonitors.get(taskId);
   if (ctl && !ctl.finalized) {
     killMonitorProcessGroup(ctl);
@@ -966,6 +1133,11 @@ function finalizeMonitorError(taskId: string, message: string): void {
 function finalizeMonitorStop(
   taskId: string,
   reason: "timeout" | "rate_burst" | "rate_total",
+  /**
+   * 覆盖终态摘要。内置监控（`sid-wait`）的到期语义是「等够了但条件没满足」，
+   * 通用文案里「请检查过滤条件是否覆盖了失败状态」对它不成立，所以由调用方给一句话。
+   */
+  summaryOverride?: string,
 ): void {
   const task = getTask(taskId) as LocalMonitorTaskState | undefined;
   if (!task || isTerminalStatus(task.status)) return;
@@ -973,7 +1145,8 @@ function finalizeMonitorStop(
   const description = task.description;
   const elapsedMin = Math.max(1, Math.round((Date.now() - task.startTime) / 60_000));
   const summary =
-    reason === "timeout"
+    summaryOverride ??
+    (reason === "timeout"
       ? `监控到期：${description}（${elapsedMin} 分钟内${formatDeliverySummary(task.eventCount, task.outputLines)}）。${
           task.eventCount === 0
             ? "未投递任何通知，请检查过滤条件是否覆盖了失败状态"
@@ -981,7 +1154,7 @@ function finalizeMonitorStop(
         }`
       : reason === "rate_burst"
         ? `监控已停止：事件过密（${BURST_WINDOW_MS / 1000} 秒内超过 ${BURST_LINE_LIMIT} 条），请收窄过滤条件后重启`
-        : `监控已停止：累计事件过多（超过 ${TOTAL_NOTIFY_LIMIT} 条通知），请改用更粗的过滤条件`;
+        : `监控已停止：累计事件过多（超过 ${TOTAL_NOTIFY_LIMIT} 条通知），请改用更粗的过滤条件`);
 
   updateTask<LocalMonitorTaskState>(taskId, (t) =>
     isTerminalStatus(t.status)

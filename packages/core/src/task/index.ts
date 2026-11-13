@@ -160,7 +160,42 @@ export {
   formatReplaceNote,
 } from "./wait-admission.ts";
 
-export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
+export {
+  spawnShellTask,
+  spawnBuiltinShellTask,
+  type BuiltinShellOutcome,
+  adoptRunningProcessAsTask,
+  killShellTask,
+} from "./shell-task.ts";
+
+// 内置等待原语 `sid-wait gh-pr <n>`（R7）：bash / monitor 两个入口共用同一份解析与轮询
+export {
+  type SidWaitGhPrSpec,
+  type SidWaitGhPrOptions,
+  type SidWaitGhPrResult,
+  type SidWaitExitCode,
+  type GhRestClient,
+  type GhPullSnapshot,
+  type GhCheckRun,
+  type GhCheckRunsSnapshot,
+  type GhCliRestClientOptions,
+  SID_WAIT_EXIT,
+  DEFAULT_SID_WAIT_INTERVAL_MS,
+  DEFAULT_SID_WAIT_DEADLINE_S,
+  MIN_SID_WAIT_INTERVAL_S,
+  MAX_SID_WAIT_INTERVAL_S,
+  SID_WAIT_MAX_CONSECUTIVE_FAILURES,
+  SID_WAIT_MAX_BACKOFF_MS,
+  parseSidWaitCommand,
+  isSidWaitCommand,
+  runSidWaitGhPr,
+  formatSidWaitResultSummary,
+  formatManualLoopHint,
+  __resetManualLoopHintForTest,
+  createGhCliRestClient,
+  createSidWaitClient,
+  setSidWaitClientFactoryForTest,
+} from "./sid-wait.ts";
 
 // 等待对象签名（R1）：bash / monitor / schedule_wakeup 三个入口共用同一把尺子。
 export {
@@ -170,6 +205,7 @@ export {
   collectWaitCommandFamilies,
   extractNaturalLanguageSubjects,
   extractScriptPaths,
+  extractSidWaitSubjects,
 } from "./wait-subjects.ts";
 
 // 等待期外部状态查询守卫（P1）：判「在等 + 只读状态查询 + 结果没变」三条同时成立才拦。
@@ -215,6 +251,8 @@ export {
   getMaxMonitorTimeoutMs,
   getDefaultMonitorTimeoutMs,
   spawnMonitorTask,
+  spawnBuiltinMonitorTask,
+  type BuiltinMonitorOutcome,
   killMonitorTask,
   killAllRunningMonitors,
   countRunningMonitors,

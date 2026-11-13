@@ -81,6 +81,22 @@ export function extractNaturalLanguageSubjects(text: string): string[] {
 }
 
 /**
+ * 内置等待原语（`sid-wait gh-pr <n>`）的对象签名（R7）。
+ *
+ * 与自然语言规则的区别：这里的 `<n>` **不是猜出来的**，是原语语法的一部分——模型写
+ * `sid-wait gh-pr 779` 就是在说「等 PR 779」。所以它比 `PR #N` 那三条正则更可靠，
+ * 也不需要脚本展开（原语没有脚本体）。
+ *
+ * 仍然只在「命令类文本」上跑（脚本正文也算命令类）：唤醒的 prompt 里写
+ * 「以后用 sid-wait gh-pr 779」是叙述，不是正在等。
+ */
+export function extractSidWaitSubjects(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/\bsid-wait\s+gh-pr\s+(\d+)\b/g)) out.add(`gh:pr:${m[1]}`);
+  return [...out];
+}
+
+/**
  * 命令类规则：逐候选片段跑 P1 命令表，命中就取它的 `subject`。
  *
  * 为什么不整条命令跑一次 `matchStatusQuery`：真实写法是
@@ -167,6 +183,8 @@ export function collectWaitSubjects(sources: WaitSubjectSources): string[] {
     // 而命令行里的查询（`gh pr view 780`）只有命令表认得。
     for (const s of extractNaturalLanguageSubjects(text)) out.add(s);
     for (const s of commandSubjectsOf(text)) out.add(s);
+    // R7：内置原语的语法本身就是签名，不必走命令表猜
+    for (const s of extractSidWaitSubjects(text)) out.add(s);
   }
   // 唤醒 prompt 只走自然语言：它是人话，跑命令表会把「描述里举例的命令」当成真在查询
   if (sources.prompt) {
