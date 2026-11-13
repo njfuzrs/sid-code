@@ -14,6 +14,7 @@ import {
   deriveContext,
   deriveCost,
   deriveCacheMetrics,
+  deriveTps,
   deriveWorktree,
   deriveRepoName,
   deriveRequests,
@@ -152,11 +153,11 @@ describe("LY1 — deriveCacheMetrics", () => {
     expect(deriveCacheMetrics(undefined)).toBeNull();
   });
 
-  test("有命中率 → `⚡N%`，≥50% 用绿色点睛", () => {
+  test("有命中率 → `↯N%`，≥50% 用绿色点睛", () => {
     const r = deriveCacheMetrics(78);
     expect(r).not.toBeNull();
     expect(r!.rate).toBe(78);
-    expect(r!.text).toBe("⚡78%");
+    expect(r!.text).toBe("↯78%");
     expect(r!.color).toBe(theme.status.success);
   });
 
@@ -168,7 +169,7 @@ describe("LY1 — deriveCacheMetrics", () => {
   test("0% 是合法值（有 prompt 但几乎没命中），与 `无数据` 区分开", () => {
     const r = deriveCacheMetrics(0);
     expect(r).not.toBeNull();
-    expect(r!.text).toBe("⚡0%");
+    expect(r!.text).toBe("↯0%");
   });
 });
 
@@ -209,13 +210,13 @@ describe("P3-3 — deriveRepoName", () => {
 });
 
 describe("requests 列 — deriveRequests（API 调用次数 + 白烧后缀）", () => {
-  test("零调用 → null（会话刚开始不显示 ⟳ 0 噪音）", () => {
+  test("零调用 → null（会话刚开始不显示 ⟳0 噪音）", () => {
     expect(deriveRequests(0, 0)).toBeNull();
   });
 
   test("无白烧 → 只显示次数，不带 ✘ 后缀", () => {
     const r = deriveRequests(12, 0)!;
-    expect(r.text).toBe("⟳ 12");
+    expect(r.text).toBe("⟳12");
     expect(r.text).not.toContain("✘");
     expect(r.requests).toBe(12);
     expect(r.discarded).toBe(0);
@@ -223,7 +224,7 @@ describe("requests 列 — deriveRequests（API 调用次数 + 白烧后缀）",
 
   test("有白烧 → 后缀是 requests 的子集语义（12 次里 3 次白烧，不是 12+3）", () => {
     const r = deriveRequests(12, 3)!;
-    expect(r.text).toBe("⟳ 12 ✘3");
+    expect(r.text).toBe("⟳12 ✘3");
     // 分子 ≤ 分母：这是"子集"而非"另一批调用"的判据
     expect(r.discarded).toBeLessThanOrEqual(r.requests);
   });
@@ -243,15 +244,43 @@ describe("requests 列 — deriveRequests（API 调用次数 + 白烧后缀）",
     expect(deriveRequests(10, 2)!.discardedColor).toBe(theme.ui.comment);
   });
 
-  test("脏快照：白烧数 > 总数时钳到总数，不渲染自相矛盾的 `⟳ 2 ✘5`", () => {
+  test("脏快照：白烧数 > 总数时钳到总数，不渲染自相矛盾的 `⟳2 ✘5`", () => {
     const r = deriveRequests(2, 5)!;
     expect(r.discarded).toBe(2);
-    expect(r.text).toBe("⟳ 2 ✘2");
+    expect(r.text).toBe("⟳2 ✘2");
   });
 
   test("负数白烧按 0 处理（不产出 ✘-1）", () => {
     const r = deriveRequests(5, -1)!;
     expect(r.discarded).toBe(0);
-    expect(r.text).toBe("⟳ 5");
+    expect(r.text).toBe("⟳5");
+  });
+});
+
+describe("tps 列 — deriveTps（会话累计输出吞吐）", () => {
+  test("无样本（undefined）→ null，不渲染该列", () => {
+    expect(deriveTps(undefined)).toBeNull();
+  });
+
+  test("0 / 负数 / NaN → null（0 是「无样本」哨兵，不是「速度为零」）", () => {
+    expect(deriveTps(0)).toBeNull();
+    expect(deriveTps(-3)).toBeNull();
+    expect(deriveTps(Number.NaN)).toBeNull();
+  });
+
+  test("取整 + 最短单位：41.4 → `⇢41/s`，不是 `⇢41.4 tok/s`", () => {
+    const r = deriveTps(41.4)!;
+    expect(r.text).toBe("⇢41/s");
+    expect(r.value).toBe(41);
+    // 单位写成 tok/s 会把行1 撑长 4 列，窄屏上直接换不来一个其他段
+    expect(r.text).not.toContain("tok/s");
+  });
+
+  test("≥ 0.5 进位：41.6 → `⇢42/s`（四舍五入，不是截断）", () => {
+    expect(deriveTps(41.6)!.text).toBe("⇢42/s");
+  });
+
+  test("字形与数值之间无空格", () => {
+    expect(deriveTps(41)!.text.startsWith("⇢41")).toBe(true);
   });
 });

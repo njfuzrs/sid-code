@@ -95,22 +95,22 @@ function renderFrame(
 }
 
 describe("Footer requests 列 — 整帧渲染", () => {
-  test("有调用次数 → 行1 出现 `⟳ 12`", () => {
+  test("有调用次数 → 行1 出现 `⟳12`（icon 与数值之间无空格）", () => {
     const row1 = renderRow1({ totalRequests: 12 });
-    expect(row1).toContain("⟳ 12");
+    expect(row1).toContain("⟳12");
     // 与邻居同处一行（确认插进了行1 的计量流，没有自己另起一行）
     expect(row1).toContain("test-model");
   });
 
-  test("有白烧 → 行1 出现 `⟳ 12 ✘3`（子集语义，不是 15）", () => {
+  test("有白烧 → 行1 出现 `⟳12 ✘3`（子集语义，不是 15）", () => {
     const row1 = renderRow1({ totalRequests: 12, discardedRequests: 3 });
-    expect(row1).toContain("⟳ 12 ✘3");
+    expect(row1).toContain("⟳12 ✘3");
     expect(row1).not.toContain("15");
   });
 
   test("无白烧 → 不出现 ✘ 后缀（零值不渲染噪音）", () => {
     const row1 = renderRow1({ totalRequests: 12, discardedRequests: 0 });
-    expect(row1).toContain("⟳ 12");
+    expect(row1).toContain("⟳12");
     expect(row1).not.toContain("✘");
   });
 
@@ -144,6 +144,6 @@ describe("Footer requests 列 — 整帧渲染", () => {
   test("窄终端下 requests 比 model 先被丢（固定段永不丢）", () => {
     const frame = renderFrame({ totalRequests: 12 }, 30);
     expect(frame).toContain("test-model");
-    expect(frame).not.toContain("⟳ 12");
+    expect(frame).not.toContain("⟳12");
   });
 });

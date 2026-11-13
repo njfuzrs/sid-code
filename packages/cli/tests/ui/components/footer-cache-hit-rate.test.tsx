@@ -1,5 +1,5 @@
 /**
- * Footer ⚡ 命中率列整帧渲染测试（D18）
+ * Footer ↯ 命中率列整帧渲染测试（D18）
  *
  * 为什么必须整帧而不是只测 `deriveCacheMetrics` 纯函数：本次修的是**取数源**——
  * 命中率必须来自 core 的 `SessionState.getCacheHitRate()`（按每个模型自己的 provider
@@ -91,11 +91,11 @@ function renderRow1(
   );
 }
 
-describe("Footer ⚡ 命中率列 — 整帧渲染（D18）", () => {
+describe("Footer ↯ 命中率列 — 整帧渲染（D18）", () => {
   test("显示的是 props.cacheHitRate，不是拿 usage + 当前模型重算", () => {
     const row1 = renderRow1({ cacheHitRate: 78 });
 
-    expect(row1).toContain("⚡78%");
+    expect(row1).toContain("↯78%");
     // 旧算法（合计 usage + 当前模型 gpt-4o → openai）会算出 141%：
     // promptTotal=11000、命中 15500，命中率反而超过 100%。它必须完全没出现。
     expect(row1).not.toContain("141");
@@ -103,16 +103,16 @@ describe("Footer ⚡ 命中率列 — 整帧渲染（D18）", () => {
     expect(row1).toContain("gpt-4o");
   });
 
-  test("cacheHitRate 省略 → 整帧无 ⚡（无缓存数据不渲染 0% 噪音）", () => {
+  test("cacheHitRate 省略 → 整帧无 ↯（无缓存数据不渲染 0% 噪音）", () => {
     const frame = renderFooter({});
-    expect(frame).not.toContain("⚡");
+    expect(frame).not.toContain("↯");
     // 状态栏本身照常渲染（不是整个组件崩了）
     expect(frame).toContain("gpt-4o");
   });
 
-  test("cacheHitRate=0 → 如实显示 ⚡0%（有 prompt 但零命中，与「无数据」不同）", () => {
+  test("cacheHitRate=0 → 如实显示 ↯0%（有 prompt 但零命中，与「无数据」不同）", () => {
     const row1 = renderRow1({ cacheHitRate: 0 });
-    expect(row1).toContain("⚡0%");
+    expect(row1).toContain("↯0%");
   });
 
   test("不折行：宽终端下行1 不超出终端宽度", () => {
@@ -121,7 +121,7 @@ describe("Footer ⚡ 命中率列 — 整帧渲染（D18）", () => {
     expect(row1.length).toBeLessThanOrEqual(columns);
   });
 
-  test("窄终端：⚡ 段按 dropOrder 被丢弃而不是把行撑爆", () => {
+  test("窄终端：↯ 段按 dropOrder 被丢弃而不是把行撑爆", () => {
     const columns = 40;
     const frame = renderFooter({ cacheHitRate: 78 }, columns);
     for (const line of frame.split("\n")) {
