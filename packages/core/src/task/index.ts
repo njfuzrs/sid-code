@@ -122,6 +122,10 @@ export {
   releaseAllWaits,
   listWaits,
   hasPromisedWait,
+  // R5：等待态判定要的是「显式声明等外部状态」这窄一类（monitor / 唤醒 / wait_until 期限），
+  // 派生任务不算 —— 与 P1 拦截同一把尺子，见 wait-registry.ts 的 isDeclaredExternalWait 注释。
+  isDeclaredExternalWait,
+  hasDeclaredExternalWait,
   findWaitBySubject,
   isWaitInvalidated,
   invalidateWakeups,

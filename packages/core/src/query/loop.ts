@@ -161,6 +161,8 @@ import {
   TODO_GATE_BUDGET_KEY,
   type TodoGateBudget,
 } from "./todo-reminder.ts";
+// R5：纯等待态判定（清单剩的每一项都已有显式等待在盯，且没有新的副作用进展）。
+import { isWaitingOnlyState } from "./wait-only-state.ts";
 import {
   resolveStallSwitches,
   createStallState,
@@ -222,8 +224,15 @@ import {
   recordFileChange,
   recordScalarObservation,
   hasRealProgress,
+  // R5：副作用进展的单调计数。等待态判定要的是「上次 todo_write 之后的增量」，
+  // 与 `hasRealProgress` 的会话级累积不是同一个问题（见 wait-only-state.ts 注释）。
+  progressRevision,
+  PROGRESS_REVISION_AT_TODO_WRITE_KEY,
 } from "./measured-progress.ts";
 import {
+  // R5：只需「显式外部等待」这一窄类——派生任务承诺的是「自己结束会回报」，
+  // 不构成「清单在等外部状态」的证据。
+  isDeclaredExternalWait,
   dequeuePendingNotifications,
   evictTerminalTasks,
   hasPendingNotifications,
@@ -236,6 +245,7 @@ import {
   // 下一次新起等待的回执据此写出可核对的事实。
   recordDeliveredTaskNotification,
   type WaitNotice,
+  type WaitSource,
   beginMainLoopTurn,
   endMainLoopTurn,
   markMainTurnCompleted,
@@ -852,6 +862,14 @@ function emitNagInjectedEvent(
     cap?: number;
     countedAsNoProgress?: boolean;
     afterCompact?: boolean;
+    /**
+     * R5：这条事件是「被等待态压掉」的记录，而不是一次真实注入。
+     *
+     * 为什么不注入也落：不落的话「这条修法压掉了几次催促」只能靠离线重放猜
+     * （与 afterCompact 同类教训——只有 log.info 不落盘时行为在现网完全不可见）。
+     * 消费侧（trace digest）必须按它排除，否则「回注次数」口径会被这些事件抬高。
+     */
+    suppressed_by_wait?: boolean;
     // ─── todo 通道字段 ───
     // 记两个扫描出来的"距今多少轮"，供事后核对阈值是否过紧/过松。
     //
@@ -2207,11 +2225,48 @@ async function* queryLoopBody(
           }
         }
         if (todoState && todoState.todos.length > 0 && countUnfinished(todoState.todos) > 0) {
+          // ─── R5：纯等待态判定（清单剩的每一项都已有显式等待在盯，且没有新副作用进展）───
+          //
+          // 缺陷：模型已经挂上 CI 等待、清单只剩「等 CI 结果」时，两条催促通道仍按
+          // 「有未完成项」判，每 8 轮催一次「请继续推进」——而它此刻唯一能做的是等。
+          // 结果要么去重复查询状态（P1 守卫要拦的同一件事），要么把项标成 blocked 让催停。
+          //
+          // 只在「本轮没更新清单」时判定：清单刚被更新过时催促本来就跳过，判了也没人消费。
+          // 判定口径见 wait-only-state.ts 头部注释（三条同时成立 + 一条让路条件）。
+          const measuredForNag = getMeasuredProgress(sessionState);
+          const progressRevNow = progressRevision(measuredForNag);
+          const progressRevAtTodoWrite =
+            (sessionState.get(PROGRESS_REVISION_AT_TODO_WRITE_KEY) as number | undefined) ??
+            progressRevNow;
+          // 本轮更新过清单就没人消费这两份数据，连 listWaits 的 sweep 都省掉。
+          const declaredWaits: WaitSource[] = todoAdvanced
+            ? []
+            : listWaits().filter(isDeclaredExternalWait);
+          const waitingOnly =
+            !todoAdvanced &&
+            isWaitingOnlyState({
+              unfinished: countUnfinished(todoState.todos),
+              declaredWaitCount: declaredWaits.length,
+              progressedSinceTodoWrite: progressRevNow !== progressRevAtTodoWrite,
+            });
+          /**
+           * 本轮是否已经注入过「正在等待」说明。两条通道 + afterCompact 文案共用，
+           * 保证「同一轮只注入一次」（R5 验收 3）——同一段话重复出现正是
+           * `reminder-throttle.ts` 顶部记录的「弱模型误判成幻影用户消息」的成因。
+           */
+          let waitNoticeInjected = false;
           // writeVersion 变化 → 模型刚更新过清单，刷新 gate 预算、本轮不重复回注。
           //
           // 注意这里**不再**刷新回注 cadence：cadence 的基准已改为"距上次 todo_write 多少轮"，
           // 由 getTodoReminderTurnCounts 从消息历史现算（下方），不需要也不该在这里手工记基线。
           if (todoAdvanced) {
+            // R5：记下「这次 todo_write 时的副作用进展计数」。等待态判定问的是
+            // 「**上一次 todo_write 之后**有没有新进展」，基线必须是写入那一刻的快照。
+            // 只在 todoAdvanced 分支更新：没写清单的轮次里，revision 的增长正是判据本身。
+            sessionState.set(
+              PROGRESS_REVISION_AT_TODO_WRITE_KEY,
+              progressRevision(getMeasuredProgress(sessionState)),
+            );
             // nag 计数与 end_turn gate 预算**同一判据**：completed 创新高（或换清单）才算推进。
             // 旧实现在 writeVersion 变化时就清零——只改措辞、或 1→0→1 的返工振荡都会让
             // work-log 封顶永不生效（会话 20261020-110542-ce7ea52e 发现 2b）。
@@ -2296,7 +2351,6 @@ async function* queryLoopBody(
             //
             // afterCompact 旁路**不受封顶管辖**：压缩把清单从上下文里抹掉后若不强制重注，
             // 清单会在模型视野里永久消失——那是信息丢失，不是催促噪音，两者不能共用预算。
-            const measuredForNag = getMeasuredProgress(sessionState);
             const bookkeepingNagCount =
               (sessionState.get(TODO_BOOKKEEPING_NAG_COUNT_KEY) as number | undefined) ?? 0;
             const todoNagDecision = decideTodoNagInjection({
@@ -2304,17 +2358,52 @@ async function* queryLoopBody(
               bookkeepingNagCount,
             });
             // T3：SID_DISABLE_TODO_NAG=1 只关节流催更；afterCompact 是信息丢失兜底，不受开关管辖
-            if (
+            if (waitingOnly && !afterCompact) {
+              // ─── R5：纯等待态下 todo 通道让位 ───
+              //
+              // 不再注入「仍有 N 项未完成，请继续推进」。此刻这几项之所以没完成，是因为外部
+              // 状态还没变；催它推进只会换来一轮状态空查（P1 守卫要拦的同一件事），或者被
+              // 它把项标成 blocked 来让催停——T2 已经点破过「闸门在逼它对清单撒谎」。
+              //
+              // 让位不是静音：改注入一次现有的等待态说明（等待源清单 + 最晚回报时刻），
+              // 让模型知道 harness 清楚它在等、不用原地查询。注入仍受 todo 通道原有节流管辖
+              // （`throttleSaysYes`）——等待说明逐字节不变，每轮注入就退化成「幻影用户消息」。
+              if (throttleSaysYes && !waitNoticeInjected) {
+                reminderParts.push(
+                  buildTodoWaitSourcesMessage(countUnfinished(todoState.todos), declaredWaits),
+                );
+                waitNoticeInjected = true;
+                sessionState.set(LAST_TODO_REMINDER_TURN_KEY, sessionState.getAbsoluteTurn());
+                log.info(
+                  "QUERY_LOOP",
+                  `R5：纯等待态，todo 催促让位（${countUnfinished(todoState.todos)} 项未完成，` +
+                    `${declaredWaits.length} 个显式等待在盯）`,
+                );
+              }
+              // 落一条「被压掉」的埋点：不注入也要可数，否则「这条修法到底压掉了几次」
+              // 只能靠离线重放猜（与 emitNagInjectedEvent 顶部记录的教训同源）。
+              emitNagInjectedEvent(deps, sessionState.sessionId, {
+                kind: "todo",
+                ...turnMetrics(state, sessionState, promptSeq),
+                suppressed_by_wait: true,
+              });
+            } else if (
               (throttleSaysYes && todoNagDecision.inject && !isTodoNagDisabled()) ||
               afterCompact
             ) {
+              // R5：`afterCompact` 旁路保留（压缩把清单从上下文里抹掉了，不重注模型就永久
+              // 看不到），但文案在等待态下让「请继续推进」让位——它此刻唯一能做的是等。见下方
+              // `buildTodoReminder` 的 `waitingSources` 选项。
               reminderParts.push(
                 buildTodoReminder(todoState.todos, {
                   // C4：文案带「距上次更新清单多少轮」，让重复提醒不再是无信息量的重复
                   // （模块注释里「给文案加轮次等自然变化量」的建议即指此处）。
                   turnsSinceLastWrite: counts.assistantMsgsSinceTodoWrite,
+                  waitingSources: waitingOnly ? declaredWaits : undefined,
                 }),
               );
+              // 文案里已含等待源清单，本轮不再单独注入一条（R5 验收 3：同一轮只一次）。
+              if (waitingOnly) waitNoticeInjected = true;
               if (todoNagDecision.countedAsNoProgress) {
                 sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, bookkeepingNagCount + 1);
               }
@@ -2408,7 +2497,22 @@ async function* queryLoopBody(
               lastInjectedText: state.lastInjectedProgressReminderText,
               noProgressNagCount: state.progressNagCount ?? 0,
             });
-            if (decision.inject && progressReminder && !isTodoNagDisabled()) {
+            // ─── R5：纯等待态下 work-log 通道同样让位 ───
+            //
+            // 这条通道与 todo 通道文案高度重叠（都由同一份清单派生），等待期间两边一起催
+            // 就是「同一份清单被复述两遍」。等待说明已由 todo 通道（或 afterCompact 文案）
+            // 在本轮给出过一次，这里不再重复——`waitNoticeInjected` 就是为此存在的。
+            //
+            // 仍落一条 suppressed 埋点：压掉也要可数（否则「这条修法到底压掉了几次」
+            // 只能靠离线重放猜）。cadence 照常推进，避免每轮重算。
+            if (waitingOnly) {
+              state.lastProgressReminderTurn = state.turnCount;
+              emitNagInjectedEvent(deps, sessionState.sessionId, {
+                kind: "work-log",
+                ...turnMetrics(state, sessionState, promptSeq),
+                suppressed_by_wait: true,
+              });
+            } else if (decision.inject && progressReminder && !isTodoNagDisabled()) {
               reminderParts.push(progressReminder);
               state.lastProgressReminderTurn = state.turnCount;
               state.lastInjectedProgressReminderText = progressReminder;
