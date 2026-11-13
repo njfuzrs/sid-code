@@ -24,6 +24,8 @@ import {
   getFilenameFromInput,
   extractTaskOutputDisplay,
   extractTaskListDisplay,
+  isShellTool,
+  countEffectiveLines,
 } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
@@ -569,13 +571,6 @@ export function messagesToHistoryItemsWithMap(
 }
 
 /**
- * 正文的**有效行数**（去掉首尾空行后按换行切分）。
- *
- * 只服务于 compact 档的空/单行降级：工具输出常带尾部换行，`"未找到匹配的内容\n"` 用朴素
- * `split("\n")` 会算成 2 行，降级就不发生了——折叠态标题行显示「2 行输出」，用户还得按
- * `ctrl+o` 才能看到那一句结论。用 trim 后再切，`""` 得 0、`"a\n"` 得 1，符合直觉。
- */
-/**
  * compact 档「不值得折叠」的行数上限：≤ 这个行数就降级回原样展示。
  *
  * 取 5 的依据：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条这类结果
@@ -585,10 +580,20 @@ export function messagesToHistoryItemsWithMap(
  */
 const COMPACT_MAX_INLINE_LINES = 5;
 
-function countEffectiveLines(text: string): number {
-  const trimmed = text.trim();
-  return trimmed === "" ? 0 : trimmed.split("\n").length;
-}
+/**
+ * shell 类工具的同一阈值 —— **故意比 5 小得多，取 1**。
+ *
+ * 5 行这条判据默认「不折叠只多占正文那几行」，这对 read / grep / glob 成立（它们的卡片
+ * 只有 header + 正文）。bash 不成立：不折叠时除了正文，还要多出一整块命令行区
+ * （`$ 命令` + 超 160 字符时的「… N 字符已折叠」提示），实测 3~4 行输出的 bash 卡片
+ * 不折叠要占 5~6 行，而 86 行的输出折叠后只占 1 行 —— **输出少的反而比输出多的更占屏**，
+ * 观感完全反了。所以 shell 类只在「一句话结论」（`git status` 干净、`grep` 无匹配）时
+ * 才不折，2 行起一律折叠。
+ *
+ * 判据不按「卡片总高度」算是因为数据层拿不到 terminalWidth（命令行区的提示行数取决于
+ * 命令长度与终端宽度，都是渲染期才知道的），用正文行数近似是这里唯一可行的口径。
+ */
+const COMPACT_MAX_INLINE_LINES_SHELL = 1;
 
 /**
  * 把一个 tool_result 块 + 它对应的 pending tool_use 合并成**完成态**工具卡片。
@@ -629,16 +634,23 @@ export function buildCompletedToolCall(
   // 故按正文行数降级回原样展示（等价于工具没声明档位）。判据用**有效行数**（去掉首尾空行后
   // 按换行切分）：工具输出常带尾部换行，用 content.length 或 split 直接取长度都会算多一行。
   //
-  // 阈值是 5 行而不是 1 行：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline`
-  // 5 条——这类结果**一眼看完且几乎不占地方**，折起来反而逼用户去按 ctrl+o，而 ctrl+o 是
-  // 全局档位，一按会把屏幕上所有 compact 卡片一起展开。折叠只在「真的会淹没消息流」时
-  // 才有收益，5 行大致是「一眼看完」与「需要滚动」的分界。
+  // 阈值**按工具类型分两档**，不是一个数通吃（PR #808 合入后实测发现的不统一）：
+  //   - 默认 5 行：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条——
+  //     这类结果一眼看完且几乎不占地方，折起来反而逼用户去按 ctrl+o，而 ctrl+o 是全局档位，
+  //     一按会把屏幕上所有 compact 卡片一起展开。折叠只在「真的会淹没消息流」时才有收益，
+  //     5 行大致是「一眼看完」与「需要滚动」的分界。
+  //   - shell 类 1 行：bash 不折叠的代价不止正文，还要多出命令行区（`$ 命令` + 截断提示），
+  //     3~4 行的输出不折要占 5~6 行、86 行的输出折起来只占 1 行——输出少的反而更占屏。
+  //     详见 COMPACT_MAX_INLINE_LINES_SHELL 的注释。
   //
   // 降级发生在数据层而非渲染层，是为了让 `displayMode` 这一字段的含义保持单一：
   // 「带 compact 的卡片 = 默认折叠有收益」，渲染层不需要再重复判一次行数。
   const rawDisplayMode = isError ? undefined : block.resultDisplayMode;
+  const maxInlineLines = isShellTool(toolName)
+    ? COMPACT_MAX_INLINE_LINES_SHELL
+    : COMPACT_MAX_INLINE_LINES;
   const displayMode =
-    rawDisplayMode === "compact" && countEffectiveLines(block.content) <= COMPACT_MAX_INLINE_LINES
+    rawDisplayMode === "compact" && countEffectiveLines(block.content) <= maxInlineLines
       ? undefined
       : rawDisplayMode;
   const suppressBody = displayMode === "summary" || displayMode === "hidden";

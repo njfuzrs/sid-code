@@ -20,6 +20,7 @@ import { BULLET, ARROW_TRAILING } from "../../constants/figures.ts";
 import { formatDuration } from "../../utils/format-duration.ts";
 import { fitPathToWidth, fitTextToWidth } from "../../utils/path-display.ts";
 import { stringWidth } from "../../render-port/text.ts";
+import { isShellTool } from "../../ui-utils.ts";
 
 export const STATUS_INDICATOR_WIDTH = 2;
 
@@ -205,11 +206,13 @@ export const McpProgressIndicator: React.FC<{
   );
 };
 
-/** 判断是否为 Shell/Bash 工具 */
-export function isShellTool(name: string): boolean {
-  const lower = name.toLowerCase();
-  return lower === "bash" || lower === "shell" || lower === "execute_command";
-}
+/**
+ * 判断是否为 Shell/Bash 工具
+ *
+ * 实现已下沉到 `ui-utils.ts`（纯 TS）：数据层 `history-adapter.ts` 也要用这个判据给
+ * compact 降级选阈值，而那边不能 import React 组件。这里保留同名导出，既有引用点不变。
+ */
+export { isShellTool };
 
 /**
  * 判断工具的 header description 是否是**文件路径**。

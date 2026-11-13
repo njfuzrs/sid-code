@@ -426,6 +426,57 @@ describe("行为回归：compact 档保留正文 / 少量行降级", () => {
     expect(card.resultDisplay?.content).toBe(sixLines);
   });
 
+  test("shell 类工具用更严的阈值：2 行起就折叠", () => {
+    // PR #808 合入后实测到的不统一：正文 4 / 3 行的 bash 因 ≤5 行降级而不折叠，占 5~6 行；
+    // 正文 86 行的 bash 折成 1 行。输出少的反而比输出多的更占屏 —— 因为 bash 不折叠还要
+    // 多出命令行区（`$ 命令` + 截断提示）。故 shell 类只在正文 ≤1 行时降级。
+    for (const lineCount of [2, 3, 4, 5]) {
+      const body = Array.from({ length: lineCount }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
+      const card = buildCompletedToolCall(resultBlock("c8", body, { mode: "compact" }), "bash");
+      expect(card.resultDisplay?.displayMode, `${lineCount} 行的 bash 该折叠`).toBe("compact");
+      expect(card.resultDisplay?.content).toBe(body);
+    }
+  });
+
+  test("shell 类工具：一句话结论仍不折叠（1 行）", () => {
+    // `git status` 干净、`grep` 无匹配就是一行结论：折成「1 行输出」比正文还长，
+    // 且逼用户按 ctrl+o 才看得到那句话。shell 的阈值是 1 而不是 0，就是为这类结果留的。
+    for (const body of [
+      "未找到匹配的内容",
+      "nothing to commit, working tree clean\n",
+      "  单行  \n",
+    ]) {
+      const card = buildCompletedToolCall(resultBlock("c9", body, { mode: "compact" }), "bash");
+      expect(card.resultDisplay?.displayMode, `正文 "${body.trim()}" 不该折叠`).toBeUndefined();
+      expect(card.resultDisplay?.content).toBe(body);
+    }
+  });
+
+  test("非 shell 工具不受 shell 阈值影响（grep 5 行仍降级）", () => {
+    // 反向锁：阈值分流按工具类型判，不能把 5 行宽松档一并收紧——read/grep/glob 的卡片
+    // 没有命令行区，5 行不折叠只多占正文，与 bash 的成本结构完全不同。
+    const fiveLines = Array.from({ length: 5 }, (_, i) => `src/x${i}.ts`).join("\n");
+    const card = buildCompletedToolCall(resultBlock("c10", fiveLines, { mode: "compact" }), "grep");
+    expect(card.resultDisplay?.displayMode).toBeUndefined();
+    const bashCard = buildCompletedToolCall(
+      resultBlock("c11", fiveLines, { mode: "compact" }),
+      "bash",
+    );
+    expect(bashCard.resultDisplay?.displayMode).toBe("compact");
+  });
+
+  test("行数口径：尾部换行不该多算一行（否则 5 行被判成 6 行而误折）", () => {
+    // countEffectiveLines 是 `⎿` 文案与降级判据的共同口径。若降级判据退回朴素 split，
+    // 一条 5 行且带尾部换行的 grep 结果会被算成 6 行、越过阈值被折叠。
+    const fiveWithTrailingNewline =
+      Array.from({ length: 5 }, (_, i) => `src/x${i}.ts`).join("\n") + "\n";
+    const card = buildCompletedToolCall(
+      resultBlock("c12", fiveWithTrailingNewline, { mode: "compact" }),
+      "grep",
+    );
+    expect(card.resultDisplay?.displayMode).toBeUndefined();
+  });
+
   test("硬约束②：错误结果即使带 compact 也照常展示、不折叠", () => {
     const card = buildCompletedToolCall(
       resultBlock("c6", "fatal: not a git repository\nline2", { isError: true, mode: "compact" }),
