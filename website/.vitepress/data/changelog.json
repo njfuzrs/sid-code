@@ -27,7 +27,7 @@
       "date": "2026-11-13",
       "highlight": "工具结果默认折成一行只显示规模，按 ctrl+o 展开完整内容",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
