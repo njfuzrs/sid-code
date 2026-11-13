@@ -9826,6 +9826,9 @@ export class App {
       costUSD: this.sessionState.getEffectiveTotalCostUSD(),
       costFxConverted: this.sessionState.isCostFxConverted(),
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+      // 吞吐与费用同一时刻重读：该轮若刚 stream_completed，这里拿到含本轮样本的最新均值；
+      // trace 关闭时为 undefined（Footer 隐藏该列，不显示误导的 0）。
+      outputTps: this.traceCollector?.getOutputTps(),
       // D18：首帧就要给命中率（resume 进来的会话 modelUsage 已有值），
       // 之后由 subscribeCostToBridge 在每次入账时续推。
       cacheHitRate: this.sessionState.getCacheHitRate(),
@@ -9927,7 +9930,9 @@ export class App {
     // Footer 停在 $0.0856、真实 $0.1501（少报 43%），且用户不再输入就永不更新。
     // 接线细节（为什么不推 stockInputTokens、为什么用 updateStreaming）见 cost-bridge.ts。
     const { subscribeCostToBridge } = await import("./ui/cost-bridge.ts");
-    const unsubscribeCostPush = subscribeCostToBridge(this.sessionState, bridge);
+    const unsubscribeCostPush = subscribeCostToBridge(this.sessionState, bridge, () =>
+      this.traceCollector?.getOutputTps(),
+    );
 
     // ── P1-2：补全列表随注册表变更自动刷新 ──
     //
@@ -11231,6 +11236,9 @@ export class App {
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 costFxConverted: this.sessionState.isCostFxConverted(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+                // 吞吐与费用同一时刻重读：该轮若刚 stream_completed，这里拿到含本轮样本的最新均值；
+                // trace 关闭时为 undefined（Footer 隐藏该列，不显示误导的 0）。
+                outputTps: this.traceCollector?.getOutputTps(),
                 totalRequests: this.sessionState.getTotalRequests(),
                 discardedRequests: this.sessionState.getDiscardedRequests(),
                 ...this.contextDisplayState(),
@@ -11454,6 +11462,9 @@ export class App {
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 costFxConverted: this.sessionState.isCostFxConverted(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+                // 吞吐与费用同一时刻重读：该轮若刚 stream_completed，这里拿到含本轮样本的最新均值；
+                // trace 关闭时为 undefined（Footer 隐藏该列，不显示误导的 0）。
+                outputTps: this.traceCollector?.getOutputTps(),
                 totalRequests: this.sessionState.getTotalRequests(),
                 discardedRequests: this.sessionState.getDiscardedRequests(),
                 ...this.contextDisplayState(),
@@ -11591,6 +11602,9 @@ export class App {
           costUSD: this.sessionState.getEffectiveTotalCostUSD(),
           costFxConverted: this.sessionState.isCostFxConverted(),
           cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+          // 吞吐与费用同一时刻重读：该轮若刚 stream_completed，这里拿到含本轮样本的最新均值；
+          // trace 关闭时为 undefined（Footer 隐藏该列，不显示误导的 0）。
+          outputTps: this.traceCollector?.getOutputTps(),
           totalRequests: this.sessionState.getTotalRequests(),
           discardedRequests: this.sessionState.getDiscardedRequests(),
           ...this.contextDisplayState(),
@@ -11944,6 +11958,9 @@ export class App {
             costUSD: this.sessionState.getEffectiveTotalCostUSD(),
             costFxConverted: this.sessionState.isCostFxConverted(),
             cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+            // 吞吐与费用同一时刻重读：该轮若刚 stream_completed，这里拿到含本轮样本的最新均值；
+            // trace 关闭时为 undefined（Footer 隐藏该列，不显示误导的 0）。
+            outputTps: this.traceCollector?.getOutputTps(),
             totalRequests: this.sessionState.getTotalRequests(),
             discardedRequests: this.sessionState.getDiscardedRequests(),
             ...this.contextDisplayState(),

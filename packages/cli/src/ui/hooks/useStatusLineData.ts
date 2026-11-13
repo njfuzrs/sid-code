@@ -32,6 +32,8 @@ import {
   PAUSED_MARK,
   RETRY_MARK,
   ERROR_MARK,
+  CACHE_MARK,
+  TPS_MARK,
 } from "../constants/figures.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级。导出供测试与 Footer 复用。 */
@@ -215,7 +217,11 @@ export function deriveCost(
  * 是两个数。现在入参是 core 算好的那个整数（与 /cost 同一口径），UI 只负责呈现。
  *
  * `undefined` = 尚无缓存命中 → 返回 null（不显示，避免对无缓存模型显示 0% 误导）；
- * `0` 是合法值（有 prompt 但基本没命中），如实显示 `⚡0%`。
+ * `0` 是合法值（有 prompt 但基本没命中），如实显示 `↯0%`。
+ *
+ * 字形从 `figures.ts` 取 `CACHE_MARK`（↯，宽度 1）。此前这里硬编码 `⚡`（U+26A1），
+ * 那是 emoji-width 字形：string-width 实测 2 列、字形右侧自带留白，`⚡71%` 在终端里
+ * 看着像多打了个空格（L1.1 也禁止硬编码字形）。
  */
 export function deriveCacheMetrics(
   cacheHitRate?: number,
@@ -223,26 +229,33 @@ export function deriveCacheMetrics(
   if (cacheHitRate === undefined) return null;
   return {
     rate: cacheHitRate,
-    text: `⚡${cacheHitRate}%`,
+    text: `${CACHE_MARK}${cacheHitRate}%`,
     color: cacheHitRate >= 50 ? theme.status.success : theme.ui.comment,
   };
 }
 
 /**
- * 10.3：缓存节省金额展示派生。
- * 展示本次会话累计因缓存命中而节省的美元金额，比单纯命中率更直观有说服力。
- * 返回 null 表示节省为 0 或无数据（不显示）。
+ * 输出吞吐派生（tps 列）：`⇢41/s` = 「本会话平均每秒生成 41 个输出 token」。
+ *
+ * ## 为什么是会话累计 tok/s，而不是 TTFT / 端到端
+ *
+ * 三个候选里只有它同时满足状态栏的三条硬约束：
+ * - **零新埋点**：分子分母就是 `/perf` 那条「生成速度」用的同一组字段
+ *   （`total_tokens_received ÷ total_gen_elapsed_ms`，见 `trace/builder.ts` 的
+ *   `deriveOutputTps`），core 里已经在逐流累加，这里只是换个出口读数。
+ * - **不抖动**：累计平均，读数随轮次渐变；TTFT 单轮受缓存命中影响能差数倍，
+ *   挂在常驻状态栏上会一直跳。
+ * - **天然低频**：累计值每轮流结束才变一次，远低于流式 32ms 合帧的刷新频率。
+ *
+ * 它是「长输出还要等多久」的直接决定量——比「省了多少钱」更贴近用户此刻的决策。
+ *
+ * 入参 `undefined` = 还没有纯生成耗时样本（首轮流结束前 / 轨迹采集关闭）→ 返回 null，
+ * 不渲染该列；`0` 同样是「无样本」的哨兵（分母为 0 时上游不给值，这里兜一次防御）。
  */
-export function deriveCacheSavings(cacheSavingsUSD: number): { text: string; color: Color } | null {
-  if (cacheSavingsUSD <= 0) return null;
-  // 格式化：< $0.01 不显示（避免精度误导），>= $1 只保留 2 位小数
-  if (cacheSavingsUSD < 0.01) return null;
-  const formatted =
-    cacheSavingsUSD >= 1 ? `$${cacheSavingsUSD.toFixed(2)}` : `$${cacheSavingsUSD.toFixed(3)}`;
-  return {
-    text: `${formatted} saved`,
-    color: theme.status.success,
-  };
+export function deriveTps(outputTps?: number): { text: string; value: number } | null {
+  if (outputTps === undefined || !Number.isFinite(outputTps) || outputTps <= 0) return null;
+  // 取整：`⇢41/s` 比 `⇢41.3/s` 短 2 列且读数更稳（行1 空间紧张，见 Footer 的 dropOrder）。
+  return { text: `${TPS_MARK}${Math.round(outputTps)}/s`, value: Math.round(outputTps) };
 }
 
 /**
@@ -296,8 +309,8 @@ export function deriveRequests(
   return {
     text:
       discarded > 0
-        ? `${RETRY_MARK} ${totalRequests} ${ERROR_MARK}${discarded}`
-        : `${RETRY_MARK} ${totalRequests}`,
+        ? `${RETRY_MARK}${totalRequests} ${ERROR_MARK}${discarded}`
+        : `${RETRY_MARK}${totalRequests}`,
     requests: totalRequests,
     discarded,
     discardedColor: wastedRatio > 0.2 ? theme.status.warning : theme.ui.comment,
@@ -411,8 +424,8 @@ export interface StatusLineData {
   /** token 计量（null = 会话尚无输入/输出，隐藏该列，避免 ↑0 ↓0 噪音） */
   tokens: { text: string } | null;
   cache: { rate: number; text: string; color: Color } | null;
-  /** 10.3：缓存节省金额（null = 节省为 0 或不足阈值，不渲染该列） */
-  cacheSavings: { text: string; color: Color } | null;
+  /** 会话输出吞吐（null = 尚无纯生成耗时样本，不渲染该列）。见 `deriveTps`。 */
+  tps: { text: string; value: number } | null;
   cost: { text: string; color: Color | undefined };
   context: { text: string; color: Color } | null;
   model: string;
@@ -460,8 +473,16 @@ export interface StatusLineInput {
   contextLevel?: "none" | "soft" | "hard" | "emergency";
   model: string;
   scrollPercent?: number;
-  /** 10.3：会话累计缓存节省金额（美元） */
-  cacheSavingsUSD?: number;
+  /**
+   * 会话输出吞吐（tokens/sec，`TraceCollector.getOutputTps()` 算好的数）。
+   * `undefined` = 尚无纯生成耗时样本 → tps 列不渲染。
+   *
+   * **由 core 算好推下来，本 hook 不做除法**：分子分母必须与 `/perf` 的「生成速度」
+   * 同源（`total_tokens_received ÷ total_gen_elapsed_ms`，见 `deriveOutputTps`）。
+   * 在这里自己拿 usage 去除「会话已过多久」，会得到含工具执行/等待时间的端到端口径，
+   * 与 /perf 对不上，且随工具占比大幅漂移。
+   */
+  outputTps?: number;
   /**
    * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
    * `undefined` = 尚无命中 → ⚡ 列不渲染。**不在本 hook 里重算**，见 `deriveCacheMetrics`。
@@ -504,7 +525,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     contextEstimated,
     model,
     scrollPercent,
-    cacheSavingsUSD,
+    outputTps,
     cacheHitRate,
     totalRequests,
     discardedRequests,
@@ -534,7 +555,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
               text: `${TOKEN_IN} ${formatLargeNumber(stockInputTokens)}  ${TOKEN_OUT} ${formatLargeNumber(usage.outputTokens)}`,
             },
       cache: deriveCacheMetrics(cacheHitRate),
-      cacheSavings: deriveCacheSavings(cacheSavingsUSD ?? 0),
+      tps: deriveTps(outputTps),
       cost: deriveCost(costUSD, costLimit, costFxConverted ?? false),
       // 显示条件与 usage 解耦（deriveContext）：估算有值即显示——打开 TUI / 刚 /clear 时
       // usage 全零但常驻开销（system prompt + 工具 schema）已在，那正是用户要看的初始占用。
@@ -573,7 +594,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     contextEstimated,
     model,
     scrollPercent,
-    cacheSavingsUSD,
+    outputTps,
     cacheHitRate,
     totalRequests,
     discardedRequests,
