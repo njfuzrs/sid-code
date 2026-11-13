@@ -55,6 +55,23 @@ export interface MeasuredProgressState {
   filesChanged: Set<string>;
   /** 可量化观测值：命令标签 → 首末值。 */
   metrics: Map<string, MetricObservation>;
+  /**
+   * 副作用进展的单调递增计数（R5）。
+   *
+   * 为什么需要它：`hasRealProgress` 回答的是「本会话**曾经**有过真实进展吗」（累积事实），
+   * 而等待态判定要问的是「**上一次 todo_write 之后**又有新进展吗」——两者不能混用。
+   * 最常见形态是「改完代码（文件早已落盘）→ 起一个 CI 等待」，拿累积量判会让这个场景
+   * 永远判成「有进展、不算等待」，整条修法失效。
+   *
+   * 只在 `recordFileChange` / 观测值**变化**时 +1：第一次见到某个观测值不算进展
+   * （那只是建立基线，世界没变）。
+   */
+  revision?: number;
+}
+
+/** 当前副作用进展计数（未初始化视为 0；纯函数，不创建状态）。 */
+export function progressRevision(state: MeasuredProgressState | undefined): number {
+  return state?.revision ?? 0;
 }
 
 /**
@@ -64,6 +81,14 @@ export interface MeasuredProgressState {
  * ——本次要修的假信号会以另一种形式复活。
  */
 export const MEASURED_PROGRESS_KEY = "measuredProgressState";
+
+/**
+ * R5：上一次 `todo_write` 时的 `revision` 基线（SessionState）。
+ *
+ * 与 `MEASURED_PROGRESS_KEY` 同一层理由：`progressRevision` 是跨用户消息累积的会话级事实，
+ * 基线也必须同一生命周期，否则用户追问一句就把「等待期间有没有新进展」判成「有」。
+ */
+export const PROGRESS_REVISION_AT_TODO_WRITE_KEY = "progressRevisionAtTodoWrite";
 
 /** 创建空状态。 */
 export function createMeasuredProgressState(): MeasuredProgressState {
@@ -109,7 +134,11 @@ export function extractScalarMetric(output: string): number | null {
 export function recordFileChange(state: MeasuredProgressState, filePath: unknown): void {
   if (typeof filePath !== "string") return;
   const p = filePath.trim();
-  if (p) state.filesChanged.add(p);
+  if (!p) return;
+  state.filesChanged.add(p);
+  // 每次落盘都算一次副作用（哪怕同一个文件被改了第二遍）——`revision` 回答的是
+  // 「上次 todo_write 之后有没有动过世界」，不是「动过几个不同的文件」。
+  state.revision = (state.revision ?? 0) + 1;
 }
 
 /**
@@ -129,6 +158,9 @@ export function recordScalarObservation(
   if (!key) return;
   const existing = state.metrics.get(key);
   if (existing) {
+    // 只有**值真的变了**才算世界被改动过。第一次见到某个观测值只是建立基线：
+    // 把它算成进展会让「刚跑了一条 wc -l」直接否掉等待态，而那一刻什么都没变。
+    if (existing.last !== value) state.revision = (state.revision ?? 0) + 1;
     existing.last = value;
     existing.count++;
   } else {

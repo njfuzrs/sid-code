@@ -177,6 +177,16 @@ export function buildTodoReminder(
      * 只用于文案；判定在 `shouldInjectTodoReminder`，不要拿它当节流依据。
      */
     turnsSinceLastWrite?: number;
+    /**
+     * R5：处于纯等待态时传入的等待源清单。非空时把「请继续推进」那句换成
+     * 「当前在等：…，结果会以通知送达」。
+     *
+     * 为什么只换这一句而不是整条不注入：这份 reminder 在 `afterCompact` 旁路上
+     * 走的是「压缩把清单从上下文里抹掉了，必须重注」的信息丢失兜底，不重注模型就
+     * 永久看不到清单了。所以旁路保留，但**文案不能再催它推进**——它此刻唯一能做的
+     * 就是等，催它推进只会换来一轮状态空查（正是 P1 守卫要拦的形态）。
+     */
+    waitingSources?: WaitSource[];
   },
 ): string {
   const unfinished = countUnfinished(todos);
@@ -195,10 +205,19 @@ export function buildTodoReminder(
       ? `\n当前进行中：${inProgress[0]!.content}。如果你正在推进这一项（读代码、跑命令、改文件都算），` +
         `清单就是最新的——不要为了证明在干活而重写它；只在状态真的变了时才更新。`
       : "";
+  // R5：等待态下「请继续推进」让位。这几项之所以没完成，是因为外部状态还没变；
+  // 催模型推进只会让它去重复查询状态或把项标成 blocked（后者是 T2 已点破的撒谎）。
+  const waiting = opts?.waitingSources ?? [];
+  const nextStepNote =
+    waiting.length > 0
+      ? `仍有 ${unfinished} 项未完成，当前都在等外部状态：\n` +
+        `${waiting.map((w) => `- ${describeWaitLine(w)}`).join("\n")}\n` +
+        `等待期间不需要查询状态，结果会以通知送达。`
+      : `仍有 ${unfinished} 项未完成。请继续推进，不要遗漏；完成每一项后立即用 todo_write 更新状态。`;
   return `<system-reminder>
 这是你当前的任务清单（请勿向用户提及本提醒）${ageNote}：
 ${renderTodoLines(todos)}
-仍有 ${unfinished} 项未完成。请继续推进，不要遗漏；完成每一项后立即用 todo_write 更新状态。${blockedNote}${activeNote}
+${nextStepNote}${blockedNote}${activeNote}
 注意：如果某项其实**已经做完**（代码已改、验证已过），只是忘了标记，请直接用 todo_write 把它标为 completed，然后如实收尾——不要为了凑"未完成"去臆造用户没要求的新工作，也不要假设已交付的产物存在故障再去排查。
 </system-reminder>`;
 }
