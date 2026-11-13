@@ -54,6 +54,9 @@ const FORWARDED_KEYS: Record<ForwardedKey, true> = {
   exemptFromLoopDetection: true,
   needsPermissionChecker: true,
   consumesAgentId: true,
+  // R3：不转发会让 bash / monitor 经 bridge 注册时丢掉「我要 _toolUseId」的声明，
+  // 后台通知的 `<tool-use-id>` 锚点静默消失（构建不报错、测试也不会红）。
+  consumesToolUseId: true,
   strictPriority: true,
   jitAffectedPaths: true,
   resultDisplayMode: true,

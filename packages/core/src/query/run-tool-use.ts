@@ -239,6 +239,9 @@ export async function runToolUse(
       // E1：嵌套子代理带上派发它的 tool_use_id（与主循环同口径）
       if (block.name === "sub_agent") internalFields._parentToolUseId = block.id;
     }
+    // R3：后台任务通知的调用锚点。只有声明了 `consumesToolUseId` 的工具（bash / monitor）
+    // 才拿得到——它们把 id 存进 task，让 `<task-notification>` 带 `<tool-use-id>`。
+    if (tool.consumesToolUseId) internalFields._toolUseId = block.id;
     const result = await tool.execute(
       { ...cleanedInput, ...internalFields },
       signal,

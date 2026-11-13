@@ -17,7 +17,9 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
-import { registerWait, releaseWait } from "../task/wait-registry.ts";
+// R3：describeBackgroundWaitFact 用于排定回执的确定性状态事实；
+// R2 把对象签名抽取换成了 wait-subjects（extractWaitSubjects 已删）。
+import { registerWait, releaseWait, describeBackgroundWaitFact } from "../task/wait-registry.ts";
 import { collectWaitSubjects, normalizeWaitCommand } from "../task/wait-subjects.ts";
 import {
   decideWaitAdmission,
@@ -140,7 +142,10 @@ export class ScheduleWakeupTool implements Tool {
     });
     if (admission.action === "duplicate") {
       return {
-        output: formatDuplicateWaitReceipt(admission.existing, subjects),
+        // R3 修法 2（R2 合入后补）：duplicate 回执同样是「模型刚发起一次等待」，
+        // 把当前状态事实写进去，模型不必凭记忆判断某条旧通知是不是这次的结果。
+        output:
+          formatDuplicateWaitReceipt(admission.existing, subjects) + describeBackgroundWaitFact(),
         isError: false,
       };
     }
@@ -203,6 +208,9 @@ export class ScheduleWakeupTool implements Tool {
       output:
         `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${replacedNote}${supersededNote}${reasonNote}\n` +
         `目标达成后若不再需要，用 cron_delete ${task.id} 取消。\n` +
+        // R3 修法 2：写清「此刻有没有待送达通知、上一条已送达的是谁」。唤醒全程不产生
+        // 后台进程，模型更容易把上一轮的旧通知误当成这次唤醒的结果——回执里直接给事实。
+        `${describeBackgroundWaitFact()}\n` +
         `唤醒只在本轮结束、会话空闲后才会触发；本轮继续查询只会推迟它。没有别的事就告诉用户你在等什么，然后结束本轮。`,
     };
   }

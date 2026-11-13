@@ -665,6 +665,13 @@ export class BashTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = bashSchema();
 
+  /**
+   * R3：声明「我会把本次工具调用 id 存进后台任务」，执行器据此注入 `_toolUseId`。
+   * 后台完成通知因此能带 `<tool-use-id>`，模型可核对通知对应哪一次 bash 调用。
+   * 契约见 `tool/types.ts`。
+   */
+  readonly consumesToolUseId = true as const;
+
   /** shell 环境快照文件路径（构造期异步创建；undefined 表示无快照，降级登录模式） */
   private snapshotFilePath: string | undefined;
   /** 快照创建完成的 Promise（永不 reject，失败时 snapshotFilePath 为 undefined） */
@@ -1225,6 +1232,8 @@ export class BashTool implements Tool {
       cwd?: string;
       run_in_background?: boolean;
       wait_until_seconds?: number;
+      /** R3：执行器注入的本次调用 id（未声明/无头路径下没有），只透传给后台任务 */
+      _toolUseId?: string;
     };
 
     if (!params.command) {
@@ -1257,7 +1266,7 @@ export class BashTool implements Tool {
     // 所以执行层只认协议字段。P2-10 的教训保留在这里：旧后台通道（不进 Task 系统、
     // 无 task_id、无完成通知）会让弱模型落入"无法查询输出"死角，不能重新引入。
     if (params.run_in_background) {
-      return this.executeWithTaskSystem(params, signal);
+      return this.executeWithTaskSystem({ ...params, toolUseId: params._toolUseId }, signal);
     }
 
     // 超时限制：默认值/上限支持 env 覆盖（BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS），
@@ -1806,6 +1815,8 @@ export class BashTool implements Tool {
       command: string;
       cwd?: string;
       wait_until_seconds?: number;
+      /** R3：启动这次后台调用的 tool_use id（执行器注入的 `_toolUseId`，可能没有） */
+      toolUseId?: string;
     },
     signal?: AbortSignal,
   ): Promise<ToolResult> {
@@ -1834,7 +1845,12 @@ export class BashTool implements Tool {
       // isError 保持 false：这不是失败，是「已经有东西在盯它了」。
       // 回执里必须带 task_stop 出口，否则模型改了脚本也挂不上新的（R2 §修法 2）。
       return {
-        output: task.formatDuplicateWaitReceipt(waitPlan.decision.existing, waitPlan.subjects),
+        output:
+          task.formatDuplicateWaitReceipt(waitPlan.decision.existing, waitPlan.subjects) +
+          // R3 修法 2（R2 合入后补）：duplicate 回执同样是「模型刚发起一次等待」，
+          // 也最容易被上一轮那条旧通知误导成「我这次挂的又被杀了」。把当前状态事实
+          // 直接写在回执里，模型不必凭记忆判断。
+          task.describeBackgroundWaitFact(),
       };
     }
 
@@ -1843,13 +1859,23 @@ export class BashTool implements Tool {
       displayCommand: params.command,
       cwd,
       signal,
+      // R3：通知锚点。拿不到（无头 / 直接调 execute）时为 undefined，通知少一栏而已。
+      toolUseId: params.toolUseId,
     });
 
+    // R2 的 registerWaitUntil 签名（第三参数是准入判定产出的 waitPlan）；
+    // R3 在此之上追加一句确定性状态事实。
     const waitNote = this.registerWaitUntil(taskState.id, params.command, waitPlan);
     // R6：同对象换了等法 → 先起新的（上面 spawn + 登记），再停旧的。
     // 顺序不能反：两步之间若出现「没有任何等待源」的空窗，todo 闸门会判成「没人会回来」
     // 而强推模型继续干活（ca8d7e5c 的形态）。淘汰本身见 `supersedeReplacedWaits` 的注释。
     const replaceNote = this.supersedeOnReplace(waitPlan, taskState.id);
+    // R3 修法 2：回执末尾写一句确定性事实——「此刻有无待送达通知 / 上一条已送达的是谁」。
+    // 旧通知被误当成新结果的根因是模型没有可核对的事实，这里直接把事实放回执里。
+    // 惰性 require 与上方 registerWaitUntil 同款（bash.ts 对 task 模块一贯如此）。
+    const waitFact = (
+      require("../task/index.ts") as typeof import("../task/index.ts")
+    ).describeBackgroundWaitFact();
 
     return {
       output: JSON.stringify({
@@ -1858,7 +1884,9 @@ export class BashTool implements Tool {
         output_file: taskState.outputFile,
         // F3：同 sub_agent 后台启动返回——明说不要轮询（20261019 轨迹 shell 任务也被 task_output 阻塞满 600s）
         // Q1：去掉运行期间读 output_file 的许可，与子代理 / Ctrl+B 回执共用同一常量。
-        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}${replaceNote}`,
+        // R3 的 waitFact 放最后：它读的是「此刻有无待送达通知 / 上一条已送达的是谁」，
+        // 与 R6 的 replaceNote（本次淘汰了谁）互补，两条事实都要让模型看到。
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}${replaceNote}${waitFact}`,
       }),
     };
   }

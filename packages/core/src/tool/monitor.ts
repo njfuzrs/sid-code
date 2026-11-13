@@ -41,7 +41,13 @@ import {
 } from "../task/index.ts";
 import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
 import { getRunningTasks } from "../task/registry.ts";
-import { registerWait, isWakeupRegistrationEnabled } from "../task/wait-registry.ts";
+// R3：describeBackgroundWaitFact 用于启动回执的确定性状态事实；
+// R2 把对象签名抽取换成了 wait-subjects（findWaitBySubject / extractWaitSubjects 已删）。
+import {
+  registerWait,
+  isWakeupRegistrationEnabled,
+  describeBackgroundWaitFact,
+} from "../task/wait-registry.ts";
 import {
   collectWaitCommandFamilies,
   collectWaitSubjects,
@@ -94,6 +100,13 @@ function listRunningMonitorBrief(): string {
 
 export class MonitorTool implements Tool<MonitorInput, string> {
   readonly zodSchema = monitorSchema();
+
+  /**
+   * R3：声明「我会把本次工具调用 id 存进后台任务」，执行器据此注入 `_toolUseId`。
+   * monitor 的每条事件/终态通知因此能带 `<tool-use-id>`，模型可核对通知对应哪一次调用。
+   * 契约见 `tool/types.ts`。
+   */
+  readonly consumesToolUseId = true as const;
   /**
    * 延迟加载：与 `schedule_wakeup` 同档（长尾、低频）。关键词覆盖中英文常见说法，
    * 让 `tool_search` 在「等 CI」「watch」「监控」这类描述下都能把它调出来。
@@ -277,7 +290,10 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     });
     if (admission.action === "duplicate") {
       return {
-        data: formatDuplicateWaitReceipt(admission.existing, subjects),
+        // R3 修法 2（R2 合入后补）：duplicate 回执同样是「模型刚发起一次等待」，
+        // 把当前状态事实写进去，模型不必凭记忆判断某条旧通知是不是这次的结果。
+        data:
+          formatDuplicateWaitReceipt(admission.existing, subjects) + describeBackgroundWaitFact(),
         isError: false,
       };
     }
@@ -289,6 +305,8 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       command,
       timeoutMs,
       cwd: getCwd(),
+      // R3：通知锚点。执行器注入的本次调用 id；拿不到时通知少一栏，其余照常。
+      toolUseId: (params as { _toolUseId?: unknown })._toolUseId as string | undefined,
     });
 
     // 登记为等待源（deadline 承诺）：todo 闸门 T2 据此放行、静默判据不误杀。
@@ -336,6 +354,11 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
         `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
         waitNote +
+        // R3 修法 2：把「此刻有没有待送达通知、上一条已送达的是谁」写成事实，
+        // 模型不必凭记忆判断某条通知是不是自己刚挂的这次监控的事件。
+        `${describeBackgroundWaitFact()}\n` +
+        // R6：superseded 非空时才追加淘汰说明（`formatReplaceNote` 对空数组返回空串）；
+        // duplicate 分支已在 spawn 之前直接返回，走到这里只会是 replace 或 start。
         `提前停止：task_stop ${taskState.id}${formatReplaceNote(superseded, taskState.id)}`,
     };
   }

@@ -56,6 +56,13 @@ const def: SmokeCase = {
       if (!text.includes("task_stop")) {
         return "回执没有给出 task_stop 出口——模型改了脚本也换不了等法（R2 §修法 2）";
       }
+      // R3 修法 2（R2 合入后补）：duplicate 回执同样是「模型刚发起一次等待」，也必须带
+      // 确定性状态事实。本用例四次调用都在第一个等待的 60s 期限之内，队列里没有任何
+      // 待送达通知，所以这句话必然出现——它正是事故 b0aa0f1e 里模型缺的那条反证
+      // （「此刻没有待送达的通知」= 你 thinking 里那条「又被杀了」不可能是这次的结果）。
+      if (!text.includes("此刻没有待送达的通知")) {
+        return "duplicate 回执没有带「此刻没有待送达的通知」——R3 修法 2 在 duplicate 路径上没有生效";
+      }
       return null;
     },
   },

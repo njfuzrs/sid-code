@@ -204,6 +204,37 @@ export interface ToolCapabilityFields<Input = unknown> {
   consumesAgentId?: true;
 
   /**
+   * R3（2026-11-12）：工具自报「我会把**本次工具调用 id** 存进后台任务」，
+   * 执行器据此按需注入 `_toolUseId = <本次 tool_use 的 block.id>`。
+   *
+   * ## 为什么需要
+   *
+   * 事故 b0aa0f1e：模型挂完一次 1800s 等待后，后续每个请求的 thinking 都说
+   * 「后台任务 sjgm4oq76 **又被杀了**」——上下文里最近那条 `<task-notification>` 是**上一轮**
+   * 的，文案里只有 task-id / status / summary，没有任何能与「我刚刚这次调用」对齐的锚点，
+   * 模型只能凭叙事拼一个故事。修法是给通知补可核对的事实：`<tool-use-id>` 指出这条通知
+   * 对应哪一次调用，`<started-at>` / `<ended-at>` 给出时间。
+   *
+   * ## 为什么做成声明字段而不是无差别注入
+   *
+   * 与 `consumesAgentId` 完全同理（见上一条的长注释）：内部字段无差别注入会从
+   * `StructuredOutput` 的严格 schema 校验、workflow 返回值、MCP server 的 arguments
+   * 三条出口漏出去。`_toolUseId` 当前只有 `bash` / `monitor` 两个消费者。
+   *
+   * ## 契约
+   *
+   * - 类型是 `true`：本字段只有「声明」一种含义。
+   * - 声明者**必须真的读它**，且**必须准备好拿不到时的安全默认**（无头 / 直接调用
+   *   `execute()` 的路径不会注入）。`bash` / `monitor` 拿不到时不写 `<tool-use-id>`，
+   *   通知照常、不报错——锚点是增强信息，不是正确性依赖。
+   * - 与 `_agentId` 互不干扰：两者由不同声明字段控制，可以同时声明（子代理里起的后台
+   *   任务两者都拿到）。
+   * - 双向对账门禁：`tests/tool/consumes-tooluseid-audit.test.ts`（源码里读 `_toolUseId`
+   *   的工具必须在清单里、清单里的工具必须真的声明）。
+   */
+  consumesToolUseId?: true;
+
+  /**
    * D11：单请求 strict 工具超过上游上限（Anthropic 20 个）时，谁先保住 strict。
    *
    * 数值越大越优先，未声明为 0。只在超限时起作用，不影响「发不发 strict」本身。
