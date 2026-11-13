@@ -37,6 +37,13 @@ import {
   getDefaultMonitorTimeoutMs,
   countRunningMonitors,
   spawnMonitorTask,
+  // R7：内置等待原语 `sid-wait gh-pr <n>`——harness 自己轮询，不 spawn 外部脚本
+  spawnBuiltinMonitorTask,
+  parseSidWaitCommand,
+  runSidWaitGhPr,
+  createSidWaitClient,
+  formatSidWaitResultSummary,
+  formatManualLoopHint,
   isMonitorTask,
 } from "../task/index.ts";
 import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
@@ -302,14 +309,45 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     // replace（R6）：模型换了一种等法（改了脚本 / 从唤醒或后台循环换成监控）。
     // 淘汰放在 spawn + 登记**之后**（见下方），先停旧再起新会留下一个没有任何等待源的空窗。
 
-    const taskState = spawnMonitorTask({
-      description,
-      command,
-      timeoutMs,
-      cwd: getCwd(),
-      // R3：通知锚点。执行器注入的本次调用 id；拿不到时通知少一栏，其余照常。
-      toolUseId: (params as { _toolUseId?: unknown })._toolUseId as string | undefined,
-    });
+    // R7：内置等待原语由 harness 解释执行，不 spawn 外部脚本。
+    // 每行输出仍然走 monitor 的事件通道（状态变化 / 检查失败 / 终态），模型侧语义不变：
+    // 「每行一条事件」的承诺照旧成立，只是产生行的不再是 shell 脚本。
+    const sidWait = parseSidWaitCommand(command);
+
+    const taskState = sidWait
+      ? spawnBuiltinMonitorTask({
+          description,
+          command,
+          timeoutMs,
+          toolUseId: (params as { _toolUseId?: unknown })._toolUseId as string | undefined,
+          // 通用 monitor 文案说「检查过滤条件是否覆盖了失败状态」，对内置原语不成立：
+          // 它自己没有过滤条件，到期就是「等够了条件还没满足」。
+          describeStop: (reason) =>
+            reason === "timeout"
+              ? `等待期限到（${Math.round(timeoutMs / 60_000)} 分钟），PR #${sidWait.pr} 的合并 / 检查仍未达成可继续的条件`
+              : `等待已停止：PR #${sidWait.pr}`,
+          run: async ({ emit, signal }) => {
+            const result = await runSidWaitGhPr({
+              pr: sidWait.pr,
+              client: createSidWaitClient({ cwd: getCwd() }),
+              emit,
+              intervalMs: sidWait.intervalMs,
+              signal,
+            });
+            return {
+              code: result.exitCode,
+              summary: formatSidWaitResultSummary(result, sidWait.pr),
+            };
+          },
+        })
+      : spawnMonitorTask({
+          description,
+          command,
+          timeoutMs,
+          cwd: getCwd(),
+          // R3：通知锚点。执行器注入的本次调用 id；拿不到时通知少一栏，其余照常。
+          toolUseId: (params as { _toolUseId?: unknown })._toolUseId as string | undefined,
+        });
 
     // 登记为等待源（deadline 承诺）：todo 闸门 T2 据此放行、静默判据不误杀。
     // `commandFamilies` 是 D13 的字段级覆盖依据：P1 只有在「monitor 脚本里也出现
@@ -342,6 +380,11 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
 
     const endAt = formatClockWithSeconds(taskState.deadlineAt);
     const minutes = Math.round(timeoutMs / 60_000);
+    // R7：内置原语的「事件」由 harness 自己产生，说明它盯的是哪些条件，
+    // 免得模型以为还需要自己再查一次 PR 状态。
+    const builtinNote = sidWait
+      ? `\n内置等待原语：每 ${Math.round(sidWait.intervalMs / 1000)} 秒查一次 PR #${sidWait.pr} 的最新 head 与 check-runs（不启动外部进程）。事件来自合并 / 关闭 / 有冲突 / 检查失败 / head 变化，退出码：合并 0 / 检查失败 1 / 关闭 3 / 冲突 4 / REST 连续失败 5。\n`
+      : "";
     // D19（方案 §10.3）：无头形态（`-p` 单轮）没有 prompt 注入通道，事件没法在回合边界
     // 叫醒主循环，进程只能等到 monitor 结束再退出。不写这句时模型会按交互式的习惯
     // 说完「已启动，我先做别的」就收尾，用户拿到一个跑完即退的进程、看不到结果。
@@ -354,6 +397,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       data:
         `已启动监控 ${taskState.id}（${description}），最晚 ${endAt} 结束（${minutes} 分钟期限）${clampNote}。\n` +
         `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
+        builtinNote +
         `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
         waitNote +
         // R3 修法 2：把「此刻有没有待送达通知、上一条已送达的是谁」写成事实，
@@ -361,7 +405,9 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         `${describeBackgroundWaitFact()}\n` +
         // R6：superseded 非空时才追加淘汰说明（`formatReplaceNote` 对空数组返回空串）；
         // duplicate 分支已在 spawn 之前直接返回，走到这里只会是 replace 或 start。
-        `提前停止：task_stop ${taskState.id}${formatReplaceNote(superseded, taskState.id)}`,
+        `提前停止：task_stop ${taskState.id}${formatReplaceNote(superseded, taskState.id)}` +
+        // R7 修法 4：用脚本手写 PR 轮询时，回执里说一次「有内置原语」
+        formatManualLoopHint(subjects, command),
     };
   }
 }

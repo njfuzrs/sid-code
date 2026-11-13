@@ -1,0 +1,111 @@
+{
+  "source": "取证的 ca8d7e5c 会话（2026-11-12 19:04 本地，UTC 11:04）。job 名与结论逐字取自该会话里 `gh pr checks 780` 的文本输出；`gh api …/check-runs` 的 JSON 字段形态按 GitHub REST schema 构造（该会话没有直接调 check-runs 端点，因此没有可逐字回放的原始 JSON）。",
+  "pr": 780,
+  "headSha": "8f3c2a91d4e5b6c7a8f90123456789abcdef01234",
+  "ticks": [
+    {
+      "observedAt": "10:55 UTC",
+      "pull": {
+        "state": "open",
+        "merged": false,
+        "mergeable_state": "blocked"
+      },
+      "checkRuns": [
+        {
+          "id": 51000001,
+          "name": "test (ubuntu-latest, 1/3)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000002,
+          "name": "test (ubuntu-latest, 2/3)",
+          "status": "in_progress",
+          "conclusion": null
+        },
+        {
+          "id": 51000003,
+          "name": "test (ubuntu-latest, 3/3)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000004,
+          "name": "test (macos-latest, 1/2)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000005,
+          "name": "test (macos-latest, 2/2)",
+          "status": "queued",
+          "conclusion": null
+        },
+        {
+          "id": 51000006,
+          "name": "lint",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000007,
+          "name": "website",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "observedAt": "11:04 UTC",
+      "pull": {
+        "state": "open",
+        "merged": false,
+        "mergeable_state": "blocked"
+      },
+      "checkRuns": [
+        {
+          "id": 51000001,
+          "name": "test (ubuntu-latest, 1/3)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000002,
+          "name": "test (ubuntu-latest, 2/3)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000003,
+          "name": "test (ubuntu-latest, 3/3)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000004,
+          "name": "test (macos-latest, 1/2)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000005,
+          "name": "test (macos-latest, 2/2)",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "id": 51000006,
+          "name": "lint",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "id": 51000007,
+          "name": "website",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}
