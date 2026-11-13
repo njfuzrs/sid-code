@@ -31,6 +31,7 @@ import {
   extractSimpleCommands,
   extractRedirectTargets,
 } from "../tool/bash/parser.ts";
+import { extractHeredocBlocks } from "../tool/bash/heredoc.ts";
 import { GH_CHECKS_PENDING_HEADER } from "../tool/bash/command-semantics.ts";
 
 /** 命中命令表时告诉调用方「这是哪一类查询」，归一化与状态摘要按它分派 */
@@ -55,6 +56,7 @@ export type StatusQueryFamily =
   | "gh_run_list"
   | "gh_api_checks"
   | "gh_api_runs"
+  | "gh_api_pulls"
   | "glab_mr_view"
   | "glab_ci_status"
   | "k8s_rollout_status"
@@ -247,6 +249,23 @@ const RULES: Rule[] = [
   },
   {
     command: "gh",
+    kind: "gh_pr",
+    // `gh api …/pulls/<n>`（可带 `/reviews` `/commits` `/files` 子端点）：PR 状态的 REST 写法。
+    //
+    // 为什么要补：R4 的两次会话把 `gh pr view` 换成了 `gh api repos/…/pulls/780 -q .state`
+    // （§1.3 的 F3 形态）——同一个 PR、同一批字段，只因为换了取数入口就整条识别不了。
+    // 这不是「按想象扩表」：`gh api` 分支本身就存在（checks / runs 两条），此处只是把
+    // 同样只读的 pulls 端点补齐。写标志仍由 `ghApiGetPath` 统一拒绝。
+    match: (args) => {
+      const path = ghApiGetPath(args);
+      if (!path) return null;
+      const m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)(?:\/(?:reviews|commits|files))?$/.exec(path);
+      if (!m) return null;
+      return { tail: m[1]!, family: "gh_api_pulls", prefix: "gh:pr:" };
+    },
+  },
+  {
+    command: "gh",
     kind: "gh_run",
     // `gh api …/actions/runs[/<id>][/jobs]`：与 `gh run view` 同一批对象，但输出是 REST JSON。
     match: (args) => {
@@ -319,10 +338,56 @@ const RULES: Rule[] = [
   },
 ];
 
-/** 归一化命令行：单行、去多余空白。命令里含换行（heredoc）时直接放弃匹配——宁漏不误 */
+/**
+ * 归一化命令行：折叠**引号外**的连续空白，引号内的正文原样保留。
+ *
+ * 为什么不再「见到换行就放弃」（R4）：两条真实会话的主力写法是
+ * ``gh pr view 780 --json … | python3 -c "``⏎``import json,sys``⏎``…"`` —— 换行在双引号内、
+ * 是脚本正文的一部分，不是命令分隔符。原实现一律返回 null，把 44 次查询全部放行。
+ *
+ * 引号**外**的换行照旧保留：`parseBashCommand` 用 `splitOutsideQuotes` 按 `;` / 换行切段，
+ * 于是 `for …⏎do …⏎done` 这类多行循环也能被正确切开（比原实现多认一类，是改进）。
+ * 不能把换行压成空格 —— 那会让 `a⏎rm -rf x` 变成一条命令的两个参数，丢掉分隔语义。
+ */
 function flattenCommand(command: string): string | null {
-  if (command.includes("\n")) return null;
-  return command.replace(/\s+/g, " ").trim();
+  let out = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let pendingSpace = false;
+  for (const ch of command) {
+    if (quote) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\" && quote === '"') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (pendingSpace) {
+        out += " ";
+        pendingSpace = false;
+      }
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === "\n") {
+      pendingSpace = false;
+      out += ch;
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\r") {
+      pendingSpace = true;
+      continue;
+    }
+    if (pendingSpace) {
+      out += " ";
+      pendingSpace = false;
+    }
+    out += ch;
+  }
+  const trimmed = out.trim();
+  return trimmed === "" ? null : trimmed;
 }
 
 /**
@@ -335,6 +400,7 @@ function flattenCommand(command: string): string | null {
  * `echo` / `printf` 在列：两条会话里高频出现 `echo "=== checks ==="` 这类分隔符。
  * `date` 在列：轮询时给结果打时间戳（`sleep 30; date '+%H:%M:%S'; gh pr view …`），
  * 只读且无副作用；不在表里会让整条命令因为「有一段不认识」而被放行。
+ * ⚠️ `date` 带 `-s` / `--set` 时**会改系统时钟**，由 `isHarmlessSegment` 单独排除（R4）。
  */
 const HARMLESS_COMMANDS = new Set([
   "cd",
@@ -352,6 +418,23 @@ const HARMLESS_COMMANDS = new Set([
   "wait",
 ]);
 
+/**
+ * 一段命令是否无害（不改变外部世界、也不产出需要拦的输出）。
+ *
+ * 为什么 `date` 要单独判：它从 `HARMLESS_COMMANDS` 里拿不出来（高频、必须放行），
+ * 但 `date -s 2020-01-01` / `date --set=…` 是**改系统时钟**的写操作。
+ * R4 要求「末尾是无害段时跳过」之后，`gh pr view 1; date -s …` 这种组合会走进
+ * 「前一段是查询、后一段无害」的路径 —— 若不排除 `-s`，一条改时钟的命令会被拦下来。
+ */
+function isHarmlessSegment(seg: SimpleSegment): boolean {
+  if (!seg.command) return false;
+  if (seg.command === "date") {
+    // `-s` / `-s2020-01-01` / `--set` / `--set=…` 都是写
+    return !seg.args.some((a) => a === "-s" || a.startsWith("--set") || /^-s./.test(a));
+  }
+  return HARMLESS_COMMANDS.has(seg.command);
+}
+
 /** fd 复制记号（`2>&1`、`>&2`）：parser 把它留在 args 里，不是位置参数 */
 const FD_DUPLICATION = /^\d*>&\d+$/;
 
@@ -364,6 +447,73 @@ function hasHelpOrVersionFlag(args: string[]): boolean {
 type SimpleSegment = { command: string; args: string[] };
 
 /**
+ * 脚本解释器 → 取「脚本正文」的 flag（`python3 -c "…"` / `node -e "…"` / `ruby -e "…"`）。
+ *
+ * 为什么要把它们算进纯过滤器（R4）：两条事故会话的主力写法是
+ * `gh pr view 780 --json … | python3 -c "…"` —— 44 次查询里有 44 次带它。
+ * 不认这一段，整条命令就会因为「末尾有一段不认识」而被判成非查询，P1 一次都不触发。
+ */
+const SCRIPT_INTERPRETERS: Record<string, string[]> = {
+  python: ["-c"],
+  python3: ["-c"],
+  node: ["-e", "--eval", "-p", "--print"],
+  ruby: ["-e"],
+};
+
+/**
+ * 脚本正文里出现这些信号，就判「不是纯过滤」——它可能写文件 / 起子进程 / 访问网络。
+ *
+ * 方向仍然是 `isReadonlyFilter` 的「宁可漏，不可误伤」：命中就返回 false（放行整条命令），
+ * 不猜它是只读的。反过来也成立 —— 这里**只**做关键词级筛查，不做语义分析：
+ * 一段把 `open('f','w')` 拼出来的脚本能绕过，而绕过的后果只是「少拦一次」，可接受。
+ */
+const SCRIPT_WRITE_SIGNALS: RegExp[] = [
+  /** `open('f','w')` / `open(f, "a")` / `open(p, 'r+')`：带写模式的文件打开 */
+  /\bopen\s*\([^)]*['"][wax]/,
+  /\bsubprocess\b/,
+  /\bos\.(?:system|popen|remove|unlink|rename|rmdir|mkdir|makedirs|chmod|chown|symlink|exec[lv])/,
+  /\bshutil\b/,
+  /\brequests\b/,
+  /\burllib\b/,
+  /\bsocket\b/,
+  /\bhttp\.client\b/,
+  /\bfs\.(?:write|append|unlink|rename|mkdir|rm|rmdir|createWriteStream|openSync)/,
+  /**
+   * node 的 `fs` 裸函数名：`require('fs').writeFileSync(…)` 被 parser 剥掉引号后是
+   * `require(fs).writeFileSync(…)` —— `fs` 后面跟着 `)`，上面那条 `fs\.` 匹配不到。
+   * 只列**写**语义的名字：`readFileSync` 这类读操作不在其中。
+   */
+  /\b(?:writeFile|appendFile|createWriteStream|rmdir|mkdir|unlink)(?:Sync)?\s*\(/,
+  /** ruby 的 `File.write` / `File.delete` / `File.open(f, 'w')` */
+  /\bFile\.(?:write|delete|rename|truncate)\b/,
+  /\bchild_process\b/,
+  /\bexec(?:Sync|File|Command)?\s*\(/,
+  /\beval\s*\(/,
+];
+
+/**
+ * 脚本解释器的正文。取不到时返回 null —— 意味着脚本来自 stdin / 文件
+ * （`python3 script.py` / `python3 <<'EOF'`），那种形态在这里判不出会不会写。
+ */
+function scriptInterpreterBody(seg: SimpleSegment): string | null {
+  const flags = SCRIPT_INTERPRETERS[seg.command];
+  if (!flags) return null;
+  const { args } = seg;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (flags.includes(a)) {
+      const rest = args.slice(i + 1).join(" ");
+      return rest === "" ? null : rest;
+    }
+    // `-c"…"` 连写形态（parser 把它留成一个 token）
+    for (const f of flags) {
+      if (a.startsWith(f) && a.length > f.length) return a.slice(f.length);
+    }
+  }
+  return null;
+}
+
+/**
  * 纯过滤命令：只对 stdin 做**一次性**过滤/格式化，不读文件树、不写文件。
  *
  * 为什么允许它们出现在查询之后：`gh pr checks 701 2>&1 | head -20` 是模型最常用的写法
@@ -374,10 +524,19 @@ type SimpleSegment = { command: string; args: string[] };
  * - `sort -o <file>`：会写文件；
  * - `awk` 的程序体可以 `print > "f"`，参数里出现 `>` 或 gawk 的 `-i`（include）一律不算纯过滤。
  *   这会误伤 `awk '$1>2'`（比较运算符）—— 少拦一次，安全方向。
+ * - 脚本解释器（`python3 -c` / `node -e` / `ruby -e`）：**按正文语义判**（R4）。
+ *   正文里出现写文件 / 起子进程 / 访问网络的信号就不算纯过滤；正文取不到（从 stdin 或
+ *   文件读脚本）也不算。`heredocBody` 是命令里唯一的 heredoc 正文（`python3 <<'EOF' … EOF`
+ *   被 parser 剥离后 args 里只剩 `<`，正文只能从外面传进来）。
  */
-function isReadonlyFilter(seg: SimpleSegment): boolean {
+function isReadonlyFilter(seg: SimpleSegment, heredocBody?: string): boolean {
   if (!seg.command) return false;
   const { command, args } = seg;
+  if (SCRIPT_INTERPRETERS[command]) {
+    const body = scriptInterpreterBody(seg) ?? heredocBody;
+    if (body === undefined || body === null) return false;
+    return !SCRIPT_WRITE_SIGNALS.some((re) => re.test(body));
+  }
   switch (command) {
     case "head":
       return true;
@@ -410,6 +569,50 @@ function hitSegment(seg: SimpleSegment): QueryHit | null {
   const args = seg.args.filter((a) => !FD_DUPLICATION.test(a));
   if (hasHelpOrVersionFlag(args)) return null;
   return matchQuery(seg.command, args);
+}
+
+/**
+ * `x=$(<命令>)` 的展开：把赋值段还原成它内部的命令，并记下「变量 → 内部命令」。
+ *
+ * 为什么要展开（R4 §1.3 的 F4 形态）：
+ * `head=$(gh api …/pulls/779 -q '.head.sha'); gh api …/commits/$head/check-runs`
+ * 在 parser 里被解析成两段，第一段的 command 是 `api`（`head=$(gh` 被当成 env 前缀吃掉），
+ * 于是「其余每段都必须无害 / 是查询」这条判据立刻失败，整条命令放行。
+ * 展开成 `gh api …/pulls/779 -q '.head.sha'` 之后两段都是合法查询，判据自然通过。
+ *
+ * 只认**段首**的 `NAME=$(…)`：`echo $(gh pr view 1)` 这类把替换嵌在参数里的形态，
+ * 展开会打乱 token 边界，宁可不认（表外不拦）。
+ */
+function expandAssignments(flat: string): { text: string; assigned: Map<string, string> } {
+  const assigned = new Map<string, string>();
+  const text = flat.replace(
+    /(^|[;&|])\s*([A-Za-z_][A-Za-z0-9_]*)=\$\(([^()]*)\)/g,
+    (_m, lead: string, name: string, inner: string) => {
+      assigned.set(name, inner.trim());
+      return `${lead} ${inner.trim()}`;
+    },
+  );
+  return { text, assigned };
+}
+
+/**
+ * 派生对象归并：`gh:commit:<变量>` 且变量来自 `gh api …/pulls/<n> … '.head.sha'` → `gh:pr:<n>`。
+ *
+ * 为什么（R4 §1.3 的 F4 形态）：同一条命令先取 PR 的 head sha、再查这个 commit 的 check-runs，
+ * 问的其实是「那个 PR 的 CI」。归并成 `gh:pr:779` 才能与 `gh pr view 779` / `gh pr checks 779`
+ * 共用同一个 subject —— 否则回执里说的对象和 monitor 盯的对象对不上（S2 撤销会失配）。
+ *
+ * 刻意收得窄：来源必须**正好是 PR 路径 + `.head.` 字段**。`x=$(gh api …/pulls/779/reviews)`
+ * 出来的是评审列表，拿它当 sha 归并会把两个不同对象混成一个 subject（误拦方向）。
+ */
+function mergeDerivedSubject(hit: QueryHit, assigned: Map<string, string>): string {
+  const prefix = hit.prefix ?? subjectPrefix(hit.kind);
+  if (prefix !== "gh:commit:") return `${prefix}${hit.tail}`;
+  const varName = /^\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)(?:\})?$/.exec(hit.tail)?.[1];
+  const origin = varName ? assigned.get(varName) : undefined;
+  if (!origin || !/\.head\.(?:sha|ref)\b/.test(origin)) return `${prefix}${hit.tail}`;
+  const pr = /repos\/[^/\s]+\/[^/\s]+\/pulls\/(\d+)(?=\s|$)/.exec(origin);
+  return pr ? `gh:pr:${pr[1]!}` : `${prefix}${hit.tail}`;
 }
 
 /** 循环头命令（shell 的三种循环） */
@@ -549,11 +752,11 @@ function loopSubject(
  * 循环头与 `done` 视为无害 —— `until gh pr checks 1; do sleep 30; done` 的循环头是一条
  * 查询，但它表达的是「等这条命令成功」而不是轮询，拦它没有意义（也不该拦）。
  */
-function matchLoopQuery(loop: LoopStructure): StatusQueryMatch | null {
+function matchLoopQuery(loop: LoopStructure, heredocBody?: string): StatusQueryMatch | null {
   // 循环外：`cd …` / `sleep …` 这类，必须无害
   for (const seg of loop.outside) {
     if (!seg.command) return null;
-    if (HARMLESS_COMMANDS.has(seg.command)) continue;
+    if (isHarmlessSegment(seg)) continue;
     return null;
   }
   if (!loop.body || loop.body.length === 0) return null;
@@ -566,11 +769,11 @@ function matchLoopQuery(loop: LoopStructure): StatusQueryMatch | null {
       hits.push({ seg, hit });
       continue;
     }
-    if (HARMLESS_COMMANDS.has(seg.command)) continue;
+    if (isHarmlessSegment(seg)) continue;
     // 循环体里的只读过滤管道：`for n in 579 578 577; do … gh pr checks $n | head -40; … done`
     // 是真实轨迹里的形态（7dd98bf5 系会话）。过滤段刻意**不进签名**：它只截断输出，
     // 不改变「查的是哪个对象」；同一循环的两种 head 行数会共享 memo，最坏是少拦一次。
-    if (isReadonlyFilter(seg)) continue;
+    if (isReadonlyFilter(seg, heredocBody)) continue;
     return null; // 循环体里有不认识/写操作的命令（`gh pr merge $pr`、`bun test`）→ 放行
   }
   if (hits.length === 0) return null;
@@ -610,8 +813,17 @@ function matchLoopQuery(loop: LoopStructure): StatusQueryMatch | null {
  * 后者用白名单 + 「其余一律放行」，安全边界反而更清楚。
  */
 export function matchStatusQuery(command: string): StatusQueryMatch | null {
-  const flat = flattenCommand(command);
-  if (!flat) return null;
+  const flattened = flattenCommand(command);
+  if (!flattened) return null;
+  // `x=$(<命令>)` 先展开成内部命令：parser 会把 `x=$(gh` 当成 env 前缀，段里只剩 `api`
+  const { text: flat, assigned } = expandAssignments(flattened);
+
+  // `python3 <<'EOF' … EOF` 的正文被 `parseBashCommand` 剥掉了（args 里只剩 `<`），
+  // 只读判定需要它。多个 heredoc 时无法确定哪个喂给了解释器 → 不提供（宁漏不误）。
+  const heredocBody =
+    extractHeredocBlocks(command).blocks.length === 1
+      ? extractHeredocBlocks(command).blocks[0]!.body
+      : undefined;
 
   let ast;
   let simple;
@@ -629,16 +841,21 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
 
   // 循环（`for … do gh … done`）：整条交给循环展开，不再走「最后一段」判据
   const loop = findLoop(simple);
-  if (loop) return matchLoopQuery(loop);
+  if (loop) return matchLoopQuery(loop, heredocBody);
 
-  // 选查询段：默认最后一段；最后一段是纯过滤命令时向前跳过连续过滤段
+  // 选查询段：默认最后一段。末尾是「纯过滤命令」或「无害命令」时向前跳（R4）——
+  // `gh pr view 780 --json state; date -u +%H:%M:%S` 这类给结果打时间戳的写法，
+  // 原实现要求最后一段必须是过滤器，`date` 不是过滤器 → 整条判成非查询。
+  // 只跳过「本身就无害 / 只读过滤」的段：`gh pr view 1; gh pr merge 1` 的末段是查询，
+  // 不会走进这条；`gh pr view 1; rm x` 的末段两者都不是 → 仍然放行。
   const lastIdx = simple.length - 1;
   let queryIdx = lastIdx;
   let hit = hitSegment(simple[lastIdx]!);
   if (!hit) {
-    if (!isReadonlyFilter(simple[lastIdx]!)) return null;
-    let j = lastIdx - 1;
-    while (j >= 0 && isReadonlyFilter(simple[j]!)) j--;
+    let j = lastIdx;
+    while (j >= 0 && (isReadonlyFilter(simple[j]!, heredocBody) || isHarmlessSegment(simple[j]!))) {
+      j--;
+    }
     if (j < 0) return null;
     hit = hitSegment(simple[j]!);
     if (!hit) return null;
@@ -656,19 +873,19 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
     if (i === queryIdx) continue;
     const seg = simple[i]!;
     if (!seg.command) return null;
-    if (HARMLESS_COMMANDS.has(seg.command)) continue;
-    if (isReadonlyFilter(seg)) continue;
+    if (isHarmlessSegment(seg)) continue;
+    if (isReadonlyFilter(seg, heredocBody)) continue;
     if (i < queryIdx && hitSegment(seg)) continue; // 之前也可以是查询（`gh pr status && gh pr checks 1`）
     return null; // 有不认识的一段 → 可能有写操作，放行
   }
 
-  const subject = `${hit.prefix ?? subjectPrefix(hit.kind)}${hit.tail}`;
+  const subject = mergeDerivedSubject(hit, assigned);
   // 签名里带上整条复合命令（除无害段）：过滤段与前置查询都会改变输出形态，
   // 混用同一个 memo 会互相污染（`| head -10` 的输出与 `| jq …` 的不是一回事）。
   // 无害段（`cd` / `echo` / `sleep`）刻意不计入 —— 轮询时它们常变，查询语义没变。
   const sigParts: string[] = [];
   for (const seg of simple) {
-    if (!seg.command || HARMLESS_COMMANDS.has(seg.command)) continue;
+    if (!seg.command || isHarmlessSegment(seg)) continue;
     sigParts.push(`${seg.command} ${seg.args.join(" ")}`.trim());
   }
   return {
@@ -834,12 +1051,18 @@ const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
  * 这种真实变化吞掉。
  */
 function normalizeText(text: string): string {
-  return text
-    .replace(ANSI_RE, "")
-    .replace(/\d+(\.\d+)?(ms|s|m)\b/g, "<t>")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
+  return (
+    text
+      .replace(ANSI_RE, "")
+      // 组合时长（`13m43s` / `1h2m3s`）要整体抹掉：下面那条单段正则对 `13m43s` 只能抹掉
+      // 后一半（`13m` 后面紧跟 `4`，`\b` 不成立），两种不同时长就会归一化成不同签名。
+      // 这正是 `gh run list` 的 ELAPSED 列形态，不抹干净等于「每轮都算状态变了」。
+      .replace(/\d+(?:\.\d+)?[hms](?:\d+(?:\.\d+)?[ms])+/g, "<t>")
+      .replace(/\d+(\.\d+)?(ms|s|m)\b/g, "<t>")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{2,}/g, "\n")
+      .trim()
+  );
 }
 
 /**
