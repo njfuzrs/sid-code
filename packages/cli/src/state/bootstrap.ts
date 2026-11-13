@@ -23,14 +23,11 @@ interface BootstrapState {
   cwd: string;
 
   totalCostUSD: number;
-  totalAPIDuration: number;
   totalToolDuration: number;
   modelUsage: Record<string, ModelUsage>;
 
   turnToolDurationMs: number;
   turnToolCount: number;
-  turnAPIDurationMs: number;
-  turnAPICount: number;
 
   mainLoopModelOverride: string | null;
   initialMainLoopModel: string;
@@ -46,13 +43,10 @@ const STATE: BootstrapState = {
   originalCwd: process.cwd(),
   cwd: process.cwd(),
   totalCostUSD: 0,
-  totalAPIDuration: 0,
   totalToolDuration: 0,
   modelUsage: {},
   turnToolDurationMs: 0,
   turnToolCount: 0,
-  turnAPIDurationMs: 0,
-  turnAPICount: 0,
   mainLoopModelOverride: null,
   initialMainLoopModel: "",
   isInteractive: true,
@@ -78,9 +72,6 @@ export function getOriginalCwd(): string {
 export function getTotalCostUSD(): number {
   return STATE.totalCostUSD;
 }
-export function getTotalAPIDuration(): number {
-  return STATE.totalAPIDuration;
-}
 export function getTotalToolDuration(): number {
   return STATE.totalToolDuration;
 }
@@ -100,8 +91,6 @@ export function getTurnMetrics() {
   return {
     toolDurationMs: STATE.turnToolDurationMs,
     toolCount: STATE.turnToolCount,
-    apiDurationMs: STATE.turnAPIDurationMs,
-    apiCount: STATE.turnAPICount,
   };
 }
 
@@ -132,12 +121,6 @@ export function addToToolDuration(durationMs: number): void {
   STATE.turnToolCount++;
 }
 
-export function addToAPIDuration(durationMs: number): void {
-  STATE.totalAPIDuration += durationMs;
-  STATE.turnAPIDurationMs += durationMs;
-  STATE.turnAPICount++;
-}
-
 export function addToCost(model: string, cost: number, usage: ModelUsage): void {
   STATE.totalCostUSD += cost;
   STATE.modelUsage[model] = usage;
@@ -146,8 +129,6 @@ export function addToCost(model: string, cost: number, usage: ModelUsage): void 
 export function resetTurnMetrics(): void {
   STATE.turnToolDurationMs = 0;
   STATE.turnToolCount = 0;
-  STATE.turnAPIDurationMs = 0;
-  STATE.turnAPICount = 0;
 }
 
 // ═══ 错误日志 ═══

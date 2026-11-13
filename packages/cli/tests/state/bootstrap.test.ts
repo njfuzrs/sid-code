@@ -5,10 +5,8 @@ import {
   getCwd,
   setCwd,
   getTotalCostUSD,
-  getTotalAPIDuration,
   getTotalToolDuration,
   addToCost,
-  addToAPIDuration,
   addToToolDuration,
   resetTurnMetrics,
   getTurnMetrics,
@@ -42,12 +40,6 @@ describe("BootstrapState", () => {
     expect(getTotalToolDuration()).toBe(before + 300);
   });
 
-  test("addToAPIDuration 累加器", () => {
-    const before = getTotalAPIDuration();
-    addToAPIDuration(500);
-    expect(getTotalAPIDuration()).toBe(before + 500);
-  });
-
   test("addToCost 累加器", () => {
     const before = getTotalCostUSD();
     addToCost("test-model", 0.01, {
@@ -63,13 +55,10 @@ describe("BootstrapState", () => {
 
   test("resetTurnMetrics 重置每轮指标", () => {
     addToToolDuration(100);
-    addToAPIDuration(200);
     resetTurnMetrics();
     const metrics = getTurnMetrics();
     expect(metrics.toolDurationMs).toBe(0);
     expect(metrics.toolCount).toBe(0);
-    expect(metrics.apiDurationMs).toBe(0);
-    expect(metrics.apiCount).toBe(0);
   });
 
   test("mainLoopModelOverride getter/setter", () => {

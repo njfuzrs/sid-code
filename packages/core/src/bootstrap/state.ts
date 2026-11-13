@@ -21,7 +21,6 @@ interface BootstrapState {
 
   // 成本追踪
   totalCostUSD: number;
-  totalAPIDuration: number;
   totalToolDuration: number;
   modelUsage: Record<string, { inputTokens: number; outputTokens: number }>;
 
@@ -37,7 +36,6 @@ const state: BootstrapState = {
   isInteractive: process.stdout.isTTY ?? false,
   sessionId: "",
   totalCostUSD: 0,
-  totalAPIDuration: 0,
   totalToolDuration: 0,
   modelUsage: {},
   mainLoopModelOverride: undefined,
@@ -96,13 +94,6 @@ export function addCost(usd: number): void {
 }
 export function getTotalCost(): number {
   return state.totalCostUSD;
-}
-
-export function addAPIDuration(ms: number): void {
-  state.totalAPIDuration += ms;
-}
-export function getTotalAPIDuration(): number {
-  return state.totalAPIDuration;
 }
 
 export function addToolDuration(ms: number): void {
