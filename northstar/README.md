@@ -63,6 +63,7 @@
 | | **cache_read / cache_creation 拆分**、**cache break 次数与归因** | ✅ 归因要分清「本地前缀断裂」vs「服务端 TTL / 路由抖动」——只有前者是我们的 bug |
 | 上下文（agent 特有） | **上下文占用率** used ÷ window（有效区 <50–65%）、**峰值与趋势** | ✅ `context_usage_peak_ratio` / `_peak_tokens` / `_trend` |
 | | **turns per task** —— **会话长度是成本最大杠杆**：2× 轮数 ≈ 3–4× 成本 | ✅ `metadata.total_steps`（后段每轮更贵，第 N 轮 input ≈ N × 第 1 轮） |
+| | **同一对象的最大并存等待数**（`max_concurrent_waits_per_subject`，p95）—— > 1 就是「同一件事挂了多份等待」，每个各送一条通知、各自在前台轮询，等于把同一笔钱花四遍（b0aa0f1e 实测并存 4） | ✅ `WaitRegistered` / `WaitReleased`（R1 起带 `subjects`，R1 之前的轨迹回退按 `description` 归并）→ digest `waitSource.maxConcurrentWaitsPerSubject` → `session-index.wait.max_concurrent`。**分母 = 有 `wait` 键的会话数**，键不存在 = 没起过显式等待或旧版本，**不是 0**。归因配套：`wait.duplicates_blocked` / `wait.replacements`（`WaitAdmission` 的判定事实，**被拦下的那次没有登记，只看 `WaitRegistered` 会数成 0**）、`wait.stale_claims`（R3 误读：起完等待就声称它又被杀） |
 | | **compaction 次数**（压缩丢信息 → 重读文件 → 重复付费） | ✅ `metadata.compactions` |
 | | **记忆索引可见率** = 索引指针数 ÷ 磁盘记忆文件数 —— 截断掉的条目在磁盘上、模型永远看不见，等于没写 | ✅ `memory_index_health` 的 `indexEntryCount` / `fileCount`（分母 = 同目录 `.md` 数，不含 `archive/`）。本机 2026-11-03 实测 63/201 = 31%；C3-A（描述截短）+ C3-C（低频归档）的验收目标 ≥ 60% |
 | 成本结构 | **reasoning / thinking token 单独计** | ✅ `total_reasoning_tokens`（OpenAI 族 >0；Anthropic 族恒 0，靠 `has_thinking` 区分） |
