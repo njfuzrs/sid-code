@@ -23,6 +23,7 @@ import {
   MIN_SID_WAIT_INTERVAL_S,
   MAX_SID_WAIT_INTERVAL_S,
   SID_WAIT_MAX_CONSECUTIVE_FAILURES,
+  SID_WAIT_MAX_EMITTED_FAILED_CHECKS,
   SID_WAIT_EXIT,
   type GhRestClient,
   type GhPullSnapshot,
@@ -297,6 +298,93 @@ describe("R7 runSidWaitGhPr 退出条件", () => {
     );
   });
 
+  test("check-runs 端点持续失败也要退出（计数不能被上一轮 getPull 成功清零）", async () => {
+    const { client, stats } = fakeClient({
+      // pulls 一直成功（PR 正常可查），只有 check-runs 端点挂掉——对应 token 缺 Checks
+      // 读权限 / GHE 未启用 checks API。回归点：failures 曾在 getPull 成功后就被清零，
+      // 于是这条路径永远到不了阈值，只能跑满 30 分钟期限。
+      pulls: [openPull()],
+      checksByCall: [new Error("gh api 超时"), new Error("gh api 超时"), new Error("gh api 超时")],
+    });
+    const out = recorder();
+    const result = await runSidWaitGhPr({ pr: 779, client, emit: out.emit, sleep: boundedSleep() });
+    expect(result.exitCode).toBe(SID_WAIT_EXIT.REST_FAILED);
+    expect(result.reason).toBe("rest-failed");
+    expect(result.attempts).toBe(SID_WAIT_MAX_CONSECUTIVE_FAILURES);
+    expect(stats.pullCalls).toBe(SID_WAIT_MAX_CONSECUTIVE_FAILURES);
+    // 编号必须递增到 3/3；若计数被打回 0，这里会是三个 1/3 且 result.reason 变成 aborted
+    expect(
+      out.lines.filter((l) => l.startsWith("REST_ERROR ")).map((l) => /连续 (\d+)\//.exec(l)?.[1]),
+    ).toEqual(["1", "2", "3"]);
+  });
+
+  test("check-runs 失败 2 次后恢复 → 计数清零，照常等到合并", async () => {
+    const { client, stats } = fakeClient({
+      pulls: [openPull(), openPull(), openPull(), mergedPull()],
+      checksByCall: [
+        new Error("网络抖动 1"),
+        new Error("网络抖动 2"),
+        { checkRuns: [check("test", "success")] },
+      ],
+    });
+    const result = await runSidWaitGhPr({ pr: 779, client, emit: () => {}, sleep: boundedSleep() });
+    expect(result.exitCode).toBe(SID_WAIT_EXIT.MERGED);
+    expect(stats.pullCalls).toBe(4);
+  });
+
+  test("4xx 是确定性拒绝 → 立即终态，不做 3 次退避", async () => {
+    const notFound = new Error(
+      "gh api repos/{owner}/{repo}/pulls/999999 失败（exit 1）：gh: Not Found (HTTP 404)",
+    );
+    const { client, stats } = fakeClient({ pulls: [notFound] });
+    const out = recorder();
+    const result = await runSidWaitGhPr({
+      pr: 999999,
+      client,
+      emit: out.emit,
+      sleep: boundedSleep(),
+    });
+    expect(result.exitCode).toBe(SID_WAIT_EXIT.REST_FAILED);
+    expect(result.reason).toBe("rest-fatal");
+    expect(result.httpStatus).toBe(404);
+    // 关键：只打一次 REST。重试 404 只会把「PR 号打错」推迟到 3 次退避（默认 60s+120s）之后
+    expect(stats.pullCalls).toBe(1);
+    expect(out.lines.some((l) => l.startsWith("REST_FATAL "))).toBe(true);
+    expect(formatSidWaitResultSummary(result, 999999)).toContain("HTTP 404");
+  });
+
+  test("5xx 仍按连续失败阈值退避（暂时故障不能当确定性拒绝）", async () => {
+    const serverError = () =>
+      new Error(
+        "gh api repos/{owner}/{repo}/pulls/779 失败（exit 1）：gh: Server Error (HTTP 502)",
+      );
+    const { client, stats } = fakeClient({
+      pulls: [serverError(), serverError(), serverError()],
+    });
+    const result = await runSidWaitGhPr({ pr: 779, client, emit: () => {}, sleep: boundedSleep() });
+    expect(result.reason).toBe("rest-failed");
+    expect(stats.pullCalls).toBe(SID_WAIT_MAX_CONSECUTIVE_FAILURES);
+  });
+
+  test("几十个检查同时失败时事件有上限（monitor 每行一条，不能刷屏）", async () => {
+    const many = Array.from({ length: 50 }, (_, i) => check(`job-${i}`, "failure", 1000 + i));
+    const { client } = fakeClient({
+      pulls: [openPull()],
+      checksByCall: [{ checkRuns: many }],
+    });
+    const out = recorder();
+    const result = await runSidWaitGhPr({ pr: 780, client, emit: out.emit, sleep: boundedSleep() });
+    expect(result.exitCode).toBe(SID_WAIT_EXIT.CHECK_FAILED);
+    // 结果里仍保留全部失败项（供 summary / 后续排查），只是**事件**收敛
+    expect(result.failedChecks.length).toBe(50);
+    expect(out.lines.filter((l) => l.startsWith("CHECK_FAILED ")).length).toBe(
+      SID_WAIT_MAX_EMITTED_FAILED_CHECKS,
+    );
+    expect(out.lines.filter((l) => l.startsWith("CHECK_FAILED_MORE "))).toEqual([
+      "CHECK_FAILED_MORE 另有 40 项失败未列出（共 50 项）",
+    ]);
+  });
+
   test("失败后恢复：连续失败 2 次（未到阈值 3）不退出，恢复后照常等到合并", async () => {
     const { client, stats } = fakeClient({
       pulls: [
@@ -331,6 +419,9 @@ describe("R7 runSidWaitGhPr 退出条件", () => {
         return false;
       },
     });
+    // 主动停止必须有独立退出码：与「REST 连续失败」共用 5 会让脚本把「我停的」
+    // 误读成「网络挂了」（入口 kill 路径会短路掉这个码，但直接调用方拿得到）
+    expect(result.exitCode).toBe(SID_WAIT_EXIT.ABORTED);
     expect(result.reason).toBe("aborted");
     expect(stats.pullCalls).toBe(1);
   });

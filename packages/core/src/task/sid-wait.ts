@@ -36,6 +36,14 @@ export const MIN_SID_WAIT_INTERVAL_S = 5;
 export const MAX_SID_WAIT_INTERVAL_S = 300;
 /** 连续 REST 失败的阈值：抖动不该被误报成「CI 失败」，但一直失败必须退出 */
 export const SID_WAIT_MAX_CONSECUTIVE_FAILURES = 3;
+/**
+ * 失败检查逐条输出的上限（monitor 入口每行一条事件）。
+ *
+ * 为什么必须有上限：一次全仓 CI 崩（几十个 job 同时 failure）会往事件流里投递几十条
+ * `CHECK_FAILED`，把模型上下文冲掉；而 summary 本来就只提 3 项。两条通道口径要一致，
+ * 都不能「有多少打多少」。
+ */
+export const SID_WAIT_MAX_EMITTED_FAILED_CHECKS = 10;
 /** 退避上限：连续失败时按 2^n 拉长，但不无限拉长（否则退出要等很久） */
 export const SID_WAIT_MAX_BACKOFF_MS = 120_000;
 /**
@@ -61,8 +69,17 @@ export const SID_WAIT_EXIT = {
   CLOSED: 3,
   /** mergeable_state == dirty（有冲突） */
   CONFLICT: 4,
-  /** REST 连续失败超过阈值 */
+  /** REST 连续失败超过阈值，或被 GitHub 以 4xx 确定性拒绝（PR 不存在 / 无权限） */
   REST_FAILED: 5,
+  /**
+   * 等待被取消（kill / 期限到）。
+   *
+   * **bash / monitor 两个入口不会产出这个码**：kill 路径在入口里先置 `killed` 短路，
+   * `run()` 的返回值被丢弃。它只对「直接调用 `runSidWaitGhPr`」的消费方有意义——
+   * 那里必须能把「我主动停的」与「查询连续失败」（REST_FAILED）区分开，
+   * 否则脚本 `if [ $? -eq 5 ]` 会把主动停止误读成网络故障。
+   */
+  ABORTED: 6,
 } as const;
 
 export type SidWaitExitCode = (typeof SID_WAIT_EXIT)[keyof typeof SID_WAIT_EXIT];
@@ -157,11 +174,22 @@ export interface GhRestClient {
 export interface SidWaitGhPrResult {
   exitCode: SidWaitExitCode;
   /** 机器可读的原因，同时用于终态通知的 summary */
-  reason: "merged" | "closed" | "check-failed" | "conflict" | "rest-failed" | "aborted";
+  reason:
+    | "merged"
+    | "closed"
+    | "check-failed"
+    | "conflict"
+    | "rest-failed"
+    | "rest-fatal"
+    | "aborted";
   /** 失败退出时命中的检查（供回执点名） */
   failedChecks: GhCheckRun[];
   /** 观察到的最后一个 head（终态通知里带，便于核对是不是在旧 commit 上盖的结论） */
   headSha: string | null;
+  /** `rest-fatal` 时 GitHub 返回的 HTTP 状态码（404 / 403 等），summary 据此说清原因 */
+  httpStatus?: number;
+  /** `rest-failed` 时实际累计到的连续失败次数（调用方可传非默认阈值） */
+  attempts?: number;
 }
 
 export interface SidWaitGhPrOptions {
@@ -206,6 +234,24 @@ function describeError(err: unknown): string {
   return message.replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
+/**
+ * 从 `gh api` 的错误信息里取 HTTP 状态码。
+ *
+ * `gh api` 失败时 stderr 形如 `gh: Not Found (HTTP 404)`，状态码是唯一能区分
+ * 「确定性拒绝」与「暂时故障」的信号：4xx 重试没有意义（PR 号打错、token 对该仓库
+ * 无读权限、仓库不存在），而 5xx / 超时 / DNS 抖动才值得退避。
+ *
+ * 注意用**原始消息**提取而不是 `describeError` 截断后的 200 字符——状态码在行尾，
+ * 长 stderr 会被截掉。
+ */
+export function extractHttpStatus(err: unknown): number | undefined {
+  const message = err instanceof Error ? err.message : String(err);
+  const match = /\(HTTP (\d{3})\)/.exec(message);
+  if (!match) return undefined;
+  const status = Number(match[1]);
+  return status >= 400 && status <= 599 ? status : undefined;
+}
+
 /** 短 sha：通知正文里够核对是哪个 commit，又不占篇幅 */
 function shortSha(sha: string | null): string {
   return sha ? sha.slice(0, 8) : "未知 commit";
@@ -240,7 +286,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
   let failures = 0;
 
   const aborted = (): SidWaitGhPrResult => ({
-    exitCode: SID_WAIT_EXIT.REST_FAILED,
+    exitCode: SID_WAIT_EXIT.ABORTED,
     reason: "aborted",
     failedChecks: [],
     headSha: lastHead,
@@ -251,6 +297,21 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
     endpoint: string,
     err: unknown,
   ): Promise<SidWaitGhPrResult | null> => {
+    // 4xx 是确定性拒绝：PR 号打错、token 对该仓库无读权限、仓库不存在。
+    // 重试改变不了结果，只会让「PR 不存在」这件事拖到 3 次退避之后（默认 60s+120s）
+    // 才报出来——那正是本原语要消灭的「等很久才知道」。立即终态。
+    // 5xx / 超时 / DNS 抖动仍然退避重试。
+    const httpStatus = extractHttpStatus(err);
+    if (httpStatus !== undefined && httpStatus < 500) {
+      emit(`REST_FATAL ${endpoint} HTTP ${httpStatus} ${describeError(err)}`);
+      return {
+        exitCode: SID_WAIT_EXIT.REST_FAILED,
+        reason: "rest-fatal",
+        failedChecks: [],
+        headSha: lastHead,
+        httpStatus,
+      };
+    }
     failures += 1;
     emit(`REST_ERROR ${endpoint} ${describeError(err)}（连续 ${failures}/${maxFailures}）`);
     if (failures >= maxFailures) {
@@ -259,6 +320,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
         reason: "rest-failed",
         failedChecks: [],
         headSha: lastHead,
+        attempts: failures,
       };
     }
     const backoffMs = Math.min(intervalMs * 2 ** failures, SID_WAIT_MAX_BACKOFF_MS);
@@ -270,10 +332,13 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
     if (signal?.aborted) return aborted();
 
     // ── pulls/<n>：终态判定 + 最新 head ──
+    // 注意这里**不**清零 failures：清零只发生在整轮（pull + check-runs）都成功之后。
+    // 曾经在 getPull 成功后就清零，于是 check-runs 端点持续失败（token 缺 Checks 读权限、
+    // GHE 未启用 checks API）时，计数每轮被打回 0，`failures >= maxFailures` 永远不成立，
+    // 等待只能跑满 30 分钟期限——正好退化成本原语要消灭的「期限到才知道」。
     let pull: GhPullSnapshot;
     try {
       pull = await opts.client.getPull(opts.pr);
-      failures = 0;
     } catch (err) {
       const terminal = await onRestFailure(`pulls/${opts.pr}`, err);
       if (terminal) return terminal;
@@ -319,6 +384,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
     let checks: GhCheckRunsSnapshot;
     try {
       checks = await opts.client.getCheckRuns(opts.pr, pull.headSha);
+      // 整轮都成功了才清零：这就是「连续失败」的唯一定义点（见上面 pulls 分支的注释）
       failures = 0;
     } catch (err) {
       const terminal = await onRestFailure(`commits/${pull.headSha}/check-runs`, err);
@@ -330,9 +396,15 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
       (run) => run.conclusion !== null && FAILED_CONCLUSIONS.has(run.conclusion),
     );
     if (failed.length > 0) {
-      // 每条失败单独一行：monitor 入口每行一条事件，模型能逐条看到是哪个分片坏了
-      for (const run of failed) {
+      // 每条失败一行：monitor 入口每行一条事件，模型能逐条看到是哪个分片坏了。
+      // 但必须有上限——全仓 CI 崩时几十个 job 同时 failure，逐条投递会把上下文冲掉；
+      // summary 本来就只提 3 项，这里收敛到同一量级，超出的部分用一行说明。
+      for (const run of failed.slice(0, SID_WAIT_MAX_EMITTED_FAILED_CHECKS)) {
         emit(`CHECK_FAILED ${run.name} (${run.conclusion}) job=${run.id ?? "?"}`);
+      }
+      const omitted = failed.length - SID_WAIT_MAX_EMITTED_FAILED_CHECKS;
+      if (omitted > 0) {
+        emit(`CHECK_FAILED_MORE 另有 ${omitted} 项失败未列出（共 ${failed.length} 项）`);
       }
       return {
         exitCode: SID_WAIT_EXIT.CHECK_FAILED,
@@ -371,7 +443,13 @@ export function formatSidWaitResultSummary(result: SidWaitGhPrResult, pr: number
       return `等待结束：PR #${pr} 有检查失败——${shown}${more}（${shortSha(result.headSha)}）`;
     }
     case "rest-failed":
-      return `等待结束：查询 PR #${pr} 的 gh REST 连续失败 ${SID_WAIT_MAX_CONSECUTIVE_FAILURES} 次，无法判断状态`;
+      return `等待结束：查询 PR #${pr} 的 gh REST 连续失败 ${
+        result.attempts ?? SID_WAIT_MAX_CONSECUTIVE_FAILURES
+      } 次，无法判断状态`;
+    case "rest-fatal":
+      return `等待结束：查询 PR #${pr} 被 GitHub 拒绝（HTTP ${
+        result.httpStatus ?? "4xx"
+      }）——这不是暂时的网络问题，先确认 PR 号存在、当前 token 对该仓库有读权限`;
     case "aborted":
       return `等待结束：PR #${pr} 的等待已被停止`;
   }
