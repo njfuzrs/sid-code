@@ -89,7 +89,7 @@ interface FooterProps {
   discardedRequests?: number;
   /**
    * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
-   * `undefined` = 尚无命中 → 不渲染 ⚡ 列。
+   * `undefined` = 尚无命中 → 不渲染 ↯ 列。
    *
    * **由 core 算好推下来，组件不许自己拿 usage + model 重算**：命中率的协议族归一化
    * 必须按每个模型**自己记账时的 provider** 逐条做（`getNormalizedCacheUsage`），
@@ -333,12 +333,14 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   if (data.tps) {
     metricSegs.push({
       key: "tps",
+      // str 与 nodes 必须列宽一致：数值取 `value` 而不是从 `text` 里 slice 掉字形，
+      // 后者依赖「text 恰好以 TPS_MARK 开头」这个隐式契约，字形一变长就静默错位。
       str: data.tps.text,
       dropOrder: 5,
       nodes: (
         <>
           <Text color={dim}>{TPS_MARK}</Text>
-          <Text color={val}>{data.tps.text.slice(TPS_MARK.length)}</Text>
+          <Text color={val}>{data.tps.value}/s</Text>
         </>
       ),
     });

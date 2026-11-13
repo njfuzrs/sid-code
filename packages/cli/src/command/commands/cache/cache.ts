@@ -144,7 +144,7 @@ export class CacheCommand implements LocalCommandModule {
         type: "text",
         value:
           "暂无用量账本数据。账本在每次会话结束时落一行到 ~/.sid-code/usage-ledger.jsonl，\n" +
-          "跑完至少一个会话后再查。（当前会话的实时命中率见状态栏 ⚡ 列与 /stats）",
+          "跑完至少一个会话后再查。（当前会话的实时命中率见状态栏 ↯ 列与 /stats）",
       };
     }
 

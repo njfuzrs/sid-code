@@ -268,6 +268,17 @@ describe("tps 列 — deriveTps（会话累计输出吞吐）", () => {
     expect(deriveTps(Number.NaN)).toBeNull();
   });
 
+  test("0 < x < 0.5 取整为 0 → null，不产出 `⇢0/s` 误导读数", () => {
+    // `⇢0/s` 会被读成「生成速度为零」，与「无样本」混成同一个读数，而两者的对策相反
+    // （前者是「很慢、还要等更久」，后者是「还没数据」）。
+    // 真实场景：首轮只吐几十 token 且思考很久，会话累计均值会落在 0.x tok/s。
+    expect(deriveTps(0.4)).toBeNull();
+    expect(deriveTps(0.49)).toBeNull();
+    expect(deriveTps(0.08)).toBeNull();
+    // 0.5 起进位成 1，恢复渲染
+    expect(deriveTps(0.5)!.text).toBe("⇢1/s");
+  });
+
   test("取整 + 最短单位：41.4 → `⇢41/s`，不是 `⇢41.4 tok/s`", () => {
     const r = deriveTps(41.4)!;
     expect(r.text).toBe("⇢41/s");

@@ -255,7 +255,12 @@ export function deriveCacheMetrics(
 export function deriveTps(outputTps?: number): { text: string; value: number } | null {
   if (outputTps === undefined || !Number.isFinite(outputTps) || outputTps <= 0) return null;
   // 取整：`⇢41/s` 比 `⇢41.3/s` 短 2 列且读数更稳（行1 空间紧张，见 Footer 的 dropOrder）。
-  return { text: `${TPS_MARK}${Math.round(outputTps)}/s`, value: Math.round(outputTps) };
+  const rounded = Math.round(outputTps);
+  // 取整后为 0（即 0 < outputTps < 0.5）时同样不渲染：`⇢0/s` 会被读成「生成速度为零」，
+  // 与「无样本」混成同一个读数 —— 而这两件事的对策完全相反（前者要等更久，后者是没数据）。
+  // 真实触发场景：首轮只吐几十 token 且思考很久，会话累计均值会落在 0.1–0.4 tok/s 区间。
+  if (rounded <= 0) return null;
+  return { text: `${TPS_MARK}${rounded}/s`, value: rounded };
 }
 
 /**
@@ -485,7 +490,7 @@ export interface StatusLineInput {
   outputTps?: number;
   /**
    * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
-   * `undefined` = 尚无命中 → ⚡ 列不渲染。**不在本 hook 里重算**，见 `deriveCacheMetrics`。
+   * `undefined` = 尚无命中 → ↯ 列不渲染。**不在本 hook 里重算**，见 `deriveCacheMetrics`。
    */
   cacheHitRate?: number;
   /** true = contextPercent 未经真实 usage 校准（Footer 显示 ~ 前缀） */
