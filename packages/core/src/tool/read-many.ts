@@ -139,6 +139,14 @@ export class ReadManyTool implements Tool {
   readonly zodSchema = readManySchema();
 
   /**
+   * 呈现档位 `"compact"`：批量读取的正文是多个文件的完整内容（总输出上限
+   * `MAX_TOTAL_OUTPUT` = 100000 字符），是 `read` 的多文件版，同属「一次几百行」型。
+   * 默认折成零行正文、标题行给「N 个文件 / N 行」，按 ctrl+o 展开——正文始终留在
+   * `resultDisplay.content` 里，没丢。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
+  /**
    * P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths）。
    *
    * read_many 是原硬编码名单漏得最狠的一个：子代理常用它批量读

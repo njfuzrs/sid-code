@@ -310,6 +310,13 @@ export class WebFetchTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = webFetchSchema();
 
+  /**
+   * 呈现档位 `"compact"`：网页正文 / 提炼结果上限 `MAX_CONTENT_LENGTH` = 100000 字符，
+   * 是典型的「一次几十上百行」，默认铺满屏幕会把主屏历史挤空。默认折成零行正文、
+   * 标题行给抓取到的字数，按 ctrl+o 展开——正文始终留在 `resultDisplay.content` 里，没丢。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
   readOnly(): boolean {
     return true;
   }

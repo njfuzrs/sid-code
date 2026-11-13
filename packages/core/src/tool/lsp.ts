@@ -223,6 +223,15 @@ export function lspToolEnabledFor(initState: string, serverCount: number): boole
 export class LSPTool implements Tool {
   readonly zodSchema = lspSchema();
 
+  /**
+   * 呈现档位 `"compact"`：引用 / 符号 / 实现列表最多 50 条（`MAX_LOCATIONS`），
+   * 与 `grep` 同属「代码检索结果」型。默认折成零行正文、标题行给「N 处」，
+   * 按 ctrl+o 展开——正文始终留在 `resultDisplay.content` 里，没丢。
+   *
+   * 「未找到定义」这类单行结论由 UI 侧（history-adapter）按视觉行数降级回原样展示。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
   /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
   jitAffectedPaths(input: unknown): string[] {
     return pickPaths(input, "file_path");
