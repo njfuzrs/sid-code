@@ -208,6 +208,9 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     // 新会话会沿用上一段的 `≈$` 前缀，而它已经没有任何 CNY 计价模型在记账了。
     costFxConverted: false,
     cacheSavingsUSD: 0,
+    // 吞吐列在同一生命周期：/clear 清空 modelUsage 后 total_gen_elapsed_ms / 样本数一起归零，
+    // 上游会重新推一个 undefined（`undefined` = 无样本，Footer 不渲染该列），这里先落到哨兵。
+    outputTps: undefined,
     // D18：命中率与 token/cost 同一生命周期——/clear 清空 modelUsage 后必须一起归零，
     // 否则状态栏会继续显示上一会话的 ⚡N%（`undefined` = 无命中数据，Footer 不渲染该列）。
     cacheHitRate: undefined,

@@ -26,8 +26,12 @@ import { subscribeCostToBridge } from "@sid-code/cli/ui/cost-bridge.ts";
 const FLUSH_WAIT_MS = 80;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** 复刻 app.ts 的接线：真实 SessionState + 真实 StateBridge 首帧字段 */
-function wire() {
+/**
+ * 复刻 app.ts 的接线：真实 SessionState + 真实 StateBridge 首帧字段。
+ * `getOutputTps` 与生产同形（app.ts 传的是 `() => traceCollector?.getOutputTps()`），
+ * 这里传假 getter 是为了单测不必拉起整个 trace 层——接线测的是「有没有推」，不是「怎么算」。
+ */
+function wire(getOutputTps?: () => number | undefined) {
   const sessionState = new SessionState("d1-bridge");
   const bridge = new StateBridge({
     costUSD: sessionState.getEffectiveTotalCostUSD(),
@@ -40,7 +44,7 @@ function wire() {
   } as any);
   const frames: number[] = [];
   bridge.on("change", (s: any) => frames.push(s.costUSD));
-  const off = subscribeCostToBridge(sessionState, bridge);
+  const off = subscribeCostToBridge(sessionState, bridge, getOutputTps);
   return { sessionState, bridge, frames, off };
 }
 
@@ -160,6 +164,71 @@ describe("D1 · 入账 → 状态栏接线", () => {
     // 合计: 命中 15500 / promptTotal 20000 = 77.5% → 78%
     expect(sessionState.getCacheHitRate()).toBe(78);
     expect(bridge.current.cacheHitRate).toBe(78);
+    off();
+    bridge.detach();
+  });
+});
+
+describe("吞吐列 · 入账 → 状态栏接线", () => {
+  test("每笔入账都重读 tps getter，并推进 outputTps", async () => {
+    let tps: number | undefined;
+    const { sessionState, bridge, off } = wire(() => tps);
+
+    // 首轮生成结束：collector 已累加样本 → getter 开始有值
+    tps = 41.2;
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+    expect(bridge.current.outputTps).toBeCloseTo(41.2, 6);
+
+    // 下一轮生成更慢，累计均值被拉低 —— 入账时再读一次，UI 跟着变
+    tps = 30;
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+    expect(bridge.current.outputTps).toBeCloseTo(30, 6);
+    off();
+    bridge.detach();
+  });
+
+  test("getter 返回 undefined（无样本 / trace 关闭）→ outputTps 落 undefined，不落 0", async () => {
+    const { sessionState, bridge, off } = wire(() => undefined);
+
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+
+    // 关键区分：undefined = 「没样本，Footer 隐藏该列」；0 会被渲染成 `⇢0/s`
+    expect(bridge.current.outputTps).toBeUndefined();
+    off();
+    bridge.detach();
+  });
+
+  test("省略 getter（未接 trace 的旧调用方）→ 不推该字段，其余照常", async () => {
+    const { sessionState, bridge, off } = wire();
+
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+
+    expect(bridge.current.outputTps).toBeUndefined();
+    expect(bridge.current.costUSD).toBeGreaterThan(0);
     off();
     bridge.detach();
   });

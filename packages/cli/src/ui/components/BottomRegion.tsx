@@ -108,8 +108,16 @@ export interface BottomRegionSharedProps {
   costUSD: number;
   /** 本会话入账价是否发生过汇率折算（费用列 `≈$` / `$` 的判据，见 SessionState.isCostFxConverted） */
   costFxConverted?: boolean;
-  /** 10.3：会话累计缓存节省金额（美元） */
+  /**
+   * 会话累计缓存节省金额（美元）。`stats` 面板（DialogSwitch→StatsDialog）仍在消费，
+   * 状态栏那一格已换成 `outputTps`，但本 prop 不能一起删——否则 /stats 的「缓存节省」行没了。
+   */
   cacheSavingsUSD?: number;
+  /**
+   * 会话输出吞吐（tokens/sec，`TraceCollector.getOutputTps()`）。
+   * `undefined` = 尚无纯生成耗时样本 → Footer 不渲染该列。组件不重算，见 Footer 的 prop 注释。
+   */
+  outputTps?: number;
   /**
    * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
    * `undefined` = 尚无命中 → Footer 不渲染 ⚡ 列。组件不重算，见 Footer 的 prop 注释。
@@ -213,6 +221,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
   costUSD,
   costFxConverted,
   cacheSavingsUSD,
+  outputTps,
   cacheHitRate,
   totalRequests,
   discardedRequests,
@@ -338,7 +347,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
         stockInputTokens={stockInputTokens}
         costUSD={costUSD}
         costFxConverted={costFxConverted}
-        cacheSavingsUSD={cacheSavingsUSD}
+        outputTps={outputTps}
         cacheHitRate={cacheHitRate}
         totalRequests={totalRequests}
         discardedRequests={discardedRequests}

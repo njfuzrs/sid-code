@@ -19,6 +19,12 @@
  * - **返回值必须被调用**（TUI 卸载后反注册）：SessionEnd 前的收尾调用仍会入账，
  *   那时 bridge 已不再渲染，继续写只是往没人消费的状态里灌值。
  *
+ * 吞吐也走这条线（`outputTps`）：它的更新时机天生与入账同步——累计值只在该轮
+ * `stream_completed` 之后变一次，而那次累加就发生在主循环 `updateUsage()`（= 入账）之前。
+ * 因此不需要新的事件源，也不需要 32ms 合帧之外的高频推送：**读数每轮最多变一次**。
+ * getter 由调用方注入（`() => traceCollector?.getOutputTps()`），本模块不认识 trace 层，
+ * 单测可以直接传一个假 getter —— 接的是「谁提供数」，不是「数从哪算」。
+ *
  * D18：命中率也在这里推（`cacheHitRate`），且**只推 core 算好的那个数**。
  * 状态栏此前自己拿「全会话合计 usage + 当前模型推断的 provider」重算，单模型会话看不出问题，
  * 但会话里换过模型、或主模型与子代理协议族不同时，anthropic 的 `input`（未命中余量）会被
@@ -44,7 +50,12 @@ type CostSource = Pick<
 /** 只用到 updateStreaming，避免把整个 StateBridge 契约拖进类型 */
 type CostSink = Pick<StateBridge, "updateStreaming">;
 
-export function subscribeCostToBridge(session: CostSource, bridge: CostSink): () => void {
+export function subscribeCostToBridge(
+  session: CostSource,
+  bridge: CostSink,
+  /** 会话输出吞吐 getter（`TraceCollector.getOutputTps()`）。省略则不推该列。 */
+  getOutputTps?: () => number | undefined,
+): () => void {
   return session.addCostChangeListener(() => {
     bridge.updateStreaming({
       costUSD: session.getEffectiveTotalCostUSD(),
@@ -56,6 +67,9 @@ export function subscribeCostToBridge(session: CostSource, bridge: CostSink): ()
       // 自己的 provider 归一化后加总，与 /cost 同一个数）。UI 层不许再拿 usage + 当前模型
       // 推断的 provider 重算——多模型/跨协议族会话那样算会错。
       cacheHitRate: session.getCacheHitRate(),
+      // 每笔入账都重读一次：该轮若刚结束，这里拿到的就是含本轮样本的最新累计均值；
+      // 若这轮还没结束（如辅助调用入账），读到的是上一轮的均值，不会倒退成 0。
+      outputTps: getOutputTps?.(),
     });
   });
 }

@@ -3539,6 +3539,22 @@ export class TraceCollector {
     return this.initialized ? this.metadata : undefined;
   }
 
+  /**
+   * 会话级输出吞吐（tokens/sec），供 TUI 状态栏读取。
+   *
+   * 公式只有一份：`deriveOutputTps`（`trace/builder.ts`），与落盘的
+   * `output_tokens_per_sec`、`/perf` 的「生成速度」同行同一个数——一个指标两个出口，
+   * 状态栏和 /perf 不会对不上。分子 `total_tokens_received` 只来自主循环，
+   * 分母 `total_gen_elapsed_ms` 只累加主循环、未截断的流（口径见 builder.ts 的字段注释）。
+   *
+   * 未初始化（轨迹采集被关闭 / 尚未 init）返回 undefined：那时没有流级样本，
+   * 与其落一个 0 让用户误读成「生成很慢」，不如让 UI 隐藏该列。
+   */
+  getOutputTps(): number | undefined {
+    if (!this.initialized) return undefined;
+    return deriveOutputTps(this.metadata);
+  }
+
   /** 当前 prevMessageCount（供测试检查增量逻辑） */
   getPrevMessageCount(): number {
     return this.prevMessageCount;

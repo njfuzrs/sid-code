@@ -407,8 +407,16 @@ export interface TUIState {
    * 同名模型走美元网关价时会错标 ≈（D7）。
    */
   costFxConverted: boolean;
-  /** 10.3：会话累计缓存节省金额（美元） */
+  /**
+   * 会话累计缓存节省金额（美元）。`stats` 面板仍在消费（DialogSwitch→StatsDialog），
+   * 状态栏那一格已换成 `outputTps`。
+   */
   cacheSavingsUSD: number;
+  /**
+   * 会话输出吞吐（tokens/sec，`TraceCollector.getOutputTps()` 推下来的数）。
+   * `undefined` = 尚无纯生成耗时样本（首轮流结束前 / 轨迹采集关闭）→ 状态栏不渲染该列。
+   */
+  outputTps?: number;
   /**
    * 会话级缓存命中率（0-100 整数）。`undefined` = 尚无命中（Footer 不渲染 ⚡ 列）。
    *
@@ -1667,6 +1675,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               costUSD={state.costUSD}
               costFxConverted={state.costFxConverted}
               cacheSavingsUSD={state.cacheSavingsUSD}
+              outputTps={state.outputTps}
               cacheHitRate={state.cacheHitRate}
               totalRequests={state.totalRequests}
               discardedRequests={state.discardedRequests}
@@ -1735,6 +1744,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               costUSD={state.costUSD}
               costFxConverted={state.costFxConverted}
               cacheSavingsUSD={state.cacheSavingsUSD}
+              outputTps={state.outputTps}
               cacheHitRate={state.cacheHitRate}
               totalRequests={state.totalRequests}
               discardedRequests={state.discardedRequests}

@@ -5,24 +5,24 @@
  * 反而显得零散不成整体。这版改为**每行单侧对齐、按语义把相关信息聚成一条连续流**，
  * 视觉语言仍对标 claude-code 的 statusline（区内 ` · ` 连接、克制点睛）：
  *
- *   行1(会话/运行 · 左对齐)  glm-5.2 · ✻ · max · 4% · ↑30.9k ↓116 · $0.0343 · ⚡47%
+ *   行1(会话/运行 · 左对齐)  glm-5.2 · ✻ · max · 4% · ↑30.9k ↓116 · $0.0343 · ↯47% · ⇢41/s
  *   行2(环境/上下文 · 右对齐)                              sid-code ⎇ master · ⏸ Manual
  *
  * ① 分两行（纵向分层）：
  *    - 行1｜会话运行态（每轮在变、需要盯的）：model · thinking · effort · [PLAN] ·
- *      context% · tokens(↑in ↓out) · cost · cache% · savings · scroll。**整行左对齐**，
+ *      context% · tokens(↑in ↓out) · cost · cache% · tps · scroll。**整行左对齐**，
  *      从最左视线起点一条流读下来。
  *    - 行2｜环境上下文（很少变、次要的）：repo ⎇ branch · ⑂worktree · 权限模式。
  *      **整行右对齐**，退到右下角，与行1错开，主次分明。
  * ② 一行内所有项用统一 ` · ` 连接成一条连续流（不再用大留白把信息撕成两半），读感整体。
- * ③ 「两色层次」：同一项内部拆「单位/符号(暗)」+「数值(亮)」两色——方向箭头 ↑↓、⚡、⎇、
+ * ③ 「两色层次」：同一项内部拆「单位/符号(暗)」+「数值(亮)」两色——方向箭头 ↑↓、↯、⎇、
  *    $ 符号、分隔点一律暗色(theme.ui.comment)后退；真正的数值(token 数、分支名、model)
  *    用亮色(theme.text.primary)前进。即便全程无告警也有「标签→数值」层次，不再一片灰。
  *    语义告警(上下文超阈红/黄、缓存命中绿、费用超限红/黄、max 档蓝、危险权限红)再点睛。
  *
  * 不折行兜底：两行各 flexWrap="nowrap" + overflow="hidden" + 每个 <Text> wrap="truncate-end"；
- * 行1 极窄时按 dropOrder 从低价值到高价值逐项丢计量项（scroll→savings→cache→cost→tokens→
- * context），model / 旋钮永远保留；行2 极窄时先丢 git 段，权限模式永远保留。
+ * 行1 极窄时按 dropOrder 从低价值到高价值逐项丢计量项（scroll→requests→tps→cache→cost→
+ * tokens→context），model / 旋钮永远保留；行2 极窄时先丢 git 段，权限模式永远保留。
  */
 
 import React from "react";
@@ -39,6 +39,8 @@ import {
   TOKEN_OUT,
   RETRY_MARK,
   ERROR_MARK,
+  CACHE_MARK,
+  TPS_MARK,
 } from "../constants/figures.ts";
 import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
 import { useConfig } from "../contexts/ConfigContext.tsx";
@@ -73,8 +75,14 @@ interface FooterProps {
   contextEstimated?: boolean;
   model: string;
   scrollPercent?: number;
-  /** 10.3：会话累计缓存节省金额（美元） */
-  cacheSavingsUSD?: number;
+  /**
+   * 会话输出吞吐（tokens/sec，core 的 `TraceCollector.getOutputTps()` 推下来的数）。
+   * `undefined` = 尚无纯生成耗时样本（首轮流结束前 / 轨迹采集关闭）→ 不渲染该列。
+   *
+   * 与 `/perf` 的「生成速度」同源同数（`total_tokens_received ÷ total_gen_elapsed_ms`），
+   * 组件不许自己用「outputTokens ÷ 会话时长」重算——那是含工具等待的端到端口径。
+   */
+  outputTps?: number;
   /** 会话累计 API 调用次数（SessionState.getTotalRequests()）。0/省略 → 不显示该列。 */
   totalRequests?: number;
   /** 其中作废（重试白烧）的次数，是 totalRequests 的子集。 */
@@ -302,7 +310,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       ),
     });
   }
-  // cache：⚡符号(暗) + 命中率(≥50% 绿点睛，否则亮)。
+  // cache：↯符号(暗) + 命中率(≥50% 绿点睛，否则亮)。
   if (data.cache) {
     const rateColor = data.cache.rate >= 50 ? theme.status.success : val;
     metricSegs.push({
@@ -311,35 +319,41 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       dropOrder: 4,
       nodes: (
         <>
-          <Text color={dim}>⚡</Text>
+          <Text color={dim}>{CACHE_MARK}</Text>
           <Text color={rateColor}>{data.cache.rate}%</Text>
         </>
       ),
     });
   }
-  // savings：金额(绿) + " saved" 后缀(暗)。
-  if (data.cacheSavings) {
-    const amount = data.cacheSavings.text.replace(/\s*saved\s*$/, "");
+  // tps：⇢符号(暗) + 吞吐数值(亮)。位置就在原 savings 那一格（dropOrder=5），
+  // 窄屏丢弃次序不变：scroll→requests→tps→cache→cost→tokens→context。
+  //
+  // 为什么是「会话累计 tok/s」而不是 TTFT / 端到端：见 deriveTps 的注释与 Agent Note。
+  // 读数只在该轮生成结束时变一次，不会随流式刷新抖动。
+  if (data.tps) {
     metricSegs.push({
-      key: "savings",
-      str: data.cacheSavings.text,
+      key: "tps",
+      str: data.tps.text,
       dropOrder: 5,
       nodes: (
         <>
-          <Text color={theme.status.success}>{amount}</Text>
-          <Text color={dim}> saved</Text>
+          <Text color={dim}>{TPS_MARK}</Text>
+          <Text color={val}>{data.tps.text.slice(TPS_MARK.length)}</Text>
         </>
       ),
     });
   }
   // requests：⟳符号(暗) + 调用次数(亮) + 白烧后缀 ✘N(占比>20% 转黄，否则暗)。
   //
-  // 放在计量段末尾（scroll 之前）是刻意的：它是**会话总账**，与左侧 model/旋钮那簇
+  // 放计量段末尾（scroll 之前）是刻意的：它是**会话总账**，与左侧 model/旋钮那簇
   // 「本轮运行态」不同族，贴在计量流尾部不打断 context→tokens→cost→cache 的读序。
   //
-  // dropOrder=5.5：比 savings(5) 先丢、比 scroll(6) 后丢。用小数而不是把 scroll 改成 7，
-  // 是为了不动既有六项的相对次序（fitRow 用严格 `>` 取最大值，同值时先出现的先丢，
+  // dropOrder=5.5：比 tps(5) 先丢、比 scroll(6) 后丢。用小数而不是把 scroll 改成 7，
+  // 是为了不动既有各段的相对次序（fitRow 用严格 `>` 取最大值，同值时先出现的先丢，
   // 改动既有值会连带改变那批段之间的丢弃顺序）。
+  //
+  // ⟳ 与数字之间**不留空格**（`⟳12`）：字形本身没有右侧留白需求，类目符号与数值
+  // 贴紧更紧凑；白烧后缀前的那个空格是**两项之间的分隔**（⟳12 ✘3），保留。
   if (data.requests) {
     metricSegs.push({
       key: "requests",
@@ -347,7 +361,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       dropOrder: 5.5,
       nodes: (
         <>
-          <Text color={dim}>{RETRY_MARK} </Text>
+          <Text color={dim}>{RETRY_MARK}</Text>
           <Text color={val}>{data.requests.requests}</Text>
           {data.requests.discarded > 0 && (
             <>
@@ -446,7 +460,10 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     : data.permission.display === "default"
       ? dim
       : data.permission.color;
-  const permStr = (data.permission.isDanger ? `${WARNING_MARK} ` : "") + data.permission.display;
+  // 危险权限的 ⚠ 与模式名之间不留空格（`⚠skip-perms`）：⚠ 实测宽度 1（string-width@7），
+  // 字形右侧已有视觉留白，再垫一个空格会读成两段。此前注释写「ambiguous-width 记 2 列」
+  // 是基于旧版 string-width 的结论，已过时。
+  const permStr = (data.permission.isDanger ? WARNING_MARK : "") + data.permission.display;
   row2Segs.push({
     key: "perm",
     str: permStr,
@@ -496,7 +513,8 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   // 关键坑（此前反复截断的真根因）：内层行**不能再写 width="100%"**。外层已 paddingX={1}，
   // 内层的 100% 会按含 padding 的宽度解析、比实际内容区宽 2 列，整行右移溢出右 padding，
   // 最右一个字符被 setCellAt 的边界检查丢弃 → 权限模式恒被截成「skip-perm」（少末字符），
-  // 加上 ⚠ 是 ambiguous-width（string-width 记 2 列、ink 渲染按 1 列）时更明显。去掉内层
+  // 加上 ⚠ 是 ambiguous-width 时更明显（旧版 string-width 记 2 列；string-width@7 实测
+  // ⚠ = 1 列，与非危险档同宽，不再是本坑的成因）。去掉内层
   // width 后行宽由 flex 父容器（已扣 padding 的内容区）自然决定，右对齐贴齐右 padding 内缘。
   // 内容盒 flexShrink={0}：fitRow 已按实测宽度保证放得下，不允许 Yoga 再压缩误触截断。
   return (
