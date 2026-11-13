@@ -60,6 +60,14 @@ function finalizeShellTaskExit(opts: {
   display: string;
   code: number | null;
   signal: NodeJS.Signals | null;
+  /**
+   * 覆盖终态通知的 summary。
+   *
+   * 内置等待原语（`sid-wait`）的退出码不是「命令成功/失败」的语义：「有检查失败 → exit 1」
+   * 是**正常回报**，说成「命令失败」会让模型以为原语坏了。所以它自带一句摘要。
+   * 普通 shell 任务不传，文案与改动前逐字一致。
+   */
+  summary?: string;
 }): void {
   const { taskId, toolUseId, outputFile, display, code, signal } = opts;
   const existing = getTask(taskId);
@@ -82,9 +90,9 @@ function finalizeShellTaskExit(opts: {
     toolUseId,
     outputFile,
     status: code === 0 ? "completed" : "failed",
-    summary: `命令 "${display.slice(0, 60)}" ${
-      code === 0 ? "执行成功" : `失败 (exit code: ${code})`
-    }`,
+    summary:
+      opts.summary ??
+      `命令 "${display.slice(0, 60)}" ${code === 0 ? "执行成功" : `失败 (exit code: ${code})`}`,
   });
 }
 
@@ -292,6 +300,116 @@ export function adoptRunningProcessAsTask(opts: {
   };
 }
 
+/**
+ * 内置任务的取消句柄。
+ *
+ * 内置等待原语（`sid-wait`）没有子进程，`activeProcesses` 里没有它的名字，
+ * 所以 killShellTask 必须另有一条路把取消信号送进轮询循环——否则 Ctrl+F / task_stop
+ * 只能改状态，循环还在后台打 REST，直到下一个终态才停。
+ */
+const activeBuiltinCancels = new Map<string, () => void>();
+
+/** 内置任务的运行结果：code 映射终态，summary 覆盖通知文案（见 finalizeShellTaskExit） */
+export interface BuiltinShellOutcome {
+  code: number;
+  summary?: string;
+}
+
+/**
+ * 启动内置 Shell 任务：没有子进程，`run()` 在 harness 进程内跑。
+ *
+ * 为什么复用 `local_shell` 这套任务形态而不是另造一种任务类型：面板、`task_stop`、
+ * 等待登记（`registerWaitUntil`）、`wait_until_seconds` 期限全都已经绑在
+ * `LocalShellTaskState` 上，模型侧也只认 `local_shell`。另造类型意味着这几条链路
+ * 各加一次分支，换来的只有「类型名更准」。
+ */
+export function spawnBuiltinShellTask(opts: {
+  command: string;
+  toolUseId?: string;
+  /** 上游一轮的 abort 信号：联动 kill（与 spawnShellTask 同语义） */
+  signal?: AbortSignal;
+  run: (ctx: {
+    /** 输出一行（不含换行），写进任务的 `.output` */
+    emit: (line: string) => void;
+    /** 取消信号：被 kill 时触发，run 应尽快返回 */
+    signal: AbortSignal;
+  }) => Promise<BuiltinShellOutcome>;
+}): LocalShellTaskState {
+  const taskId = generateTaskId("local_shell");
+  const output = initTaskOutput(taskId);
+  const display = opts.command;
+  const controller = new AbortController();
+  let killed = false;
+
+  const taskState: LocalShellTaskState = {
+    id: taskId,
+    type: "local_shell",
+    status: "running",
+    description: display.slice(0, 100),
+    toolUseId: opts.toolUseId,
+    startTime: Date.now(),
+    outputFile: output.filePath,
+    outputOffset: 0,
+    notified: false,
+    command: display,
+    interrupted: false,
+    isBackgrounded: true,
+  };
+  registerTask(taskState);
+  activeBuiltinCancels.set(taskId, () => {
+    killed = true;
+    controller.abort();
+  });
+
+  // 内置等待「一段时间没有任何输出」是正常状态（只在状态变化时打一行），所以**不挂**
+  // 停滞检测——5s tick + 45s 无增长会把它误报成「卡在 y/n」。但「有人会回来」的活动
+  // 跟踪必须登记，否则主循环会把这轮等待当成没人接的后台任务。
+  trackShellActivity(taskId);
+
+  const release = (): void => {
+    activeBuiltinCancels.delete(taskId);
+    forgetShellActivity(taskId);
+  };
+
+  void (async () => {
+    try {
+      const outcome = await opts.run({
+        emit: (line) => output.append(`${line}\n`),
+        signal: controller.signal,
+      });
+      // kill 路径已由 killShellTask 写过终态与通知，这里短路（同 finalize 的守卫语义）
+      if (killed) return;
+      finalizeShellTaskExit({
+        taskId,
+        toolUseId: opts.toolUseId,
+        outputFile: output.filePath,
+        display,
+        code: outcome.code,
+        signal: null,
+        summary: outcome.summary,
+      });
+    } catch (err) {
+      if (killed) return;
+      const message = err instanceof Error ? err.message : String(err);
+      output.append(`[内置任务异常] ${message}\n`);
+      finalizeShellTaskError({
+        taskId,
+        toolUseId: opts.toolUseId,
+        outputFile: output.filePath,
+        err: err instanceof Error ? err : new Error(message),
+      });
+    } finally {
+      release();
+    }
+  })();
+
+  opts.signal?.addEventListener("abort", () => {
+    killShellTask(taskId);
+  });
+
+  return taskState;
+}
+
 /** 终止 Shell 任务 */
 export function killShellTask(
   taskId: string,
@@ -339,6 +457,16 @@ export function killShellTask(
     }
   }
   activeProcesses.delete(taskId);
+
+  // 内置任务没有子进程：把取消送到 run() 的 signal，并清掉「有人会回来」的活动跟踪。
+  // 放在这里而不是 run() 自己的 finally 里：kill 之后轮询可能正卡在一个 REST 请求上，
+  // 活动跟踪必须立刻清，否则主循环还会以为这个任务在产出。
+  const cancelBuiltin = activeBuiltinCancels.get(taskId);
+  if (cancelBuiltin) {
+    activeBuiltinCancels.delete(taskId);
+    cancelBuiltin();
+  }
+  forgetShellActivity(taskId);
 
   const task = getTask(taskId) as LocalShellTaskState | undefined;
   // 已终态：仅 kill 进程（上面已做），不重复改状态、不重复发通知（幂等）。

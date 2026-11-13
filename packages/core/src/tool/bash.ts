@@ -74,7 +74,9 @@ const bashSchema = lazySchema(() =>
       .optional()
       .describe(
         "【只在 run_in_background=true 时有意义】声明「这是一次等待」：最多等这么多秒，期间不适用 60s 静默判据" +
-          "（静默不代表不会回报）。到期仍在跑会被终止并通知。会被钳制到 [60, 3600]。",
+          "（静默不代表不会回报）。到期仍在跑会被终止并通知。会被钳制到 [60, 3600]。" +
+          "等 PR 的合并 / CI 时命令直接写 `sid-wait gh-pr <n>`——内置原语，退出即结论" +
+          "（合并 / 检查失败 / 关闭 / 冲突 / 查询失败各有退出码），不必自己写轮询循环。",
       ),
   }),
 );
@@ -1269,6 +1271,23 @@ export class BashTool implements Tool {
       return this.executeWithTaskSystem({ ...params, toolUseId: params._toolUseId }, signal);
     }
 
+    // R7：内置等待原语是**后台**等待。前台执行它只会 command not found（它不是真二进制），
+    // 不如直接说清正确用法——模型漏传 run_in_background 是常见形态。
+    {
+      const sidWaitSpec = (
+        require("../task/index.ts") as typeof import("../task/index.ts")
+      ).parseSidWaitCommand(params.command);
+      if (sidWaitSpec) {
+        return {
+          output:
+            `sid-wait 是内置等待原语，只能后台执行：请补 run_in_background=true` +
+            `（可选 wait_until_seconds，默认 ${1800}s 期限）。` +
+            `它会轮询 PR #${sidWaitSpec.pr} 的合并 / 检查状态，退出即结论（合 0 / 检查失败 1 / 关闭 3 / 冲突 4）。`,
+          isError: true,
+        };
+      }
+    }
+
     // 超时限制：默认值/上限支持 env 覆盖（BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS），
     // 下限恒为 1 秒。未传 timeout 用默认值，传了则夹在 [1s, max] 内。
     const { defaultMs, maxMs } = resolveTimeoutBounds();
@@ -1840,7 +1859,14 @@ export class BashTool implements Tool {
     // R2：显式等待先过「同一个对象只允许一个有效等待」的准入判定，而且必须在 spawn **之前**——
     // 起了进程再 kill 会先产生一次输出与一条终态通知，与「本次未重复启动」的承诺自相矛盾
     // （b0aa0f1e 正是四次 spawn、四条通知）。
-    const waitPlan = this.planWaitUntil(params.command, params.wait_until_seconds, cwd);
+    //
+    // R7：内置等待原语（`sid-wait gh-pr <n>`）默认就是「一次显式等待」。不带
+    // `wait_until_seconds` 的后台命令只是普通任务（静默 60s 被判「不会回报」），
+    // 而等 PR 恰好长时间没有输出——给它默认期限，别让它退化成「期限到才知道」。
+    const sidWait = task.parseSidWaitCommand(params.command);
+    const effectiveWaitSeconds =
+      params.wait_until_seconds ?? (sidWait ? task.DEFAULT_SID_WAIT_DEADLINE_S : undefined);
+    const waitPlan = this.planWaitUntil(params.command, effectiveWaitSeconds, cwd);
     if (waitPlan?.decision.action === "duplicate") {
       // isError 保持 false：这不是失败，是「已经有东西在盯它了」。
       // 回执里必须带 task_stop 出口，否则模型改了脚本也挂不上新的（R2 §修法 2）。
@@ -1854,14 +1880,35 @@ export class BashTool implements Tool {
       };
     }
 
-    const taskState = spawnShellTask({
-      command: commandString,
-      displayCommand: params.command,
-      cwd,
-      signal,
-      // R3：通知锚点。拿不到（无头 / 直接调 execute）时为 undefined，通知少一栏而已。
-      toolUseId: params.toolUseId,
-    });
+    // R7：内置等待原语不 spawn 任何进程，由 harness 自己轮询 gh REST。
+    // 任务形态仍是 local_shell —— 面板、task_stop、等待登记、期限 kill 都无需另加分支。
+    const taskState = sidWait
+      ? task.spawnBuiltinShellTask({
+          command: params.command,
+          toolUseId: params.toolUseId,
+          signal,
+          run: async ({ emit, signal: runSignal }) => {
+            const result = await task.runSidWaitGhPr({
+              pr: sidWait.pr,
+              client: task.createSidWaitClient({ cwd }),
+              emit,
+              intervalMs: sidWait.intervalMs,
+              signal: runSignal,
+            });
+            return {
+              code: result.exitCode,
+              summary: task.formatSidWaitResultSummary(result, sidWait.pr),
+            };
+          },
+        })
+      : spawnShellTask({
+          command: commandString,
+          displayCommand: params.command,
+          cwd,
+          signal,
+          // R3：通知锚点。拿不到（无头 / 直接调 execute）时为 undefined，通知少一栏而已。
+          toolUseId: params.toolUseId,
+        });
 
     // R2 的 registerWaitUntil 签名（第三参数是准入判定产出的 waitPlan）；
     // R3 在此之上追加一句确定性状态事实。
@@ -1884,6 +1931,12 @@ export class BashTool implements Tool {
         ? taskModule.formatPriorDeadlineExpiryNote(waitPlan.subjects)
         : "";
 
+    // R7：内置原语的回执要说清「它为什么不需要手写循环」——退出条件由 harness 保证，
+    // 模型不必自己拼 `while` + `case`，也不必根据退出码再判断一次 PR 状态。
+    const builtinNote = sidWait
+      ? `\n内置等待原语：每 ${Math.round(sidWait.intervalMs / 1000)} 秒查一次 PR #${sidWait.pr} 的最新 head 与 check-runs（不启动外部进程）。退出即结论：合并 exit 0 / 检查失败 exit 1 / 已关闭 exit 3 / 有冲突 exit 4 / REST 连续失败 exit 5。`
+      : "";
+
     return {
       output: JSON.stringify({
         task_id: taskState.id,
@@ -1893,7 +1946,9 @@ export class BashTool implements Tool {
         // Q1：去掉运行期间读 output_file 的许可，与子代理 / Ctrl+B 回执共用同一常量。
         // R3 的 waitFact 放最后：它读的是「此刻有无待送达通知 / 上一条已送达的是谁」，
         // 与 R6 的 replaceNote（本次淘汰了谁）互补，两条事实都要让模型看到。
-        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}${replaceNote}${waitFact}${priorExpiryNote}`,
+        // 两个后缀都要留：builtinNote（R7，说清内置原语为什么不需要手写循环）
+        // 与 priorExpiryNote（R8，重挂时点破「上一轮期限内的最后输出」）互不替代。
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${builtinNote}${waitNote}${replaceNote}${waitFact}${priorExpiryNote}`,
       }),
     };
   }
@@ -2010,7 +2065,10 @@ export class BashTool implements Tool {
       clamped !== plan.rawSeconds ? `（已从 ${plan.rawSeconds}s 钳制到 ${clamped}s）` : "";
     return (
       `\n已声明这是一次等待：最多等 ${clamped}s${clampNote}，期间不按「静默」判定；` +
-      `到期仍在跑会被终止并以通知告知（不需要你轮询）。`
+      `到期仍在跑会被终止并以通知告知（不需要你轮询）。` +
+      // R7 修法 4：模型仍手写 PR 轮询循环时，回执里说一次「有内置原语」。
+      // 模块内按对象去重，同一个 PR 只提示一次，不会每轮都刷。
+      task.formatManualLoopHint(plan.subjects, command)
     );
   }
 

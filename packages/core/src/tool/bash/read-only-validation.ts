@@ -6,6 +6,8 @@
 import { parseBashCommand, extractSimpleCommands, extractRedirectTargets } from "./parser.ts";
 import { judgeDdCommand } from "../../permission/dangerous-command.ts";
 import { expandShellCommand } from "../../permission/shell-command-variants.ts";
+// R7：内置等待原语只读判定复用同一份语法解析，避免「功能认 sid-wait、权限不认」两套规则漂移
+import { parseSidWaitCommand } from "../../task/sid-wait.ts";
 
 /** 已知的只读命令 */
 const READ_ONLY_COMMANDS = new Set([
@@ -812,6 +814,13 @@ function isReadOnlyImpl(command: string, ignoreCd: boolean): boolean {
   for (const { command: cmd, args } of simpleCommands) {
     if (!cmd) return false;
     if (ignoreCd && DIRECTORY_BUILTINS.has(cmd)) continue;
+
+    // R7：内置等待原语（`sid-wait gh-pr <n>`）由 harness 解释执行，只发 gh REST GET、
+    // 不写任何文件。不认它就会落进「未知命令 → 非只读」，每等一次 PR 弹一次确认。
+    if (cmd === "sid-wait") {
+      if (parseSidWaitCommand([cmd, ...args].join(" ")) === null) return false;
+      continue;
+    }
 
     // 条件命令特殊处理
     if (cmd in CONDITIONAL_COMMANDS) {

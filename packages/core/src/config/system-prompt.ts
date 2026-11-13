@@ -1370,7 +1370,7 @@ function buildWaitingSection(language?: LanguagePref, monitorDeferred = false): 
 ## 等待外部状态
 用户要你「等某件事」时（CI、构建、部署、日志、文件变化），先分清要几次通知，再选工具，不要用前台 sleep 循环或反复手动查询扛：
 ${activationNote}
-- **只要一次通知**（「CI 全绿了告诉我」「构建完了叫我」）→ bash + \`run_in_background=true\` + \`wait_until_seconds\`，命令写成条件满足就退出的循环。
+- **只要一次通知**（「CI 全绿了告诉我」「构建完了叫我」）→ 等一个 PR 的合并 / CI：bash + \`run_in_background=true\`，命令直接写 \`sid-wait gh-pr <n>\`——这是 harness 内置原语，退出即结论（合并 / 检查失败 / 关闭 / 冲突 / 查询失败各有退出码），不要自己写轮询循环。其余条件：bash + \`run_in_background=true\` + \`wait_until_seconds\`，命令写成条件满足就退出的循环。
 - **每次发生都要通知**（「每个 check 结束告诉我」「日志里每出现 ERROR 告诉我」）→ \`monitor\`：脚本的每行 stdout 是一条事件，结束或到期必有终态回报。过滤条件要覆盖失败 / 取消 / 超时，沉默不等于成功。
 - **挂上之后**不要再手动查同一个状态；没有别的事就告诉用户在等什么，然后结束本轮，事件会把你叫醒。
 - **同一件事不要同时挂 monitor 又排 \`schedule_wakeup\`**：两者都会叫醒主循环，事件重复。定时复查用调度工具，事件驱动用 monitor，二选一。
