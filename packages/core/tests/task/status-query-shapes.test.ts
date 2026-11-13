@@ -171,8 +171,12 @@ describe("N3 循环展开（for / while / until）", () => {
     ).toBeNull();
   });
 
-  test("多行循环仍不识别（flattenCommand 遇换行直接放弃）", () => {
-    expect(matchStatusQuery("for pr in 1 2\ndo\n  gh pr checks $pr\ndone")).toBeNull();
+  // R4：`flattenCommand` 不再「见换行就放弃」——引号外的换行仍按分隔符切给 parser，
+  // 于是多行写法的循环和后置 `; do …; done` 走的是同一条展开路径。
+  test("多行循环同样识别（换行是分隔符，不是放弃理由）", () => {
+    expect(matchStatusQuery("for pr in 1 2\ndo\n  gh pr checks $pr\ndone")?.subject).toBe(
+      "gh:pr:1,2",
+    );
   });
 });
 
@@ -310,11 +314,22 @@ describe("N3 gh api 状态端点", () => {
       "gh api repos/o/r/actions/runs/1/logs",
       "gh api repos/o/r/actions/runs/1/rerun",
       "gh api user",
-      "gh api repos/o/r/pulls/1",
       "gh api /repos/o/r/commits/abc/check-runs", // 前导 `/` 不是 gh 的路径形态
     ]) {
       expect(matchStatusQuery(cmd)).toBeNull();
     }
+  });
+
+  // R4：`gh api …/pulls/<n>` 从「表外」改成命中——两条事故会话把 `gh pr view` 换成了
+  // `gh api repos/…/pulls/780 -q .state`，同一个 PR、同一批字段，不该因为换了取数入口就漏拦。
+  test("pulls/<n>（含 reviews/commits/files 子端点）命中，subject 与 gh pr view 同族", () => {
+    expect(matchStatusQuery("gh api repos/o/r/pulls/779")?.subject).toBe("gh:pr:779");
+    expect(matchStatusQuery("gh api repos/o/r/pulls/779 -q .state")?.family).toBe("gh_api_pulls");
+    for (const sub of ["reviews", "commits", "files"]) {
+      expect(matchStatusQuery(`gh api repos/o/r/pulls/779/${sub}`)?.subject).toBe("gh:pr:779");
+    }
+    // 写标志仍然拒绝
+    expect(matchStatusQuery("gh api -X PATCH repos/o/r/pulls/779 -f state=closed")).toBeNull();
   });
 
   test("GET 显式写出仍然命中（-X GET 与 --method=GET）", () => {

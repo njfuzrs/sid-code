@@ -302,7 +302,9 @@ describe("P1 命令表匹配（只读 + 查外部状态）", () => {
       // 这里换成会写文件的 tee 与 `tail -f`（持续跟随），守住「纯过滤才算」的边界
       "gh pr checks 662 | tee /tmp/x.log",
       "gh pr checks 662 | tail -f",
-      "gh pr checks 662; echo done", // 最后一段是 echo（仍是表外形态）
+      // 末尾是无害命令（`echo` / `date`）自 R4 起是合法查询形态（见 status-query-shapes.test.ts
+      // 的「末尾无害段」用例），这里换成一段既非查询、也非纯过滤、也不无害的命令守住边界
+      "gh pr checks 662; git status",
     ]) {
       expect(matchStatusQuery(cmd)).toBeNull();
     }
