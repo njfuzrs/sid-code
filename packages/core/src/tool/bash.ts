@@ -1873,9 +1873,16 @@ export class BashTool implements Tool {
     // R3 修法 2：回执末尾写一句确定性事实——「此刻有无待送达通知 / 上一条已送达的是谁」。
     // 旧通知被误当成新结果的根因是模型没有可核对的事实，这里直接把事实放回执里。
     // 惰性 require 与上方 registerWaitUntil 同款（bash.ts 对 task 模块一贯如此）。
-    const waitFact = (
-      require("../task/index.ts") as typeof import("../task/index.ts")
-    ).describeBackgroundWaitFact();
+    const taskModule = require("../task/index.ts") as typeof import("../task/index.ts");
+    const waitFact = taskModule.describeBackgroundWaitFact();
+    // R8 修法 2：同一对象上一次是「期限到」时，把「期限内最后看到什么」写回回执。
+    // 只在 start 成立：replace 是旧等待还在跑、换了等法，旧的那把没到期，这行事实不成立；
+    // duplicate 已提前返回，根本没有新等待。写这句不是说教，是补上模型**唯一缺的那条事实**
+    // ——加长期限的直接动因就是「除了期限没有别的可看」。
+    const priorExpiryNote =
+      waitPlan?.decision.action === "start"
+        ? taskModule.formatPriorDeadlineExpiryNote(waitPlan.subjects)
+        : "";
 
     return {
       output: JSON.stringify({
@@ -1886,7 +1893,7 @@ export class BashTool implements Tool {
         // Q1：去掉运行期间读 output_file 的许可，与子代理 / Ctrl+B 回执共用同一常量。
         // R3 的 waitFact 放最后：它读的是「此刻有无待送达通知 / 上一条已送达的是谁」，
         // 与 R6 的 replaceNote（本次淘汰了谁）互补，两条事实都要让模型看到。
-        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}${replaceNote}${waitFact}`,
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}${replaceNote}${waitFact}${priorExpiryNote}`,
       }),
     };
   }
@@ -1984,11 +1991,14 @@ export class BashTool implements Tool {
     if (!registered) return "";
 
     const timer = setTimeout(() => {
-      const t = task.getTask(taskId);
-      if (!t || t.status !== "running") return;
-      // 期限就是回报：kill + 终态通知由 harness 自己执行，不依赖子进程配合
-      task.killShellTask(taskId, {
-        summary: `等待期限到（${clamped} 秒），条件未满足，已停止命令 "${command.slice(0, 60)}"`,
+      // R8：到期收口要**先读输出尾部再 kill**（见 `expireDeadlineShellTask` 的注释）——
+      // 通知里要带上「期限内最后一次看到什么」，模型才有依据判断是不是退出条件写错了。
+      // 收口是异步的（读一次磁盘），但「到期必 kill」的承诺不变：函数内部无论读尾部
+      // 成败都会 kill，所以这里不需要额外的兜底分支。
+      void task.expireDeadlineShellTask(taskId, {
+        clamped,
+        command,
+        subjects: plan.subjects,
       });
     }, clamped * 1000);
     // 不阻止进程退出：等待由主循环的活跃度承载，进程要退出时不应该被这个定时器拖住

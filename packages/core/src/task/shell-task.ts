@@ -304,6 +304,13 @@ export function killShellTask(
      * 同样的等待。其余 kill 路径不传，保持原文案。
      */
     summary?: string;
+    /**
+     * R8：期限到之前读到的输出末尾（见 `TaskNotification.outputTail`）。
+     *
+     * 只在 `expireDeadlineShellTask` 里传：它负责「先读尾部、再 kill」的顺序，
+     * 其余 kill 路径不传就不会在通知里多出这一段。
+     */
+    outputTail?: string;
   },
 ): void {
   const child = activeProcesses.get(taskId);
@@ -358,6 +365,9 @@ export function killShellTask(
     outputFile: task.outputFile,
     status: "killed",
     summary: opts?.summary ?? `命令 "${(task.command ?? task.description).slice(0, 60)}" 已被终止`,
+    // R8：只有期限到那条路径会传（见 `expireDeadlineShellTask`）。其余 kill 保持原样，
+    // 通知里不会凭空多出一段输出尾部。
+    ...(opts?.outputTail !== undefined ? { outputTail: opts.outputTail } : {}),
   });
 }
 

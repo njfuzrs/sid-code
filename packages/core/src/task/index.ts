@@ -134,6 +134,9 @@ export {
   recordDeliveredTaskNotification,
   getLastDeliveredWaitNotice,
   describeBackgroundWaitFact,
+  // R8：期限到的事实（同对象重挂时把「上一次最后看到什么」写回回执）
+  recordDeadlineExpiryFact,
+  formatPriorDeadlineExpiryNote,
   extractWaitSubjects,
   describeWaitSource,
   drainWaitNotices,
@@ -161,6 +164,10 @@ export {
 } from "./wait-admission.ts";
 
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
+
+// R8：`wait_until_seconds` 期限到的统一收口（读输出尾部 → kill → 记事实）。
+// bash 的到期定时器与单测调同一个函数，所以单测不需要真等一次 60s 到期。
+export { expireDeadlineShellTask, DEADLINE_OUTPUT_TAIL_BYTES } from "./deadline-expiry.ts";
 
 // 等待对象签名（R1）：bash / monitor / schedule_wakeup 三个入口共用同一把尺子。
 export {
