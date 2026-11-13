@@ -284,7 +284,8 @@ export async function runToolUse(
       mode.sessionId,
       tool.maxResultSizeChars,
     );
-    const displayMode = resolveResultDisplayMode(tool, effectiveInput);
+    // 带 result：bash 的档位要读 `meta.exitCode`（成功才折叠），只看入参分不出来。
+    const displayMode = resolveResultDisplayMode(tool, effectiveInput, result);
 
     const withHookFeedback = await runPostToolHooks(hookSystem, {
       toolName: block.name,

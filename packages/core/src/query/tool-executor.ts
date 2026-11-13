@@ -1889,7 +1889,8 @@ export async function executeSingleTool(
 
     // TUI 呈现档位（见下方 block 构造处的注释）。用 effectiveInput 而非 block.input：
     // hook 改参后的实际入参才是本次执行的真相，与鉴权 / PostToolUse 上报同口径。
-    const displayMode = resolveResultDisplayMode(tool, effectiveInput);
+    // 带 result：bash 的档位要读 `meta.exitCode`（成功才折叠），只看入参分不出来。
+    const displayMode = resolveResultDisplayMode(tool, effectiveInput, result);
 
     // B14（HB-13a）：外部来源结果的不可信包裹。**必须排在所有 finalOutput 改写之后** ——
     // 上面的 `replaced` 分支是 hook 整段替换（还会再过一次 processToolResult），标签写在它

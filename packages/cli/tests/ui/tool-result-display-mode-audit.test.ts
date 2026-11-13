@@ -46,6 +46,10 @@ import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
 import { EnterPlanModeTool } from "@sid-code/core/tool/enter-plan-mode.ts";
 import { ExitPlanModeTool } from "@sid-code/core/tool/exit-plan-mode.ts";
 import { MonitorTool } from "@sid-code/core/tool/monitor.ts";
+import { ReadTool } from "@sid-code/core/tool/read.ts";
+import { GrepTool } from "@sid-code/core/tool/grep.ts";
+import { GlobTool } from "@sid-code/core/tool/glob.ts";
+import { bashResultDisplayMode } from "@sid-code/core/tool/bash.ts";
 import { toLegacyTool } from "@sid-code/core/tool/bridge.ts";
 import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
@@ -92,12 +96,29 @@ const EXPECTED_SUMMARY = [
 ].sort();
 
 /**
- * `skill` 按 mode 分档，不进上面两张静态名单（单独测函数形态）。
+ * 期望为 `"compact"`（保留正文、默认折成零行、ctrl+o 可展开）的工具。
+ *
+ * 判据见 `tool/types.ts`：正文是**真实工作内容**（用户按 ctrl+o 时真要读它），
+ * 只是一次输出太占行，默认铺满屏幕会把主屏历史的可用行数吃掉。
+ * 与 `summary` 的分界是「正文对用户是否有价值」——summary 的正文是给模型读的提示词，
+ * compact 的正文是文件内容 / 搜索结果 / 命令输出。
+ */
+const EXPECTED_COMPACT = [
+  "read", // 正文是文件内容，一次常几百行
+  "grep", // 正文是搜索结果列表
+  "glob", // 正文是文件路径列表
+].sort();
+
+/**
+ * 函数形态的工具（档位依赖入参 / 执行结果，静态常量表达不了）。
+ *
+ * - `Skill`：按 `activate` / `delegate` 的 mode 分档（只看入参）；
+ * - `bash`：按 `meta.exitCode` 分档（要看执行结果）——成功才折叠，非零退出必须原样展示。
  *
  * 注意工具名是 `"Skill"`（大写 S，`SKILL_TOOL_NAME`，对齐 cc）而非 `"skill"`——
  * 本审计首次运行时就是拿小写写错了、被「无多余」断言挂出来的。
  */
-const FUNCTION_FORM_TOOLS = ["Skill"];
+const FUNCTION_FORM_TOOLS = ["Skill", "bash"];
 
 function makeInstances() {
   const planManager = new PlanModeManager();
@@ -112,6 +133,12 @@ function makeInstances() {
     // monitor 是新版 Tool 接口（应写新接口）；本审计消费 LegacyTool 形态，
     // 经 bridge 归一——与 registry.register 的真实路径一致。
     toLegacyTool(new MonitorTool()),
+    // compact 档（2026-11-13）：读写搜索类工具，正文是真实工作内容、只是太占行。
+    // BashTool 刻意不在这里 new——构造期会 spawn 一次登录 shell 抓快照（~2s），
+    // 它的档位判据是模块级纯函数 `bashResultDisplayMode`，单独测更省也更准。
+    new ReadTool(),
+    new GrepTool(),
+    new GlobTool(),
   ];
 }
 
@@ -119,8 +146,15 @@ function makeInstances() {
  * 静态扫描源码里自报 `resultDisplayMode` 的工具名。
  *
  * 与实例对账互补：防"新工具声明了字段，但本测试忘了 import 进实例列表"的二次漂移。
- * 同时容纳常量形态（`resultDisplayMode = "hidden" as const`）与函数形态
- * （`resultDisplayMode(input): ... {`）两种写法。
+ * 同时容纳三种写法：
+ *   - 类字段常量：`readonly resultDisplayMode = "hidden" as const`
+ *   - 属性/字面量常量：`resultDisplayMode: "compact"`（对象字面量与带类型标注的类字段）
+ *   - 函数形态：`resultDisplayMode(input): ... {` / `resultDisplayMode = (input, result) => ...`
+ *
+ * ⚠️ 匹配字符集必须含 `:`。漏掉它的后果不是报错，是**静默漏扫**：写成
+ * `resultDisplayMode: "compact"` 的工具不会被收进 `found`，「无遗漏」断言于是认为
+ * 没有多余项——正好是本审计最该防的那种失效（文件头与下方回退逻辑各强调过一遍）。
+ * 可选标记 `resultDisplayMode?: T` 不会误命中（`?` 挡住了 `:`）。
  */
 function scanSourceForDisplayModeTools(): Map<string, string> {
   const found = new Map<string, string>();
@@ -134,10 +168,10 @@ function scanSourceForDisplayModeTools(): Map<string, string> {
     for (const file of entries) {
       if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
       const src = readFileSync(join(dir, file), "utf8");
-      // 常量形态：resultDisplayMode = "hidden" / "summary"
-      const constMatch = src.match(/resultDisplayMode\s*=\s*["'](hidden|summary)["']/);
-      // 函数形态：resultDisplayMode(input...) {
-      const fnMatch = /resultDisplayMode\s*\(/.test(src);
+      // 常量形态：resultDisplayMode = "hidden" / resultDisplayMode: "compact"
+      const constMatch = src.match(/resultDisplayMode\s*[:=]\s*["'](hidden|summary|compact)["']/);
+      // 函数形态：resultDisplayMode(input...) { }  或  resultDisplayMode = (input, result) => ...
+      const fnMatch = /resultDisplayMode\s*[:=(]/.test(src);
       if (!constMatch && !fnMatch) continue;
       const mode = constMatch ? constMatch[1] : "function";
       const nameRegex = /name\s*\(\s*\)\s*:?\s*(?:string\s*)?\{\s*return\s*["'`]([^"'`]+)["'`]/g;
@@ -180,7 +214,7 @@ function scanSourceForDisplayModeTools(): Map<string, string> {
 function resultBlock(
   toolUseId: string,
   content: string,
-  opts: { isError?: boolean; mode?: "hidden" | "summary" } = {},
+  opts: { isError?: boolean; mode?: "hidden" | "summary" | "compact" } = {},
 ) {
   return {
     type: "tool_result" as const,
@@ -208,11 +242,26 @@ describe("工具结果呈现档位对账审计", () => {
     expect(actual).toEqual(EXPECTED_SUMMARY);
   });
 
+  test("【实例对账】compact 档工具集合 === EXPECTED_COMPACT（双向相等）", () => {
+    const actual = makeInstances()
+      .filter((t) => (t as any).resultDisplayMode === "compact")
+      .map((t) => t.name())
+      .sort();
+    expect(actual).toEqual(EXPECTED_COMPACT);
+  });
+
   test("【源码扫描·无遗漏】自报 resultDisplayMode 的工具都在期望名单里", () => {
     const scanned = scanSourceForDisplayModeTools();
     // 防正则漂移扫空后假绿
-    expect(scanned.size).toBeGreaterThanOrEqual(EXPECTED_HIDDEN.length + EXPECTED_SUMMARY.length);
-    const known = new Set([...EXPECTED_HIDDEN, ...EXPECTED_SUMMARY, ...FUNCTION_FORM_TOOLS]);
+    expect(scanned.size).toBeGreaterThanOrEqual(
+      EXPECTED_HIDDEN.length + EXPECTED_SUMMARY.length + EXPECTED_COMPACT.length,
+    );
+    const known = new Set([
+      ...EXPECTED_HIDDEN,
+      ...EXPECTED_SUMMARY,
+      ...EXPECTED_COMPACT,
+      ...FUNCTION_FORM_TOOLS,
+    ]);
     const unexpected = [...scanned.keys()].filter((n) => !known.has(n));
     expect(
       unexpected,
@@ -223,9 +272,12 @@ describe("工具结果呈现档位对账审计", () => {
 
   test("【源码扫描·无多余】期望名单里的每个名字都有工具真的自报该字段", () => {
     const scanned = scanSourceForDisplayModeTools();
-    const orphan = [...EXPECTED_HIDDEN, ...EXPECTED_SUMMARY, ...FUNCTION_FORM_TOOLS].filter(
-      (n) => !scanned.has(n),
-    );
+    const orphan = [
+      ...EXPECTED_HIDDEN,
+      ...EXPECTED_SUMMARY,
+      ...EXPECTED_COMPACT,
+      ...FUNCTION_FORM_TOOLS,
+    ].filter((n) => !scanned.has(n));
     expect(
       orphan,
       `以下名字在期望名单里、但没有任何工具源码自报 resultDisplayMode（拼错/工具已删？）：${orphan.join(", ")}`,
@@ -278,6 +330,109 @@ describe("函数形态：skill 按 mode 分档", () => {
   test("工具缺失 / 未声明 → undefined", () => {
     expect(resolveResultDisplayMode(undefined, {})).toBeUndefined();
     expect(resolveResultDisplayMode({}, {})).toBeUndefined();
+  });
+});
+
+describe("函数形态：bash 按退出码分档", () => {
+  test("exitCode === 0 → compact（成功命令的正文是工作内容，折起来不丢信息）", () => {
+    expect(bashResultDisplayMode({}, { output: "file1.ts\nfile2.ts", meta: { exitCode: 0 } })).toBe(
+      "compact",
+    );
+  });
+
+  test("非零退出 → undefined（失败输出是排查第一现场，必须原样可见）", () => {
+    // `grep` 退出码 1（无匹配）/ `gh pr checks` 退出码 8（有 pending）都是非零但不算错误，
+    // 正文仍是用户要看的内容——原样展示是唯一不丢信息的选项。
+    for (const exitCode of [1, 2, 8, 127, 130]) {
+      expect(
+        bashResultDisplayMode({}, { output: "some output", meta: { exitCode } }),
+        `exitCode=${exitCode} 不该折叠`,
+      ).toBeUndefined();
+    }
+  });
+
+  test("无 meta / 无 exitCode（早退路径、转后台）→ undefined", () => {
+    // 早退路径（缺参数、cwd 不存在、转后台）没有退出码，判定依据不全就不做展示优化。
+    expect(bashResultDisplayMode({}, { output: "x" })).toBeUndefined();
+    expect(bashResultDisplayMode({}, { output: "x", meta: {} })).toBeUndefined();
+    expect(bashResultDisplayMode({}, undefined)).toBeUndefined();
+  });
+
+  test("透传语义：resolveResultDisplayMode 会把 result 交给函数形态", () => {
+    // 锁"第二个参数真的穿下去了"这件事：函数形态只看 input 时永远拿不到 exitCode，
+    // 接线若漏了（三个调用点只传两个参数），bash 会静默退化成"永不折叠"。
+    const tool = { resultDisplayMode: bashResultDisplayMode };
+    expect(resolveResultDisplayMode(tool, {}, { meta: { exitCode: 0 } })).toBe("compact");
+    expect(resolveResultDisplayMode(tool, {}, { meta: { exitCode: 1 } })).toBeUndefined();
+  });
+});
+
+describe("行为回归：compact 档保留正文 / 少量行降级", () => {
+  // 6 行：超过 COMPACT_MAX_INLINE_LINES(5)，是「真该折叠」的最小样本。
+  const BODY = [
+    "src/a.ts:1:1",
+    "src/b.ts:2:2",
+    "src/c.ts:3:3",
+    "src/d.ts:4:4",
+    "src/e.ts:5:5",
+    "src/f.ts:6:6",
+  ].join("\n");
+
+  test("硬约束①：compact 档正文**不置空**（与 summary 的分界就在这一条）", () => {
+    // 这是全套改动里最容易写错、且错了之后无法补救的一条：一旦 compact 也走 suppressBody，
+    // 正文在数据层就丢了，渲染层再想支持 ctrl+o 展开也无从恢复。
+    const card = buildCompletedToolCall(resultBlock("c1", BODY, { mode: "compact" }), "grep");
+    expect(card.resultDisplay?.content).toBe(BODY);
+    expect(card.resultDisplay?.displayMode).toBe("compact");
+  });
+
+  test("compact 档保留结果规模摘要（折叠态标题行唯一的结果信息）", () => {
+    const card = buildCompletedToolCall(resultBlock("c2", BODY, { mode: "compact" }), "grep");
+    // 折叠后正文不上屏，标题行的「N 行 / N 个结果」是读者唯一能判断规模的信息，必须非空。
+    expect((card.resultSummary ?? "").trim()).not.toBe("");
+  });
+
+  test("空正文降级：正文为空时去掉 compact 档（折叠零行与不折叠等价，留着只是噪音）", () => {
+    const card = buildCompletedToolCall(resultBlock("c3", "   \n\n", { mode: "compact" }), "read");
+    expect(card.resultDisplay?.displayMode).toBeUndefined();
+  });
+
+  test("单行降级：一句话结论不被折成「1 行输出」", () => {
+    // grep / glob 无匹配时就是一句 "未找到匹配的内容"：折叠后标题行「1 行输出」比正文还长，
+    // 还逼用户按 ctrl+o 才看得到那句结论——折叠是负收益，故降级为原样展示。
+    for (const body of ["未找到匹配的内容", "未找到匹配的文件\n", "  单行  \n"]) {
+      const card = buildCompletedToolCall(resultBlock("c4", body, { mode: "compact" }), "grep");
+      expect(card.resultDisplay?.displayMode, `正文 "${body.trim()}" 不该折叠`).toBeUndefined();
+      expect(card.resultDisplay?.content).toBe(body);
+    }
+  });
+
+  test("≤5 行降级：一眼看完的少量结果不该被折起来", () => {
+    // `glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条——这类结果一眼看完、
+    // 几乎不占地方，折成「5 行输出」反而把用户要的文件名/命中行藏起来，还得按 ctrl+o。
+    // ctrl+o 是全局档位，一按会把整屏所有 compact 卡片一起展开，代价比省下的几行大得多。
+    for (const lineCount of [2, 3, 5]) {
+      const body = Array.from({ length: lineCount }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
+      const card = buildCompletedToolCall(resultBlock("c5", body, { mode: "compact" }), "grep");
+      expect(card.resultDisplay?.displayMode, `${lineCount} 行不该折叠`).toBeUndefined();
+      expect(card.resultDisplay?.content).toBe(body);
+    }
+  });
+
+  test("6 行才折叠（越过「一眼看完」的分界）", () => {
+    const sixLines = Array.from({ length: 6 }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
+    const card = buildCompletedToolCall(resultBlock("c7", sixLines, { mode: "compact" }), "grep");
+    expect(card.resultDisplay?.displayMode).toBe("compact");
+    expect(card.resultDisplay?.content).toBe(sixLines);
+  });
+
+  test("硬约束②：错误结果即使带 compact 也照常展示、不折叠", () => {
+    const card = buildCompletedToolCall(
+      resultBlock("c6", "fatal: not a git repository\nline2", { isError: true, mode: "compact" }),
+      "bash",
+    );
+    expect(card.resultDisplay?.displayMode).toBeUndefined();
+    expect(card.resultDisplay?.content).toBe("fatal: not a git repository\nline2");
   });
 });
 

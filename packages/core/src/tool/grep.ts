@@ -142,6 +142,16 @@ export class GrepTool implements Tool {
   readonly zodSchema = grepSchema();
 
   /**
+   * 呈现档位 `"compact"`：搜索结果是真实工作内容，但命中多时一次几十行，默认铺满屏幕
+   * 会吃掉主屏历史的可用行数。默认折成零行正文、标题行给「N 个结果」，按 ctrl+o 与
+   * 普通工具走同一套阶梯展开——正文始终留在 `resultDisplay.content` 里，没丢。
+   *
+   * 「未找到匹配的内容」这类单行结论由 UI 侧（history-adapter）按正文行数降级回原样展示，
+   * 不会被折成误导的「1 个结果」。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
+  /**
    * P1-1：可选的路径隐藏判定（deny 规则 ∪ 敏感文件）。
    * 命中的文件从搜索结果剔除，对齐 glob/ls 的 G21 过滤。
    */

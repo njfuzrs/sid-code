@@ -63,10 +63,12 @@ export interface ToolResultDisplay {
    *
    * - `"hidden"` —— 整条卡片不渲染（`ToolGroupMessage` 过滤掉）。
    * - `"summary"` —— 只渲染 header 行，`content` 已在 `buildCompletedToolCall` 里置空。
+   * - `"compact"` —— 正文**不置空**（与 summary 的关键区别，硬约束①），默认折叠成零行
+   *   正文、标题行给结果规模，`ctrl+o` 与普通工具走同一套阶梯展开。
    *
    * 缺省 = 原样展示。完整设计见 `tool/types.ts` 的 `resultDisplayMode`。
    */
-  displayMode?: "hidden" | "summary";
+  displayMode?: "hidden" | "summary" | "compact";
 }
 
 /** 单个工具调用的展示数据 */

@@ -92,7 +92,7 @@ export interface ToolResultBlock {
    *
    * 缺省（`undefined`）= 原样展示 content，是绝大多数工具的行为，字段不出现、零破坏。
    */
-  resultDisplayMode?: "hidden" | "summary";
+  resultDisplayMode?: "hidden" | "summary" | "compact";
   /**
    * 本次结果是否是**权限层拒绝**（不是工具执行失败）。
    *

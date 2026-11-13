@@ -20,7 +20,7 @@
  * - **只影响展示**。返回值不参与 `ToolResultBlock.content` 的构造，模型侧行为零改动。
  */
 
-import type { ToolResultDisplayMode } from "./types.ts";
+import type { DisplayModeResultView, ToolResultDisplayMode } from "./types.ts";
 
 /**
  * 能自报呈现档位的最小结构。
@@ -33,25 +33,28 @@ import type { ToolResultDisplayMode } from "./types.ts";
 type DisplayModeCapable = {
   resultDisplayMode?:
     | ToolResultDisplayMode
-    | ((input: unknown) => ToolResultDisplayMode | undefined);
+    | ((input: unknown, result?: DisplayModeResultView) => ToolResultDisplayMode | undefined);
 };
 
 /**
  * 解析某次工具调用的呈现档位。
  *
- * @param tool  工具实例（可能为 undefined——注册表查不到时按无声明处理）
- * @param input 本次调用的原始 input（函数形态据此分档，如 skill 的 activate/delegate）
- * @returns `"hidden"` / `"summary"`，或 `undefined` 表示原样展示
+ * @param tool   工具实例（可能为 undefined——注册表查不到时按无声明处理）
+ * @param input  本次调用的原始 input（函数形态据此分档，如 skill 的 activate/delegate）
+ * @param result 本次执行结果视图（只带 `output` / `isError` / `meta`）。函数形态可据此
+ *               看输出与退出码分档（如 bash 非零退出必须原样展示）。可选：单参实现不用改。
+ * @returns `"hidden"` / `"summary"` / `"compact"`，或 `undefined` 表示原样展示
  */
 export function resolveResultDisplayMode(
   tool: DisplayModeCapable | undefined | null,
   input: unknown,
+  result?: DisplayModeResultView,
 ): ToolResultDisplayMode | undefined {
   const mode = tool?.resultDisplayMode;
   if (!mode) return undefined;
   if (typeof mode !== "function") return mode;
   try {
-    return mode(input) ?? undefined;
+    return mode(input, result) ?? undefined;
   } catch {
     // 判定失败 → 原样展示。宁可多显示一点，不可因为一个展示优化让结果消失。
     return undefined;
