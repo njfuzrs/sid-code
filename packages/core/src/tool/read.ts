@@ -442,6 +442,15 @@ export class ReadTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = readSchema();
 
+  /**
+   * 呈现档位 `"compact"`：读文件是真实工作内容，但一次 read 常常几百行，默认铺满屏幕
+   * 会把主屏历史的可用行数吃掉（长会话上翻看不全的主因，见
+   * docs-research/bugfixes/…TUI主屏历史被截断 方案）。默认折成零行正文、标题行给
+   * 「N 行」，按 ctrl+o 与普通工具走同一套阶梯展开——正文始终留在
+   * `resultDisplay.content` 里，没丢。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
   /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
   jitAffectedPaths(input: unknown): string[] {
     return pickPaths(input, "file_path");

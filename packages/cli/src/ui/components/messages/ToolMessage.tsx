@@ -32,7 +32,7 @@ import { THINK_HEADER_LABEL } from "../../ui-utils.ts";
 import { theme } from "../../semantic-colors.ts";
 import { TREE_BRANCH } from "../../constants/figures.ts";
 import { useUIState, useExpandedMaxLines } from "../../contexts/UIStateContext.tsx";
-import { truncateShellCommand } from "../../constants/collapse.ts";
+import { truncateShellCommand, CMD_MAX_CHARS, ELLIPSIS } from "../../constants/collapse.ts";
 import { useTerminalDimensionsOptional } from "../../contexts/TerminalContext.tsx";
 import { selectAgentProgressTier, formatAgentProgressLine } from "../../agent-progress-view.ts";
 import { formatLargeNumber } from "../../utils/format-number.ts";
@@ -49,6 +49,21 @@ const THINK_COLLAPSE_MAX_LINES = 8;
 
 /** 思考正文换行的安全边距（与 ToolResultDisplay 的 WRAP_WIDTH_PADDING 同量级）。 */
 const THINK_WRAP_PADDING = 8;
+
+/**
+ * 把多行命令压成单行（compact 折叠态的标题行用）。
+ *
+ * 标题行只有一行，命令里的换行必须折成空格，否则 `Text` 会把它们渲染成多行、
+ * 撞破 `height={1}` 的 header 容器。超长按 `CMD_MAX_CHARS` 截断并补统一省略号
+ * ——它随后还会被 `ToolInfo` 按真实可用列宽二次收缩，这里只是先压到合理量级。
+ */
+function toSingleLineCommand(command: string): string {
+  const oneLine = command
+    .replace(/\r\n/g, "\n")
+    .replace(/\s*\n\s*/g, " ")
+    .trim();
+  return oneLine.length > CMD_MAX_CHARS ? `${oneLine.slice(0, CMD_MAX_CHARS)}${ELLIPSIS}` : oneLine;
+}
 
 export interface ToolMessageProps {
   name: string;
@@ -88,6 +103,15 @@ export interface ToolMessageProps {
   elapsedMs?: number;
   /** bash/shell 工具的完整命令行文本（独立区域自然换行展示） */
   shellCommand?: string;
+  /**
+   * 呈现档位（源自 `IndividualToolCallDisplay.displayMode`）。
+   *
+   * 只有 `"compact"` 在本组件里改变行为：默认折叠成**零行正文**、标题行给结果规模，
+   * `ctrl+o` 与普通工具走同一套阶梯展开。`"hidden"` 已在 `ToolGroupMessage` 被过滤掉，
+   * `"summary"` 的结果正文在上游（`buildCompletedToolCall`）已被置空，到这里与
+   * 「无正文」等价。缺省 = 原样展示。
+   */
+  displayMode?: "hidden" | "summary" | "compact";
 }
 
 export const ToolMessage: React.FC<ToolMessageProps> = ({
@@ -111,6 +135,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   elapsedMs,
   shellCommand,
   thinkThought,
+  displayMode,
 }) => {
   const { expandLevel } = useUIState();
   // 终端高度决定子代理进度是展开活动明细还是压成一行（见 selectAgentProgressTier）。
@@ -126,6 +151,35 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
 
   const isShell = isShellTool(name);
   const hasShellCommand = isShell && !!shellCommand;
+
+  /**
+   * compact 折叠态：默认**零行正文**，标题行给结果规模（见 `displayMode` 字段注释）。
+   *
+   * `expandLevel >= 1` 时回到普通渲染路径，与今天 ctrl+o 的行为逐字一致——这是本档与
+   * `summary` 的本质区别（summary 的正文在上游已置空，展开也拿不回来）。
+   *
+   * 显式再挡一道 `isError`：上游（`buildCompletedToolCall`）已经保证错误结果不带档位，
+   * 这里防的是手工构造 block（轨迹回放 / 未来新增的执行路径）。硬约束 ② 是「错误必须
+   * 可见」，多一道判据比少一道便宜——折错一个失败命令的代价是用户看不到失败原因。
+   */
+  const isCompactCollapsed = displayMode === "compact" && expandLevel === 0 && !isError;
+
+  /**
+   * compact 折叠态的 bash：命令并进标题行单行展示，不再单独占一行命令区 + 折叠提示。
+   *
+   * 理由：一次成功 bash 默认只画一行，若命令仍独占一行，折叠省下的正文行又被命令抵消。
+   * 命令压成单行（换行折空格）后交给 `ToolInfo` 按真实列宽收缩，多出来的部分自然省略。
+   */
+  const compactShellDescription =
+    isCompactCollapsed && isShell && shellCommand ? toSingleLineCommand(shellCommand) : undefined;
+
+  /**
+   * 命令行独立区域是否渲染。
+   *
+   * compact 折叠态下命令已并入标题行（见上），此处必须关掉，否则屏幕上会同时出现
+   * 标题行里的命令与下方的命令行——同一段文字连排两遍。
+   */
+  const hasShellCommandSection = hasShellCommand && !isCompactCollapsed;
 
   // description 是文件路径的工具：收缩时要从**头部**省略目录以保住文件名
   // （`…/todo/x.md`），而不是砍掉尾部只留下每行都一样的 `/Users/…/sid-code/` 前缀。
@@ -151,8 +205,11 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
    * 故显式按 `.trim()` 判空，把"看似正确"钉成"确实正确"。
    * hidden 档整条卡片已被 ToolGroupMessage 过滤，走不到这里；
    * summary 档在此退化为"只有 header"的紧凑形态，正是想要的效果。
+   *
+   * compact 折叠态同理按「没有正文」处理：默认零行正文是本档的定义，正文仍在
+   * `resultDisplay` 里、`expandLevel >= 1` 时照旧渲染（走普通 ToolResultDisplay 路径）。
    */
-  const hasResultBody = !!resultDisplay && resultDisplay.trim() !== "";
+  const hasResultBody = !isCompactCollapsed && !!resultDisplay && resultDisplay.trim() !== "";
   const shouldExpandContent = hasResultBody || hasProgress || hasThinkThought;
 
   /**
@@ -179,7 +236,15 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         // （思考短于 44 列时 header 摘要与正文会一模一样，读起来像卡带）。
         // 但 header 不能退回光秃秃的 `⏺ think`——那正是本次要修的问题；改用用途标签
         // 回答"这一步在干什么"，与下方"记了什么"分工。
-        description={hasShellCommand ? "" : hasThinkThought ? THINK_HEADER_LABEL : description}
+        //
+        // compact 折叠态的 bash 是例外：命令不再单独占一行，而是并进这里单行展示
+        // （`compactShellDescription`），此时 description 必须让位给命令——工具的
+        // description 往往是"查看某某文件"，与命令本身信息重复，挤掉命令就白折了。
+        description={
+          hasShellCommandSection
+            ? ""
+            : (compactShellDescription ?? (hasThinkThought ? THINK_HEADER_LABEL : description))
+        }
         status={status}
         emphasis={emphasis}
         // shell 工具的实时输出是多行 tail 快照，塞进单行 header 会被截断——改在命令行下方
@@ -195,7 +260,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
           0,
           terminalWidth - (emphasis === "high" && !hasShellCommand ? 2 : 0),
         )}
-        descriptionIsPath={descriptionIsPath}
+        descriptionIsPath={compactShellDescription ? false : descriptionIsPath}
       />
       {emphasis === "high" && !hasShellCommand && <TrailingIndicator />}
       <FocusHint name={name} status={status} />
@@ -215,7 +280,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   // 已在 commandDisplay 中按 CMD_MAX_CHARS 预截断，truncate-end 用于兜底窄终端。
   // 2 空格缩进与 header 和结果区的视觉节奏一致
   const shellCommandSection =
-    hasShellCommand && commandDisplay ? (
+    hasShellCommandSection && commandDisplay ? (
       <Box flexDirection="column">
         <Box flexDirection="row">
           <Box flexShrink={0} width={2}>
@@ -333,7 +398,10 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
 
   // 无结果、无 shell 命令、无实时输出：紧凑模式只有 header
   // 子代理进度/等待进度行也算"有内容"——否则执行中的卡片又退回只有一行 header 的黑盒。
-  if (!shouldExpandContent && !hasShellCommand && !hasAgentProgress && !hasProgressLine) {
+  // compact 折叠态走的正是这条路径：正文与命令行都已让位给标题行（零行正文是本档的定义），
+  // 在这里返回 header 即可，附带好处是**不渲染 ToolResultDisplay 因而不登记溢出**，
+  // 组级的「ctrl+o 展开完整输出」提示也就不会为它出现。
+  if (!shouldExpandContent && !hasShellCommandSection && !hasAgentProgress && !hasProgressLine) {
     return header;
   }
 

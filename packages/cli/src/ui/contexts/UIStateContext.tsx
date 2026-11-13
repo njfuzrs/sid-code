@@ -164,13 +164,25 @@ export const useExpandedMaxLines = (base = 3): number | undefined => {
 
 interface UIStateProviderProps {
   children: React.ReactNode;
+  /**
+   * 初始展开档位（默认 0 = 折叠态）。
+   *
+   * 只给测试用：整帧渲染测试要对比「level 0 折叠成一行」与「level 1 正文出现」两种形态，
+   * 而 vendored 渲染底座对外部 setState 不保证同步出帧——在测试里靠 useEffect 调
+   * `setExpandLevel` 再取 lastFrame 会读到旧帧。构造时给定初始值是最确定的办法。
+   * 生产代码不传（默认走 useState(0) 的既有行为）。
+   */
+  initialExpandLevel?: ExpandLevel;
 }
 
-export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) => {
+export const UIStateProvider: React.FC<UIStateProviderProps> = ({
+  children,
+  initialExpandLevel = 0,
+}) => {
   const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [transientMessage, setTransientMessageState] = useState<TransientMessage | null>(null);
   const [showIsExpandableHint, setShowIsExpandableHint] = useState(false);
-  const [expandLevel, setExpandLevelState] = useState<ExpandLevel>(0);
+  const [expandLevel, setExpandLevelState] = useState<ExpandLevel>(initialExpandLevel);
   const [ctrlCPressedOnce, setCtrlCPressedOnce] = useState(false);
   const [ctrlDPressedOnce, setCtrlDPressedOnce] = useState(false);
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);

@@ -569,6 +569,18 @@ export function messagesToHistoryItemsWithMap(
 }
 
 /**
+ * 正文的**有效行数**（去掉首尾空行后按换行切分）。
+ *
+ * 只服务于 compact 档的空/单行降级：工具输出常带尾部换行，`"未找到匹配的内容\n"` 用朴素
+ * `split("\n")` 会算成 2 行，降级就不发生了——折叠态标题行显示「2 行输出」，用户还得按
+ * `ctrl+o` 才能看到那一句结论。用 trim 后再切，`""` 得 0、`"a\n"` 得 1，符合直觉。
+ */
+function countEffectiveLines(text: string): number {
+  const trimmed = text.trim();
+  return trimmed === "" ? 0 : trimmed.split("\n").length;
+}
+
+/**
  * 把一个 tool_result 块 + 它对应的 pending tool_use 合并成**完成态**工具卡片。
  *
  * 从 convertUserMessage 内联逻辑提取为导出函数，供两个调用方共用：
@@ -592,12 +604,27 @@ export function buildCompletedToolCall(
   const hasPatch = !!block.structuredPatch?.length;
 
   // 呈现档位（执行器解析后随 block 落盘，见 llm/types.ts 的 resultDisplayMode）：
-  //   - hidden  → 整条卡片不渲染，由 ToolGroupMessage 过滤（此处仍照常构造，
-  //               因为「隐藏」是渲染层决定，数据层保留完整信息供 /export、轨迹回放使用）；
-  //   - summary → 丢弃 ⎿ 正文（content 置空），header 摘要承担说明职责。
+  //   - hidden   → 整条卡片不渲染，由 ToolGroupMessage 过滤（此处仍照常构造，
+  //                因为「隐藏」是渲染层决定，数据层保留完整信息供 /export、轨迹回放使用）；
+  //   - summary  → 丢弃 ⎿ 正文（content 置空），header 摘要承担说明职责；
+  //   - compact  → **正文照常保留**（默认折叠是渲染层的事，见 ToolMessage 的 expandLevel），
+  //                只把档位带下去。硬约束 ①：compact 与 summary 的分界就在这一行——
+  //                若哪天有人图省事把 compact 也塞进 suppressBody，ctrl+o 展开就再也拿不
+  //                回正文了（内容已丢，渲染层无从恢复），等于把「默认折叠」偷换成「永久隐藏」。
   // 错误结果不受管辖：执行器不会给错误 block 打这个标记，此处再守一道，
   // 防御未来有人手工构造 block（错误必须可见，见 tool/types.ts 硬约束 ②）。
-  const displayMode = isError ? undefined : block.resultDisplayMode;
+  //
+  // compact 的**空/单行降级**：正文只有零星几行时，折叠态标题行的「N 行输出」比正文本身
+  // 还长，用户还得按 ctrl+o 才能看到「未找到匹配的内容」这种一句话结论——折叠是负收益。
+  // 故按正文行数降级回原样展示（等价于工具没声明档位）。判据用**有效行数**（去掉首尾空行后
+  // 按换行切分）：工具输出常带尾部换行，用 content.length 或 split 直接取长度都会算多一行。
+  // 降级发生在数据层而非渲染层，是为了让 `displayMode` 这一字段的含义保持单一：
+  // 「带 compact 的卡片 = 默认折叠有收益」，渲染层不需要再重复判一次行数。
+  const rawDisplayMode = isError ? undefined : block.resultDisplayMode;
+  const displayMode =
+    rawDisplayMode === "compact" && countEffectiveLines(block.content) <= 1
+      ? undefined
+      : rawDisplayMode;
   const suppressBody = displayMode === "summary" || displayMode === "hidden";
 
   const resultDisplay: ToolResultDisplay = {

@@ -169,6 +169,15 @@ export class GlobTool implements Tool {
   readonly zodSchema = globSchema();
 
   /**
+   * 呈现档位 `"compact"`：文件列表是真实工作内容，但大仓库一次 glob 常常几十行，
+   * 默认铺满屏幕会吃掉主屏历史的可用行数。默认折成零行正文、标题行给「N 个文件」，
+   * 按 ctrl+o 与普通工具走同一套阶梯展开——正文始终留在 `resultDisplay.content` 里，没丢。
+   *
+   * 「未找到匹配的文件」这类单行结论由 UI 侧（history-adapter）按正文行数降级回原样展示。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
+  /**
    * P2-9 / §8.9-2：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths）。
    *
    * 关键是 pattern 里的静态前缀也要报：`glob("src/ui/**\/*.tsx")` 不带 `path` 时，

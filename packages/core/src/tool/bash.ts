@@ -14,6 +14,8 @@ import type {
   LegacyToolResult as ToolResult,
   PermissionResult,
   ToolUseContext,
+  DisplayModeResultView,
+  ToolResultDisplayMode,
 } from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
@@ -663,6 +665,29 @@ export function trackedFilesChangedNotice(changed: BashChangedFile[]): string {
   return blocks.join("\n");
 }
 
+/**
+ * bash 的呈现档位判定：**退出码 0 才折叠**，其余一律原样展示。
+ *
+ * 抽成模块级纯函数而不是写在类里的箭头属性，是为了让三条分支（成功 / 非零 / 无 meta）
+ * 能被单测直接覆盖——`new BashTool()` 会在构造期 spawn 一次登录 shell 抓快照（本机 ~2s，
+ * CI 慢 runner 更久），为测三个 if 付这个代价不值。
+ *
+ * 三条判据各自的理由：
+ * - **成功才折叠**：正文是真实命令输出，成功时它已被模型读过、用户需要时 ctrl+o 还能
+ *   拿到全文；而失败输出（非零退出、超时、取消）是排查的第一现场，折起来等于藏故障。
+ * - **非零就 `undefined` 而非别的档**：`grep` 退出码 1（无匹配）、`gh pr checks` 退出码 8
+ *   （有 pending）这类「非零但不是错误」的结果，正文仍是用户要看的内容，只是不该按
+ *   成功折叠。原样展示是唯一不丢信息的选项。
+ * - **拿不到 exitCode 也 `undefined`**：早退路径（缺参数、cwd 不存在、转后台）没有退出码，
+ *   判定依据不全就不做展示优化。
+ */
+export function bashResultDisplayMode(
+  _input: unknown,
+  result?: DisplayModeResultView,
+): ToolResultDisplayMode | undefined {
+  return result?.meta?.exitCode === 0 ? "compact" : undefined;
+}
+
 export class BashTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = bashSchema();
@@ -673,6 +698,16 @@ export class BashTool implements Tool {
    * 契约见 `tool/types.ts`。
    */
   readonly consumesToolUseId = true as const;
+
+  /**
+   * 呈现档位 `"compact"` —— **只在退出码 0 时**（这是本字段函数形态的第二个实例，
+   * 也是第一个必须看「执行结果」而非只看入参的）。
+   *
+   * 判据抽到模块级纯函数 `bashResultDisplayMode`（见文件末尾），本字段只做转发：
+   * 判据本身要能被单测直接覆盖（成功 / 非零 / 无 meta 三条分支），而 `new BashTool()`
+   * 会在构造期 spawn 一次登录 shell 抓快照（本机 ~2s），为测三个 if 付这个代价不值。
+   */
+  readonly resultDisplayMode = bashResultDisplayMode;
 
   /** shell 环境快照文件路径（构造期异步创建；undefined 表示无快照，降级登录模式） */
   private snapshotFilePath: string | undefined;
@@ -1414,6 +1449,17 @@ export class BashTool implements Tool {
       // Ctrl+B 转后台注册（P1-4）。命令仍在跑时才能响应——已经在超时/取消收尾中的
       // 执行会被守卫忽略（迟到的转后台请求没有意义，进程已经在被杀或已经杀完）。
       const detachHandlerId = ++foregroundDetachSeq;
+      /**
+       * 本次执行的退出码（拿到后写进返回值的 `meta.exitCode`）。
+       *
+       * 为什么提到这一层：退出码在 `runToCompletion` 的深层作用域里产生，而返回路径有
+       * 六七个（超时 / 取消 / 语义非错误 / 普通成功…）。逐个 return 补 meta 必然漏一个，
+       * 所以先用闭包变量接住，在唯一的汇合点（`Promise.race` 之后）统一附加。
+       *
+       * 拿不到时保持 `undefined`：早退路径（缺参数、cwd 不存在、转后台）本就没有退出码，
+       * 消费侧（`resultDisplayMode`）据此回退到原样展示。
+       */
+      let observedExitCode: number | undefined;
       let resolveDetach: ((result: ToolResult) => void) | null = null;
       const detachPromise = new Promise<ToolResult>((resolve) => {
         resolveDetach = resolve;
@@ -1563,6 +1609,10 @@ export class BashTool implements Tool {
               void proc.exited.then(resolve, reject);
               void pipesDone.then(() => {}, reject);
             });
+            // 供汇合点统一写进 meta.exitCode（消费侧 resultDisplayMode 据此分档）。
+            // 放在这里而不是各 return 处：退出码一旦拿到就是本次执行的客观事实，
+            // 后续无论走语义非错误、超时还是普通成功，都应该带上它。
+            observedExitCode = exitCode;
 
             if (!pipesFinished) {
               await Promise.race([
@@ -1804,7 +1854,13 @@ export class BashTool implements Tool {
 
         // Ctrl+B 竞速：谁先 settle 用谁。未触发 detach 时 detachPromise 永远不会
         // resolve（没有 handler 调用过 resolveDetach），等价于原来的 `await runToCompletion`。
-        return await Promise.race([detachPromise, runToCompletion]);
+        const settled = await Promise.race([detachPromise, runToCompletion]);
+        // 唯一的汇合点：退出码写进 `meta.exitCode`，供消费侧（resultDisplayMode）判断
+        // 「成功命令才折叠正文」。转后台 / 早退路径此时 observedExitCode 仍是 undefined，
+        // 原样返回（不编造一个 0 让失败被折叠）。
+        return observedExitCode === undefined
+          ? settled
+          : { ...settled, meta: { ...settled.meta, exitCode: observedExitCode } };
       } finally {
         foregroundDetachHandlers.delete(detachHandlerId);
         // detach 分支已经在 handler 内部清理过 timer/listener；未 detach 时这里兜底清理。

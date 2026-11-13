@@ -51,9 +51,10 @@ export interface ToolCallDisplay {
   shellCommand?: string;
   /**
    * 呈现档位（源自工具自报的 `resultDisplayMode`，见 `tool/types.ts`）。
-   * `"hidden"` 的完成态工具整条不渲染；`"summary"` 只渲染 header 行。
+   * `"hidden"` 的完成态工具整条不渲染；`"summary"` 只渲染 header 行；
+   * `"compact"` 保留正文但默认折叠成零行，`ctrl+o` 可展开（见 `ToolMessage`）。
    */
-  displayMode?: "hidden" | "summary";
+  displayMode?: "hidden" | "summary" | "compact";
 }
 
 interface ToolGroupMessageProps {
@@ -152,12 +153,16 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             concurrentAgentCount={concurrentAgentCount}
             progress={tool.progress}
             progressTotal={tool.progressTotal}
-            // summary 档不重算摘要：`resultSummary` 与 `result` 都已被置空，
+            // summary / hidden 档不重算摘要：`resultSummary` 与 `result` 都已被置空，
             // 若沿用 `||` 兜底链去重算，`getResultSummary` 会用 `N 字符` 量**那份提示词**
             // 的长度（实测 todo_write 曾报 "258 字符"，描述的是前向推进指令本身）。
             // 该档的信息重心在 header 的 description，摘要留空正是想要的。
+            //
+            // compact 档**必须重算/保留摘要**：它是折叠态标题行唯一的结果规模信息
+            // （「54 行输出」「12 个结果」），丢了就只剩「⏺ bash <命令>」一行、读者
+            // 完全不知道跑了多少东西——折叠就从「省地方」退化成「藏信息」。
             resultSummary={
-              tool.displayMode
+              tool.displayMode === "hidden" || tool.displayMode === "summary"
                 ? undefined
                 : tool.resultSummary ||
                   (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)
@@ -165,6 +170,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             elapsedMs={tool.elapsedMs}
             shellCommand={shellCommand}
             thinkThought={thinkThought}
+            displayMode={tool.displayMode}
           />
         );
       })}

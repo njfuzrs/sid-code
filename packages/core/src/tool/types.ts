@@ -31,12 +31,29 @@ export interface ToolDescriptionContext {
 }
 
 /**
+ * 解析档位函数能看到的本次执行结果（只读展示相关字段）。
+ *
+ * 刻意不含 `structuredPatch` / `mediaBlocks` 等渲染专用字段：档位判定只需要知道
+ * 「跑成功了没有、退出码多少、输出了什么」，把渲染细节暴露进去会诱使工具在
+ * 展示层做本应在渲染层做的事。
+ */
+export interface DisplayModeResultView {
+  output?: string;
+  isError?: boolean;
+  /** 结构化执行元数据（bash 的 `exitCode` 从这里读，见 LegacyToolResult.meta）。 */
+  meta?: Record<string, unknown>;
+}
+
+/**
  * 工具结果在 TUI 的呈现档位（见 `ToolCapabilityFields.resultDisplayMode` 的完整说明）。
  *
  * - `"hidden"` —— 整条卡片不渲染（连 `⏺ 工具名` 都没有）。
  * - `"summary"` —— 保留卡片、丢弃 `⎿` 正文，由 header 摘要用用户语言说明发生了什么。
+ * - `"compact"` —— 保留卡片与正文（`resultDisplay.content` 不置空），默认折叠成零行正文、
+ *   只在标题行给结果规模；`ctrl+o` 与普通工具走同一套阶梯展开。适用于「正文是真实工作
+ *   内容、只是太占行」的读写搜索类工具（read / grep / glob / bash）。
  */
-export type ToolResultDisplayMode = "hidden" | "summary";
+export type ToolResultDisplayMode = "hidden" | "summary" | "compact";
 
 /**
  * ToolSearch 协议字段 + 中断行为 —— 新旧两版接口共享的"能力声明"。
@@ -365,16 +382,26 @@ export interface ToolCapabilityFields<Input = unknown> {
    * 由 `tests/ui/tool-result-display-mode-audit.test.ts` 与期望名单双向对账，
    * 「新增工具时忘记评估呈现方式」变成 CI 可见的硬错误而非屏幕上的静默噪音。
    *
-   * ## 函数形态：同一个工具按入参分档
+   * ## 函数形态：同一个工具按入参 / 执行结果分档
    *
-   * 少数工具的输出性质**随本次调用而变**，静态常量表达不了。唯一实例是 `skill`：
-   *   - `activate` 模式 —— `output` 是整份 skill prompt（注入上下文用）→ 必须 `"summary"`；
-   *   - `delegate` 模式 —— `output` 是子代理跑完的**真实工作成果** → 必须原样展示。
-   * 一刀切成 summary 会把用户要的交付内容丢掉，一刀切成 undefined 则继续泄漏 prompt。
+   * 少数工具的输出性质**随本次调用而变**，静态常量表达不了。两类实例：
+   *
+   * - **只看入参**（`skill`）：`activate` 模式的 `output` 是整份 skill prompt（注入上下文用）
+   *   → 必须 `"summary"`；`delegate` 模式是子代理跑完的**真实工作成果** → 必须原样展示。
+   * - **要看执行结果**（`bash`）：退出码 0 的成功命令，正文是真实工作内容、只是太占行
+   *   → `"compact"`；非零退出（含 `grep` 退出码 1 这类语义上不算错误的）必须原样展示正文，
+   *   否则用户看不到失败原因。退出码只能从 `result.meta.exitCode` 读，入参里没有。
+   *
    * 故本字段允许函数形态（与 `isConcurrencySafe(input)` / `interruptBehavior()` 同风格），
-   * 返回 `undefined` 表示"本次调用按默认原样展示"。
+   * 第二个参数是**可选**的本次执行结果视图（只带 `output` / `isError` / `meta`）。返回
+   * `undefined` 表示"本次调用按默认原样展示"。
+   *
+   * ⚠️ 拿不到判定依据时**必须回退到原样展示**，不能猜一个档位：`bash` 的早退路径
+   * （缺参数、转后台）没有 `exitCode`，那些结果一律按普通卡片画。
    */
-  resultDisplayMode?: ToolResultDisplayMode | ((input: Input) => ToolResultDisplayMode | undefined);
+  resultDisplayMode?:
+    | ToolResultDisplayMode
+    | ((input: Input, result?: DisplayModeResultView) => ToolResultDisplayMode | undefined);
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====
