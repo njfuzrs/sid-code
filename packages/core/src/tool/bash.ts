@@ -1840,7 +1840,12 @@ export class BashTool implements Tool {
     // R2：显式等待先过「同一个对象只允许一个有效等待」的准入判定，而且必须在 spawn **之前**——
     // 起了进程再 kill 会先产生一次输出与一条终态通知，与「本次未重复启动」的承诺自相矛盾
     // （b0aa0f1e 正是四次 spawn、四条通知）。
-    const waitPlan = this.planWaitUntil(params.command, params.wait_until_seconds, cwd);
+    const waitPlan = this.planWaitUntil(
+      params.command,
+      params.wait_until_seconds,
+      cwd,
+      params.toolUseId,
+    );
     if (waitPlan?.decision.action === "duplicate") {
       // isError 保持 false：这不是失败，是「已经有东西在盯它了」。
       // 回执里必须带 task_stop 出口，否则模型改了脚本也挂不上新的（R2 §修法 2）。
@@ -1920,6 +1925,7 @@ export class BashTool implements Tool {
     command: string,
     rawSeconds: number | undefined,
     cwd: string,
+    toolUseId?: string,
   ): WaitPlan | null {
     if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return null;
     const task = require("../task/index.ts") as typeof import("../task/index.ts");
@@ -1931,6 +1937,8 @@ export class BashTool implements Tool {
     const normalizedCommand = task.normalizeWaitCommand(command);
     const scriptHash = task.hashScriptBodies(scriptBodies);
     const decision = task.decideWaitAdmission({
+      kind: "shell",
+      ...(toolUseId !== undefined ? { toolUseId } : {}),
       subjects,
       command: normalizedCommand,
       scriptHash,

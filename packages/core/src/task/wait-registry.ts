@@ -289,6 +289,26 @@ let traceSink: WaitTraceSink | null = null;
  */
 export const WAIT_REGISTERED_EVENT_NAME = "WaitRegistered";
 
+/**
+ * 等待释放的轨迹事件名（与 `WaitRegistered` 成对，是「并存了几个」的分子/分母来源）。
+ *
+ * 同 `WAIT_REGISTERED_EVENT_NAME` 导出成常量：digest 用它算
+ * `max_concurrent_waits_per_subject`，写字面量会在改名后静默算成 0。
+ */
+export const WAIT_RELEASED_EVENT_NAME = "WaitReleased";
+
+/**
+ * 准入判定的轨迹事件名（R9）。
+ *
+ * 与 `WaitRegistered` 的分工是**判定 vs 事实**：登记事件只记录「真的登记上了什么」，
+ * 判成 duplicate 的那次入口调用根本登记不了，于是在轨迹里完全消失——b0aa0f1e 的
+ * 4 次重挂能数出来，纯粹因为它每次都真的启动了；R2 上线后同样的操作会被拦住，
+ * 若没有这条事件，「模型试过几次重复等待」就变成不可观测（审计看不到的缺陷本人）。
+ *
+ * 导出成常量同 `WAIT_REGISTERED_EVENT_NAME`：用例写字面量会在改名后匹配 0 条而照样通过。
+ */
+export const WAIT_ADMISSION_EVENT_NAME = "WaitAdmission";
+
 /** 注入 trace 通道。传 `null` 关闭。 */
 export function setWaitTraceSink(s: WaitTraceSink | null): void {
   traceSink = s;
@@ -332,6 +352,17 @@ function emitWaitTrace(event: string, data: Record<string, unknown>): void {
   } catch {
     /* 埋点失败静默，绝不影响等待语义 */
   }
+}
+
+/**
+ * 供等待语义的其他模块（`wait-admission.ts`）埋事件。
+ *
+ * 为什么要有这个包装而不是第二个 `setWaitTraceSink`：sink 只有一份，由 App 注入。
+ * 判定模块自己留一个 sink 的话，注入路径一处漏写就会让整类事件静默消失——
+ * 而「事件静默消失」正是 R9 要修的缺陷形态（审计口径看不到发生过的事）。
+ */
+export function recordWaitTraceEvent(event: string, data: Record<string, unknown>): void {
+  emitWaitTrace(event, data);
 }
 
 // ── 单调时钟（可注入，T-W1-8/9 用） ──
@@ -420,7 +451,7 @@ export function releaseWait(id: string, reason: WaitReleaseReason): boolean {
       });
     }
   }
-  emitWaitTrace("WaitReleased", {
+  emitWaitTrace(WAIT_RELEASED_EVENT_NAME, {
     id,
     kind: entry.src.kind,
     reason,
@@ -730,7 +761,7 @@ function sweepExpiredWaits(): void {
 
     explicitWaits.delete(id);
     invalidatedIds.add(id);
-    emitWaitTrace("WaitReleased", {
+    emitWaitTrace(WAIT_RELEASED_EVENT_NAME, {
       id,
       kind: entry.src.kind,
       reason: "expired",

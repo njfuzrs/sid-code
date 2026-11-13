@@ -14,10 +14,12 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
+  WAIT_ADMISSION_EVENT_NAME,
   __resetWaitRegistryForTest,
   registerWait,
   releaseWait,
   listWaits,
+  setWaitTraceSink,
 } from "../../src/task/wait-registry.ts";
 import {
   decideWaitAdmission,
@@ -95,6 +97,7 @@ describe("R2 准入真值表", () => {
   test("不同 subject → start（不误伤并行的无关等待）", () => {
     addShellWait("s1", { subjects: ["gh:pr:779"], command: "bash /tmp/wait-pr-779.sh" });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:741"],
       command: "bash /tmp/wait-pr-741.sh",
     });
@@ -105,6 +108,7 @@ describe("R2 准入真值表", () => {
   test("同 subject 同命令 → duplicate（b0aa0f1e 后三次）", () => {
     addShellWait("s1", { subjects: ["gh:pr:779"], command: "bash /tmp/wait-pr-779.sh" });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:779"],
       command: "bash /tmp/wait-pr-779.sh",
     });
@@ -115,6 +119,7 @@ describe("R2 准入真值表", () => {
   test("同 subject 不同命令 → replace（换了一种等法）", () => {
     addShellWait("s1", { subjects: ["gh:pr:779"], command: "bash /tmp/wait-pr-779.sh" });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:779"],
       command: "while true; do gh pr checks 779; sleep 30; done",
       deadlineAt: Date.now() + 3_600_000,
@@ -130,6 +135,7 @@ describe("R2 准入真值表", () => {
       scriptHash: "aaaa1111",
     });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:779"],
       command: "bash /tmp/wait-pr-779.sh",
       scriptHash: "bbbb2222",
@@ -144,6 +150,7 @@ describe("R2 准入真值表", () => {
       scriptHash: "aaaa1111",
     });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:779"],
       command: "bash /tmp/wait-pr-779.sh",
       scriptHash: "aaaa1111",
@@ -155,6 +162,7 @@ describe("R2 准入真值表", () => {
     const deadlineAt = Date.now() + 1_800_000;
     addShellWait("s1", { subjects: ["gh:pr:780"], command: "bash a.sh", deadlineAt });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:780"],
       command: "for i in {1..40}; do gh pr view 780; sleep 30; done",
       deadlineAt: Date.now() + 1_500_000,
@@ -166,6 +174,7 @@ describe("R2 准入真值表", () => {
     const deadlineAt = Date.now() + 1_500_000;
     addShellWait("s1", { subjects: ["gh:pr:780"], command: "bash a.sh", deadlineAt });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:780"],
       command: "bash b.sh",
       deadlineAt: Date.now() + 3_000_000,
@@ -180,6 +189,7 @@ describe("R2 准入真值表", () => {
     updateTask("s1", (t) => ({ ...t, status: "completed" }));
 
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:779"],
       command: "bash /tmp/wait-pr-779.sh",
     });
@@ -188,13 +198,16 @@ describe("R2 准入真值表", () => {
 
   test("新等待无 subject → start（抽不出对象就不参与去重）", () => {
     addShellWait("s1", { subjects: ["gh:pr:779"], command: "bash /tmp/wait-pr-779.sh" });
-    expect(decideWaitAdmission({ command: "bun test" }).action).toBe("start");
-    expect(decideWaitAdmission({ subjects: [], command: "bun test" }).action).toBe("start");
+    expect(decideWaitAdmission({ kind: "shell", command: "bun test" }).action).toBe("start");
+    expect(decideWaitAdmission({ kind: "shell", subjects: [], command: "bun test" }).action).toBe(
+      "start",
+    );
   });
 
   test("排除自身 id（同一任务重复登记不算重复）", () => {
     addShellWait("s1", { subjects: ["gh:pr:779"], command: "bash /tmp/wait-pr-779.sh" });
     const decision = decideWaitAdmission({
+      kind: "shell",
       id: "s1",
       subjects: ["gh:pr:779"],
       command: "bash /tmp/wait-pr-779.sh",
@@ -206,6 +219,7 @@ describe("R2 准入真值表", () => {
     // 普通后台 shell：promise 是 exit_or_quiescent → 不是显式等待
     registerTask(shellTask("bg1", { description: "bun test" }));
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:741"],
       command: "bash /tmp/wait-pr-741.sh",
     });
@@ -234,6 +248,7 @@ describe("R2 duplicate 回执", () => {
       deadlineAt,
     });
     const decision = decideWaitAdmission({
+      kind: "shell",
       subjects: ["gh:pr:779"],
       command: "bash /tmp/wait-pr-779.sh",
     });
@@ -277,5 +292,51 @@ describe("R2 duplicate 回执", () => {
     const text = formatDuplicateWaitReceipt(existing, ["gh:pr:779"]);
     expect(text).toContain("另有 1 个同对象等待也在跑");
     expect(text).toContain("s2");
+  });
+});
+
+describe("R9：判定落 WaitAdmission 事件（判定事实与登记事实分开）", () => {
+  test("duplicate 也落一条，字段能对上 tool_use 与既有等待", () => {
+    const trace: Array<{ event: string; data: Record<string, unknown> }> = [];
+    setWaitTraceSink((event, data) => trace.push({ event, data }));
+    try {
+      addShellWait("s1", { subjects: ["gh:pr:779"], command: "bash /tmp/wait-pr-779.sh" });
+      const decision = decideWaitAdmission({
+        kind: "shell",
+        toolUseId: "call_r9",
+        subjects: ["gh:pr:779"],
+        command: "bash /tmp/wait-pr-779.sh",
+      });
+      expect(decision.action).toBe("duplicate");
+      // 关键：这次调用**没有登记**（判成 duplicate 直接返回回执），
+      // 只有 WaitAdmission 事件能在轨迹里留下「模型试过一次重复等待」。
+      const ev = trace.filter((t) => t.event === WAIT_ADMISSION_EVENT_NAME);
+      expect(ev).toHaveLength(1);
+      expect(ev[0]!.data).toMatchObject({
+        action: "duplicate",
+        kind: "shell",
+        subjects: ["gh:pr:779"],
+        existing_ids: ["s1"],
+        tool_use_id: "call_r9",
+      });
+    } finally {
+      setWaitTraceSink(null);
+    }
+  });
+
+  test("抽不出 subjects 的 start 也落一条（「无法判定对象」本身是可观测事实）", () => {
+    const trace: Array<{ event: string; data: Record<string, unknown> }> = [];
+    setWaitTraceSink((event, data) => trace.push({ event, data }));
+    try {
+      const decision = decideWaitAdmission({ kind: "wakeup", command: "过 10 分钟看看" });
+      expect(decision.action).toBe("start");
+      const ev = trace.filter((t) => t.event === WAIT_ADMISSION_EVENT_NAME);
+      expect(ev).toHaveLength(1);
+      expect(ev[0]!.data.action).toBe("start");
+      expect(ev[0]!.data.kind).toBe("wakeup");
+      expect(ev[0]!.data.subjects).toBeUndefined();
+    } finally {
+      setWaitTraceSink(null);
+    }
   });
 });
