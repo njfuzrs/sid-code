@@ -151,6 +151,9 @@ export {
   findActiveWaitsBySubjects,
   decideWaitAdmission,
   formatDuplicateWaitReceipt,
+  // R6：同对象换了等法时淘汰旧等待（三个入口共用；bash 经本聚合器惰性 require）
+  supersedeReplacedWaits,
+  formatReplaceNote,
 } from "./wait-admission.ts";
 
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";

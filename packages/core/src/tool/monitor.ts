@@ -53,7 +53,12 @@ import {
   collectWaitSubjects,
   normalizeWaitCommand,
 } from "../task/wait-subjects.ts";
-import { decideWaitAdmission, formatDuplicateWaitReceipt } from "../task/wait-admission.ts";
+import {
+  decideWaitAdmission,
+  formatDuplicateWaitReceipt,
+  formatReplaceNote,
+  supersedeReplacedWaits,
+} from "../task/wait-admission.ts";
 import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
@@ -292,14 +297,8 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         isError: false,
       };
     }
-    // replace：模型换了一种等法（改了脚本 / 从唤醒换成监控）。R2 只判不淘汰，
-    // 旧的仍在跑——不静默，否则模型会以为只剩自己这一路，收不到旧任务通知时又去前台查。
-    const replaceNote =
-      admission.action === "replace"
-        ? `\n注意：${
-            admission.existing[0]!.id
-          }（${admission.existing[0]!.description}）也在盯同一个对象，它仍会继续到结束或你 task_stop 它。`
-        : "";
+    // replace（R6）：模型换了一种等法（改了脚本 / 从唤醒或后台循环换成监控）。
+    // 淘汰放在 spawn + 登记**之后**（见下方），先停旧再起新会留下一个没有任何等待源的空窗。
 
     const taskState = spawnMonitorTask({
       description,
@@ -332,6 +331,13 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       `monitor ${taskState.id} 启动：${description}（期限 ${timeoutMs}ms，并发 ${countRunningMonitors()}/${effectiveMaxConcurrent}）`,
     );
 
+    // R6：先起新的（上面 spawn + 登记），再停旧的。顺序不能反——中间的空窗会被 todo 闸门
+    // 判成「没人会回来」而强推模型继续干活（ca8d7e5c 的形态）。
+    const superseded =
+      admission.action === "replace"
+        ? supersedeReplacedWaits(admission.existing, taskState.id, "monitor")
+        : [];
+
     const endAt = formatClockWithSeconds(taskState.deadlineAt);
     const minutes = Math.round(timeoutMs / 60_000);
     // D19（方案 §10.3）：无头形态（`-p` 单轮）没有 prompt 注入通道，事件没法在回合边界
@@ -351,9 +357,9 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         // R3 修法 2：把「此刻有没有待送达通知、上一条已送达的是谁」写成事实，
         // 模型不必凭记忆判断某条通知是不是自己刚挂的这次监控的事件。
         `${describeBackgroundWaitFact()}\n` +
-        // R2：monitor 的 duplicate 分支已在 spawn 之前直接返回，走到这里只会是 replace
-        // （旧的继续跑、新的照常起），所以这里用 replaceNote 而不是 duplicateNote。
-        `提前停止：task_stop ${taskState.id}${replaceNote}`,
+        // R6：superseded 非空时才追加淘汰说明（`formatReplaceNote` 对空数组返回空串）；
+        // duplicate 分支已在 spawn 之前直接返回，走到这里只会是 replace 或 start。
+        `提前停止：task_stop ${taskState.id}${formatReplaceNote(superseded, taskState.id)}`,
     };
   }
 }

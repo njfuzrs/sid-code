@@ -1866,6 +1866,10 @@ export class BashTool implements Tool {
     // R2 的 registerWaitUntil 签名（第三参数是准入判定产出的 waitPlan）；
     // R3 在此之上追加一句确定性状态事实。
     const waitNote = this.registerWaitUntil(taskState.id, params.command, waitPlan);
+    // R6：同对象换了等法 → 先起新的（上面 spawn + 登记），再停旧的。
+    // 顺序不能反：两步之间若出现「没有任何等待源」的空窗，todo 闸门会判成「没人会回来」
+    // 而强推模型继续干活（ca8d7e5c 的形态）。淘汰本身见 `supersedeReplacedWaits` 的注释。
+    const replaceNote = this.supersedeOnReplace(waitPlan, taskState.id);
     // R3 修法 2：回执末尾写一句确定性事实——「此刻有无待送达通知 / 上一条已送达的是谁」。
     // 旧通知被误当成新结果的根因是模型没有可核对的事实，这里直接把事实放回执里。
     // 惰性 require 与上方 registerWaitUntil 同款（bash.ts 对 task 模块一贯如此）。
@@ -1880,9 +1884,26 @@ export class BashTool implements Tool {
         output_file: taskState.outputFile,
         // F3：同 sub_agent 后台启动返回——明说不要轮询（20261019 轨迹 shell 任务也被 task_output 阻塞满 600s）
         // Q1：去掉运行期间读 output_file 的许可，与子代理 / Ctrl+B 回执共用同一常量。
-        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}${waitFact}`,
+        // R3 的 waitFact 放最后：它读的是「此刻有无待送达通知 / 上一条已送达的是谁」，
+        // 与 R6 的 replaceNote（本次淘汰了谁）互补，两条事实都要让模型看到。
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}${replaceNote}${waitFact}`,
       }),
     };
+  }
+
+  /**
+   * R6：同对象换了等法时淘汰旧等待，返回回执里那一段。
+   *
+   * 调用点必须在 spawn + `registerWaitUntil` **之后**（理由见 `supersedeReplacedWaits`）。
+   * 只有 `replace` 才动旧的：`start` 没有同对象等待，`duplicate` 已经提前返回、根本没 spawn。
+   */
+  private supersedeOnReplace(plan: WaitPlan | null, newTaskId: string): string {
+    if (plan?.decision.action !== "replace") return "";
+    const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    return task.formatReplaceNote(
+      task.supersedeReplacedWaits(plan.decision.existing, newTaskId, "shell"),
+      newTaskId,
+    );
   }
 
   /**

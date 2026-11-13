@@ -18,6 +18,26 @@ import { enforceMcpOutputTokenLimit } from "../mcp/mcp-output-limit.ts";
 /** manager 惰性获取器（cli.ts 里 mcpManager 是 let + 异步连接，注册工具时可能尚未就绪） */
 type ManagerGetter = () => MCPManager | undefined;
 
+/**
+ * MCP 资源工具的共用启用判据（D7）：没有任何已连接 server 暴露资源时，这两个工具
+ * 对模型完全无用——30 天轨迹里 `ListMcpResources` 只被调用 1 次、`ReadMcpResource`
+ * 0 次，却要占常驻 schema 883 字节、挤 2 个 strict 名额。
+ *
+ * **必须每轮重新求值，不能用注册时的快照**：MCP 是异步连接的，注册时 manager 可能
+ * 还没连上、更没列过资源。registry 已在 definitions / activeDefinitions 两处接
+ * `isEnabled`，连接完成后下一轮自然可见。
+ *
+ * 代价点破：启用状态在会话中途 false → true 时工具数组会变长，插入点之后的工具区
+ * 缓存失效一次（与 MCP 工具晚到同类）。这是有意的——只在 server **确实有资源**时
+ * 发生一次；不要为了缓存把判据改成一次性快照，那会让「连上有资源的 server」永远
+ * 看不到这两个工具。
+ */
+function managerHasResources(getManager: ManagerGetter): boolean {
+  const manager = getManager();
+  if (!manager) return false;
+  return manager.hasResources();
+}
+
 const listSchema = z.object({
   server: z.string().optional().describe("只列出该 MCP 服务器的资源；省略则列出全部"),
 });
@@ -41,6 +61,11 @@ export class ListMcpResourcesTool implements Tool {
   }
 
   searchHint = "list mcp server resources";
+
+  /** 只在真有资源时进 schema（见 managerHasResources）；不声明 shouldDefer，保持常驻 */
+  isEnabled(): boolean {
+    return managerHasResources(this.getManager);
+  }
 
   readOnly(): boolean {
     return true;
@@ -93,6 +118,11 @@ export class ReadMcpResourceTool implements Tool {
   }
 
   searchHint = "read mcp resource by uri";
+
+  /** 只在真有资源时进 schema（见 managerHasResources）；不声明 shouldDefer，保持常驻 */
+  isEnabled(): boolean {
+    return managerHasResources(this.getManager);
+  }
 
   readOnly(): boolean {
     return true;

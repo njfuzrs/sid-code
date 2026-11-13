@@ -14,7 +14,7 @@ import {
   getQueueSnapshot,
   type QueuedCommand,
 } from "../query/message-queue-manager.ts";
-import { isResultDeliveredByToolResult, getTask } from "./registry.ts";
+import { getTask, isResultDeliveredByToolResult } from "./registry.ts";
 
 /**
  * 通知正文最大字符数。
@@ -285,6 +285,17 @@ export function enqueueTaskNotification(
   n: TaskNotification,
   priority: NotificationPriority = "later",
 ): void {
+  // R6 修法 2：被替换的旧等待不送终态通知。
+  //
+  // 为什么在**入队**这一层跳过，而不是在三条 kill 路径各写一次：入队点是所有终态通
+  // 知的唯一收口（shell / monitor / agent / workflow 共 9 个写点都过这里），写在调用
+  // 侧漏掉任何一条，旧任务的 killed 就会在下一轮送达，成为 R3 误读的素材。
+  //
+  // 只跳终态：替换瞬间旧 monitor 可能还有事件批次在飞，那些是运行中的观测，不受此约束
+  // （与 `isSupersededNotification` 的 isTerminalStatus 判据同口径）。
+  // 放在锚点补齐之前：跳过的通知不需要任何锚点，早返回少一次 registry 查询。
+  if (isTerminalStatus(n.status) && getTask(n.taskId)?.supersededBy) return;
+
   // R3：锚点从 registry 自动补齐，而不是让 14 个调用点各自传——
   // 漏传一处，那类任务的通知就少一个判据，而这种缺失在测试里很难发现
   // （断言写「含 tool-use-id」时不会检查另一类任务的 ended-at）。

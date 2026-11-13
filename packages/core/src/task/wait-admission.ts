@@ -33,7 +33,11 @@
  */
 
 import type { WaitSource } from "./wait-registry.ts";
-import { isDeclaredExternalWait, listWaits } from "./wait-registry.ts";
+import { isDeclaredExternalWait, listWaits, releaseWait } from "./wait-registry.ts";
+import { updateTask } from "./registry.ts";
+import { killShellTask } from "./shell-task.ts";
+import { killMonitorTask } from "./monitor-task.ts";
+import { getScheduler } from "../cron/scheduler.ts";
 import { formatClockWithSeconds } from "./monitor-text.ts";
 import { normalizeWaitCommand } from "./wait-subjects.ts";
 
@@ -160,6 +164,96 @@ export function formatDuplicateWaitReceipt(existing: WaitSource[], subjects: str
 /** 停掉这个等待源的命令（回执里给模型直接用，见上面「给错命令比不给更糟」） */
 export function stopCommand(src: WaitSource): string {
   return src.kind === "wakeup" ? `cron_delete ${src.id}` : `task_stop ${src.id}`;
+}
+
+/**
+ * R6：淘汰被替换的旧等待（`decideWaitAdmission` 返回 `replace` 时由入口调用）。
+ *
+ * ## 调用时序是契约，不是偏好
+ *
+ * 入口必须**先启动并登记新的等待，再调这里**。反过来会有一个「没有任何等待源」的空窗，
+ * 被 todo 闸门判成「没人会回来」而强推模型继续干活——那正是 R6 要消除的形态
+ * （ca8d7e5c 里模型在等 CI，闸门却催它推进别的待办）。
+ *
+ * ## 为什么只淘汰这三类
+ *
+ * `isDeclaredExternalWait` 的定义域是 shell-deadline / monitor / wakeup：它们都是**模型声明的
+ * 等待方式**，换一种等法意味着旧的那种不再有信息量。agent / workflow 是模型要等的**产出**，
+ * 换等法不该顺手杀掉一个正在干活的子代理，所以即便将来它们进入 `existing` 也保持不动。
+ *
+ * ## 唤醒是兜底，不淘汰任何主动等待
+ *
+ * `newKind === "wakeup"` 时本函数直接返回空。唤醒的语义是「过一会儿回来看看」，它天然与
+ * 正在跑的 monitor / 后台等待**互补**——S2 的设计就是「monitor 盯对象 + 唤醒兜底」，
+ * monitor 成功终态后撤销唤醒（`invalidateWakeupsForDeliveredTask`）。把新起唤醒当成
+ * 「换了一种等法」去 kill 掉 monitor，会拆掉这条链：monitor 被 kill 后通知不入队，
+ * 兜底唤醒反而永远撤不掉（`wakeup-invalidation-chain` 的真实入口用例实测红）。
+ * 反方向不受影响：新起 shell / monitor 仍淘汰旧的唤醒（方案 §R6 验收 2）。
+ *
+ * ## 顺序：先标记、再释放、最后 kill
+ *
+ * - `supersededBy` 必须在 kill **之前**写进任务状态：`killShellTask` 在同一个函数里完成
+ *   终态写入与通知入队，晚一步通知就已经进队列了（`enqueueTaskNotification` 靠这个字段跳过）；
+ * - `WaitReleased(superseded)` 也必须在 kill 之前：终态释放路径会把它记成 `terminal`，
+ *   两者在轨迹上必须能分开（方案 §R6 修法 2）。
+ *
+ * 返回实际被淘汰的源，供回执列出（`agent`/`workflow` 不淘汰，不能出现在回执里）。
+ */
+export function supersedeReplacedWaits(
+  existing: WaitSource[],
+  newId: string,
+  newKind: WaitSource["kind"],
+): WaitSource[] {
+  if (newKind === "wakeup") return [];
+  const stopped: WaitSource[] = [];
+  for (const src of existing) {
+    if (src.id === newId) continue;
+    switch (src.kind) {
+      case "shell": {
+        markTaskSuperseded(src.id, newId);
+        releaseWait(src.id, "superseded");
+        killShellTask(src.id, { summary: `已被 ${newId} 替换（同一对象换了等法，无需再等）` });
+        stopped.push(src);
+        break;
+      }
+      case "monitor": {
+        markTaskSuperseded(src.id, newId);
+        releaseWait(src.id, "superseded");
+        killMonitorTask(src.id);
+        stopped.push(src);
+        break;
+      }
+      case "wakeup": {
+        // 与 `cron_delete` 同一条路径：先从调度器摘掉，再按 superseded 释放
+        getScheduler().removeTask(src.id);
+        releaseWait(src.id, "superseded");
+        stopped.push(src);
+        break;
+      }
+      case "agent":
+      case "workflow":
+        break;
+    }
+  }
+  return stopped;
+}
+
+/** 替换回执（与 schedule_wakeup 现有 `replacedNote` 同一句式） */
+export function formatReplaceNote(stopped: WaitSource[], newId: string): string {
+  if (stopped.length === 0) return "";
+  const items = stopped.map((src) => `${src.id}（${src.description}）`).join("、");
+  return `\n已替换此前在盯同一对象的等待：${items}（新等待 ${newId} 接管，旧的不再送终态通知）。`;
+}
+
+/**
+ * 把任务标记为「被新任务替换」。
+ *
+ * 单独一个函数而不是内联在 kill 里：标记必须在 kill 与通知入队之前落地，且两条 kill 路径
+ * （shell / monitor）共用同一口径。已标记过就保留第一次的值——并存替换时先被替换的那个
+ * 才是「旧」，后来的任务不该把溯源指针改写成自己。
+ */
+function markTaskSuperseded(taskId: string, newId: string): void {
+  updateTask(taskId, (t) => (t.supersededBy ? t : { ...t, supersededBy: newId }));
 }
 
 function kindLabel(kind: WaitSource["kind"]): string {

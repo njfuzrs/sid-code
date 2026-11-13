@@ -156,7 +156,13 @@ const explicitWaits = new Map<string, WaitEntry>();
 const invalidatedIds = new Set<string>();
 
 /**
- * 终态 monitor 的 subjects 快照（D8/S2）：等通知**送达**之后再判要不要撤销唤醒。
+ * 终态等待源的 subjects 快照（D8/S2 + R6 修法 3）：等通知**送达**之后再判要不要撤销唤醒。
+ *
+ * 两种来源，同一判据（「被等对象已成功终态，且通知已投递」）：
+ * - monitor 成功终态（S2，D8 起）；
+ * - **shell-deadline 成功终态**（R6 修法 3）：ca8d7e5c 里 sg36n1dwy 若以 MERGED 退出，
+ *   盯同一 PR 的唤醒 882930b6 本该自动撤掉，否则它到点还会再叫醒模型一次。
+ *   只收 `deadline`（模型显式声明的等待），普通后台 shell 的退出不是「对象已终态」的信号。
  *
  * 为什么需要搬一份：subjects 只存在登记项里，而 `releaseWait` 会把它删掉。终态释放
  * （D4）发生在任务进终态那一刻，比「通知进模型上下文」早一段；到送达时就再也读不到
@@ -166,7 +172,10 @@ const invalidatedIds = new Set<string>();
  * 有界性：通知可能永远不送达（如 `task_output` 抢先认领结果、队列里的通知被撤回），
  * 残项由 `TERMINAL_SUBJECT_TTL_MS` 兜底清理，不在会话生命周期里累积。
  */
-const terminalMonitorSubjects = new Map<string, { subjects: string[]; at: number }>();
+const terminalWaitSubjects = new Map<
+  string,
+  { subjects: string[]; at: number; kind: "monitor" | "shell" }
+>();
 
 /**
  * 终态 monitor 的 subject 快照保留多久（D8）。
@@ -386,13 +395,30 @@ export function releaseWait(id: string, reason: WaitReleaseReason): boolean {
   if (!entry) return false;
   explicitWaits.delete(id);
   if (reason === "invalidated" || reason === "expired") invalidatedIds.add(id);
-  // D8/S2：终态释放是 subjects 的**唯一**读取窗口（登记项马上就没了）。S2 要求
-  // 「被等对象成功终态 **且通知已送达**」，而送达点在注入侧、比这里晚一段，
+  // D8/S2 + R6 修法 3：终态释放是 subjects 的**唯一**读取窗口（登记项马上就没了）。
+  // 判据要求「被等对象成功终态 **且通知已送达**」，而送达点在注入侧、比这里晚一段，
   // 所以把登记项自带的 subjects 搬到待送达快照，送达时再判
   // （见 `invalidateWakeupsForDeliveredTask`）。不另存第二份权威数据：
   // 这里只是同一次搬移，送达即删。
-  if (reason === "terminal" && entry.src.kind === "monitor" && entry.src.subjects?.length) {
-    terminalMonitorSubjects.set(id, { subjects: entry.src.subjects, at: Date.now() });
+  //
+  // 两类来源同一条判据：
+  // - monitor（S2）：监控脚本退出 = 它盯的那段状态给出了结论；
+  // - shell-deadline（R6 修法 3）：模型显式声明的等待以 exit 0 结束 = 条件满足了。
+  //   普通后台 shell 不收：它退出只说明「这条命令跑完了」，不是「对象已终态」。
+  if (reason === "terminal" && entry.src.subjects?.length) {
+    if (entry.src.kind === "monitor") {
+      terminalWaitSubjects.set(id, {
+        subjects: entry.src.subjects,
+        at: Date.now(),
+        kind: "monitor",
+      });
+    } else if (entry.src.kind === "shell" && entry.src.promise.kind === "deadline") {
+      terminalWaitSubjects.set(id, {
+        subjects: entry.src.subjects,
+        at: Date.now(),
+        kind: "shell",
+      });
+    }
   }
   emitWaitTrace("WaitReleased", {
     id,
@@ -447,7 +473,7 @@ export function releaseAllWaits(reason: WaitReleaseReason = "session_end"): numb
   const ids = [...explicitWaits.keys()];
   for (const id of ids) releaseWait(id, reason);
   // 待送达快照描述的是「这个会话里还有通知要送达」，会话结束就没人消费了
-  terminalMonitorSubjects.clear();
+  terminalWaitSubjects.clear();
   return ids.length;
 }
 
@@ -665,8 +691,8 @@ function sweepExpiredWaits(): void {
   // 认领会撤回队列里的通知），这些残项不能被无限保留。清在这里而不是定时器里，
   // 与承诺过期兜底同源：主循环只要还在问「有等待源吗」就会顺手清理。
   const wallNow = Date.now();
-  for (const [id, snap] of [...terminalMonitorSubjects]) {
-    if (wallNow - snap.at >= TERMINAL_SUBJECT_TTL_MS) terminalMonitorSubjects.delete(id);
+  for (const [id, snap] of [...terminalWaitSubjects]) {
+    if (wallNow - snap.at >= TERMINAL_SUBJECT_TTL_MS) terminalWaitSubjects.delete(id);
   }
   for (const [id, entry] of [...explicitWaits]) {
     let expiredAtMono: number;
@@ -781,36 +807,43 @@ function previewOf(description: string): string | undefined {
 }
 
 /**
- * 一条终态通知**已送达模型**：若它对应的 monitor 是成功终态（exit 0），
- * 按登记项带过来的 subjects 撤销本会话挂着的唤醒（S2）。
+ * 一条终态通知**已送达模型**：若它对应的等待源是成功终态（exit 0），
+ * 按登记项带过来的 subjects 撤销本会话挂着的唤醒（S2 + R6 修法 3）。
+ *
+ * 两种来源同一判据：monitor 成功终态（S2）、shell-deadline 成功终态（R6）。
+ * ca8d7e5c 里 sg36n1dwy 若以 MERGED 退出，盯同一 PR 的唤醒 882930b6 本该自动撤掉。
  *
  * 为什么由送达侧驱动，而不是在 `releaseWait(terminal)` 里直接撤销：S2 的判据是
  * 「被等对象已成功终态 **且通知已投递**」（方案 §6 第 ⑩ 行）。通知还没进上下文就撤销，
  * 等于在模型没看到结果时拿走它的兜底唤醒——一旦投递链路出问题（D2/D3 的形态），
  * 模型既不知道结果、也不会再被叫醒，这正是 #642 否决自动撤销时担心的那种静默中断。
  *
- * 为什么 subjects 要经快照：见 `terminalMonitorSubjects` 的注释（登记项在终态释放时消失）。
+ * 为什么 subjects 要经快照：见 `terminalWaitSubjects` 的注释（登记项在终态释放时消失）。
  *
  * @returns 被撤销的唤醒 id（failed / killed / 无 subject 快照均为空）
  */
 export function invalidateWakeupsForDeliveredTask(taskId: string, status: TaskStatus): string[] {
-  const snapshot = terminalMonitorSubjects.get(taskId);
-  // 不是 monitor、或 subjects 为空：这条通知与 S2 无关
+  const snapshot = terminalWaitSubjects.get(taskId);
+  // 不是 monitor / shell-deadline、或 subjects 为空：这条通知与撤销判据无关
   if (!snapshot) return [];
   // 非终态通知**不消费快照**：monitor 的每条事件都是 `running`，它与终态通知会进同一批
   // （实测：`[{taskId, status:"running"}, {taskId, status:"completed"}]`）。先到的事件
   // 如果把快照吃掉，紧跟的终态通知就判不出 S2 —— 这个顺序缺陷实测让 R6 一直绿不了。
   if (!isTerminalStatus(status)) return [];
   // 一次送达只判一次：无论结果如何都删快照，重复调用是 no-op
-  terminalMonitorSubjects.delete(taskId);
-  // killed（到期 / task_stop）与 failed 不是「对象已成功终态」，不撤销
+  terminalWaitSubjects.delete(taskId);
+  // killed（到期 / task_stop / 被替换）与 failed 不是「对象已成功终态」，不撤销
   if (status !== "completed") return [];
   const victims: string[] = [];
   for (const subject of snapshot.subjects) {
     victims.push(
       ...invalidateWakeups("subject_terminal", {
         subject,
-        reasonText: `监控 ${taskId} 已完成（${subject}）`,
+        // 两种来源的文案分开：轨迹里要能看出是监控脚本给出了结论，还是等待命令自己退出了
+        reasonText:
+          snapshot.kind === "monitor"
+            ? `监控 ${taskId} 已完成（${subject}）`
+            : `等待 ${taskId} 已成功结束（${subject}）`,
       }),
     );
   }
@@ -879,7 +912,7 @@ export function __resetWaitRegistryForTest(): void {
   explicitWaits.clear();
   invalidatedIds.clear();
   pendingNotices.length = 0;
-  terminalMonitorSubjects.clear();
+  terminalWaitSubjects.clear();
   // R3：会话内记忆，测试之间必须复位——否则「上一条已送达通知」会跨用例泄漏，
   // 让回执文案断言在单跑时绿、全量跑时红。
   everWaitedTaskIds.clear();

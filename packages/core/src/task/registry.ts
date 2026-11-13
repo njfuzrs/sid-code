@@ -93,6 +93,9 @@ export function updateTask<T extends TaskState>(taskId: string, updater: (task: 
       updated = { ...updated, hitlWaitAtTerminalMs: humanInputWaitElapsedMs() };
       emitTaskLifecycle(updated, "completed", {
         exit_code: "exitCode" in updated ? (updated.exitCode as number | undefined) : undefined,
+        // R6：被替换的旧等待**不送终态通知**，轨迹是它唯一留下的证据。不记这一笔，
+        // 「旧任务为什么提前终态」在审计里就成了一个没有原因的中断。
+        ...(updated.supersededBy ? { reason: "superseded" as const } : {}),
       });
     }
     tasks.set(taskId, updated);

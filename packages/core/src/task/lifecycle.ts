@@ -65,6 +65,14 @@ export type TaskLifecyclePhase = "started" | "completed" | "delivered" | "evicte
 /** 驱逐原因：判据走的是哪条分支（验收要分得清「正常送达后删」与「安全阀兜底删」） */
 export type TaskEvictReason = "delivered_turn_passed" | "safety_valve" | "cleared";
 
+/**
+ * `TaskLifecycle.completed` 的终态原因。
+ *
+ * `superseded`（R6）：被新的同对象等待替换而提前终止。与驱逐原因分开：
+ * 它解释的是「为什么进终态」，不是「为什么删输出文件」。
+ */
+export type TaskTerminalReason = "superseded";
+
 export type TaskLifecycleSink = (data: Record<string, unknown>) => void;
 
 let sink: TaskLifecycleSink | null = null;
@@ -83,7 +91,7 @@ export function emitTaskLifecycle(
   task: Pick<TaskState, "id" | "type" | "status"> & { isBackgrounded?: boolean },
   phase: TaskLifecyclePhase,
   extra: {
-    reason?: TaskEvictReason;
+    reason?: TaskEvictReason | TaskTerminalReason;
     exit_code?: number;
     /** delivered 阶段：结果经哪条通道送达（F6，trace-digest 据此判双投递） */
     via?: "notification" | "tool_result";
