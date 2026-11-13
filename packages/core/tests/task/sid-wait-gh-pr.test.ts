@@ -297,13 +297,25 @@ describe("R7 runSidWaitGhPr 退出条件", () => {
     );
   });
 
-  test("失败后恢复：抖动一次不退出，恢复后照常等到合并", async () => {
-    const { client } = fakeClient({
-      pulls: [new Error("网络抖动"), openPull(HEAD_A), mergedPull(HEAD_A)],
+  test("失败后恢复：连续失败 2 次（未到阈值 3）不退出，恢复后照常等到合并", async () => {
+    const { client, stats } = fakeClient({
+      pulls: [
+        new Error("网络抖动 1"),
+        new Error("网络抖动 2"),
+        openPull(HEAD_A),
+        mergedPull(HEAD_A),
+      ],
       checksBySha: { [HEAD_A]: { checkRuns: [check("test", "success")] } },
     });
-    const result = await runSidWaitGhPr({ pr: 779, client, emit: () => {}, sleep: boundedSleep() });
+    const result = await runSidWaitGhPr({
+      pr: 779,
+      client,
+      emit: () => {},
+      sleep: boundedSleep(),
+    });
     expect(result.exitCode).toBe(SID_WAIT_EXIT.MERGED);
+    // 2 次失败 + 1 次 open + 1 次 merged：阈值内不退出，恢复后继续轮询
+    expect(stats.pullCalls).toBe(4);
   });
 
   test("被取消 → 立即返回，不再打 REST", async () => {
