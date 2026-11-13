@@ -418,7 +418,7 @@ export interface TUIState {
    */
   outputTps?: number;
   /**
-   * 会话级缓存命中率（0-100 整数）。`undefined` = 尚无命中（Footer 不渲染 ⚡ 列）。
+   * 会话级缓存命中率（0-100 整数）。`undefined` = 尚无命中（Footer 不渲染 ↯ 列）。
    *
    * 唯一事实源是 `SessionState.getNormalizedCacheUsage()`——按**每个模型自己的 provider**
    * 归一化后再加总，与 /cost 同一个数。D18 之前 Footer 自己拿「全会话合计 usage + 当前

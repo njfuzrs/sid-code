@@ -108,6 +108,19 @@ describe("Footer ⇢ 吞吐列 — 整帧渲染", () => {
     expect(frame).not.toContain(TPS_MARK);
   });
 
+  test("0 < outputTps < 0.5 → 取整为 0 也不渲染，不落 `⇢0/s`", () => {
+    // 真实场景：首轮只吐几十 token 且思考很久，会话累计均值会落在 0.x tok/s。
+    // 若直接 Math.round 会渲染成 `⇢0/s`，与「无样本」混成同一个读数 ——
+    // 而两者的对策相反（前者是「很慢、还要等更久」，后者是「还没数据」）。
+    for (const v of [0.4, 0.49, 0.08]) {
+      const frame = renderFooter({ outputTps: v });
+      expect(frame).not.toContain(TPS_MARK);
+      expect(frame).not.toContain("⇢0/s");
+    }
+    // 边界：恰好 0.5 进位成 1，恢复渲染
+    expect(renderRow1({ outputTps: 0.5 })).toContain(`${TPS_MARK}1/s`);
+  });
+
   test("不重算：只给 outputTps，改 usage 不会改变吞吐读数", () => {
     // 两份 usage 差 100 倍，但 outputTps 相同 → 行1 的吞吐读数必须一致。
     // 若组件偷偷用 usage.outputTokens ÷ 会话时长自算，这里会露馅。

@@ -212,7 +212,7 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     // 上游会重新推一个 undefined（`undefined` = 无样本，Footer 不渲染该列），这里先落到哨兵。
     outputTps: undefined,
     // D18：命中率与 token/cost 同一生命周期——/clear 清空 modelUsage 后必须一起归零，
-    // 否则状态栏会继续显示上一会话的 ⚡N%（`undefined` = 无命中数据，Footer 不渲染该列）。
+    // 否则状态栏会继续显示上一会话的 ↯N%（`undefined` = 无命中数据，Footer 不渲染该列）。
     cacheHitRate: undefined,
     // /clear 走 sessionState.resetCounters()（清空 modelUsage → requests 归零），
     // 这里同步把展示侧归零，保持「状态栏计量项与上下文一起清空」的既有约定。
