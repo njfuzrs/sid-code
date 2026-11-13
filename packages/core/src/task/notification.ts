@@ -31,6 +31,30 @@ export const NOTIFICATION_OUTPUT_MAX_CHARS = 16_000;
 export const NOTIFICATION_ERROR_MAX_CHARS = 4_000;
 
 /**
+ * R8：期限到通知里携带的「期限内最后看到的状态」最多几行。
+ *
+ * 为什么需要（20261112 方案 §R8）：等待期限到时，模型看到的通知只有「期限到、条件未满足」，
+ * 于是把期限从 600 加到 1800 再挂一次——**唯一可见的旋钮就是期限**，而真正的信息
+ * （脚本在期限内一直在报同一个状态，说明退出条件写错了）在输出文件里，模型手上没有。
+ * 5 行足够看到「`state: OPEN` 连续不变」这类事实，又不至于把整段日志塞进通知。
+ */
+export const NOTIFICATION_OUTPUT_TAIL_LINES = 5;
+
+/**
+ * 取文本末尾最多 `maxLines` 行（去掉尾部空行；没有可显示内容时返回空串）。
+ *
+ * 为什么去掉尾部空行：`.output` 文件几乎总以 `\n` 结尾，`split` 会多出末尾空串，
+ * 不去掉就会在 `<output-tail>` 里留一行空白，看起来像「有输出但读不到」。
+ * 中间的空行保留——那是脚本自己输出的空行，属于真实形态。
+ */
+export function takeTrailingLines(text: string, maxLines: number): string {
+  const lines = text.split(/\r?\n/);
+  while (lines.length > 0 && lines[lines.length - 1]!.trim() === "") lines.pop();
+  if (lines.length === 0) return "";
+  return lines.slice(-maxLines).join("\n");
+}
+
+/**
  * 截断长文本：超过 max 时保留前 max 字符并追加一行提示，指向完整内容所在文件。
  * 未超长时原样返回。用码点安全切割（Array.from），避免把多字节字符切坏。
  */
@@ -91,6 +115,19 @@ export interface TaskNotification {
   result?: AgentTaskResult;
   /** 纯文本错误信息（failed 状态时可用，向后兼容旧调用方传 string） */
   error?: string;
+  /**
+   * R8：**等待期限到**的 shell 任务在 kill 之前读到的输出末尾。
+   *
+   * 为什么只在这一条路径填：期限到的语义是「条件始终没满足」，而模型能看到的只有
+   * 「期限到」这一个事实，于是把期限加长再挂一次（20261112 方案 §R8 的形态）。
+   * 带上前 5 行输出，模型能自己看出「脚本一直在报同一个 state」，从而改退出条件
+   * 而不是继续加期限。用户 Ctrl+F / task_stop 的主动 kill 不填：那时代码没跑完，
+   * 尾部输出不构成「等法不对」的证据，塞进通知只是噪音。
+   *
+   * 由 `expireDeadlineShellTask` 传入，格式化时按
+   * `NOTIFICATION_OUTPUT_TAIL_LINES` 裁剪（见 `takeTrailingLines`）。
+   */
+  outputTail?: string;
 }
 
 /**
@@ -161,6 +198,18 @@ export function formatNotification(n: TaskNotification): string {
     `  <status>${n.status}</status>`,
     `  <summary>${n.summary}</summary>`,
   );
+
+  // R8：期限到的等待把「期限内最后一次看到的状态」放在 summary 之后单独一段。
+  // 用独立段而不是并进 summary：summary 是 TUI 单行摘要与模型快速判断用的，
+  // 多行输出混进去会让摘要行失去判据（与 `<event>` 的理由同源）。
+  // untrusted 与 `<event>` / `<result>` 同口径：内容是子进程 stdout，属不可信数据。
+  // 裁剪后为空（脚本什么都没输出）就整段不出现——空段只会让模型以为输出读丢了。
+  if (n.outputTail !== undefined) {
+    const tail = takeTrailingLines(n.outputTail, NOTIFICATION_OUTPUT_TAIL_LINES);
+    if (tail !== "") {
+      parts.push(`  <output-tail untrusted="true">${tail}</output-tail>`);
+    }
+  }
 
   // 监控事件：单独一段，不并进 summary（见 TaskNotification.event 的注释）。
   // 事件正文来自**被监控进程的 stdout**，属外部不可信数据，与 `<result>` 同口径

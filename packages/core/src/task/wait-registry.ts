@@ -54,7 +54,11 @@ import { getScheduler } from "../cron/scheduler.ts";
 import type { StatusQueryFamily } from "./status-query-commands.ts";
 import { extractNaturalLanguageSubjects } from "./wait-subjects.ts";
 import { emitScheduledTrace, SCHEDULED_INVALIDATED_EVENT_NAME } from "../cron/cron-telemetry.ts";
-import { enqueueTaskNotification, hasPendingNotifications } from "./notification.ts";
+import {
+  enqueueTaskNotification,
+  hasPendingNotifications,
+  takeTrailingLines,
+} from "./notification.ts";
 import { formatClockWithSeconds } from "./monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -266,6 +270,77 @@ export function describeBackgroundWaitFact(now = Date.now()): string {
   if (!lastDeliveredWaitNotice) return `\n${head}。`;
   const clock = formatClockWithSeconds(lastDeliveredWaitNotice.at);
   return `\n${head}；${lastDeliveredWaitNotice.taskId} 的终态通知已在 ${clock} 送达过，不对应本次启动的任务。`;
+}
+
+/**
+ * R8：本会话内「期限到」的事实，按等待对象索引。
+ *
+ * ## 要解决的事故
+ *
+ * 模型的等法里没有退出条件（脚本一直在报 `state: OPEN`，循环却写成了 `until ...; do sleep 30`），
+ * 期限到之后它拿到的通知只有「期限到，条件未满足」——**唯一可见的旋钮就是期限**，
+ * 于是把 600 秒加到 1800 秒再挂一次。真正的信息（期限内一直看到同一个状态）躺在
+ * `.output` 里，没人把它放到模型眼前。
+ *
+ * ## 为什么按 subject 索引
+ *
+ * 重挂时模型未必用同一条命令（可能换了脚本、换了写法），命令 / 脚本哈希都会变，
+ * 只有对象签名（`gh:pr:779`）稳定。这一条事实要跨「命令变了」仍然能命中。
+ *
+ * 同一对象多次期限到只留最近一次：更早的那次已经被下一次覆盖，回执里列一串
+ * 只会稀释「上一次的最后状态」这个信号。
+ *
+ * ## 有界性
+ *
+ * 键是 subject 字符串（每会话数量有限），值三个字段。不设 TTL：它要跨整个会话
+ * 参与「这个对象之前是不是期限到过」的判定，清掉就回到事故前的形态。
+ */
+const deadlineExpiryFacts = new Map<string, { taskId: string; lastLine: string; at: number }>();
+
+/**
+ * 记录一次「期限到」终态（`expireDeadlineShellTask` 收口后由调用方写入）。
+ *
+ * `tail` 是 kill 之前读到的那段输出（见 `TaskNotification.outputTail`），
+ * 这里只留最后一行非空内容——回执里那句事实要的正是「最后一次看到什么」。
+ * 抽不出对象 / 输出为空 / 读不到尾部时**不记**：宁可不写这句，也不写一句没有依据的话。
+ */
+export function recordDeadlineExpiryFact(
+  subjects: string[] | undefined,
+  taskId: string,
+  tail: string | null,
+): void {
+  if (!subjects?.length || tail === null) return;
+  const lastLine = takeTrailingLines(tail, 1);
+  if (lastLine === "") return;
+  const at = Date.now();
+  for (const subject of subjects) deadlineExpiryFacts.set(subject, { taskId, lastLine, at });
+}
+
+/**
+ * R8：同一对象重挂等待时，把「上一次是期限到、最后一次看到什么」写回回执。
+ *
+ * 调用点只有 `bash.ts` 的 start 分支（`decideWaitAdmission` 判为 start 且抽得到对象）：
+ * - duplicate 已被提前拒绝，没有「重挂」这件事；
+ * - replace 是「旧等待还在跑、换了等法」，旧的那把没到期，这行事实不成立。
+ *
+ * 返回空串表示没有可写的事实，调用方原样拼接即可。
+ *
+ * ⚠️ 这是**事实陈述**（含一句由事实直接推出的判断），不是行为叮嘱。不加「所以你应该改
+ * 退出条件」这类指令——理由见 `describeBackgroundWaitFact` 的同一段注释。
+ */
+export function formatPriorDeadlineExpiryNote(subjects: string[] | undefined): string {
+  if (!subjects?.length) return "";
+  let hit: { subject: string; taskId: string; lastLine: string; at: number } | undefined;
+  for (const subject of subjects) {
+    const fact = deadlineExpiryFacts.get(subject);
+    if (!fact) continue;
+    if (!hit || fact.at > hit.at) hit = { subject, ...fact };
+  }
+  if (!hit) return "";
+  return (
+    `\n上一个盯 ${hit.subject} 的等待 ${hit.taskId} 在期限内的最后输出是：${hit.lastLine}。` +
+    `如果状态一直在变，问题在退出条件，不在期限长短。`
+  );
 }
 
 /**
@@ -917,6 +992,9 @@ export function __resetWaitRegistryForTest(): void {
   // 让回执文案断言在单跑时绿、全量跑时红。
   everWaitedTaskIds.clear();
   lastDeliveredWaitNotice = null;
+  // R8：期限到的事实也是会话内记忆——不复位会让上个用例的「最后输出」出现在
+  // 下个用例的回执里，断言在单跑时绿、全量跑时红。
+  deadlineExpiryFacts.clear();
   wakeupRegistrationEnabled = false;
   traceSink = null;
   monoNowImpl = () => performance.now();
