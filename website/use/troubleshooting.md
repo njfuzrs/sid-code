@@ -147,6 +147,25 @@ export PATH="$HOME/.local/bin:$PATH"
 用 `Ctrl+L` 清屏（保留历史）。执行中工具输出在 scrollback 里留下的残行，曾是主屏
 渲染路径的已知问题，现已用 Static 同步折叠收敛（大输出进 scrollback 前先裁好）。
 
+**症状：上翻看不到更早的输出**
+
+默认的主屏内联模式下，历史在**终端自己的 scrollback** 里，能被上翻多少条由终端的
+设置决定，不是 sid-code 的配置项。会话长了（尤其是连着读十几个文件、跑几条 bash 之后），
+早期内容会被终端丢出缓冲。
+
+把终端的 scrollback 调大即可：
+
+- **VS Code / Cursor**：设置里搜 `terminal.integrated.scrollback`，默认 `1000`，
+  建议改成 `10000` 以上（或直接在 `settings.json` 里写 `"terminal.integrated.scrollback": 10000`）。
+- **iTerm2**：Settings → Profiles → Terminal → Scrollback lines，默认 1000，
+  调大或勾选 `Unlimited scrollback`。
+
+调大之后要**新开会话**才生效——已经丢掉的缓冲不会凭空调回来。
+
+工具结果默认按规模折叠（`read` / `grep` / `glob` / 成功退出的 `bash` 只占一行，
+标题行给行数或结果数），本身就是为了少占 scrollback；要看全文按 `Ctrl+O` 展开。
+失败的命令、错误结果不折叠，照常显示正文。
+
 **症状：`Ctrl+B` 不起作用**
 
 在 tmux 下和默认 prefix 撞车。改 tmux prefix，或在 `keybindings.json` 里给
