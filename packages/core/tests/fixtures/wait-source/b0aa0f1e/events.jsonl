@@ -1,0 +1,12 @@
+{"event": "WaitRegistered", "timestamp": "2026-11-12T10:25:04.199Z", "data": {"id": "sjgm4oq76", "kind": "shell", "promise_kind": "deadline", "deadline_ms": 1794480904199, "description": "bash /tmp/wait-pr-779.sh"}}
+{"event": "WaitReleased", "timestamp": "2026-11-12T10:55:04.204Z", "data": {"id": "sjgm4oq76", "kind": "shell", "reason": "terminal", "held_ms": 1800005}}
+{"event": "WaitRegistered", "timestamp": "2026-11-12T10:55:31.697Z", "data": {"id": "scr07cxlo", "kind": "shell", "promise_kind": "deadline", "deadline_ms": 1794482731697, "description": "bash /tmp/wait-pr-779.sh"}}
+{"event": "WaitRegistered", "timestamp": "2026-11-12T10:55:52.202Z", "data": {"id": "so9g4cjhv", "kind": "shell", "promise_kind": "deadline", "deadline_ms": 1794482452202, "description": "bash /tmp/wait-pr-779.sh"}}
+{"event": "WaitRegistered", "timestamp": "2026-11-12T10:56:04.086Z", "data": {"id": "svzhngc0i", "kind": "shell", "promise_kind": "deadline", "deadline_ms": 1794483964086, "description": "bash /tmp/wait-pr-779.sh"}}
+{"event": "WaitRegistered", "timestamp": "2026-11-12T10:56:17.808Z", "data": {"id": "sg85xcaky", "kind": "shell", "promise_kind": "deadline", "deadline_ms": 1794484577808, "description": "bash /tmp/wait-pr-779.sh"}}
+{"event": "WaitReleased", "timestamp": "2026-11-12T10:59:54.748Z", "data": {"id": "svzhngc0i", "kind": "shell", "reason": "terminal", "held_ms": 230662}}
+{"event": "WaitReleased", "timestamp": "2026-11-12T11:00:04.569Z", "data": {"id": "scr07cxlo", "kind": "shell", "reason": "terminal", "held_ms": 272872}}
+{"event": "WaitReleased", "timestamp": "2026-11-12T11:00:18.434Z", "data": {"id": "sg85xcaky", "kind": "shell", "reason": "terminal", "held_ms": 240626}}
+{"event": "WaitReleased", "timestamp": "2026-11-12T11:00:25.763Z", "data": {"id": "so9g4cjhv", "kind": "shell", "reason": "terminal", "held_ms": 273561}}
+{"event": "WaitRegistered", "timestamp": "2026-11-12T11:01:37.291Z", "data": {"id": "sf0qym3ip", "kind": "shell", "promise_kind": "deadline", "deadline_ms": 1794484897291, "description": "bash /tmp/wait-pr-779.sh"}}
+{"event": "WaitReleased", "timestamp": "2026-11-12T11:09:49.340Z", "data": {"id": "sf0qym3ip", "kind": "shell", "reason": "terminal", "held_ms": 492049}}

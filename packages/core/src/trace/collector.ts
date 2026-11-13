@@ -2855,6 +2855,25 @@ export class TraceCollector {
           // S1 L1：只有本路径跑过 digest，增量路径不给（缺失 ≠ 0）
           short_text_end_turns: m?.short_text_end_turns,
           end_turn_n: m?.end_turn_n,
+          // R9：等待源口径。`m.waitSource` 不存在 = 本会话没有等待事件（不是 0 次），
+          // 所以整块透传 undefined，由 buildSessionIndexEntry 决定键落不落。
+          wait: m?.waitSource
+            ? {
+                ...(m.waitSource.registered > 0
+                  ? { max_concurrent: m.waitSource.maxConcurrentWaitsPerSubject }
+                  : {}),
+                registered: m.waitSource.registered,
+                ...(m.waitSource.admissions > 0
+                  ? {
+                      duplicates_blocked: m.waitSource.waitDuplicatesBlocked,
+                      replacements: m.waitSource.waitReplacements,
+                    }
+                  : {}),
+                ...(m.waitSource.staleNotificationClaims !== undefined
+                  ? { stale_claims: m.waitSource.staleNotificationClaims }
+                  : {}),
+              }
+            : undefined,
           // 这条路径**跑过** digest，所以它是唯一有资格给出损坏结论的地方。
           // `m` 为 undefined（digest 没产出 sessionMetrics）时这里也是 undefined ——
           // 那同样是「没检测」，不能兜底成 false（见 buildSessionIndexEntry 注释）。

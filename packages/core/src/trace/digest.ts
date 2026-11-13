@@ -25,6 +25,14 @@ import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { HOOK_EXECUTED_EVENT_NAME } from "../hook/hook-telemetry.ts";
 import { REWIND_EVENT_NAME } from "../session/rewind-telemetry.ts";
 import { SCHEDULED_FIRE_EVENT_NAME, SCHEDULED_INJECT_EVENT_NAME } from "../cron/cron-telemetry.ts";
+// R9：等待源事件名从生产模块 import，不写字面量。写字面量的消费方在事件改名后
+// 会静默算成 0——digest 恰好是最容易漏改的那类消费方（它不 import 生产模块，
+// 见本文件头对该风险的说明；这里显式 import 就是为了不落进那个形态）。
+import {
+  WAIT_ADMISSION_EVENT_NAME,
+  WAIT_REGISTERED_EVENT_NAME,
+  WAIT_RELEASED_EVENT_NAME,
+} from "../task/wait-registry.ts";
 import {
   BRIDGE_INBOUND_EVENT_NAME,
   BRIDGE_SESSION_EVENT_NAME,
@@ -1193,6 +1201,62 @@ export interface TodoDigestStats {
 }
 
 /**
+ * 「等待源」度量（R9）：重复等待拦了几次、并存了几个、换代几次、误读几次。
+ *
+ * ## 补的是什么缺口
+ *
+ * R2 上线后，同一对象的重复等待在入口就被判成 `duplicate` **不启动**，于是等待表里
+ * 什么都不会发生——轨迹里也什么都不剩。修得越有效，这个数越小，最后看起来像
+ * 「问题从未存在」。R9 用一对数据把这层补回来：
+ *
+ * - `WaitAdmission`（判定事件）回答「模型试过几次重复 / 换代」——被拦下的那些也在其中；
+ * - `WaitRegistered` / `WaitReleased`（事实事件）回答「同一对象上同时并存了几个」。
+ *
+ * 两组口径刻意分开：判了不一定启动成功（spawn 失败走另一条错误回执），
+ * 而「实际并存」必须只看真的登记上的。
+ *
+ * ## staleNotificationClaims 为什么不用 raw.jsonl
+ *
+ * R3 的「起完等待就声称它又被杀」此前只能靠一次性 python 脚本读 raw.jsonl 反推，
+ * digest 里没有口径，也就进不了曲线。这里用 `session.traj` 的 `history`：
+ * 它是完整的消息序列（含 thinking / tool_result / 注入的 user 文本），与 raw 的
+ * `new_messages` 增量和逐条等价，且 digest 本来就在读 session.traj——
+ * 不为了一个指标把 2–3MB 的 raw.jsonl 再读一遍。
+ */
+export interface WaitSourceDigestStats {
+  /** 显式等待的登记条数（`WaitRegistered`）。0 且无准入事件时整节不出现 */
+  registered: number;
+  /**
+   * 同一对象**同时并存**的最大等待数（b0aa0f1e 的正确值是 4）。
+   *
+   * 口径：按 `WaitRegistered.subjects` 聚合；R1 之前的轨迹对 shell 类没有 subjects，
+   * 回退用 `description` 归并（同一个脚本再挂一份 = 同一件事，b0aa0f1e 那 4 条
+   * 就是同一段 `bash /tmp/wait-pr-779.sh`）。回退是**启发式**：两条不同对象的等待
+   * 若描述完全相同会被并成一个，所以只在没有 subjects 时使用——新轨迹走精确口径。
+   */
+  maxConcurrentWaitsPerSubject: number;
+  /** 判成 duplicate 的入口调用次数（`WaitAdmission` action=duplicate），R2 的直接成效 */
+  waitDuplicatesBlocked: number;
+  /** 判成 replace 的入口调用次数（换了一种等法；R6 会淘汰旧的） */
+  waitReplacements: number;
+  /** 有准入判定事件的调用总数（上面两个数的分母；老轨迹无此事件时为 0） */
+  admissions: number;
+  /**
+   * 「等待刚起，下一个请求就声称它又被杀 / 又超时 / 唤醒又触发」的次数（R3 的误读）。
+   *
+   * 判据（与 20261112 方案 §7.3 的脚本逐条对应）：上一个 `tool_result` 的正文是
+   * 等待启动回执（「命令已作为后台任务启动」/「已安排 Ns 后唤醒一次」），且这之间
+   * **没有**真实通知送达（user 文本里出现 `<task-notification>` / `[定时唤醒`），
+   * 而下一个 assistant thinking 的前 300 字命中「又被杀 / 等待期限到 / 又超时 /
+   * 唤醒触发」。
+   *
+   * `session.traj` 没有 `history` 的老轨迹为 **undefined**（不是 0）：
+   * 「算不出来」与「一次都没误读」必须可区分。
+   */
+  staleNotificationClaims?: number;
+}
+
+/**
  * P1-8：过程病态度量（6 个指标）。
  *
  * ## 它补的是什么缺口
@@ -1558,6 +1622,11 @@ export interface Digest {
    * （老会话 / 整场没建过清单）。
    */
   todo?: TodoDigestStats;
+  /**
+   * R9：等待源口径（重复等待 / 换代 / 误读）。等待事件全无时 undefined
+   * （R1/R2 埋点上线前的会话，或整场没起过显式等待）。
+   */
+  waitSource?: WaitSourceDigestStats;
   /** 2026-10-08：LLM 错误恢复口径。无重试 / 放弃事件时 undefined。 */
   recovery?: RecoveryDigestStats;
   /** 2026-10-24：continue 路径收敛度。无 continue 计数字段 / GateExhausted 时 undefined（老会话）。 */
@@ -1753,6 +1822,12 @@ export interface SessionLevelMetrics {
   isAudit?: boolean;
   /** P2-14：session.traj 是否损坏（1/56 实测损坏率此前完全不可见） */
   trajCorrupt: boolean;
+  /**
+   * R9：等待源口径（会话级）。键不存在 = 等待事件全无（R1/R2 埋点上线前，或整场
+   * 没起过显式等待）——不是「0 次重复等待」。**索引行据此算 p95 与分母**
+   * （北极星「更省」辅助口径 `max_concurrent_waits_per_subject`）。
+   */
+  waitSource?: WaitSourceDigestStats;
   /** 上下文压缩次数 */
   compactions: number;
   /**
@@ -4332,11 +4407,20 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     (a, b) => layerRank[a.layer] - layerRank[b.layer] || sevRank[a.severity] - sevRank[b.severity],
   );
 
+  // ── R9：等待源口径（重复等待拦了几次 / 并存几个 / 换代几次 / 误读几次）──
+  // 第二个参数是 traj.history：staleNotificationClaims 只能从消息序列里读 thinking，
+  // 而不是为了一个指标再读一遍 raw.jsonl（理由见 WaitSourceDigestStats 注释）。
+  const waitSource = aggregateWaitSourceStats(events, traj.history);
+
   // ── T12.5：按 Provider 聚合诊断信号 ──
   const providerStats = aggregateProviderStats(events);
   // P0-2：会话级指标（供 session-index 长留）。trajCorrupt 复用上面已经做过的
   // 损坏判定（trajRead.corrupt），不再判第二次 —— 两处判定必然漂移出两个答案。
-  const sessionMetrics = aggregateSessionMetrics(events, { trajCorrupt: trajRead.corrupt });
+  // R9：waitSource 一起进会话级指标，索引行才能算跨会话 p95（北极星「更省」辅助口径）。
+  const sessionMetrics = aggregateSessionMetrics(events, {
+    trajCorrupt: trajRead.corrupt,
+    ...(waitSource ? { waitSource } : {}),
+  });
   const perfDetail = aggregatePerfDetail(events);
 
   // ── 第 5 批：JIT 上下文度量（命中率 / 字节 / 浪费率 / 耗时分位）──
@@ -4420,6 +4504,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     prefixBreaks: prefixBreaks ?? undefined,
     promptCache: promptCache ?? undefined,
     todo: todo ?? undefined,
+    waitSource: waitSource ?? undefined,
     recovery: recovery ?? undefined,
     continuePaths: continuePaths ?? undefined,
     thinkingLeak,
@@ -5249,6 +5334,46 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ── R9：等待源（重复等待 / 换代 / 误读）──
+  // 这一节回答的是「等待这件事本身健康吗」：同一对象挂了几份、拦下几次重复、
+  // 起了几次等法换代、有没有「通知还没到就声称它又被杀」的误读。
+  if (d.waitSource) {
+    const w = d.waitSource;
+    L.push("");
+    // 并存数是核心口径：> 1 就是同一个对象上挂了多个等待，每个都各送一条通知。
+    const concColor: Color = w.maxConcurrentWaitsPerSubject > 1 ? "red" : "green";
+    L.push(
+      c("bold", "等待源:") +
+        " " +
+        c(concColor, `最大并存 ${w.maxConcurrentWaitsPerSubject} / 对象`) +
+        c("gray", `  登记 ${w.registered} 次`),
+    );
+    if (w.maxConcurrentWaitsPerSubject > 1) {
+      L.push(
+        c("red", "  ⚠ 同一对象同时挂了多个等待") +
+          c("gray", "（b0aa0f1e 的形态：每个各送一条通知，且都在前台轮询）"),
+      );
+    }
+    if (w.admissions > 0) {
+      L.push(
+        c("gray", "  准入判定: ") +
+          `${w.admissions} 次  拦下重复 ${w.waitDuplicatesBlocked}  换代 ${w.waitReplacements}`,
+      );
+    }
+    if (w.staleNotificationClaims !== undefined) {
+      if (w.staleNotificationClaims > 0) {
+        L.push(
+          c("yellow", `  ⚠ 起完等待就声称「又被杀 / 又超时」${w.staleNotificationClaims} 次`) +
+            c("gray", "（R3 误读：通知还没到就断言了结果，会据此改等法再烧一轮）"),
+        );
+      } else {
+        L.push(c("green", "  ✓ 无「等待刚起就声称被杀」的误读"));
+      }
+    } else {
+      L.push(c("gray", "  （traj 无 history，误读率不可算）"));
+    }
+  }
+
   // ── P1-2：前缀断裂定位（"命中率为什么不是 95%"的直接答案）──
   if (d.prefixBreaks) {
     const p = d.prefixBreaks;
@@ -5723,7 +5848,14 @@ export function groupProviderHealth(stats: readonly ProviderDigestStats[]): Prov
  */
 export function aggregateSessionMetrics(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
-  opts: { trajCorrupt: boolean },
+  opts: {
+    trajCorrupt: boolean;
+    /**
+     * R9：等待源口径。可选——没传 = 「没算」（老调用方 / 单测只关心别的指标），
+     * 不能兜底成空对象，否则索引行会落一个看起来像「0 次重复等待」的假值。
+     */
+    waitSource?: WaitSourceDigestStats;
+  },
 ): SessionLevelMetrics {
   // PR-A：按调用来源分三组（判据 call-scope.ts）。主口径只用 main。
   const ttfts: number[] = [];
@@ -5995,6 +6127,8 @@ export function aggregateSessionMetrics(
     // 消费侧按「未检测」把它排除出分母 —— 对齐 `traj_corrupt` 的三态处理。
     ...(isAudit !== undefined ? { isAudit } : {}),
     trajCorrupt: opts.trajCorrupt,
+    // R9：算过才写键（没传 = 没算，不是「0 次重复等待」，对齐上面 isAudit 的三态处理）
+    ...(opts.waitSource ? { waitSource: opts.waitSource } : {}),
     compactions,
     compact_quality_n: compactQualityN,
     ...(compactCoverageMin !== undefined ? { compact_coverage_min: compactCoverageMin } : {}),
@@ -6602,6 +6736,131 @@ export function aggregateTodoStats(
     maxTurnsSinceWrite: sinceWrites.length > 0 ? Math.max(...sinceWrites) : undefined,
     gateRetries: gateRetries.length,
   };
+}
+
+/**
+ * 「这次工具调用是一次等待启动」的回执特征（bash 后台 / schedule_wakeup 两个入口的文案）。
+ *
+ * 与 `bash.ts` / `schedule-wakeup.ts` 的回执逐字对应。改了那边的文案必须同步这里——
+ * 不同步的失败形态是 `staleNotificationClaims` 静默变成 0（永远不命中），
+ * 而不是报错。所以这里用**窄**匹配（只认这两句启动回执），不扩大成
+ * 「任何提到后台任务的文本」：启动回执本身也提到 `<task-notification>`。
+ */
+const WAIT_LAUNCH_RECEIPT_RE = /命令已作为后台任务启动|已安排 \d+s 后唤醒一次/;
+
+/**
+ * R3 误读的措辞（「等待刚起就声称它又被杀 / 又超时」）。
+ *
+ * 逐字取自 20261112 方案 §7.3 的参考实现，**不要顺手放宽**：「任务…超时」这类
+ * 宽松模式会命中「这个任务超时设得太短」这种正常推理，把误读率算虚高。
+ */
+const STALE_WAIT_CLAIM_RE =
+  /(又|再次)?被杀|等待期限到|又超时|再次超时|唤醒（?[0-9a-f]{8}）?\s*触发|任务.{0,12}(超时|到期)/;
+
+/**
+ * R9：等待源度量。数据源 = `events.jsonl` 的三类等待事件 + `session.traj` 的 `history`。
+ *
+ * 两类事件全无（R1/R2 埋点上线前的会话）时返回 null，整节不出现——
+ * 「这版还没接线」与「一次都没发生过」必须可区分。
+ */
+export function aggregateWaitSourceStats(
+  events: Array<{ event?: string; timestamp?: string; data?: Record<string, unknown> }>,
+  history?: unknown,
+): WaitSourceDigestStats | null {
+  const admiss = events.filter((e) => e.event === WAIT_ADMISSION_EVENT_NAME && e.data);
+  const registered = events.filter((e) => e.event === WAIT_REGISTERED_EVENT_NAME && e.data);
+  if (admiss.length === 0 && registered.length === 0) return null;
+
+  // ── 同一对象的最大并存数 ──
+  // 活跃集合存 `id → 对象键`；每登记一条就数「与它共享任一对象键」的活跃条数。
+  // 用共享键而不是完全相等的 subjects 数组：一条等待盯 A+B、另一条盯 B，是同一对象
+  // B 上的两个等待，应当计入并存。一条等待有多个 subjects 时也只算它自己一次。
+  const active = new Map<string, string[]>();
+  let maxConcurrent = 0;
+  for (const e of events) {
+    const id = typeof e.data?.id === "string" ? e.data.id : undefined;
+    if (id === undefined) continue;
+    if (e.event === WAIT_REGISTERED_EVENT_NAME) {
+      const subjects = Array.isArray(e.data!.subjects)
+        ? e.data!.subjects.filter((s): s is string => typeof s === "string")
+        : [];
+      // R1 之前 shell 类没有 subjects（b0aa0f1e 就是）：回退按 description 归并。
+      // `d:` 前缀保证不会与真实签名（形如 `gh:pr:779`）撞键。
+      const keys =
+        subjects.length > 0
+          ? subjects.map((s) => `s:${s}`)
+          : [
+              `d:${
+                typeof e.data!.description === "string" && e.data!.description.length > 0
+                  ? e.data!.description
+                  : id
+              }`,
+            ];
+      active.set(id, keys);
+      let n = 0;
+      for (const other of active.values()) {
+        if (other.some((k) => keys.includes(k))) n++;
+      }
+      if (n > maxConcurrent) maxConcurrent = n;
+    } else if (e.event === WAIT_RELEASED_EVENT_NAME) {
+      active.delete(id);
+    }
+  }
+
+  const stale = countStaleNotificationClaims(history);
+  return {
+    registered: registered.length,
+    maxConcurrentWaitsPerSubject: maxConcurrent,
+    waitDuplicatesBlocked: admiss.filter((e) => e.data!.action === "duplicate").length,
+    waitReplacements: admiss.filter((e) => e.data!.action === "replace").length,
+    admissions: admiss.length,
+    ...(stale !== undefined ? { staleNotificationClaims: stale } : {}),
+  };
+}
+
+/**
+ * R3 误读计数：等待启动回执之后、真实通知送达之前，下一个 thinking 就声称它被杀/超时。
+ *
+ * `history` 是 `session.traj` 的完整消息序列，与 raw.jsonl 的 `new_messages` 增量
+ * 逐条等价（`raw.jsonl` 就是按增量记的同一条链）。判据逐条对应方案 §7.3：
+ *
+ * 1. `tool_result` 正文命中启动回执 → 记一个「刚起等待」；
+ * 2. user 文本里出现 `<task-notification>` / `[定时唤醒` → 真实通知到了，清标记
+ *    （拿到事实后再说「又超时」不算误读）；
+ * 3. assistant thinking 前 300 字命中误读措辞且标记还在 → 计 1 次，并清标记。
+ *
+ * 没有 `history`（很老的轨迹）返回 undefined——不是 0，「算不出来」与「没误读」要分开。
+ */
+function countStaleNotificationClaims(history: unknown): number | undefined {
+  if (!Array.isArray(history)) return undefined;
+  let pendingLaunch = false;
+  let hits = 0;
+  for (const msg of history) {
+    if (!msg || typeof msg !== "object") continue;
+    const { role, content } = msg as { role?: unknown; content?: unknown };
+    if (typeof content === "string") {
+      if (role === "user") pendingLaunch = false;
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as { type?: unknown; content?: unknown; text?: unknown; thinking?: unknown };
+      if (b.type === "tool_result") {
+        const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "");
+        pendingLaunch = WAIT_LAUNCH_RECEIPT_RE.test(text);
+      } else if (b.type === "text" && role === "user") {
+        const text = typeof b.text === "string" ? b.text : "";
+        if (text.includes("<task-notification>") || text.includes("[定时唤醒"))
+          pendingLaunch = false;
+      } else if (b.type === "thinking" && role === "assistant") {
+        const thought = typeof b.thinking === "string" ? b.thinking : "";
+        if (pendingLaunch && STALE_WAIT_CLAIM_RE.test(thought.slice(0, 300))) hits++;
+        pendingLaunch = false;
+      }
+    }
+  }
+  return hits;
 }
 
 /**
