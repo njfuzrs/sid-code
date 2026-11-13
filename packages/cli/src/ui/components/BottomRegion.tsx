@@ -120,7 +120,7 @@ export interface BottomRegionSharedProps {
   outputTps?: number;
   /**
    * 会话级缓存命中率（0-100 整数，`SessionState.getCacheHitRate()`）。
-   * `undefined` = 尚无命中 → Footer 不渲染 ⚡ 列。组件不重算，见 Footer 的 prop 注释。
+   * `undefined` = 尚无命中 → Footer 不渲染 ↯ 列。组件不重算，见 Footer 的 prop 注释。
    */
   cacheHitRate?: number;
   /** 会话累计 API 调用次数（状态栏 `⟳ N` 列）。省略 → Footer 不渲染该列。 */

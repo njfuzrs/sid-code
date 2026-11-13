@@ -216,6 +216,36 @@ describe("吞吐列 · 入账 → 状态栏接线", () => {
     bridge.detach();
   });
 
+  test("读数回落：先有值 41 → getter 再返回 undefined → outputTps 归 undefined", async () => {
+    // /clear 重建 trace（gen_samples 归 0）或 trace 中途关闭时，入账拿到的是 undefined。
+    // 若不覆盖旧值，状态栏会一直停在上一会话的 `⇢41/s`。
+    // 这条卡的是「回退」——上一条（getter 恒返回 undefined）在「完全不推送」时同样通过，
+    // 区分不出「推了 undefined」与「压根没推」，所以两者都要有。
+    let tps: number | undefined = 41;
+    const { sessionState, bridge, off } = wire(() => tps);
+
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+    expect(bridge.current.outputTps).toBeCloseTo(41, 6);
+
+    tps = undefined;
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+    expect(bridge.current.outputTps).toBeUndefined();
+    off();
+    bridge.detach();
+  });
+
   test("省略 getter（未接 trace 的旧调用方）→ 不推该字段，其余照常", async () => {
     const { sessionState, bridge, off } = wire();
 
