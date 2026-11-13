@@ -86,14 +86,35 @@ const subAgentSchema = lazySchema(() => {
 export type SubAgentUsageSink = (result: SubAgentResult) => void;
 
 /**
+ * 类型行用的短标签。
+ *
+ * 2026-11-13 描述瘦身（方案 T9 / D6）：类型行原先逐字拼 `whenToUse` 全句
+ * （explore 一条就 90 字，还带 quick/medium/very thorough 的搜索深度说明），
+ * 而 usageGuide 的「怎么选类型」本来就是短标签口径的选择指引，全句在那里再拼一遍
+ * 是把刚省下的字节原样搬回来。所以全句（含 explore 的搜索深度说明）不再进每轮常驻文本，
+ * 它仍是 `whenToUse` 字段本身，给 /agents 这类展示面用。
+ *
+ * 内置类型在这里登记；自定义 / 插件类型没有登记时回退到 `whenToUse` 全句，
+ * 不能为了省字节把用户自己写的使用说明裁掉。
+ */
+const AGENT_TYPE_SHORT_LABELS: Record<string, string> = {
+  explore: "只读探查（搜代码、读模块、定位实现）",
+  task: "改文件 / 跑命令",
+  summarize: "总结对话、提取决策与待办（无工具）",
+  plan: "只读分析、设计实现方案",
+  "general-purpose": "复杂多步任务（省略 type 时的默认兜底）",
+  verify: "对抗式复核已有结论（只读 + bash 核实）",
+};
+
+/**
  * 渲染「可用子代理类型」清单（sub_agent 工具 description 的主体部分）。
  *
- * 文案结构对标 claude-code AgentTool/prompt.ts:43 formatAgentLine：`- type: whenToUse (Tools: ...)`。
- * 用 whenToUse（"何时用"，比 description"是什么"更能指导派活决策）；
+ * 文案结构对标 claude-code AgentTool/prompt.ts:43 formatAgentLine：`- type: 标签 (Tools: ...)`。
  * 工具集按 allowlist/denylist 分别渲染（denylist → "除 X 外的全部工具"）。
  *
  * 独立导出（而非内联在 description 里）供 §12 P0-1 的 /context 分类记账复用——
  * 「自定义代理」占多少 token 必须与模型实际看到的文本同源，否则两处会漂移。
+ * 改这里的文案，记账口径会一起变，这是预期行为（两处同源本来就是为了不漂移）。
  */
 export function renderAgentTypeLines(): string {
   const defs = getActiveAgentDefinitions();
@@ -112,7 +133,8 @@ export function renderAgentTypeLines(): string {
   return defs
     .map((d) => {
       const readonlyTag = d.readOnly ? "，只读" : "";
-      return `- ${d.agentType}：${d.whenToUse}（可用工具：${toolsDescOf(d)}${readonlyTag}）`;
+      const label = AGENT_TYPE_SHORT_LABELS[d.agentType] ?? d.whenToUse;
+      return `- ${d.agentType}：${label}（可用工具：${toolsDescOf(d)}${readonlyTag}）`;
     })
     .join("\n");
 }
@@ -402,15 +424,18 @@ ${typeLines}
     // usageGuide() 只拼进 tools[].description（registry.ts toolToDefinition），系统提示词不再
     // 重复渲染（F5-Q5a，2026-11-04）。flash A/B 里只留这一份时子代理派发略少、召回不降；
     // opus 未验证，若 opus 上派发掉得多，先回看这里（bench_fix 06a §7）。
+    //
+    // 2026-11-13 描述瘦身（T9 / D6）：「何时不该派」原是 4 条各自带一段解释，合并成 2 条，
+    // 每条保留原有的判别锚点（同源错误 / 相邻文件 / 上下文读得完 / 全量验证），
+    // 这些锚点是 subagent-divide-criteria.test.ts 的门禁字面量，合并时不许丢掉。
+    // whenToUse 全句不再进常驻文本：类型行改短标签，「怎么选类型」这条本身就是选择指引。
     return `- **何时该派**：任务能拆成多个相对独立的子方向时优先分治。判据——子方向 ≥ 3 个（如系统排查要过多个模块、审计要查多个维度、要同时搜索多处来源），或单个方向读起来会撑爆主上下文。满足任一条就派子代理，而不是自己一个个串行读。
 - **怎么选类型**：只读探查（搜代码、读模块、定位实现）派 explore；要改文件 / 跑命令派 task；验证某个已有结论是否成立、需要对抗式复核派 verify。拿不准是否要写入就先按只读派 explore，需要写时子代理会反馈、再改派 task。
 - **什么时候传 isolation=worktree**：只有子代理**会改文件**、且需要与主工作区隔离时才传。只读子代理（explore / plan / verify）一律不传——worktree 是真建一个 git 工作树（git worktree add + 复制本地配置），结束时再判改动、无改动才删，纯读任务白付这一整套创建与清理开销。
 - **分治 vs 并行只读不是一回事**：并行调 read/grep/glob 只是在同一个上下文里多发几个只读调用，结果都回到主对话；分治是把一整段子任务连同它的上下文交给独立子代理，主对话只收最终结论。方向多、每个方向都重（要读很多文件）时，用分治而不是堆并行 read。
 - **何时不该派（一句话判据：分治的前提是子任务可切开，改动互相影响的不可切）**：
-  - **同源错误不要分治**：一处类型/接口/签名收紧引发的连锁报错，哪怕跨几十个文件，也只是一个改动点——改那一处，其余报错集体消失。派多个子代理各改一份互相影响的定义，重复劳动和冲突是必然的。判断方法：先读报错，看它们是否指向同一个定义；是就自己串行改，不要按文件数估算规模。
-  - **编辑同一模块或相邻文件的子任务不要并行派发**。目标文件集有交集就串行做，或者合成一个子任务交给一个子代理。
-  - **上下文切不开就不要派**：派 task 类子代理前先确认每个子任务的上下文能在它自己的预算内读完。需要全局视野才能判断怎么改的活，交出去只会拿回一个信息不全的结论。
-  - **只有全量验证才知道对不对的活不要分治**：产出形态是"反复跑 tsc / test 才能收敛的连续编辑"时，自己做；子任务能自验、结论可独立汇总时才分治。
+  - **同源错误不要分治**：一处类型/接口/签名收紧引发的连锁报错，哪怕跨几十个文件，也只是一个改动点——改那一处，其余报错集体消失。先读报错看它们是否指向同一个定义；是就自己串行改。**编辑同一模块或相邻文件的子任务也不要并行派发**：目标文件集有交集就串行做，或合成一个子任务交给一个子代理。
+  - **上下文切不开、或只有全量验证才知道对不对，就不要派**：派 task 类子代理前先确认每个子任务的上下文能在它自己的预算内读完——需要全局视野才能判断怎么改的活，交出去只会拿回一个信息不全的结论；产出形态是"反复跑 tsc / test 才能收敛的连续编辑"时自己做，子任务能自验、结论可独立汇总时才分治。
 - **并行分治**：确认过上面的反面判据、子任务确实可切开后，多个子方向可以一次发多个 sub_agent 并行执行；需要后台跑设 run_in_background=true。
 - **嵌套限制**：${
       isNestedSubAgentEnabled()
