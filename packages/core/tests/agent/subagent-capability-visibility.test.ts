@@ -54,12 +54,18 @@ describe("SubAgentTool.description() — 能力边界可见", () => {
   // description() 不触碰 providerRegistry，用最小 stub 即可
   const tool = new SubAgentTool({} as unknown as ProviderRegistry, new ToolRegistry());
 
-  test("含每种内置类型的类型名 + whenToUse 能力指南", () => {
+  test("含每种内置类型的类型名；类型行用短标签，不再逐字重复 whenToUse 全句", () => {
     const desc = tool.description();
     for (const d of getBuiltInAgentDefinitions()) {
       expect(desc).toContain(d.agentType);
-      // 对标 claude-code formatAgentLine：用 whenToUse（何时用）而非 description（是什么）
-      expect(desc).toContain(d.whenToUse);
+      // 2026-11-13 描述瘦身（T9 / D6）：whenToUse 全句（explore 一条就含搜索深度说明）
+      // 从每轮常驻的类型行里拿掉，类型行改短标签。「怎么选类型」的指引在 usageGuide 里，
+      // 口径相同但不重复全句。全句仍是 AgentDefinition.whenToUse，供展示面使用。
+      const line = desc.split("\n").find((l) => l.startsWith(`- ${d.agentType}：`));
+      expect(line).toBeDefined();
+      const label = line!.slice(`- ${d.agentType}：`.length, line!.indexOf("（可用工具："));
+      expect(label.length).toBeGreaterThan(0);
+      expect(label.length).toBeLessThan(d.whenToUse.length);
     }
   });
 
@@ -77,9 +83,10 @@ describe("SubAgentTool.description() — 能力边界可见", () => {
     expect(desc).toContain("worktree");
   });
 
-  test("工具行格式对标 claude-code（类型：whenToUse（可用工具：...））", () => {
+  test("工具行格式（类型：短标签（可用工具：...））", () => {
     const desc = tool.description();
-    // 每个内置类型都应有一行 "- <type>：...（可用工具：...）"
+    // 每个内置类型都应有一行 "- <type>：...（可用工具：...）"。
+    // 短标签断言在上面那条用例里，这里只守行格式。
     for (const d of getBuiltInAgentDefinitions()) {
       const line = desc.split("\n").find((l) => l.includes(`- ${d.agentType}：`));
       expect(line).toBeDefined();
