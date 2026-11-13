@@ -807,15 +807,14 @@ export class BashTool implements Tool {
   }
 
   usageGuide(): string {
+    // 2026-11-13 描述瘦身（T9 / D6）：timeout 上限、后台任务用法、输出截断这三条
+    // 在 timeout / run_in_background 的参数描述里已经写过（bashSchema），这里不重复。
+    // git 安全纪律一条不删——它是不可逆操作的护栏，schema 里没有第二份。
     return `- 仅用于需要 shell 执行的系统命令，文件操作请用专用工具
 - 不要用 bash 执行 cat/head/tail（用 read）、echo/cat 写文件（用 write）、sed/awk（用 edit）、find（用 glob）、grep（用 grep 工具）
 - 要向用户传达信息时，直接在回复正文里输出文本，不要用 echo/printf 打印（除非确实需要把文本喂给管道/重定向等 shell 流程）
 - 必须提供 description 参数，用自然语言描述命令意图
-- 设置合理的 timeout，默认 2 分钟，最长 10 分钟
-- 命令预计耗时超过 10 分钟时直接用 run_in_background=true：前台 timeout 传更大的值也会被截到上限，后台任务没有这个上限
-- 输出超过 30000 字符会被自动截断
-- 长时间运行的进程（如 dev server）可设置 run_in_background=true 后台运行
-- 后台任务会返回 task_id，可用 task_output 查看输出、task_stop 终止；完成时有通知
+- 后台任务（run_in_background=true）返回 task_id，用 task_output 查看输出、task_stop 终止；完成时有通知
 - 命令超时被杀后，不要原样重试——要么用 run_in_background=true 重跑，要么缩小范围（见下条）
 - 全盘/大目录搜索（find / / grep -r ~ 这类）极易超时：优先用 glob / grep 工具并把 path 限定到具体子目录
 - 每条命令在独立 shell 进程中执行。cd 后的目录变更会被自动追踪并对所有工具（read/edit/glob 等）生效，无需每次重复传 cwd；

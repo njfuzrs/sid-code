@@ -25,6 +25,31 @@ afterEach(() => {
   setCwd(originalGlobalCwd);
 });
 
+describe("T9: usageGuide 不重复 schema 已有的说明，git 纪律保留", () => {
+  const tool = new BashTool();
+
+  it("timeout 上限与后台任务用法只在参数描述里说一次", () => {
+    const guide = tool.usageGuide();
+    // 这三条与 bashSchema 的 timeout / run_in_background 描述重复，2026-11-13 从 guide 拿掉
+    expect(guide).not.toContain("最长 10 分钟");
+    expect(guide).not.toContain("30000");
+    // task_id 的用法留在 guide 里（模型要知道怎么拿后台输出），但超时上限与截断阈值只在 schema 说
+    const schema = JSON.stringify(tool.inputSchema());
+    expect(schema).toContain("600000");
+    expect(schema).toContain("task_id");
+  });
+
+  it("git 安全纪律一条不删（不可逆操作的护栏）", () => {
+    const guide = tool.usageGuide();
+    expect(guide).toContain("--amend");
+    expect(guide).toContain("--no-verify");
+    expect(guide).toContain("push --force");
+    expect(guide).toContain("core.hooksPath");
+    expect(guide).toContain("--theirs");
+    expect(guide).toContain("git merge --abort");
+  });
+});
+
 describe("缺口1: 超时机制真正生效", () => {
   it("命令超过 timeout 被终止，且实际耗时接近 timeout 而非跑满全程", async () => {
     if (process.platform === "win32") return;
