@@ -2,7 +2,8 @@
  * 主屏渲染布局（ADR-040，默认模式）
  *
  * 对标 claude-code 外部用户默认 REPL：
- * - 已完成历史用 Ink <Static> 一次性打印进终端 scrollback（print-and-forget），
+ * - 已完成历史用端口 `Static`（底座是 `History`，memo Box）落进终端 scrollback，
+ *   项可原地 reconcile（不是上游 ink 的 print-once），落定后靠帧 diff 零写入；
  *   落入终端真实行缓冲 → 边流式边可用鼠标原生选中复制、原生无限滚动。
  * - 仅"正在生成的流式消息 + 输入框 + 状态栏/对话框"留在小动态区（log-update 只重绘这几行）。
  * - 不设固定 height / 不 overflow hidden：内容自然纵向增长，旧行滚出进终端 scrollback。
@@ -34,7 +35,7 @@ interface MainScreenLayoutProps extends Omit<BottomRegionSharedProps, "scrollPer
   streamingThinking: string;
   /** v2：流式思考开始时间戳（ms），透传给 ThinkingMessage 计时器 */
   streamingThinkingStartMs?: number;
-  /** v2：思考块折叠状态（Static 模式始终 false） */
+  /** v2：历史项里思考块的折叠状态（App 按 ctrl+o 的 expandLevel 同步，level 0 折叠） */
   thinkCollapsed: boolean;
   /** 是否正在流式输出 */
   isStreaming: boolean;
@@ -74,7 +75,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   return (
     // 根 Box 不设固定高度 / 不 overflow hidden：让内容顺序增长，Static 落 scrollback、动态区在末尾。
     <Box flexDirection="column" width={termWidth}>
-      {/* 历史区：Static print-and-forget → 终端 scrollback（原生可选/可滚） */}
+      {/* 历史区：Static（底座 History，memo Box、项可原地 reconcile）→ 终端 scrollback（原生可选/可滚） */}
       <Static items={staticItems}>
         {(item: HistoryItem, index: number) => (
           <HistoryItemDisplay
@@ -116,7 +117,9 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
                 思考在正文之前渲染（模型先思考后回答），顺序与语义一致。
                 思考全程折叠为单行摘要（thinkingCollapsed 恒为 true），实时计时原地更新、
                 高度恒定 → 页面零跳动；不再有「纯思考逐字展开 → 正文开始时塌缩」的高度突变。
-                Static 模式 ctrl+o 无法重渲已打印项，故折叠态不显示展开提示（showExpandHint=false）。 */}
+                这里是**流式动态区**（不是 Static 历史区），每帧随流式内容重渲；流式中本就
+                不给展开提示（ThinkingMessage 内部 `!streaming && showExpandHint` 已挡），
+                这里显式传 false 作双保险，免得将来那条判据被改动时冒出个「按了没用」的提示。 */}
             {hasThinking && streamingThinking ? (
               <ThinkingMessage
                 text={streamingThinking}

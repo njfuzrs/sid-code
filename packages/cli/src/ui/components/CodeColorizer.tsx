@@ -194,10 +194,10 @@ export interface ColorizeCodeOptions {
  * 对齐 gemini-cli colorizeCode()：通过 Theme.getInkColor() 获取颜色、逐行高亮。
  *
  * 注：不做高度折叠。折叠必须由**调用方**用同步路径（SlicingMaxSizedBox /
- * DiffRenderer 的 maxLines）在渲染前裁好——工具结果一完成即进 <Static> 打印到 scrollback、
- * 此后无法重渲，靠异步测高的 MaxSizedBox 折叠会先把整份内容落 scrollback 再折叠、污染回滚区
- * 且擦不掉（详见 src/ui/CLAUDE.md L3.3 Static 安全铁律）。此处曾有一段基于 MaxSizedBox 的
- * availableHeight 折叠分支，全仓无人传参=死代码且是重蹈覆辙的陷阱，已删。
+ * DiffRenderer 的 maxLines）在渲染前裁好——工具结果一完成即进 <Static>（项可原地重渲，
+ * 见 src/ui/CLAUDE.md L5.3，但重渲代价是整帧重画），靠异步测高的 MaxSizedBox 折叠会先把
+ * 整份内容以完整高度落一遍、下一帧再变矮，白付一次整帧重画（详见 L3.3）。此处曾有一段基于
+ * MaxSizedBox 的 availableHeight 折叠分支，全仓无人传参=死代码且是重蹈覆辙的陷阱，已删。
  */
 export function colorizeCode({
   code,
