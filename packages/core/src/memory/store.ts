@@ -29,6 +29,7 @@ import {
   isIndexVisibleMemory,
   isMemorySource,
   isMemoryType,
+  isNegationEntry,
   memorySourceRank,
   type MemorySource,
   type MemoryType,
@@ -70,6 +71,14 @@ export interface MemoryEntry {
    * 三处各写一遍必然漂成三个缺省口径，而它们本该是同一条事实。
    */
   source: MemorySource;
+  /**
+   * 本条目否定（推翻）了哪个 key 的做法（P0-4）。空 = 普通记忆。
+   *
+   * 用可选而不是 `string | null`：`MemoryEntry` 会被索引重建、淘汰排序、召回
+   * 多处消费，一个 `null` 值会在 JSON 往返里与「字段不存在」分叉（`null` 能序列化、
+   * 缺省不能），两套形态迟早要写两遍判据。判据统一走 `isNegationEntry()`。
+   */
+  negates?: string;
 }
 
 /** 旧版 JSON 存储格式（仅用于迁移） */
@@ -402,6 +411,7 @@ function parseMemoryFile(
   let description: string | undefined;
   let type: MemoryType | undefined;
   let source: MemorySource | undefined;
+  let negates: string | undefined;
   let created: number | undefined;
   let updated: number | undefined;
   let body: string;
@@ -417,6 +427,10 @@ function parseMemoryFile(
     // P0-3：老文件没有这一行 ⇒ 缺省 `inferred`（见下方返回处）。非法值同样落到缺省：
     // `source` 只有三档，猜一个会把「无从判断」伪装成结论。
     if (fields.source !== undefined && isMemorySource(fields.source)) source = fields.source;
+    // P0-4：否定条目。空串按「没写」处理（见 scan.ts parseFrontmatter 的同一口径）。
+    if (fields.negates !== undefined && fields.negates.trim() !== "") {
+      negates = fields.negates.trim();
+    }
     if (fields.created !== undefined) created = Number(fields.created) || undefined;
     if (fields.updated !== undefined) updated = Number(fields.updated) || undefined;
     body = text
@@ -443,6 +457,9 @@ function parseMemoryFile(
     // P0-3：老文件（本次修复前写入的）没有 `source:` 这一行 ⇒ `inferred`。
     // 不猜成 `user_explicit`：那等于把「无从判断」直接抬成最高可信度。
     source: source ?? DEFAULT_MEMORY_SOURCE,
+    // P0-4：普通条目不写这个字段（`undefined`），与 `MemoryHeader.negates = null` 是
+    // 两个层次的口径（这里是对外的条目对象，那里是扫描结果），都由 `isNegationEntry()` 判。
+    ...(negates !== undefined ? { negates } : {}),
     // 读侧同样过归一化：本次修复前写入的旧文件，frontmatter 里已经存着 `## 标题`。
     // 只修写入端的话，那些历史条目会一直把陈述句标题漏进索引（索引重建也照抄 desc）。
     description: description ? normalizeMemoryDesc(description, body) : undefined,
@@ -463,6 +480,10 @@ function serializeMemoryFile(entry: MemoryEntry): string {
     // P0-3：来源落盘。写在 `type` 之后是有意的 —— 它是**这条记忆的可信度**，
     // 与分类相邻最容易被读 frontmatter 的人（与模型）看到。
     `source: ${entry.source ?? DEFAULT_MEMORY_SOURCE}`,
+    // P0-4：否定条目才写这一行。普通条目不写空行 —— 空 `negates:` 会在
+    // `readFrontmatterFields` 里被当成「空值顶层键」而开启嵌套块解析，
+    // 那是给 `metadata:` 准备的分支，不该被一个语义上不存在的字段触发。
+    ...(isNegationEntry(entry.negates) ? [`negates: ${entry.negates}`] : []),
     `created: ${entry.createdAt}`,
     `updated: ${entry.updatedAt}`,
     "---",
@@ -1136,7 +1157,13 @@ export class MemoryStore {
     key: string,
     value: string,
     scope: "global" | "project" = "project",
-    opts?: { type?: MemoryType; description?: string; source?: MemorySource },
+    opts?: {
+      type?: MemoryType;
+      description?: string;
+      source?: MemorySource;
+      /** P0-4：本条目否定（推翻）哪个 key 的做法；省略 = 普通记忆 */
+      negates?: string;
+    },
   ): Promise<MemorySetResult> {
     await this.load();
     const log = getLogger();
@@ -1171,6 +1198,15 @@ export class MemoryStore {
       // 若退回缺省，会把一条 `user_explicit` 记忆静默降级成 `inferred` ——
       // 那是信息丢失，而调用方根本没打算改动来源。
       source: opts?.source ?? existing?.source ?? DEFAULT_MEMORY_SOURCE,
+      // P0-4：与 source 同一套优先级（本次 > 原条目），但语义上多一条约束 ——
+      // **普通更新不能把否定声明静默抹掉**。若不带 negates 的 /memory set 改正文时
+      // 退回「无」，那条 tombstone 就凭空消失了，而用户根本没打算撤销否定。
+      //
+      // ⚠️ 不提供「显式清空」的入口（`negates: ""` 也走 ??，被当成没给）：
+      // 撤销否定的正确操作是删掉那条记忆（`/memory delete`），而不是把一条
+      // 否定记录改写成普通记录 —— 后者会让 `negates` 指向的目标失去解释，
+      // 而 frontmatter 里看不出它曾经否定过什么。
+      negates: opts?.negates ?? existing?.negates,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };

@@ -86,8 +86,9 @@ export function memorySourceRank(source: MemorySource | undefined): number {
 export function isIndexVisibleMemory(source: MemorySource | undefined): boolean {
   return (source ?? DEFAULT_MEMORY_SOURCE) !== "agent_action";
 }
-
-/** 记忆文件 frontmatter 结构 */
+/**
+ * 记忆文件 frontmatter 结构
+ */
 export interface MemoryFrontmatter {
   /** 记忆名称（kebab-case slug，唯一标识） */
   name: string;
@@ -97,8 +98,91 @@ export interface MemoryFrontmatter {
   type: MemoryType;
   /** 记忆来源（P0-3；老文件没有这一行 ⇒ 解析为 `inferred`） */
   source?: MemorySource;
+  /**
+   * 本条目否定（推翻）了哪个 key 的做法（P0-4）。
+   *
+   * 有值 = 这是一条 **tombstone（否定记录）**：用户明确说过「不要 X」，
+   * 而 `negates` 指向的正是记录 X 做法的那条记忆。没有就是普通记忆。
+   *
+   * ─── 为什么必须落成独立字段，而不是从正文里认 ───
+   *
+   * 判据必须是**结构的**。「X 是流程」与「不要 X」的语义匹配在中文里无法用字符串判定
+   * （无分词，同义改写空间无限），任何正文关键词黑名单都会被一句改写绕过。
+   * 而「哪条记忆被否定了」这件事可以显式存下来，之后只做 key 相等比较 ——
+   * 不涉及任何语义推断。这条边界必须在实现里守住：它挡的是「同 key 回写」，
+   * 不是「换个 key 再写一遍同样的做法」（后者只能靠提示词与人工核实）。
+   */
+  negates?: string;
 }
 
+/**
+ * 记忆库里的「否定条目」判定：frontmatter 带 `negates` 即 tombstone。
+ *
+ * 只导出判定而不导出「怎么解析」：解析在各处读 frontmatter 时就地做（scan / store），
+ * 多一层间接只会让两处口径漂移。
+ */
+export function isNegationEntry(negates: string | null | undefined): negates is string {
+  return typeof negates === "string" && negates.trim().length > 0;
+}
+
+/**
+ * P0-4 的放行标记：正文里出现这些「行首标签」时，视为**显式声明这是例外**。
+ *
+ * 与 P0-2 的 `USER_QUOTE_RE` 同一类设计 —— 结构判据，不是语义判据：
+ * 它不判断「这次是不是真的该例外」，只要求模型把这件事写出来。
+ * 写出来之后，人和下一次 review 才有据可查；不写就默认「它是忘了有这条否定」。
+ *
+ * 「更正：」「修改：」刻意不进表：它们和「更新：」是同一个意思，
+ * 放进来等于让所有普通的追加更新都能通过这道闸门（P1-1 对「更新：」有同样的判断）。
+ */
+export const NEGATION_ACK_MARKERS = ["推翻：", "推翻:", "例外：", "例外:"] as const;
+
+/**
+ * 本次写入是否**显式引用**了某条否定条目。
+ *
+ * 两种合规写法，任一成立即放行：
+ * 1. 正文里出现该否定条目的 key（`feedback_xxx` / `xxx` 都算，按归一化后的 key 比）——
+ *    这是最精确的形式，人和模型都能顺着它找到那条否定记录；
+ * 2. 正文里出现 `推翻：` / `例外：` 行首标签 —— 这是「我知道有这条否定，这次是例外」的
+ *    结构化声明，理由必须跟在标签后面（标签后无内容不算，见 `NEGATION_ACK_MARKERS` 的调用处）。
+ */
+export function referencesNegation(
+  value: string,
+  tombstoneKey: string,
+  tombstoneNegates: string,
+): boolean {
+  // 引用形式一：写出否定条目自己的 key，或写出它 negates 的目标 key
+  const targets = [tombstoneKey, tombstoneNegates].filter(Boolean);
+  for (const t of targets) {
+    const bare = t.trim().replace(/\.md$/, "");
+    if (!bare) continue;
+    // 用「key 前后不接 ASCII 词字符」的边界判断，避免 `x` 命中 `xylophone`。
+    // 中文记忆 key 里也有中文，但边界只在 ASCII 词字符上判 —— 对 `feedback_不要动文档`
+    // 这种混合 key，`feedback_不要动文档` 整串仍能精确命中。
+    const re = new RegExp(`(?<![A-Za-z0-9_])${escapeRegExp(bare)}(?![A-Za-z0-9_])`);
+    if (re.test(value)) return true;
+  }
+  // 引用形式二：行首的推翻/例外标签，且后面有实际内容（理由）
+  return NEGATION_ACK_MARKERS.some((m) => {
+    // 遍历**全部**出现位置，不能只看第一个：正文里先出现一句自然用词的
+    // 「这不是例外：而是……」、后面才是真正的行首 `例外：<理由>` 时，
+    // 只看首次出现会把合法的例外声明判成不合格（漏放行 = 合法写入被拒）。
+    let idx = value.indexOf(m);
+    while (idx >= 0) {
+      const before = value.slice(0, idx);
+      // 标签前面必须是行首或句读（与 P0-2 的「Why: 必须是行首标签」同一口径），
+      // 避免「这不是例外：而是……」这种行文里的自然用词被当成声明。
+      const atLineStart = /(?:^|\n)[ \t>*\-]*$/.test(before);
+      if (atLineStart && value.slice(idx + m.length).trim().length > 0) return true;
+      idx = value.indexOf(m, idx + m.length);
+    }
+    return false;
+  });
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 /**
  * 扫描后的记忆头信息（不含完整正文，用于索引和召回初筛）
  */
@@ -123,6 +207,14 @@ export interface MemoryHeader {
    * 三处各写一次就会漂成三种缺省口径，而它们本该是同一件事实。
    */
   source: MemorySource;
+  /**
+   * 本条目否定（推翻）了哪个 key 的做法（P0-4）。`null` = 普通记忆。
+   *
+   * 与 `source` 不同，这里保留 `null` 而不是造一个缺省字符串：
+   * 「不是否定条目」本身是一个有意义的状态，造 `""` 或 `"none"` 只会让
+   * `isNegationEntry()` 的判据多一处需要记着排除的特例。
+   */
+  negates: string | null;
 }
 
 /** 召回的记忆（包含完整正文 + 新鲜度信息） */

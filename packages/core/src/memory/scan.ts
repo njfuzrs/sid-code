@@ -12,6 +12,7 @@ import {
   DEFAULT_MEMORY_SOURCE,
   isMemorySource,
   isMemoryType,
+  isNegationEntry,
   type MemoryHeader,
   type MemoryFrontmatter,
   type MemoryType,
@@ -131,6 +132,12 @@ export function parseFrontmatter(text: string): Partial<MemoryFrontmatter> {
   // P0-3：老文件（P0-3 之前写的）没有这一行 ⇒ 不填，由取用处兜成 `inferred`。
   // 非法值同样不填（而不是猜一个）：`source` 只有三档，猜错会把「无从判断」伪装成结论。
   if (fields.source !== undefined && isMemorySource(fields.source)) result.source = fields.source;
+  // P0-4：否定条目（tombstone）的 `negates` 指向被推翻的那条记忆 key。
+  // 只在有值时填 —— `negates` 空串等价于「不是否定条目」，写成 `""` 会让下游
+  // 需要一个「空串也算没写」的特例判据（isNegationEntry 是兜底，不是主判据）。
+  if (fields.negates !== undefined && fields.negates.trim() !== "") {
+    result.negates = fields.negates.trim();
+  }
   return result;
 }
 
@@ -243,6 +250,8 @@ export async function scanMemoryFiles(
         // P0-3：缺省 `inferred`（老文件 / 没写这一行 / 值非法）。在**唯一的构造点**兜底，
         // 下游只消费不兜底，避免索引、召回、淘汰三处各定一套缺省口径。
         source: fm.source ?? DEFAULT_MEMORY_SOURCE,
+        // P0-4：`null` = 普通记忆。否定条目的 negates 指向被推翻的那条 key。
+        negates: fm.negates ?? null,
       };
       return header;
     }),
@@ -274,7 +283,12 @@ export function formatMemoryManifest(headers: MemoryHeader[]): string {
       const type = h.type ?? "unknown";
       const desc = h.description ?? "(no description)";
       const key = h.name ?? h.filename.replace(/\.md$/, "");
-      return `key: ${key} | filename: ${h.filename} | type: ${type} | desc: ${desc}`;
+      // P0-4：`negates:` 必须出现在清单里，否则提取代理根本不知道哪条是否定条目 ——
+      // 而「清单里存在『不要 X』类记忆时不许再写 X」这条硬规则的前提就是它看得见。
+      // 不写进索引（只写进清单）：索引每轮全量注入，多一列纯属噪音；
+      // 否定约束的强制力来自它自己的正文，不来自这一行标记。
+      const negates = isNegationEntry(h.negates) ? ` | negates: ${h.negates}` : "";
+      return `key: ${key} | filename: ${h.filename} | type: ${type} | desc: ${desc}${negates}`;
     })
     .join("\n");
 }
