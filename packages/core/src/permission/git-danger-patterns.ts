@@ -77,6 +77,17 @@ export const GIT_DANGER_PATTERNS: readonly GitDangerPattern[] = [
     pattern: /\bgit\s+branch\s+(-D\b|--delete\s+--force|--force\s+--delete)/,
     severity: "high",
   },
+  // 强制删除 worktree（`--force` / `-f` / `-ff`，任意位置）：连同其中未提交/未跟踪的改动
+  // 一起删掉，**不可恢复**。不带 force 时 git 自己会拒绝删除有改动或 locked 的 worktree，
+  // 那种写法是安全的，不拦；`git worktree prune` 只清管理元数据，也不拦。
+  // 超出 CC 清单（CC 的 destructiveCommandWarning.ts 没有这一条）：本仓并行开发时 worktree
+  // 数量上百（`harness-bench/wt/*`、`.sid-code/worktrees/*`），误删一次就丢别人的在途改动，
+  // 所以按本仓的并行工作方式补上，级别与 `branch -D` 同级。
+  {
+    name: "git 强删 worktree",
+    pattern: /\bgit\s+worktree\s+remove\b[^;&|\n]*[ \t](?:--force\b|-[a-zA-Z]*f[a-zA-Z]*\b)/,
+    severity: "high",
+  },
   // 跳过 hooks
   {
     name: "git 跳过 hooks",
@@ -131,6 +142,10 @@ export const GIT_DANGER_DISPLAY: readonly GitDangerDisplay[] = [
   {
     pattern: /\bgit\s+branch\s+(-D\b|--delete\s+--force|--force\s+--delete)/i,
     label: "强制删除分支 (git branch -D)",
+  },
+  {
+    pattern: /\bgit\s+worktree\s+remove\b[^;&|\n]*[ \t](?:--force\b|-[a-zA-Z]*f[a-zA-Z]*\b)/i,
+    label: "强制删除 worktree (git worktree remove -f)，其中的未提交改动会一并丢失",
   },
   {
     pattern: /\bgit\s+(commit|push|merge)\b[^;&|\n]*--no-verify\b/i,
