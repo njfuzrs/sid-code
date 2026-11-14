@@ -463,6 +463,27 @@ ${typeLines}
     return def?.readOnly === true;
   }
 
+  /**
+   * B14 / J9：派子代理不需要用户批准——无头 default 下 `sub_agent` 被拒是有真实记录的
+   * 功能缺陷（附录 A.9：会话 `20261029-231731-10736fd4` 在 `step=headless:14` 被拒），
+   * 而同一次调用在交互模式下只是弹个窗，人只会盲点通过。
+   *
+   * **唯一例外是 `isolation: "worktree"`**：它会真的 `git worktree add` 一个新工作树、
+   * 复制本地配置并在结束时判改动，属对磁盘的可见动作，仍然要人确认（J9 原文）。
+   *
+   * 判据必须同时看**显式参数**和 **agent 定义的默认值**：`execute` 里会把
+   * `def.isolation === "worktree"` 补进参数（见下方「P2-1：agent 定义声明的 background /
+   * isolation 作为默认值」那段），只看入参会让「frontmatter 声明了 isolation 的 agent」
+   * 静默绕过确认——而 frontmatter 正是此类 agent 最常见的声明处。
+   */
+  requiresPermission(input?: unknown): boolean {
+    const explicit = (input as { isolation?: unknown } | undefined)?.isolation;
+    if (explicit === "worktree") return true;
+    const type = resolveSubAgentTypeParam(input);
+    if (!type) return false;
+    return resolveAgent(type)?.isolation === "worktree";
+  }
+
   inputSchema(): Record<string, unknown> {
     return z.toJSONSchema(subAgentSchema()) as Record<string, unknown>;
   }

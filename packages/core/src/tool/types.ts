@@ -186,6 +186,34 @@ export interface ToolCapabilityFields<Input = unknown> {
   needsPermissionChecker?: boolean;
 
   /**
+   * B14（方案 20261114）：工具自报「我**不需要权限**」，权限检查器据此直接放行。
+   *
+   * ## 为什么需要
+   *
+   * 进程内记账/只读类工具（`think` / `todo_write` / `task_*` / `bg_task_*` /
+   * `cron_list` / `enter_plan_mode`）既不改工作区也不执行外部命令，但权限主链
+   * 只认工具名清单（`READ_ONLY_TOOLS` 等四张表），于是它们一路落到 Step 14 默认
+   * `ask`：交互模式下用户要给「记一条 todo」点确认，无头模式下直接拒绝。
+   * claude-code 的口径是工具**自己声明** `checkPermissions` 结果，声明成放行就放行。
+   *
+   * ## 契约
+   *
+   * - **只有返回 `false` 才有含义**：`true` 与不声明等价（照样走后面的 Step）。
+   *   类型上保留 `boolean` 是因为入参可以参与判断（少数工具按输入决定）。
+   * - **只对注册来源为「内置」的工具生效**。MCP 桥接工具、自定义代理工具、插件工具
+   *   即便声明了也一律忽略——声明是「我写的代码我担保」，外部来源不享受这个担保。
+   *   判据来自注册时打的标（`tool/registry.ts` 的 `TOOL_REGISTRATION_SOURCE`），
+   *   不看 `mcp__` 前缀或工具名（名字可以撞）。
+   * - **不等于 `readOnly()`**：本字段放行的是「整个权限链」，`readOnly()` 只用于
+   *   deny-write 模式的额外一道判断。两者可以不一致（`todo_write` 会写 progress 文件、
+   *   `readOnly()` 为 false，但它是本地记账，不需要用户批准）。
+   * - 声明抛错按「需要权限」处理（fail-closed），不能因为工具写坏了就把闸门打开。
+   * - 防漂移哨兵：`packages/core/tests/permission/internal-tool-permission.test.ts`
+   *   把「哪些工具声明了本字段」与写死的清单双向对账，新增/删除都会让 CI 变红。
+   */
+  requiresPermission?(input?: Input): boolean;
+
+  /**
    * 工具自报「我会读执行器注入的 `_agentId`」，执行器据此**按需注入**。
    *
    * ## 为什么从「无差别注入」改成「按需注入」

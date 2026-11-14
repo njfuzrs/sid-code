@@ -5,6 +5,25 @@
 import { describe, test, expect } from "bun:test";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import { TodoWriteTool } from "@sid-code/core/tool/todo-write.ts";
+
+/**
+ * B14（2026-11-14）：免权限依据从「无头专用名单」改成工具的 `requiresPermission()`
+ * 声明，而「这是内置工具」的事实由 registry 在**注册那一刻**打标（Symbol，见
+ * `TOOL_REGISTRATION_SOURCE`）。所以这两件事都不能省：
+ *
+ * - 必须传真实工具实例（只传工具名拿不到声明）；
+ * - 实例必须经 `registry.register()` 再 `get()` 取出（直接 `new` 出来的没有来源标记，
+ *   会被判成非内置 → 声明被忽略，测试就测不到真实链路）。
+ *
+ * 生产链路（`query/tool-executor.ts` / `query/run-tool-use.ts`）传的正是 `get()` 那份。
+ */
+const todoWriteRegistry = new Registry();
+todoWriteRegistry.register(new TodoWriteTool());
+const todoWrite = todoWriteRegistry.get("todo_write") as unknown as Parameters<
+  PermissionChecker["check"]
+>[1];
 
 describe("PermissionChecker", () => {
   test("危险命令被拦截", async () => {
@@ -87,13 +106,16 @@ describe("PermissionChecker", () => {
      * `-p` 下直接矛盾，每一份计划进入执行阶段的第一步必然失败。一次无头 plan 实跑里，
      * 整个执行阶段就此报废（todo_write 被拒 → edit math.js 被拒 → 模型转成只读交付）。
      *
-     * 现改为独立的 `HEADLESS_LOCAL_LEDGER_TOOLS` 白名单放行（只写本地进度账本，
-     * 不碰工作区/网络/子进程）。**READ_ONLY_TOOLS 本身没动**，所以 plan 模式与
-     * deny-write 的只读语义一字未变——下面两条对照用例就是机械证据。
+     * 契约变更（2026-11-14，B14 / PR-6）：放行依据从 `HEADLESS_LOCAL_LEDGER_TOOLS`
+     * 这张**无头专用名单**改成工具自己的 `requiresPermission()` 声明，于是同一批工具在
+     * 交互、plan、无头、子代理里口径统一（此前只有无头这一条路径被放行）。
+     * 因此下面几条测试**必须传真实工具实例**：声明挂在工具上，只传工具名拿不到它。
+     * 这一步在旧实现下传不传实例结果相同（那时靠名字名单），现在不再相同——
+     * 这正是「声明」取代「名单」的实质。
      */
-    test("todo_write 在无头模式放行（本地记账白名单）", async () => {
+    test("todo_write 在无头模式放行（工具声明免权限）", async () => {
       const checker = new PermissionChecker({ ...defaultConfig(), print: true });
-      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } }, todoWrite);
       expect(r.allowed).toBe(true);
     });
 
@@ -105,27 +127,41 @@ describe("PermissionChecker", () => {
         print: true,
         permissionMode: "acceptEdits",
       });
-      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } }, todoWrite);
       expect(r.allowed).toBe(true);
     });
 
-    test("对照：白名单不在阶段一，plan 模式仍拒 todo_write", async () => {
+    /**
+     * 契约变更（2026-11-14，B14）：这条断言从前是 `allowed === false`。
+     *
+     * plan 是「代码级强制只读」，而 todo_write 不改工作区（只写 `~/.sid-code/` 的
+     * progress 账本），本来就不该被只读模式拦住。此前只认 `PLAN_MODE_EXTRA_TOOLS`
+     * 那张点名单，于是规划阶段连「记一条 todo」都做不了。现在由工具的
+     * `requiresPermission()` 声明放行（`checkPlanMode` 里那条，位于 PLAN_MODE_EXTRA_TOOLS
+     * 之后，不会绕过 `sub_agent` 的 explore 限制）。
+     */
+    test("plan 模式放行 todo_write（工具声明免权限，B14 起）", async () => {
       const checker = new PermissionChecker({
         ...defaultConfig(),
         print: true,
         permissionMode: "plan",
       });
-      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
-      expect(r.allowed).toBe(false);
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } }, todoWrite);
+      expect(r.allowed).toBe(true);
     });
 
-    test("对照：白名单不在阶段一，deny-write 模式仍拒 todo_write", async () => {
+    /**
+     * deny-write 的语义是「不许改文件」，比 plan 更硬：放行条件是
+     * **声明免权限 且 `readOnly()` 为 true**。`todo_write` 会写 progress 文件
+     * （`readOnly()` 返回 false），所以在这里仍然被拒——两处的语义没有被一起放宽。
+     */
+    test("对照：deny-write 模式仍拒 todo_write（会写账本）", async () => {
       const checker = new PermissionChecker({
         ...defaultConfig(),
         print: true,
         permissionMode: "deny-write",
       });
-      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } }, todoWrite);
       expect(r.allowed).toBe(false);
     });
 

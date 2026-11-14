@@ -114,6 +114,47 @@ function isNewTool(tool: LegacyTool | Tool<any, any>): tool is Tool<any, any> {
   return typeof tool.name === "string";
 }
 
+/**
+ * 工具注册来源（B14）：`requiresPermission()` 声明**只对内置工具生效**。
+ *
+ * ## 为什么需要区分来源
+ *
+ * `requiresPermission` 的语义是「这份代码是我写的，我担保它不需要用户批准」。
+ * MCP server、用户自定义代理、插件提供的工具不在这条担保范围内——它们声明
+ * `requiresPermission() { return false }` 时，权限链必须**照旧**走后面的 Step。
+ * 这是外部输入与内置代码的信任边界，不能靠「它们大概不会声明」来保证。
+ *
+ * ## 为什么用 Symbol 打标而不是名字前缀
+ *
+ * 曾经的判据是 `name.startsWith("mcp__")`（本文件分容器、`toolToDefinition` 的 strict
+ * 判断都在用）。但**名字可以撞**：自定义代理工具取名 `mcp__x__y` 就会走进 MCP 分支，
+ * 反过来一个真的 MCP 工具去掉前缀就绕过了限制。来源要在**注册那一刻**记录，那才是
+ * 唯一知道真相的时刻。
+ *
+ * Symbol 且 non-enumerable：不进 `Object.keys` / JSON（工具对象会被序列化进
+ * `--dump-tools` 与轨迹），也不与工具自身可能的同名字段冲突。
+ */
+export const TOOL_REGISTRATION_SOURCE = Symbol("sid-code.tool.registrationSource");
+
+/**
+ * 注册来源的闭集。
+ *
+ * - `builtin`：仓内 `packages/core/src/tool/` 与 CLI 注册的内置工具。**唯一**允许
+ *   `requiresPermission()` 生效的来源。
+ * - `mcp`：MCP server 桥接出来的工具（含插件带的 MCP）。
+ * - `custom`：用户/代理定义的自定义工具（`sub-agent.ts` 的 `resolveCustomTools`）。
+ */
+export type ToolRegistrationSource = "builtin" | "mcp" | "custom";
+
+/**
+ * 读工具的注册来源。未打标（升级前注册的对象、被冻结而打标失败的对象）返回
+ * `undefined`，调用方按**非内置**处理（fail-closed）——宁可多问一次，不可少问一次。
+ */
+export function getToolRegistrationSource(tool: unknown): ToolRegistrationSource | undefined {
+  if (!tool || typeof tool !== "object") return undefined;
+  return (tool as Record<symbol, ToolRegistrationSource | undefined>)[TOOL_REGISTRATION_SOURCE];
+}
+
 /** simple 模式下可用的工具 */
 const SIMPLE_MODE_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many"]);
 
@@ -212,7 +253,7 @@ export class Registry {
    * 接受新版 `Tool`（`name` 是字符串属性）与 `LegacyTool`（`name` 是方法），前者在这里经
    * bridge 归一。判别用 `typeof name`：两个接口唯一一处形态必然不同、且无法同时满足的成员。
    */
-  register(input: LegacyTool | Tool<any, any>): void {
+  register(input: LegacyTool | Tool<any, any>, source: ToolRegistrationSource = "builtin"): void {
     const tool = isNewTool(input) ? toLegacyTool(input) : input;
     const name = tool.name();
     // disallowedTools 拒收（见 disallowedNames 注释）：MCP 工具在裁剪之后才异步注册，
@@ -225,6 +266,21 @@ export class Registry {
     if (target.has(name)) {
       getLogger().warn("TOOL", `工具名冲突: "${name}" 已注册，跳过重复注册（先到先得，保留首个）`);
       return;
+    }
+    // B14：来源在注册这一刻记录（见 TOOL_REGISTRATION_SOURCE 注释）。只有内置工具打标——
+    // 非内置来源保持未打标，`getToolRegistrationSource()` 返回 undefined，权限链按
+    // 「非内置」处理（fail-closed）。打标失败（对象被 Object.freeze）同样落到 undefined，
+    // 后果只是多问一次确认，不会把闸门打开，所以这里吞掉异常、不打日志刷屏。
+    if (source === "builtin") {
+      try {
+        Object.defineProperty(tool, TOOL_REGISTRATION_SOURCE, {
+          value: source,
+          enumerable: false,
+          configurable: true,
+        });
+      } catch {
+        /* 冻结对象打不上标：视为非内置，fail-closed */
+      }
     }
     target.set(name, tool);
     this.scheduleChangeNotify();
