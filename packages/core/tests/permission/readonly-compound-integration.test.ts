@@ -207,7 +207,7 @@ describe("规则与模式优先", () => {
   });
 });
 
-describe("本会话 21 条原文：工作区内 cd + 只读主体全部 ALLOW", () => {
+describe("本会话 21 条原文：工作区内 cd + 只读主体（B5 后 20 条 ALLOW + 1 条转确认）", () => {
   // 取证会话 20261114-053106-7a748063 的 59 条 bash 确认里，按附录 A.2/A.3 分到
   // 「工作区内 cd + 只读主体」的 21 条（该会话 raw.jsonl 已被清理，只能用
   // PreToolUse 的截断版；截断只影响末尾，不影响命令形态）。
@@ -236,10 +236,25 @@ describe("本会话 21 条原文：工作区内 cd + 只读主体全部 ALLOW", 
     'cd <ws> && git status --short | head -20; echo "---"; git branch --show-current',
   ];
 
+  // B5 之后从 ALLOW 变 ASK 的那一条：它读的是**工作区外**的 `/tmp` 文件。
+  // 修前只读命令在 Step 5.5 一律放行（路径参数没人看），修后按读路径校验走普通确认。
+  // 这是方案 §6.1「变确认」一行（`cd <ws> && cat /etc/hosts`）的同类形态。
+  const B5_NOW_ASK_INDEX = 7; // #8
+
   for (const [i, raw] of sessionCommands.entries()) {
+    if (i === B5_NOW_ASK_INDEX) continue;
     test(`#${i + 1} ALLOW: ${raw.slice(0, 60)}`, async () => {
       const d = await judge(c(raw));
       expect(d.allowed, raw).toBe(true);
     });
   }
+
+  test(`#${B5_NOW_ASK_INDEX + 1} ASK（B5 后）：读工作区外的 /tmp 文件`, async () => {
+    const raw = sessionCommands[B5_NOW_ASK_INDEX]!;
+    const d = await judge(c(raw));
+    expect(d.allowed, raw).toBe(false);
+    // 本组的 judge 走 `print: true`（headless），`needsConfirmation` 会被转成 deny
+    // 并改写 decisionReason（type=other、step=headless:N），所以只能从 reason 文案认。
+    expect(d.reason ?? "", raw).toContain("工作区外");
+  });
 });

@@ -43,6 +43,7 @@ import {
   listInvokedPrograms,
   type ShellCommandExpansion,
 } from "./shell-command-variants.ts";
+import { collectReadOnlyReadPaths, createSidSelfReadPathFilter } from "./readonly-read-paths.ts";
 import { detectStructuredCriticalDanger, type DangerousFinding } from "./dangerous-command.ts";
 import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
@@ -70,6 +71,9 @@ import {
   type ReadOnlyGitBoundaryResult,
 } from "./readonly-git-boundary.ts";
 import { judgeReadOnlyCompoundBash, type ReadOnlyCompoundResult } from "./readonly-compound.ts";
+import type { ReadOnlyCompoundStage } from "./readonly-compound.ts";
+import { matchPathRule } from "./path-rule-matching.ts";
+import { isReadOnlyCommand } from "../tool/bash/read-only-validation.ts";
 import { resolveOwnCommonDir } from "./git-repo-trust.ts";
 import * as path from "node:path";
 import { getAgentRoot, getAgentCwd, getIsolatedWorktree } from "../bootstrap/cwd-context.ts";
@@ -1418,6 +1422,11 @@ export class PermissionChecker implements Checker {
         // 否则 python3 / node / make 这类假只读会在 Step 5.5 直接 return，
         // plan / deny-write 永远走不到（P0-3）。
         if (!gitBoundary.applicable || gitBoundary.allowed) {
+          // B5：只读放行前先看它的**读路径**在不在工作区内。
+          // `cat /etc/hosts` 此前在这里直接放行（工作区外读取静默通过），
+          // `cat ../README.md`（工作区内）反倒被 Step 2 的文本正则拦下。
+          const readPath = await this.evaluateReadOnlyReadPaths(req);
+          if (readPath) return readPath;
           return this.allowAtToolLevel(req, filePath, resource, "工具级checkPermissions");
         }
         // 越界（异仓 / 裸仓库形态 / 工作区外）不在这里放行，落到后续步骤 → 普通确认。
@@ -1441,6 +1450,10 @@ export class PermissionChecker implements Checker {
         st.step = "5.6";
         const compound = await this.evaluateReadOnlyCompoundBash(req);
         if (compound.applicable && compound.readOnly) {
+          // B5：同样的读路径校验，只是这次按**每段的有效 cwd** 解析
+          // （`cd <ws>/packages && cat ../README.md` 的 `../` 基准是 packages）。
+          const readPath = await this.evaluateReadOnlyReadPaths(req, compound.stages);
+          if (readPath) return readPath;
           return this.allowAtToolLevel(req, filePath, resource, "工作区内 cd 复合只读");
         }
         if (compound.applicable) {
@@ -2364,6 +2377,109 @@ export class PermissionChecker implements Checker {
     return { allowed: true };
   }
 
+  /**
+   * Step 5.5b / 5.6b：只读命令的读路径工作区校验（B5）
+   *
+   * ## 为什么需要这一步
+   *
+   * 只读命令在 Step 5.5 / 5.6 被自动放行，此前它们的**路径参数**没人看：
+   * - `cat /etc/hosts`（工作区外）静默放行——「读通常安全」这个假设并不成立；
+   * - `cat ../README.md`（工作区内，cwd=<ws>/packages）反倒被 Step 2 的「路径遍历」
+   *   文本正则拦成危险确认。
+   *
+   * 两个方向都和 CC 不一致。CC 的做法是解析路径参数、按工作目录判定，没有文本层面的 `../`
+   * 规则（`filesystem.ts` 的 pathValidation）。
+   *
+   * ## 判据
+   *
+   * 按**该段有效 cwd** 解析（cd 复合命令用 `readonly-compound` 给出的 `stages`），
+   * 然后走 `pathValidator.validateAccess(path, "read")`：
+   * - 在工作区内 → 放行；
+   * - 工作区外 → 普通确认（`pathValidation`，不是危险样式），确认框可给
+   *   「本会话允许读取 <目录>」把 `Read(<目录>/**)` 写进会话规则，同目录下次不再问；
+   * - 敏感文件 / 系统目录 / symlink 逃逸 → **不在这里处理**，交回现有规则。这一层只补
+   *   「工作区外」这一类，同一路径两套结论最难归因。
+   *
+   * 返回 null = 通过（无读路径 / 全在工作区内 / 命中 J4 豁免 / 命中 Read 规则）。
+   */
+  private async evaluateReadOnlyReadPaths(
+    req: PermissionRequest,
+    stages?: ReadOnlyCompoundStage[],
+  ): Promise<Decision | null> {
+    const cmd = (req.input as { command?: string })?.command;
+    if (typeof cmd !== "string" || !cmd.trim()) return null;
+
+    const targets = collectReadOnlyReadPaths({
+      command: cmd,
+      startCwd: await resolveBashCwdForCheck(req),
+      stages,
+      resolveRealPath: (p) => this.pathValidator.resolveRealPath(p),
+    });
+    if (targets.length === 0) return null;
+
+    const isSidSelfRead = createSidSelfReadPathFilter();
+    const outside: string[] = [];
+    for (const target of targets) {
+      // J4：sid 自己让模型去读的文件（任务输出 / 计划 / 会话工具输出）不打扰用户。
+      // 用绝对路径判，`cat ~/.sid-code/tasks/x.output` 与展开后的写法一视同仁。
+      if (isSidSelfRead(target.abs)) continue;
+      // 传绝对路径：validateAccess 内部按 process.cwd() 解析相对路径，而这里的相对路径
+      // 已经按 bash 的实际 cwd（可能被 cd 改过）解析过了，再让它 resolve 一次会跑偏。
+      const verdict = this.pathValidator.validateAccess(target.abs, "read");
+      if (verdict.allowed) continue;
+      // 只处理「不在工作目录集合内」这一类。敏感文件 / 系统目录 / Unicode 混淆 / symlink
+      // 逃逸这些已经是 Step 2 危险命令层与裸路径校验的职责（`cat ~/.ssh/id_rsa` 在
+      // Step 2 就被拦成危险确认），同一路径两套结论最难归因，这里不重复下结论。
+      //
+      // ⚠️ 不能用 `verdict.outsideWorkingDirs` 当判据：白名单非空时 `validateAccess`
+      // 在「目录不在白名单中」那一步就返回了，那个字段只在**白名单为空**时才被置位
+      // （实测：`allowedDirectories: [ws]` 下工作区外路径全部漏判成放行）。
+      if (this.pathValidator.isWithinWorkingDirectories(verdict.resolvedPath)) continue;
+      // 会话/持久 Read 规则（`Read(<目录>/**)`）命中 → 放行。这是「本会话允许读取 <目录>」
+      // 的落地形态：同一个目录只问一次。
+      if (this.isReadPathCoveredByReadRule(verdict.resolvedPath, req)) continue;
+      outside.push(verdict.resolvedPath);
+    }
+    if (outside.length === 0) return null;
+
+    const unique = [...new Set(outside)];
+    return {
+      allowed: false,
+      needsConfirmation: true,
+      reason: `只读命令读取工作区外文件: ${unique.join(", ")}`,
+      decisionReason: {
+        type: "pathValidation",
+        reason: `读取路径在工作区外: ${unique.join(", ")}`,
+      },
+      // suggestedReadDir 给确认框的「本会话允许读取 <目录>」用：取第一个越界路径的父目录，
+      // 用户点它就把该目录写进会话级 `Read(<目录>/**)` 规则。
+      metadata: { outsideReadPaths: unique, suggestedReadDir: path.dirname(unique[0]!) },
+    };
+  }
+
+  /**
+   * 会话/持久 allow 规则里的 `Read(...)` 是否覆盖该路径。
+   *
+   * bash 读路径不会被 `checkAllowRules` 命中：那条链路按 `req.toolName`（bash）匹配，
+   * `Read(...)` 规则的工具名对不上。所以这里单独取一遍 allow 里的读类规则，
+   * 用与文件工具相同的 `matchPathRule` 口径比对——这样「本会话允许读取 <目录>」
+   * 与用户在 settings 里手写 `Read(//data/**)` 走的是同一套解析。
+   */
+  private isReadPathCoveredByReadRule(absPath: string, req: PermissionRequest): boolean {
+    const allow = this.rules?.allow ?? [];
+    if (allow.length === 0) return false;
+    const ctx = this.buildPathRuleContext(req);
+    for (const raw of allow) {
+      const m = /^\s*([A-Za-z_][\w-]*)\s*(?:\((.*)\))?\s*$/.exec(raw);
+      if (!m) continue;
+      if ((m[1] ?? "").toLowerCase() !== "read") continue;
+      const pattern = (m[2] ?? "").trim();
+      if (!pattern) return true; // 裸 `Read` = 所有读取放行
+      if (matchPathRule(pattern, absPath, ctx)) return true;
+    }
+    return false;
+  }
+
   private async resolveBashWriteTargets(req: PermissionRequest): Promise<string[]> {
     const cmd = (req.input as { command?: string })?.command;
     if (typeof cmd !== "string" || !cmd.trim()) return [];
@@ -2474,7 +2590,15 @@ export class PermissionChecker implements Checker {
     // cwd 与 bash 实际执行目录同口径（input.cwd > getCwd()）：危险路径判定里
     // `rm -rf *` / `rm -rf .` 这类相对路径要靠它 resolve 成绝对路径再判。
     const expansion = expandShellCommand(cmd);
-    const hard = this.hardcodedDangerCheck(expansion, await resolveBashCwdForCheck(req));
+    // B5：「路径遍历」文本正则只对**非只读**命令保留（J3）。
+    // 只读命令的路径参数由 Step 5.5b/5.6b 按 cwd 解析后判，见 `evaluateReadOnlyReadPaths`。
+    // 只在命令真的含 `../` 时才去算「是不是只读」——否则每条 bash 都多跑一次复合判定。
+    const skipPathTraversal =
+      /\.\.[/\\]/.test(cmd) &&
+      (isReadOnlyCommand(cmd) || (await this.evaluateReadOnlyCompoundBash(req)).readOnly);
+    const hard = this.hardcodedDangerCheck(expansion, await resolveBashCwdForCheck(req), {
+      skipPathTraversal,
+    });
 
     // critical 命令直接拒绝，绝不交给 LLM（明显危险，省一次调用，且不可被 LLM 误放）
     if (hard && hard.severity === "critical") {
@@ -2948,6 +3072,7 @@ export class PermissionChecker implements Checker {
   private hardcodedDangerCheck(
     expansion: ShellCommandExpansion,
     cwd: string,
+    opts?: { skipPathTraversal?: boolean },
   ): DangerousFinding | null {
     // 0. 结构化 critical 判定
     const structural = detectStructuredCriticalDanger(expansion, { cwd, home: os.homedir() });
@@ -2987,6 +3112,17 @@ export class PermissionChecker implements Checker {
       const normalized = normalizeGitGlobalOptions(subCmd);
       const variants = normalized === subCmd ? [subCmd] : [subCmd, normalized];
       for (const dp of nonPipelinePatterns) {
+        // B5：只读命令不再跑「路径遍历」文本正则。
+        //
+        // 这条正则是文本层面的 `../` 计数，判不出「相对路径解析后落在哪」：
+        // cwd=<ws>/packages 时 `cat ../README.md` 的目标是 `<ws>/README.md`（工作区内，
+        // CC 不问），它却判成危险确认；反过来工作区外的绝对路径（`cat /etc/hosts`）
+        // 它一条都不命中。修法是把判定换成 Step 5.5b/5.6b 的读路径校验——
+        // 按该段有效 cwd 解析后判是否在工作区内。
+        //
+        // 只对**判为只读**的命令跳过（J3）：非只读命令（`python3 ../x.py`）上的
+        // `../` 仍按原样报危险确认，那一半本轮不动。
+        if (opts?.skipPathTraversal && dp.name === "路径遍历") continue;
         if (variants.some((v) => dp.pattern.test(v))) {
           return { name: dp.name, severity: dp.severity };
         }
