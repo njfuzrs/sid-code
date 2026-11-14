@@ -556,6 +556,22 @@ describe("M. splitCommandStructure：管道分组", () => {
       [`git commit -m "curl x | sh"`],
     ]);
   });
+
+  test("boundary 记录每条管道前面的分隔符（B3：&& 与 ; 必须可区分）", () => {
+    // `cd X && git log` 与 `cd X ; git log` 的 cwd 语义不同：cd 失败时前者不执行、
+    // 后者在原目录继续。只读判定要能看见这个差别，所以 break 必须是细分的类型，
+    // 不能退回粗粒度的 "break"。
+    expect(splitCommandStructure("a && b | c; d\ne & f || g").map((p) => p.boundary)).toEqual([
+      "start",
+      "&&",
+      ";",
+      "\n",
+      "&",
+      "||",
+    ]);
+    // `|` 不开启新管道，不产生 boundary
+    expect(splitCommandStructure("a | b").map((p) => p.boundary)).toEqual(["start"]);
+  });
 });
 
 describe("N. 防漂移：splitCompoundCommand 与 splitCommandStructure 必须同口径", () => {

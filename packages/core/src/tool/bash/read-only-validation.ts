@@ -221,6 +221,195 @@ function flagName(token: string): string {
  *
  * 未知 flag 判写是刻意的保守方向：多弹一次确认，而不是把带未知副作用的形态放行。
  */
+/**
+ * `git worktree` 的只读形态（B8）：只有 `list` 是纯读。
+ *
+ * `add` / `remove` / `prune` / `move` / `lock` / `unlock` / `repair` 都改工作树状态，
+ * 一律非只读。`remove --force` 另有危险命令模式兜底（见 dangerous-command），
+ * 两处判的是不同层：这里决定「要不要确认」，那里决定「是不是 critical」。
+ */
+export function isReadOnlyGitWorktree(args: string[]): boolean {
+  if (args[0] !== "list") return false;
+  for (const token of args.slice(1)) {
+    if (token === "--porcelain" || token === "-v" || token === "--verbose" || token === "-z") {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 值可省略的只读 flag（`git grep`）。带值形式统一在循环里按「下一个 token 是值」处理。
+ */
+const GIT_GREP_BOOL_FLAGS = new Set([
+  "-i",
+  "--ignore-case",
+  "-I",
+  "-w",
+  "--word-regexp",
+  "-v",
+  "--invert-match",
+  "-n",
+  "--line-number",
+  "-l",
+  "--files-with-matches",
+  "-L",
+  "--files-without-match",
+  "-c",
+  "--count",
+  "-h",
+  "-H",
+  "--full-name",
+  "--cached",
+  "-a",
+  "--text",
+  "--no-textconv",
+  "-p",
+  "--show-function",
+  "-W",
+  "--function-context",
+  "-q",
+  "--quiet",
+  "-s",
+  "--no-messages",
+  "-o",
+  "--only-matching",
+  "-z",
+  "--null",
+  "-F",
+  "--fixed-strings",
+  "-E",
+  "--extended-regexp",
+  "-G",
+  "--basic-regexp",
+  "-P",
+  "--perl-regexp",
+  "--all-match",
+  "--and",
+  "--or",
+  "--not",
+  "--break",
+  "--heading",
+  "--column",
+  "--no-color",
+  "--color",
+]);
+
+/** `git grep` 里带值的只读 flag（值在下一个 token 或粘连形式里） */
+const GIT_GREP_VALUE_FLAGS = new Set([
+  "-A",
+  "-B",
+  "-C",
+  "-m",
+  "--max-count",
+  "--threads",
+  "--exclude",
+  "--max-depth",
+  "-e",
+]);
+
+/** `--` 之前的 `=` 形式带值 flag（`--max-count=3` / `--color=always`） */
+const GIT_GREP_EQ_FLAGS = new Set([
+  "--max-count",
+  "--threads",
+  "--exclude",
+  "--max-depth",
+  "--color",
+]);
+
+/**
+ * `git grep` 的只读形态（B8）。
+ *
+ * 比「在只读表里加一个名字」多做一步，因为 `git grep` 有两个能**执行任意程序**的 flag：
+ * `-O<orderfile>` 与 `--open-files-in-pager[=<pager>]`。直接把 `grep` 放进只读子命令
+ * 集合等于开一个任意代码执行口子。所以这里用白名单：认识的只读 flag 才放行，
+ * 其余（含 `-O` / `--open-files-in-pager` / `-f`）一律非只读。
+ *
+ * 三个**刻意**不放行的形态（等 B5 的路径校验落地再放开，不是遗漏）：
+ * - `-f <file>` / `--file=<file>`：从文件读模式，文件路径绕过权限层的路径校验；
+ * - `--no-index` / `--untracked`：pathspec 会扩展到文件系统任意路径（可读工作区外文件）；
+ * - `--pathspec-from-file`：pathspec 来自文件，同样绕开路径校验。
+ *
+ * pathspec 只做「不出仓库」的粗判（拒绝对路径、`..`、`~`）：精确的工作区校验属于 B5。
+ */
+export function isReadOnlyGitGrep(args: string[]): boolean {
+  let i = 0;
+  /** 第一个位置参数是 pattern，其后都是 pathspec */
+  let patternSeen = false;
+  let afterDoubleDash = false;
+
+  while (i < args.length) {
+    const token = args[i]!;
+
+    if (afterDoubleDash) {
+      if (!isSafeGitPathspec(token)) return false;
+      i++;
+      continue;
+    }
+    if (token === "--") {
+      afterDoubleDash = true;
+      i++;
+      continue;
+    }
+
+    // 位置参数：先 pattern，再 pathspec
+    if (!token.startsWith("-") || token === "-") {
+      if (!patternSeen) {
+        patternSeen = true;
+        i++;
+        continue;
+      }
+      if (!isSafeGitPathspec(token)) return false;
+      i++;
+      continue;
+    }
+
+    // `--flag=value`：只认识表内的只读 flag
+    const eq = token.indexOf("=");
+    if (token.startsWith("--") && eq > 0) {
+      if (!GIT_GREP_EQ_FLAGS.has(token.slice(0, eq))) return false;
+      i++;
+      continue;
+    }
+
+    // 粘连形式：`-A3` / `-e<pattern>`
+    const attached = /^-([ABCm])(.+)$/.exec(token) ?? /^-e(.+)$/.exec(token);
+    if (attached) {
+      i++;
+      continue;
+    }
+
+    if (GIT_GREP_BOOL_FLAGS.has(token)) {
+      i++;
+      continue;
+    }
+
+    if (GIT_GREP_VALUE_FLAGS.has(token)) {
+      const value = args[i + 1];
+      // 值缺失，或值看起来是另一个选项（`-e --foo` 除外：`-e` 的值可以以 `-` 开头）
+      if (value === undefined || (token !== "-e" && value.startsWith("-"))) return false;
+      i += 2;
+      continue;
+    }
+
+    // 未知 flag（含 -O / --open-files-in-pager / -f / --no-index / --untracked）→ 非只读
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * pathspec 的粗判：必须以仓库内相对路径表达，不能是绝对路径、`~` 展开或跳出仓库的 `..`。
+ * 不含 glob 检查——pathspec 里的通配是正常用法，且通配不会把范围扩到工作区外。
+ */
+function isSafeGitPathspec(p: string): boolean {
+  if (!p || p.startsWith("/") || p.startsWith("~") || p.startsWith("\\")) return false;
+  if (/[$`]/.test(p)) return false;
+  return !p.split("/").includes("..");
+}
+
 export function isReadOnlyGitStash(args: string[]): boolean {
   const tokens = stripFdDuplicationTokens(args);
   let verb: string | null = null;
@@ -969,6 +1158,16 @@ function isReadOnlyImpl(command: string, ignoreCd: boolean): boolean {
       }
       if (subCmd === "reflog") {
         if (!isReadOnlyGitReflog(gitArgs.slice(1))) return false;
+        continue;
+      }
+      // B8：`git worktree list` / `git grep` 是纯读，但都有写形态与执行程序的口子，
+      // 按参数细分（见各自函数注释）。
+      if (subCmd === "worktree") {
+        if (!isReadOnlyGitWorktree(gitArgs.slice(1))) return false;
+        continue;
+      }
+      if (subCmd === "grep") {
+        if (!isReadOnlyGitGrep(gitArgs.slice(1))) return false;
         continue;
       }
       if (!READ_ONLY_GIT_SUBCOMMANDS.has(subCmd)) return false; // 未知子命令默认非只读

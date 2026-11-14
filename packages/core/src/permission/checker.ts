@@ -69,6 +69,7 @@ import {
   judgeReadOnlyGitInOwnRepo,
   type ReadOnlyGitBoundaryResult,
 } from "./readonly-git-boundary.ts";
+import { judgeReadOnlyCompoundBash, type ReadOnlyCompoundResult } from "./readonly-compound.ts";
 import { resolveOwnCommonDir } from "./git-repo-trust.ts";
 import * as path from "node:path";
 import { getAgentRoot, getAgentCwd, getIsolatedWorktree } from "../bootstrap/cwd-context.ts";
@@ -1429,6 +1430,26 @@ export class PermissionChecker implements Checker {
         // 判非只读，但它等价于「只对这一条 git 命令生效的 cd <dir>」，目标字面量、
         // 在工作区内、属本仓，按只读放行。模式硬约束与工具级 allow 完全相同。
         return this.allowAtToolLevel(req, filePath, resource, "只读 git 本仓边界");
+      } else {
+        // Step 5.6: 工作区内 `cd` + 只读主体（B3）。
+        //
+        // `BashTool.checkPermissions` 用的是不带上下文的 `isReadOnlyCommand`，它把 `cd`
+        // 一律判非只读——这是对的（纯函数不知道会话 cwd），但代价是
+        // `cd <会话 cwd> && git log` 这类命令每次都弹确认（本会话 22 条 / 327.8s）。
+        // 这里补回带 cwd 上下文的那一半：cd 目标必须在工作区内，主体仍逐段只读，
+        // 含 git 段时仓库归属照 PR-1 的口径判。判不准一律返回 false → 落到后续确认。
+        st.step = "5.6";
+        const compound = await this.evaluateReadOnlyCompoundBash(req);
+        if (compound.applicable && compound.readOnly) {
+          return this.allowAtToolLevel(req, filePath, resource, "工作区内 cd 复合只读");
+        }
+        if (compound.applicable) {
+          // 适用但判不准：留一条可归因的日志，最终落普通确认
+          log.info(
+            "PERMISSION",
+            `${req.toolName}(${resource.slice(0, 80)}) → 落确认(cd 复合只读: ${compound.reason ?? "未知"})`,
+          );
+        }
       }
       // passthrough: 工具没有意见，继续后续检查
     }
@@ -2268,6 +2289,46 @@ export class PermissionChecker implements Checker {
       command: cmd,
       startCwd: baseCwd,
       ownCommonDir: this.ownCommonGitDir,
+    });
+  }
+
+  /**
+   * 工作区内 `cd` + 只读主体的复合命令判定（B3）。
+   *
+   * 与 `evaluateReadOnlyGitBoundary` 的分工：那个管「只读 git 作用在谁的仓库上」，
+   * 本方法管「`cd` 之后主体还是不是只读」。两者都只在**工具自己判非只读**时才被问到
+   * （否则前者由 Step 5.5 的 allow 路径、后者根本不需要介入）。
+   *
+   * 判不准一律 `readOnly: false` —— 方向是多问一次，不是多放一条。
+   */
+  private async evaluateReadOnlyCompoundBash(
+    req: PermissionRequest,
+  ): Promise<ReadOnlyCompoundResult> {
+    if (!isCommandSemanticsRequest(req)) return { applicable: false, readOnly: false };
+    const cmd = (req.input as { command?: unknown })?.command;
+    if (typeof cmd !== "string" || !cmd.trim()) return { applicable: false, readOnly: false };
+
+    // 起始 cwd 与 resolveBashWriteTargets / evaluateReadOnlyGitBoundary 同一口径：
+    // input.cwd → 全局 cwd（cd 会被回写）→ 工作区根
+    let baseCwd: string = this.workspacePath;
+    const inputCwd = (req.input as { cwd?: unknown })?.cwd;
+    if (typeof inputCwd === "string" && inputCwd) {
+      baseCwd = inputCwd;
+    } else {
+      try {
+        const { getCwd } = await import("../bootstrap/state.ts");
+        baseCwd = getCwd();
+      } catch {
+        /* 无全局 cwd（测试 / 嵌入）：退回工作区根 */
+      }
+    }
+
+    return judgeReadOnlyCompoundBash({
+      command: cmd,
+      startCwd: baseCwd,
+      ownCommonDir: this.ownCommonGitDir,
+      isWithinWorkingDirectories: (p) => this.pathValidator.isWithinWorkingDirectories(p),
+      resolveRealPath: (p) => this.pathValidator.resolveRealPath(p),
     });
   }
 

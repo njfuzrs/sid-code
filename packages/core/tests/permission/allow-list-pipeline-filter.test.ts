@@ -141,7 +141,10 @@ describe("必须仍拒：放宽不能带进任何写 / 执行 / 任意读", () =
   }
 
   test("全是过滤器 / cd、没有一段命中 allow：不经 allow 放行", async () => {
-    expect((await judge(`cd ${ws} && tail -5`)).allowed).toBe(false);
+    // B3 之后 `cd <工作区内> && 只读主体` 会走只读放行（与 allow 规则无关），
+    // 所以这里用**工作区外**的 cd：两段仍没有一段命中 allow，且只读路径也不接管，
+    // 守的还是「不经 allow 放行」这件事本身。
+    expect((await judge(`cd /etc && tail -5`)).allowed).toBe(false);
   });
 
   test("cd 之后接 `;`（cd 失败后续照跑）：不认作无害前缀", async () => {
