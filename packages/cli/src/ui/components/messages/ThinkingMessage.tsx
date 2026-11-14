@@ -34,8 +34,12 @@ interface ThinkingMessageProps {
   thinkingStartMs?: number;
   /**
    * 折叠态是否显示「ctrl+o 展开」提示，默认 true。
-   * 仅在 ctrl+o 真能切换的场景（AB 虚拟列表模式）显示；
-   * 主屏 Static 模式（print-and-forget，无法重渲已打印项）传 false，避免误导。
+   *
+   * ⚠️ 别照旧说法理解成「主屏无法重渲所以传 false」：端口的 `Static` 是 memo Box、
+   * 项可原地 reconcile（`src/ui/CLAUDE.md` L5.3），主屏历史项的 `collapsed` 也确实
+   * 随 ctrl+o 变（`MainScreenLayout` 的 `thinkCollapsed` 由 App 按 `expandLevel` 同步）。
+   * 主屏传 false 是**不逐条挂提示**的取舍（L4-C：长会话几十条思考各带一句就是唠叨），
+   * 展开能力本身不受影响。流式中另有 `!streaming` 判据，见下方渲染分支。
    */
   showExpandHint?: boolean;
 }
