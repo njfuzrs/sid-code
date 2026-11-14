@@ -43,6 +43,9 @@ import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
 import { recordHitlWaitHistogram } from "../telemetry/metrics/latency-histograms.ts";
 import { detectSensitiveData } from "../permission/sensitive.ts";
+// B9：把「这次确认属于安全类」透传给确认回调——「始终允许」据此只记整条精确规则、
+// 只在会话内，避免 hook 特意要求确认的命令被一次点击永久绕过。
+import { isSafetyConfirmation } from "../permission/safety-confirmation.ts";
 import { emitCredentialInContext } from "./guidance-events.ts";
 import {
   checkBackgroundPoll,
@@ -390,6 +393,11 @@ export interface ToolExecutorDeps {
     signal?: AbortSignal,
     /** B25：SDK 宿主的 can_use_tool 要带真实 tool_use_id，宿主才能和 assistant 消息对上 */
     toolUseId?: string,
+    /**
+     * B9：本次 ask 是否属于安全类确认（dangerousCommand / safetyCheck / destructiveTool）。
+     * 为真时「本会话始终允许」只记整条精确规则、不生成前缀规则，也不落盘。
+     */
+    safetyConfirmation?: boolean,
   ) => Promise<boolean>;
   /**
    * Plan Mode 状态转换处理。
@@ -1238,6 +1246,9 @@ export async function resolveToolPermission(
                 block.input,
                 deps.getAbortSignal(),
                 block.id,
+                // B9：安全类确认（危险命令 / hook 要求确认 / MCP 自报破坏性）透传给回调，
+                // 「始终允许」据此只记整条精确规则、只在会话内。
+                isSafetyConfirmation(decision.decisionReason),
               )
               .then((confirmed) => {
                 if (!resolve.isResolved()) {

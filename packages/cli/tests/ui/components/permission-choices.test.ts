@@ -15,6 +15,7 @@ import { test, expect, describe } from "bun:test";
 import {
   buildPermissionChoices,
   buildShellConfirmChoices,
+  formatPlannedRules,
   initialPermissionChoiceIndex,
   initialShellChoiceIndex,
   isBashLikeTool,
@@ -73,6 +74,63 @@ describe("buildPermissionChoices — 选项集随工具与危险性变化", () =
   test("选项的快捷键互不重复（含大小写：a 与 A 是两个键）", () => {
     const cs = buildPermissionChoices({ toolName: "bash", isDangerous: false });
     expect(new Set(keysOf(cs)).size).toBe(cs.length);
+  });
+});
+
+describe("plannedRules — 确认框显示将要写入的规则（B9）", () => {
+  test("Bash 工具：会话档与持久档都显示规则，用户知道放行范围", () => {
+    const cs = buildPermissionChoices({
+      toolName: "bash",
+      isDangerous: false,
+      plannedRules: ["Bash(bun test *)"],
+    });
+    const session = cs.find((c) => c.value === "always")!;
+    expect(session.description).toContain("Bash(bun test *)");
+    const persist = cs.find((c) => c.value === "always-persist")!;
+    expect(persist.description).toContain("Bash(bun test *)");
+    // 持久档仍要说明写到哪：local settings 是个人私有文件，不是团队共享
+    expect(persist.description).toContain("settings.local.json");
+  });
+
+  test("不传 plannedRules 时落回旧的泛化文案（非 Bash / 无法生成规则）", () => {
+    const cs = buildPermissionChoices({ toolName: "bash", isDangerous: false });
+    expect(cs.find((c) => c.value === "always")!.description).toBe("退出后失效");
+    expect(cs.find((c) => c.value === "always-persist")!.description).toContain(
+      "settings.local.json",
+    );
+  });
+
+  test("非 Bash 工具不显示规则（没有规则形态）", () => {
+    const cs = buildPermissionChoices({ toolName: "write", isDangerous: false });
+    expect(cs.find((c) => c.value === "always")!.description).toBe("退出后失效");
+  });
+
+  test("危险确认：文案显示整条精确规则，不暗示会放宽", () => {
+    const cs = buildPermissionChoices({
+      toolName: "bash",
+      isDangerous: true,
+      plannedRules: ["Bash(rm -rf build)"],
+    });
+    const session = cs.find((c) => c.value === "always")!;
+    expect(session.description).toContain("Bash(rm -rf build)");
+    // 危险操作仍不给持久档
+    expect(valuesOf(cs)).not.toContain("always-persist");
+  });
+});
+
+describe("formatPlannedRules — 规则摘要压成一行", () => {
+  test("1 条直出；2 条顿号连接；3+ 条显示条数与前两条", () => {
+    expect(formatPlannedRules(["Bash(bun test *)"])).toBe("Bash(bun test *)");
+    expect(formatPlannedRules(["Bash(git push *)", "Bash(npm test *)"])).toBe(
+      "Bash(git push *)、Bash(npm test *)",
+    );
+    expect(formatPlannedRules(["Bash(a *)", "Bash(b *)", "Bash(c *)", "Bash(d *)"])).toBe(
+      "4 条规则: Bash(a *)、Bash(b *) 等",
+    );
+  });
+
+  test("空数组返回空串（调用方据此落回泛化文案）", () => {
+    expect(formatPlannedRules([])).toBe("");
   });
 });
 
