@@ -1,5 +1,5 @@
 /**
- * 「恒思考模型」名单 —— 服务端**不接受**关闭思考的模型。
+ * 「恒思考模型」判定 —— 服务端**不接受**关闭思考的模型。
  *
  * ## 为什么需要这一层（2026-08-17 GLM-5.3 会话实证）
  *
@@ -16,46 +16,50 @@
  * 且分类为 `TerminalError("invalid_request")` → **零重试**，直接"主 Provider 失败且无
  * 可用 fallback"。实测一次会话里 11 次真实请求全灭。
  *
- * ## 为什么是「名单」而不是「版本外推」
+ * ## 为什么改由注册表声明（2026-11-13）
  *
- * 不写 `>= 5.3 即恒思考` 这类版本比较：本仓已记录过版本外推的教训（外推出来的数值
- * 没有任何事实依据，而且错了不会报错、只会静默发错请求）。名单里每一条都对应一次
- * **实测到的 400**，加新条目的门槛就是"你见过它报这个错"。
+ * 此前这里是一份正则名单（`/^glm-5\.3\b/i`），当时的理由是「协议能力判定链不查注册表」。
+ * 那份名单有三个问题：
  *
- * ## 为什么不放进 `model-registry.ts`
+ * 1. **新增一个恒思考模型就要改一次代码**，而且改的是一处所有协议族共用的判定 —
+ *    「恒思考」是模型事实，本该是数据；
+ * 2. **与注册表分叉**：同一个模型的「有哪几档」写注册表、「能不能关」写代码，
+ *    两处各说一半，新增模型时漏一处就是静默错；
+ * 3. **网关改名命中不了**（`origin-glm-5.3`），只能靠 compat 兜。
  *
- * 协议能力判定链**根本不查注册表**（`classify.ts:85` 的 `/^glm/i` 正则兜底），
- * 未注册模型照样能拿到正确的族。往注册表加条目治不了这个 bug，
- * 而且 GLM-5.3 的注册属于另一份文档（模型元数据体系）的范围。
+ * 现在注册表条目声明 `thinkingMode: "always-on"`，`lookupCatalog` 的模糊查找能命中带
+ * 网关前缀 / 日期快照的名字（`origin-glm-5.3` / `glm-5.3-0815`），启动时不需要用户配置。
+ * 新增恒思考模型 = 加一条数据。
+ *
+ * ## 为什么这里可以用模糊查找（而「发 disabled」不能）
+ *
+ * 两个方向判错的代价不对称：
+ *
+ * - 误判为「关不掉」→ 按最低档思考，请求成功，只是没省到；`effort` 字段若不被接受
+ *   还有 `learnFromError` 的剥字段重试兜底；
+ * - 误判为「能关」→ 服务端收到 `disabled` → **400 且零重试**，整轮对话失败。
+ *
+ * 所以这里偏向代价小的那一边。⚠ 但「关」该不该**发 `disabled`** 仍只认精确命中
+ * （`thinking-off-wire.ts`）：那是往线上多发字段的方向，判错就是 400，规则反过来。
  *
  * ## 用户出口
  *
- * 企业网关常把模型改名（`origin-glm-5.3`、`glm53-prod`），这里的 `^glm-5\.3` 匹配不到。
- * 那种情况下用 `settings.json` 的 `modelCompat.<渠道>.thinking_always_on: true` 显式声明
- * —— 与 compat 的一贯语义一致：**用户显式声明 > 按名推导**。
+ * `settings.json` 的 `modelCompat.<渠道>.thinking_always_on` 仍可覆盖本判定
+ * （两侧都用 `compat?.thinkingAlwaysOn ?? isThinkingAlwaysOn(model)` 口径）：
+ * **用户显式声明 > 按名推导**。
  */
 
-/**
- * 恒思考模型的名称模式。
- *
- * ⚠ 每条都必须对应一次**实测到的服务端拒绝**，不要按"应该也是"添加。
- * 锚 `^` 与 `classify.ts` 的族判定正则同口径（都吃真名、都从头匹配）；
- * 带网关前缀的改名模型走 compat 显式声明，不在这里放宽锚点 ——
- * 放宽会让 `xxx-glm-5.3-nonthinking` 这类名字被误命中。
- */
-const ALWAYS_THINKING_PATTERNS: readonly RegExp[] = [
-  // GLM-5.3：2026-08-17 会话 `20260817-135824-fcf863e1` 实测 11 次 400。
-  // `\b` 让 `glm-5.3` / `glm-5.3-flash` 命中，而 `glm-5.30` 不命中。
-  /^glm-5\.3\b/i,
-];
+import { lookupCatalog } from "../model-params-catalog.ts";
 
 /**
  * 该模型是否**不允许**关闭思考。
  *
  * @param model 模型**真名**（不是渠道别名）—— 与 `classifyProtocolFamily` 同口径。
  *   喂别名会静默 miss，与 `wire-model.ts:27`「能力判定必须吃真名」是同一条约束。
+ *   ⚠ 注意这是「真名」而非「查注册表的键」：模糊查找负责把 `origin-glm-5.3` 对到
+ *   `glm-5.3` 那条数据，调用方不需要自己剥前缀。
  */
 export function isThinkingAlwaysOn(model: string): boolean {
   if (!model) return false;
-  return ALWAYS_THINKING_PATTERNS.some((re) => re.test(model));
+  return lookupCatalog(model)?.thinkingMode === "always-on";
 }

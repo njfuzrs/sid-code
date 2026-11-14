@@ -53,6 +53,8 @@ import {
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
 import { thinkingOffWire } from "./dialect/thinking-off-wire.ts";
+import { lookupModelCompat } from "./model-compat.ts";
+import type { DialectEffortLevel } from "./dialect/types.ts";
 import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
 import { observeRequestShape } from "./request-shape-observation.ts";
 import { lookupRegistryExact } from "./model-registry.ts";
@@ -61,6 +63,7 @@ import {
   classifyProtocolFamily,
   getToolSchemaDialect,
   sanitizeToolSchema,
+  thinkingOffEffortFloor,
 } from "./dialect/catalog.ts";
 import {
   buildSystemBlocks,
@@ -355,7 +358,11 @@ export class AnthropicProvider implements Provider {
       });
 
       const thinkingWire = buildThinkingWire(params, wireModel, this.client.baseURL);
-      const wireEffort = thinkingWire.dropEffort ? undefined : params.outputConfig?.effort;
+      // `effortFloor`（①「关思考落到最低档」）优先于 params 上的用户档位：后者是「想多深」，
+      // 前者是「关不掉时按最省的档跑」，见 buildThinkingWire 里的说明。
+      const wireEffort = thinkingWire.dropEffort
+        ? undefined
+        : (thinkingWire.effortFloor ?? params.outputConfig?.effort);
 
       const requestParams = {
         model: wireModel,
@@ -1136,10 +1143,11 @@ export class AnthropicProvider implements Provider {
     let billedUsage: Usage | undefined;
     let billable = false;
     const nonStreamThinkingWire = buildThinkingWire(params, wireModel, this.client.baseURL);
-    // 与下面请求体 output_config 的条件同一份，落盘的就是线上发的（E9）
+    // 与上面请求体 output_config 的条件同一份，落盘的就是线上发的（E9）
+    // `effortFloor`（① 关思考落到最低档）优先，理由同流式路径。
     const nonStreamWireEffort = nonStreamThinkingWire.dropEffort
       ? undefined
-      : params.outputConfig?.effort;
+      : (nonStreamThinkingWire.effortFloor ?? params.outputConfig?.effort);
     let nonStreamSawThinking = false;
     try {
       const createMessage = () =>
@@ -1336,10 +1344,27 @@ export function buildThinkingWire(
   params: SendParams,
   wireModel: string,
   baseURL?: string,
-): { param: Record<string, unknown>; dropEffort: boolean } {
+): { param: Record<string, unknown>; dropEffort: boolean; effortFloor?: DialectEffortLevel } {
   if (params.thinking?.enabled) return { param: buildThinkingParam(params), dropEffort: false };
   if (params.thinking && thinkingOffWire(wireModel, baseURL) === "disabled") {
     return { param: { thinking: { type: "disabled" } }, dropEffort: true };
+  }
+  // ① 关思考 + 关不掉 + 有档位表 → `adaptive` + 该模型最低档。
+  //
+  // 这是 Anthropic 官方对恒思考模型的唯一正确关法（400 报错文本直接写
+  // 「Use thinking.type.adaptive and output_config.effort」）：不能发 `disabled`，
+  // 也不能什么都不发（不发 = 走服务端默认档，等于让用户「想省」变成「按默认烧」）。
+  //
+  // ⚠ 刻意**不**走「把 params.thinking.enabled 改回 true 再交给 buildThinkingParam」：
+  // 那条路依赖 `outputConfig.thinkingType`，而 side-call（`SIDE_CALL_NO_THINK` 的 14 个
+  // 调用点）根本不填它 → 静默退回 manual 的 `budget_tokens` → 恒思考模型必然 400。
+  // 这正是本文件 `effort.ts applyCompatOverrides` 里记过的那条「用一个协议降级去实现
+  // 另一个字段的关闭」的同型陷阱。
+  if (params.thinking) {
+    const floor = thinkingOffEffortFloor(wireModel, lookupModelCompat(wireModel));
+    if (floor) {
+      return { param: { thinking: { type: "adaptive" } }, dropEffort: false, effortFloor: floor };
+    }
   }
   return { param: {}, dropEffort: false };
 }

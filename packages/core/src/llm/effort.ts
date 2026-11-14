@@ -30,6 +30,7 @@ import {
   ANTHROPIC_EFFORT_BUDGET,
   isThinkingAlwaysOn,
   mapThinkingCapToEffort,
+  thinkingOffEffortFloor,
   type Dialect,
   type ProtocolFamily,
 } from "./dialect/catalog.ts";
@@ -131,6 +132,19 @@ export interface EffortCapability {
    * 恒思考模型上提级照样有意义，跟着改成 false 会把它一起关掉。
    */
   thinkingControl: ThinkingControl;
+  /**
+   * 「关思考」在关不掉思考的模型上应下发的强度档（① = 该模型档位表里最低的一档）。
+   *
+   * 只在 `thinkingControl === "locked-on"` 且注册表登记了 `reasoningEffortValues` 时存在，
+   * 其余（含「恒思考但没档位表」）为 undefined —— 那几种情况维持原有下发，不猜。
+   * 取值来源单一：`dialect/thinking-off-floor.ts` 的 {@link thinkingOffEffortFloor}。
+   *
+   * 三个消费方读同一个字段，避免各自按模型名推（那正是本次修的病根）：
+   * - applier 包装（{@link withThinkingOffFloor}）→ 决定线上发什么；
+   * - {@link getDisplayedEffort} → 状态栏/Footer 显示实发档；
+   * - `/think` 与 `/effort` 面板 → 告诉用户「off 在这台模型上等于哪一档」。
+   */
+  thinkingOffFloor?: EffortLevel;
   /**
    * auto 态下状态栏展示用的默认档位（对标 cc getDisplayedEffortLevel 的兜底）。
    *
@@ -316,26 +330,77 @@ function finalizeThinkingControl(
   // 只影响展示与降档基准，不往线上多发字段；口径理由见 model-registry.ts defaultEffort。
   const registryDefault = lookupCatalog(model)?.defaultEffort;
   if (registryDefault) cap = { ...cap, defaultEffort: registryDefault };
-  // 用户显式声明恒思考 > 族推导：网关改名模型（`origin-glm-5.3`）常被判 unknown 族，
-  // 但服务端照样恒思考，展示必须说「关不掉」而不是「内置」。
-  if (compat?.thinkingAlwaysOn === true) {
-    return { ...cap, thinkingControl: "locked-on", thinkingDefaultOn: true };
+
+  // 恒思考判定前移到「没有思考开关字段 → none」**之前**。
+  //
+  // Kimi K3 / Grok / o-series 这类族根本没有 `thinking:{type}` 字段（`supportsThinkingToggle`
+  // 为 false），但它们**照样关不掉**：判成 `none` 会让「关思考 → 最低档」这条规则漏掉它们，
+  // `/think off` 在它们身上依旧落到服务端默认档（Grok 4.7 默认 high、Kimi K3 默认 max）。
+  // 这是本次修复覆盖的第三只族，也是最容易被「没有开关字段 = 没有思考」这个直觉漏掉的一只。
+  //
+  // 判定口径收敛成一条 `compat?.thinkingAlwaysOn ?? isThinkingAlwaysOn(model)`：此前
+  // anthropic-native 走 `lookupCatalog(model)?.thinkingMode === "always-on"`、其余族走
+  // compat > 正则名单，两路各写一遍。现在 `isThinkingAlwaysOn` 本身就查注册表，两路等价；
+  // 合并后 anthropic 族也接受 compat 显式 false 覆盖（与 openai.ts 同口径 —— 网关改名
+  // 模型的唯一出口是「用户显式声明 > 按名推导」）。
+  const alwaysOn = compat?.thinkingAlwaysOn ?? isThinkingAlwaysOn(model);
+  if (alwaysOn) {
+    return withThinkingOffFloor(
+      { ...cap, thinkingControl: "locked-on", thinkingDefaultOn: true },
+      model,
+      compat,
+    );
   }
   if (!cap.supportsThinkingToggle) {
     return { ...cap, thinkingControl: "none" };
-  }
-  const alwaysOn =
-    kind === "anthropic-native"
-      ? lookupCatalog(model)?.thinkingMode === "always-on"
-      : // compat 显式 false 可覆盖内置名单（与 openai.ts 同口径）；true 已在上面返回。
-        (compat?.thinkingAlwaysOn ?? isThinkingAlwaysOn(model));
-  if (alwaysOn) {
-    return { ...cap, thinkingControl: "locked-on", thinkingDefaultOn: true };
   }
   if (kind === "anthropic-native" && lookupRegistryExact(model)?.thinkingOmitMeans === "on") {
     return { ...cap, thinkingControl: "toggle", thinkingDefaultOn: true };
   }
   return { ...cap, thinkingControl: "toggle" };
+}
+
+/**
+ * 给 applier 包一层「关思考 → 该模型最低档」的兜底（① 的唯一落地处）。
+ *
+ * 只在 `thinking === false` 且 {@link thinkingOffEffortFloor} 有值时生效，其余原样转发 ——
+ * 各族 applier **一行不改**：GLM / DeepSeek 得到 `thinking:{type:"enabled"}` + 最低档，
+ * Anthropic 走它自己「恒思考强制开」的分支得到 `adaptive` + 最低档，
+ * Kimi K3 / Grok / o-series 这类无开关字段的族只拿到 `reasoning_effort: 最低档`。
+ *
+ * ⚠ `off` **覆盖用户显式档位**（`/think off` + `/effort max` → 实发最低档）。
+ * `off` 是「要不要思考」的上游决定，与 `max` 冲突时以 `off` 为准；想深度思考请 `/think on`。
+ * 反过来（有档位表时仍发用户的 max）才是本次要修的病：用户敲 off 想省，结果拉满。
+ *
+ * ⚠ **不改 {@link resolveThinking} 的契约**：它仍返回「下发意图」，`loop.ts` 的
+ * `thinkingIntent` 照记 `false`，fallback 换备用模型后重新解析 —— 切到能关思考的模型时
+ * `off` 照样生效。把 `false` 改成 `true` 会让「意图」与「用户选择」脱节，那条链路上
+ * 还有 UI 展示与轨迹字段在读它。
+ *
+ * ⚠ 也不改 `cap.thinkingDefaultOn`（保持 true）：它回答「auto 时服务端是否思考」，
+ * 与「off 时发什么档」是两个问题。恒思考模型 auto 确实在思考，这一位没说错。
+ */
+function withThinkingOffFloor(
+  cap: EffortCapability,
+  model: string,
+  compat?: ModelCompat,
+): EffortCapability {
+  const floor = thinkingOffEffortFloor(model, compat);
+  // 没有档位表（或渠道声明不吃 effort）→ 不兜底，保持原有下发。不知道最低档是哪个就别编：
+  // 发一个模型不认的 effort 是确定 400，而不下发只是恢复旧行为。
+  if (!floor) return cap;
+  const inner = cap.applyToSendParams.bind(cap);
+  return {
+    ...cap,
+    thinkingOffFloor: floor,
+    applyToSendParams(params, effort, thinking) {
+      if (!thinking) {
+        inner(params, floor, true);
+        return;
+      }
+      inner(params, effort, thinking);
+    },
+  };
 }
 
 /**
@@ -530,7 +595,21 @@ export function getDisplayedEffort(
   cap: EffortCapability,
   runtimeEffort: EffortSetting,
   envOverride: EffortSetting | null,
+  /**
+   * 已解析的最终思考开关（`resolveThinking` 的结果）；`undefined` = 调用方没提供，不兜底。
+   *
+   * 只在 `locked-on` + 意图 off 时改变结果：那时线上发的是 {@link EffortCapability.thinkingOffFloor}
+   * （①「关思考落到最低档」），状态栏/面板必须显示这个实发档，而不是用户选的那档。
+   * 不传时保持原语义（展示所选档的映射结果）—— 三处旧调用点在拿到 thinking 态之前
+   * 仍按旧口径算，不会因为本参数而改变行为。
+   */
+  thinkingApplied?: boolean,
 ): EffortLevel {
+  // ① 关思考 + 关不掉 + 有档位表：实发档就是兜底档，与用户选的档无关。
+  // 放在最前面而不是 `!cap.supportsEffort` 之后：Kimi K3 / Grok / o-series 的
+  // `supportsEffort` 为 true，但它们的 `thinkingControl` 也是 `locked-on`（本次改动统一判定），
+  // 放在后面会被 `applied` 的映射结果覆盖。
+  if (thinkingApplied === false && cap.thinkingOffFloor) return cap.thinkingOffFloor;
   const applied = resolveAppliedEffort(cap, runtimeEffort, envOverride);
   if (!cap.supportsEffort) return applied ?? cap.defaultEffort;
   // auto：applier 显式发了档就显示发的那档（manual Claude 发 medium 预算 → medium，E1）；
@@ -724,10 +803,16 @@ export function resolveThinkingState(
 /**
  * 交给 applier 的思考开关（优先级 env > runtime > cap.thinkingDefaultOn）。
  *
- * ⚠ 这是**下发意图**，不是展示值：`locked-on` 模型上它仍可能返回 false，由各族线格式层
- * 自行兜底（Anthropic applier 强制 adaptive、openai.ts 对 GLM-5.3 不发 disabled）。
- * 刻意不改成 `resolveThinkingState().effective`——那会让 GLM-5.3 在用户 `/think off` 时
- * 改发 `enabled` + effort 档位，用户说关反而多下发一个强度。展示请用 {@link resolveThinkingState}。
+ * ⚠ 这是**下发意图**，不是展示值：`locked-on` 模型上它仍会返回 false。返回 false
+ * **不等于「什么都不发」** —— 线格式层与 applier 包装会把它翻译成「开思考 + 该模型
+ * 最低档」（`thinkingOffEffortFloor`，见 `dialect/thinking-off-floor.ts`）：
+ * Anthropic 发 `adaptive` + 最低 effort、GLM 发 `enabled` + 最低档、
+ * Kimi K3 / Grok / o-series 只发 `reasoning_effort: 最低档`。
+ * 「关不掉」的正确语义是「不能真关，但能压到最省」，不是「用户说了不算」。
+ *
+ * 刻意**不**改成返回 `resolveThinkingState().effective`：那会让恒思考模型永远返回 true，
+ * `loop.ts` 记的 `thinkingIntent` 与用户选择脱节；而且 fallback 换到能关思考的备用模型时，
+ * `off` 就再也不会生效了。展示请用 {@link resolveThinkingState}。
  *
  * @param envOverride getThinkingEnvOverride() 的返回值：null=env 未设；true/false=env 强制。
  */

@@ -100,7 +100,12 @@ export function createAnthropicNativeDialect(
 
       if (thinkingMode === "always-on" || thinkingMode === "adaptive") {
         // ── adaptive / always-on 路径 ──
-        // always-on 模型不可关闭思考（关也按低 effort 下发），避免 400。
+        // always-on 模型不可关闭思考：`disabled` 会 400，所以这里强制开。
+        // ⚠ 「关思考时压到最低档」**不在本函数里做** —— 那由 `effort.ts` 的
+        // `withThinkingOffFloor` 包装层在调用前把档位换成 floor 并传 thinking=true
+        // （规则见 `dialect/thinking-off-floor.ts`）。分工：本函数只管「always-on 就必须开」，
+        // 包装层管「开成多深」。此前这行注释写「关也按低 effort 下发」，
+        // 而函数体里根本没有降档逻辑 —— 注释描述的是一个当时不存在的实现。
         const effectiveThinking = thinkingMode === "always-on" ? true : thinking;
 
         if (!effectiveThinking) {

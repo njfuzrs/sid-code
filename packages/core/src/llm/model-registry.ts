@@ -81,6 +81,19 @@ export interface ModelRegistryEntry {
   systemRole?: "system" | "developer";
   maxTokensField?: "max_tokens" | "max_completion_tokens";
   supportsTemperature?: boolean;
+  /**
+   * 该模型**线上**认可的强度档位。
+   *
+   * 两个用途：
+   * 1. 校验/钳制用户选择（`model-capability-filter.ts`）；
+   * 2. **「关思考」在恒思考模型上落到哪一档** —— `dialect/thinking-off-floor.ts` 取其中
+   *    按统一标度最低的一档（不按数组下标，数组顺序无语义）。
+   *
+   * ⚠ 用途 2 让这个字段从「可选提示」升级成**恒思考模型的必需数据**：登记了
+   * `thinkingMode:"always-on"` 却不登记本字段，`/think off` 会静默退回「什么都不发」=
+   * 服务端默认档（GLM-5.3 是 max），与本次修复前的现象完全一样。
+   * 两个字段要成对登记（防退化断言见 `packages/core/tests/llm/thinking-off-floor.test.ts`）。
+   */
   reasoningEffortValues?: ("low" | "medium" | "high" | "xhigh" | "max")[];
   protocolKind?:
     | "deepseek-openai"
@@ -107,13 +120,23 @@ export interface ModelRegistryEntry {
   requiresReasoningContentForToolCalls?: boolean;
 
   /**
-   * Extended Thinking 模式（Anthropic 协议族专用）。
+   * 思考能不能关闭（**协议无关**，2026-11-13 起不再只对 Anthropic 有意义）。
    *
-   * - `"adaptive"`：Opus 4.7+/Sonnet 4.6/Fable 5 — 下发 `thinking:{type:"adaptive"}` + `output_config.effort`
-   * - `"always-on"`：Fable 5/Mythos 5 — 自适应始终开启，不可关闭（`thinking:{type:"disabled"}` 返回 400）
-   * - undefined（= "manual" 兜底）：旧模型 — 下发 `thinking:{type:"enabled", budget_tokens:N}`
+   * - `"always-on"`：模型**不接受**关闭思考。两种线上形态由代码自动适配，本字段只声明事实：
+   *   - 有 `thinking.type` 开关的族（Anthropic / GLM）：`disabled` 会 400；
+   *   - 没有开关字段的族（Kimi K3 / Grok 4.5+ / o 系列）：只能靠 `reasoning_effort` 调深浅，
+   *     「关」被翻译成**该模型档位表里最低的一档**（`dialect/thinking-off-floor.ts`）。
+   *   两条链路都**不掉档成「什么都不发」**：不发 = 服务端默认档，常常就是最高档
+   *   （GLM-5.3 / Kimi K3 默认 max），用户敲 `/think off` 想省反而更贵。
+   * - `"adaptive"`（Anthropic 专用）：下发 `thinking:{type:"adaptive"}` + `output_config.effort`。
+   * - undefined（Anthropic 的 "manual" 兜底）：`thinking:{type:"enabled", budget_tokens:N}`。
    *
-   * [来源: anthropic-api.md:320-323]
+   * ⚠ 消费方（`isThinkingAlwaysOn` / `thinkingOffEffortFloor`）用 **`lookupCatalog` 模糊匹配**，
+   * 网关改名（`origin-glm-5.3`）与日期快照名都要能命中；判错代价不对称，见
+   * `dialect/always-thinking.ts` 文件头。另：`always-on` 必须与 `reasoningEffortValues`
+   * **成对登记**，否则「关思考」无处可落（见该字段注释）。
+   *
+   * [anthropic 语义来源: anthropic-api.md:320-323；各族恒思考事实见各 api.md]
    */
   thinkingMode?: "adaptive" | "always-on";
 
@@ -226,6 +249,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
     supportsXhighEffort: true,
+    // 恒思考族的档位表（anthropic-api.md:409 的 effort 矩阵含 low/medium/high/xhigh/max）：
+    // 「关思考」落到其中最低的 low（dialect/thinking-off-floor.ts）。
+    reasoningEffortValues: ["low", "medium", "high", "xhigh", "max"],
     // 输入/输出 anthropic-api.md:967；缓存 5m 写 $5 / 读 $0.20（anthropic-api.md:1000）
     pricing: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
   },
@@ -236,6 +262,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
     supportsXhighEffort: true,
+    // 恒思考族的档位表（anthropic-api.md:409 的 effort 矩阵含 low/medium/high/xhigh/max）：
+    // 「关思考」落到其中最低的 low（dialect/thinking-off-floor.ts）。
+    reasoningEffortValues: ["low", "medium", "high", "xhigh", "max"],
     // 输入/输出 anthropic-api.md:968；缓存 5m 写 $2.50 / 读 $0.20（anthropic-api.md:1000）
     pricing: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   },
@@ -265,6 +294,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
     supportsXhighEffort: true,
+    // 恒思考族的档位表（anthropic-api.md:409 的 effort 矩阵含 low/medium/high/xhigh/max）：
+    // 「关思考」落到其中最低的 low（dialect/thinking-off-floor.ts）。
+    reasoningEffortValues: ["low", "medium", "high", "xhigh", "max"],
     // 输入/输出 anthropic-api.md:966；5m 写 $12.50（anthropic-api.md:1000）。
     // 文档没给 Fable 5.1 的缓存读价，故不写 cacheRead（调用方按 input×0.1 近似）。
     pricing: { input: 10, output: 50, cacheWrite: 12.5 },
@@ -276,6 +308,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
     supportsXhighEffort: true,
+    // 恒思考族的档位表（anthropic-api.md:409 的 effort 矩阵含 low/medium/high/xhigh/max）：
+    // 「关思考」落到其中最低的 low（dialect/thinking-off-floor.ts）。
+    reasoningEffortValues: ["low", "medium", "high", "xhigh", "max"],
     pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   },
   "claude-mythos-5": {
@@ -285,6 +320,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
     supportsXhighEffort: true,
+    // 恒思考族的档位表（anthropic-api.md:409 的 effort 矩阵含 low/medium/high/xhigh/max）：
+    // 「关思考」落到其中最低的 low（dialect/thinking-off-floor.ts）。
+    reasoningEffortValues: ["low", "medium", "high", "xhigh", "max"],
     pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   },
   // ── 5 一代（Opus 5 / Sonnet 5）──────────────────────────────────────
@@ -865,6 +903,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     supportsThinking: true,
+    // 只能靠 reasoning_effort 调深浅，没有 `thinking.type` 开关字段；
+    // 「关思考」落到档位表最低的 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     systemRole: "developer",
     maxTokensField: "max_completion_tokens",
     supportsTemperature: false,
@@ -877,6 +918,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     supportsThinking: true,
+    // 只能靠 reasoning_effort 调深浅，没有 `thinking.type` 开关字段；
+    // 「关思考」落到档位表最低的 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     systemRole: "developer",
     maxTokensField: "max_completion_tokens",
     supportsTemperature: false,
@@ -891,6 +935,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     supportsThinking: true,
+    // 只能靠 reasoning_effort 调深浅，没有 `thinking.type` 开关字段；
+    // 「关思考」落到档位表最低的 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     systemRole: "developer",
     maxTokensField: "max_completion_tokens",
     supportsTemperature: false,
@@ -974,6 +1021,12 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 1_048_576,
     maxOutputTokens: 131_072,
     supportsThinking: true,
+    // 始终思考，没有 `thinking.type` 开关字段 → 只能靠 reasoning_effort 调深浅。
+    // 「关思考」被翻译成这里最低的一档 low（dialect/thinking-off-floor.ts）。
+    // ⚠ 两个字段必须成对：只写 thinkingMode 会让 `/think off` 静默退回「不发」
+    // → 服务端默认 max，想省反而拉满（本次修复前的现象）。
+    thinkingMode: "always-on",
+    reasoningEffortValues: ["low", "high", "max"],
     pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
   },
   // k2.7-code：262,144 / 默认 32768（kimi-api.md:88,92）；$0.95/$4/$0.19（kimi-api.md:376）
@@ -1115,6 +1168,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   "glm-5.3": {
     // reasoning_effort 默认 max，仅 5.2 及以上（glm-api.md:221，E10）
     defaultEffort: "max",
+    // 强制思考：`thinking:{type:"disabled"}` 直接 400「该模型始终思考」（glm-api.md:209,225）。
+    // 「关思考」落到档位表最低的一档 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1126,6 +1182,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   "glm-5.3-flash": {
     // reasoning_effort 默认 max，仅 5.2 及以上（glm-api.md:221，E10）
     defaultEffort: "max",
+    // 强制思考，同 glm-5.3（glm-api.md:209,225）
+    thinkingMode: "always-on",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1137,6 +1195,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   "glm-5.3-flashx": {
     // reasoning_effort 默认 max，仅 5.2 及以上（glm-api.md:221，E10）
     defaultEffort: "max",
+    // 强制思考，同 glm-5.3（glm-api.md:209,225）
+    thinkingMode: "always-on",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1276,6 +1336,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 500_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
+    // 4.5+ 不可关推理（grok-api.md:28,382）：没有 `thinking.type` 开关字段，
+    // 「关思考」落到档位表最低的 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
     reasoningEffortValues: ["low", "medium", "high", "xhigh"],
@@ -1288,6 +1351,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 500_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
+    // 4.5+ 不可关推理（grok-api.md:28,382）：没有 `thinking.type` 开关字段，
+    // 「关思考」落到档位表最低的 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
     reasoningEffortValues: ["low", "medium", "high", "xhigh"],
@@ -1301,6 +1367,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 500_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
+    // 4.5+ 不可关推理（grok-api.md:28,382）：没有 `thinking.type` 开关字段，
+    // 「关思考」落到档位表最低的 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
     reasoningEffortValues: ["low", "medium", "high"],
