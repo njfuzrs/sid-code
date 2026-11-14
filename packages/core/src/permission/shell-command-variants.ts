@@ -163,26 +163,49 @@ function hasBalancedQuotes(cmd: string): boolean {
 }
 
 /**
- * 一个简单命令里所有处在「程序位置」的名字（去引号 / 去转义 / 取 basename）：
- * 命令头、沿 wrapper 链往下的每一层（`env FOO=1 nohup sudo id` → env、nohup、sudo、id），
- * 以及 `find … -exec <程序>` 的程序。
- *
- * 用途：判「是不是在执行 X」——这是程序位置的问题，不是原文里有没有 X 字样的问题
- * （`grep -n "sudo 命令" f` 不在执行 sudo）。
- *
- * 引号未闭合时返回 null，调用方应回退到原文判定（宁严勿松）。
+ * 命令前缀关键字：它们后面紧跟的才是「要执行的命令」（`if $(cmd); then …`）。
+ * 不当关键字跳过的话，`if` 会被当成程序位，`$(cmd)` 变成它的参数位而躲过命令位判定。
  */
-export function listInvokedPrograms(sub: string): string[] | null {
-  if (!hasBalancedQuotes(sub)) return null;
-  const tokens = tokenizeWithPositions(sub).map((t) => t.value);
-  const names: string[] = [];
+const COMMAND_PREFIX_KEYWORDS = new Set([
+  "if",
+  "then",
+  "elif",
+  "else",
+  "while",
+  "until",
+  "do",
+  "!",
+  "time",
+]);
+
+/**
+ * 一段 token 里所有处在「程序位置」的下标：命令头、沿 wrapper 链往下的每一层
+ * （`env FOO=1 nohup sudo id` → env、nohup、sudo、id），以及 `find … -exec <程序>` 的程序。
+ *
+ * 返回下标而不是名字：`detectCommandSubstitutionDanger` 要用它判「这处替换的**结果**
+ * 是不是要被当成程序执行」——那是位置问题，只看名字不够。
+ */
+function programPositionIndexes(tokens: readonly string[]): number[] {
+  const positions: number[] = [];
 
   const walk = (start: number) => {
     let i = start;
-    while (i < tokens.length && ASSIGNMENT_RE.test(tokens[i])) i++;
+    // 前导赋值与前缀关键字不占程序位：`FOO=1 cmd` / `if cmd` 的 cmd 才是程序
+    for (let guard = 0; guard < 8; guard++) {
+      let moved = false;
+      while (i < tokens.length && ASSIGNMENT_RE.test(tokens[i])) {
+        i++;
+        moved = true;
+      }
+      if (i < tokens.length && COMMAND_PREFIX_KEYWORDS.has(tokens[i])) {
+        i++;
+        moved = true;
+      }
+      if (!moved) break;
+    }
     for (let guard = 0; guard < 8 && i < tokens.length; guard++) {
       const name = path.basename(tokens[i]);
-      names.push(name);
+      positions.push(i);
       const spec = WRAPPERS[name];
       if (!spec) break;
       let j = i + 1;
@@ -207,14 +230,31 @@ export function listInvokedPrograms(sub: string): string[] | null {
       i = j;
     }
     // find -exec / -execdir / -ok / -okdir 之后是一个新的程序位置（可多次出现）
-    if (names[names.length - 1] === "find") {
+    const last = positions[positions.length - 1];
+    if (last !== undefined && path.basename(tokens[last]) === "find") {
       for (let k = i + 1; k < tokens.length; k++) {
         if (FIND_EXEC_ACTIONS.has(tokens[k]) && k + 1 < tokens.length) walk(k + 1);
       }
     }
   };
   walk(0);
-  return names;
+  return positions;
+}
+
+/**
+ * 一个简单命令里所有处在「程序位置」的名字（去引号 / 去转义 / 取 basename）：
+ * 命令头、沿 wrapper 链往下的每一层（`env FOO=1 nohup sudo id` → env、nohup、sudo、id），
+ * 以及 `find … -exec <程序>` 的程序。
+ *
+ * 用途：判「是不是在执行 X」——这是程序位置的问题，不是原文里有没有 X 字样的问题
+ * （`grep -n "sudo 命令" f` 不在执行 sudo）。
+ *
+ * 引号未闭合时返回 null，调用方应回退到原文判定（宁严勿松）。
+ */
+export function listInvokedPrograms(sub: string): string[] | null {
+  if (!hasBalancedQuotes(sub)) return null;
+  const tokens = tokenizeWithPositions(sub).map((t) => t.value);
+  return programPositionIndexes(tokens).map((i) => path.basename(tokens[i]));
 }
 
 /** 把参数当脚本执行的 shell（`sh -c '<脚本>'`） */
@@ -304,12 +344,36 @@ function canonicalizeSimpleCommand(sub: string): CanonicalCommand {
   };
 }
 
+/** 命令替换 / 进程替换在原文里的区间与内层脚本 */
+interface SubstitutionSpan {
+  start: number;
+  end: number;
+  body: string;
+}
+
+/** 解析结果：替换区间 + 简单命令段的区间 */
+interface ShellTextAnalysis {
+  spans: SubstitutionSpan[];
+  /** 按 `;&|\n(){}` 切出的「段」区间（引号内与替换内部都不切） */
+  segments: Array<{ start: number; end: number }>;
+}
+
+/** 段分隔符：`;` `&` `|` 换行与括号 / 花括号。引号内与替换内部不算 */
+const SEGMENT_BREAK_RE = /[;&|\n(){}]/;
+
 /**
- * 提取命令替换 / 进程替换的内层脚本：`$(…)`、反引号、`<(…)`、`>(…)`。
- * 单引号内是字面量，不提取；双引号内的 `$(…)` 照样执行，要提取。
+ * 一次扫描拿到「每处替换的区间」和「每个简单命令段的区间」。
+ *
+ * 两件事必须一起做：段划分要跳过替换内部（`$(a; b)` 的 `;` 不是命令分隔符），
+ * 而替换提取又需要知道自己在哪一段里，分两次扫一定会漂移。
+ *
+ * 口径与 `extractSubstitutionBodies` 完全一致（单引号内是字面量，双引号内的 `$(…)`
+ * 照样执行，`$((` 是算术不算替换），因为它就是后者的实现。
  */
-export function extractSubstitutionBodies(cmd: string): string[] {
-  const bodies: string[] = [];
+function analyzeShellText(cmd: string): ShellTextAnalysis {
+  const spans: SubstitutionSpan[] = [];
+  const segments: ShellTextAnalysis["segments"] = [];
+  let segStart = 0;
   let inSingle = false;
   let inDouble = false;
   for (let i = 0; i < cmd.length; i++) {
@@ -330,7 +394,7 @@ export function extractSubstitutionBodies(cmd: string): string[] {
     if (ch === "`") {
       const close = cmd.indexOf("`", i + 1);
       if (close < 0) break;
-      bodies.push(cmd.slice(i + 1, close));
+      spans.push({ start: i, end: close + 1, body: cmd.slice(i + 1, close) });
       i = close;
       continue;
     }
@@ -344,11 +408,29 @@ export function extractSubstitutionBodies(cmd: string): string[] {
         if (cmd[j] === "(") depth++;
         else if (cmd[j] === ")") depth--;
       }
-      if (depth === 0) bodies.push(cmd.slice(i + 2, j - 1));
+      if (depth === 0) {
+        spans.push({ start: i, end: j, body: cmd.slice(i + 2, j - 1) });
+      }
       i = j - 1;
+      continue;
+    }
+    if (!inDouble && SEGMENT_BREAK_RE.test(ch)) {
+      segments.push({ start: segStart, end: i });
+      segStart = i + 1;
     }
   }
-  return bodies.filter((b) => b.trim() !== "");
+  segments.push({ start: segStart, end: cmd.length });
+  return { spans, segments };
+}
+
+/**
+ * 提取命令替换 / 进程替换的内层脚本：`$(…)`、反引号、`<(…)`、`>(…)`。
+ * 单引号内是字面量，不提取；双引号内的 `$(…)` 照样执行，要提取。
+ */
+export function extractSubstitutionBodies(cmd: string): string[] {
+  return analyzeShellText(cmd)
+    .spans.map((s) => s.body)
+    .filter((b) => b.trim() !== "");
 }
 
 /** 展开结果 */
@@ -434,6 +516,12 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
       // heredoc 正文的归属：接收者是解释器（`bash <<EOF`）或管道下游是解释器
       // （`cat <<EOF | bash`）时正文是脚本，要递归判危险；接收者是文件时正文是数据，丢弃。
       for (const block of blocks) {
+        // 不带引号定界符（`<<EOF`）的正文会先做变量展开与命令替换，
+        // `cat <<EOF ⏎ $(rm -rf /) ⏎ EOF` 里的 `$(…)` 在 shell 里**真的会执行**。
+        // 接收者不是 shell 时上面那条 `nested.push(block.body)` 不触发，正文里的
+        // 替换就完全没人看——修前这条命令在 always-allow 下直接放行。
+        // 带引号（`<<'EOF'`）是纯字面量，一条都不取。
+        if (!block.quoted) nested.push(...extractSubstitutionBodies(block.body));
         const placeholder = `<<${block.placeholder}`;
         const ownerIdx = parsed.findIndex((p) => p.args.some((a) => a.includes(placeholder)));
         if (ownerIdx < 0) continue;
@@ -469,6 +557,121 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
     interpreterHeredocs,
     truncated,
   };
+}
+
+/** 命令替换出现的位置：决定替换的**结果**会不会被当成命令执行 */
+type SubstitutionPosition =
+  /** 命令位：替换结果就是程序名（`$(curl x)`、`` `cat cmd.txt` ``、`sudo $(cat f)`） */
+  | "program"
+  /** 参数即代码：`sh -c "$(…)"` / `eval "$(…)"` / `source` / `.` 的参数会被当脚本再跑一遍 */
+  | "code-argument"
+  /** 参数位：替换结果只作为参数值，内层命令已由 expandShellCommand 单独展开检查 */
+  | "argument";
+
+/** 段首是这些程序时，参数位的替换同样会被当作代码执行 */
+const CODE_ARGUMENT_PROGRAMS = new Set(["eval", "source", "."]);
+
+/**
+ * 每处命令替换落在什么位置。
+ *
+ * 「有没有替换」不足以决定危险性：`echo $(git rev-parse HEAD)` 的替换在参数位，
+ * 内层 `git rev-parse HEAD` 已经被 `expandShellCommand` 展开成独立的 variant 检查过；
+ * 而 `$(curl -s x)` 的替换**结果就是程序名**，静态检查根本看不见要执行什么。
+ * 修前两者一律 high，于是最普通的 `echo $(date)` 也弹「危险命令」红框——
+ * 级别没错但语义错了，用户每次都要在红框里点确认。
+ *
+ * 位置判定用「占位符 + 程序位置下标」而不是正则：`sh -c "$(…)"` 里的替换在
+ * **参数**位置，但那个参数是要执行的脚本，与 `echo $(…)` 完全不同。
+ */
+function classifySubstitutions(
+  cmd: string,
+): Array<{ span: SubstitutionSpan; position: SubstitutionPosition }> {
+  const { spans, segments } = analyzeShellText(cmd);
+  if (spans.length === 0) return [];
+
+  return spans.map((span) => {
+    const seg = segments.find((s) => span.start >= s.start && span.start < s.end) ?? {
+      start: 0,
+      end: cmd.length,
+    };
+    // 用占位符遮住段内所有替换再分词：否则 `echo $(a b)` 会把内层命令的 token
+    // 当成外层的参数，位置判定直接错。
+    let masked = "";
+    let pos = seg.start;
+    const placeholder = new Map<SubstitutionSpan, string>();
+    const inSegment = spans.filter((s) => s.start >= seg.start && s.start < seg.end);
+    for (const [k, s] of inSegment.entries()) {
+      masked += cmd.slice(pos, s.start);
+      const ph = `__SID_SUBST_${k}__`;
+      placeholder.set(s, ph);
+      masked += ph;
+      pos = s.end;
+    }
+    masked += cmd.slice(pos, seg.end);
+
+    const tokens = tokenizeWithPositions(masked).map((t) => t.value);
+    const mention = placeholder.get(span);
+    if (!mention) return { span, position: "argument" as const };
+    const tokenIdx = tokens.findIndex((t) => t.includes(mention));
+    if (tokenIdx < 0) return { span, position: "argument" as const };
+
+    const programPositions = programPositionIndexes(tokens);
+    if (programPositions.includes(tokenIdx)) return { span, position: "program" as const };
+
+    const headIdx = programPositions[0];
+    if (headIdx === undefined) return { span, position: "argument" as const };
+    const head = path.basename(tokens[headIdx]);
+    // `eval` / `source` / `.`：所有参数都是代码，参数位的替换同样看不穿
+    if (CODE_ARGUMENT_PROGRAMS.has(head)) return { span, position: "code-argument" as const };
+    // `sh -c <脚本>`：只有 `-c` 后面那个参数是代码；`sh script.sh $(x)` 的替换是普通参数
+    if (SHELLS.has(head)) {
+      for (let k = headIdx + 1; k < tokens.length; k++) {
+        const a = tokens[k];
+        if (a === "--") break;
+        if (!a.startsWith("-")) break;
+        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) {
+          if (k + 1 === tokenIdx) return { span, position: "code-argument" as const };
+          break;
+        }
+      }
+    }
+    return { span, position: "argument" as const };
+  });
+}
+
+/**
+ * 命令替换危险判定（取代 DANGEROUS_PATTERNS 里的「命令替换注入」正则）。
+ *
+ * ## 判据
+ *
+ * - **命令位**（替换结果就是程序名）→ high：静态看不见要执行什么。
+ * - **参数即代码**（`sh -c` / `eval` / `source` / `.` 的参数）→ high：同理。
+ * - **参数位** → 不报：内层命令已经作为独立 variant 过了一遍全部危险判定
+ *   （`echo $(rm -rf /)` 因此仍命中 critical「递归删除根目录」）。
+ * - **引号没闭合** → high：位置判定不可信，且内层命令根本没被提取
+ *   （`echo "$(date` 修前在 always-allow 下静默放行）。
+ *
+ * ## 为什么不在这一层递归判内层危险
+ *
+ * 内层命令已经被 `expandShellCommand` 展开进 `variants`，Step 2 的每一条判定
+ * （结构化 critical、sudo 程序位、其余正则）都会看见它。在这里再判一遍等于
+ * 第二份口径，迟早与 variants 那条漂移。
+ */
+export function detectCommandSubstitutionDanger(
+  expansion: ShellCommandExpansion,
+  originalCommand: string,
+): { name: string; severity: "high" } | null {
+  const name = "命令替换注入";
+  // 解析失败 fail-closed：只在**确实含替换**时才报，纯引号笔误不该变成危险命令
+  if (!hasBalancedQuotes(originalCommand) && /`|\$\(|<\(|>\(/.test(originalCommand)) {
+    return { name, severity: "high" };
+  }
+  for (const script of expansion.scripts) {
+    if (!hasBalancedQuotes(script)) continue;
+    const classified = classifySubstitutions(script);
+    if (classified.some((c) => c.position !== "argument")) return { name, severity: "high" };
+  }
+  return null;
 }
 
 /** 参数即写入目标的命令（全部非选项参数） */

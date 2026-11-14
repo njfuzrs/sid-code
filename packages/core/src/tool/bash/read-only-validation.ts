@@ -1064,8 +1064,26 @@ export function isReadOnlyIgnoringCd(command: string): boolean {
   return isReadOnlyImpl(command, true);
 }
 
+/**
+ * 「命令替换」记号：反引号、`$(…)`、进程替换 `<(…)` / `>(…)`。
+ *
+ * `$((…))` 是纯算术（`echo $((1 << 2))` 里没有命令），不算。
+ *
+ * 为什么要判它非只读：`isReadOnlyCommand("echo $(git rev-parse HEAD)")` 修前是 true，
+ * Step 5.5 直接放行——可替换内层跑的是**什么程序**要看到展开结果才知道
+ * （`$(git rev-parse HEAD)` 只是参数，但 `$(curl x | sh)` 就是任意执行）。
+ * 静态判定看不穿时不能算只读。对齐 CC 的 too-complex：一律落到**普通确认**，
+ * 不是危险命令（危险级别由 `detectCommandSubstitutionDanger` 按替换位置单独判）。
+ */
+const COMMAND_SUBSTITUTION_MARK_RE = /`|\$\((?!\()|<\(|>\(/;
+
 function isReadOnlyImpl(command: string, ignoreCd: boolean): boolean {
   if (!command.trim()) return true;
+
+  // 0. 含命令替换 → 非法静态判定的范围，判非只读（落到普通确认）。
+  //    放在最前面：它比任何子命令白名单都优先，`echo $(date)` 不该因为 `echo` 在白名单里
+  //    就整条放行。`$((…))` 算术不算替换。
+  if (COMMAND_SUBSTITUTION_MARK_RE.test(command)) return false;
 
   const ast = parseBashCommand(command);
 

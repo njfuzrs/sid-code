@@ -38,6 +38,7 @@ import {
   resolveCdTarget,
 } from "./allow-composition.ts";
 import {
+  detectCommandSubstitutionDanger,
   expandShellCommand,
   extractBashWriteTargets,
   listInvokedPrograms,
@@ -135,7 +136,10 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
 
   // high: 拒绝但允许用户确认
   // 「sudo 命令」不在正则表里：按程序位置判（detectPrivilegeEscalation），见那里的注释。
-  { name: "命令替换注入", pattern: /`[^`]*`|\$\([^)]*\)/, severity: "high" },
+  // 「命令替换注入」也不在正则表里：按**替换出现的位置**判
+  // （shell-command-variants.ts 的 detectCommandSubstitutionDanger）。
+  // 正则 `/`…`|\$\([^)]*\)/` 把 `echo $(git rev-parse HEAD)` 和 `$(curl x)` 同等对待，
+  // 前者在参数位、内层命令已单独判过，用户每次都得在「危险命令」红框里点确认。
   { name: "递归权限修改", pattern: /chmod\s+-R\s+(777|666)/, severity: "high" },
   { name: "递归所有者修改", pattern: /chown\s+-R\s+/, severity: "high" },
   {
@@ -2596,7 +2600,7 @@ export class PermissionChecker implements Checker {
     const skipPathTraversal =
       /\.\.[/\\]/.test(cmd) &&
       (isReadOnlyCommand(cmd) || (await this.evaluateReadOnlyCompoundBash(req)).readOnly);
-    const hard = this.hardcodedDangerCheck(expansion, await resolveBashCwdForCheck(req), {
+    const hard = this.hardcodedDangerCheck(expansion, await resolveBashCwdForCheck(req), cmd, {
       skipPathTraversal,
     });
 
@@ -3072,6 +3076,7 @@ export class PermissionChecker implements Checker {
   private hardcodedDangerCheck(
     expansion: ShellCommandExpansion,
     cwd: string,
+    originalCommand: string,
     opts?: { skipPathTraversal?: boolean },
   ): DangerousFinding | null {
     // 0. 结构化 critical 判定
@@ -3096,6 +3101,13 @@ export class PermissionChecker implements Checker {
     // 1a'. 提权（sudo / doas）：按程序位置判，不扫原文
     const privilege = detectPrivilegeEscalation(expansion.variants);
     if (privilege) return privilege;
+
+    // 1a''. 命令替换：按**位置**判，不按「有没有」判。
+    //   命令位 / 参数即代码 → high；参数位 → 不报，内层命令已作为独立 variant
+    //   过完整套判定（下面第 1b 步）。放在 structural 与 privilege 之后：
+    //   `echo $(rm -rf /)` 仍按内层 critical 硬拒，`sudo $(cat cmd)` 仍报「sudo 命令」。
+    const substitution = detectCommandSubstitutionDanger(expansion, originalCommand);
+    if (substitution) return substitution;
 
     // 1b. 拆分复合命令，对每个子命令检查其余模式
     //
