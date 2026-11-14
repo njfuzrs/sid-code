@@ -130,7 +130,8 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
       // 注册新工具
       if (ctx.toolRegistry) {
         for (const tool of tools) {
-          ctx.toolRegistry.register(tool);
+          // B14：插件工具走 MCP 桥接，来源标 mcp —— 不享受内置工具的免权限声明
+          ctx.toolRegistry.register(tool, "mcp");
         }
       }
     } catch (err: any) {

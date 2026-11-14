@@ -447,6 +447,40 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 `log show --last 1m --predicate 'eventMessage CONTAINS "deny"'` 查统一日志。
 :::
 
+## 哪些工具不需要确认
+
+有一批**进程内记账 / 只读**工具既不改工作区、也不执行外部命令，它们在所有权限模式下
+都不需要确认。这不是靠一张内置名单，而是工具在**自己的定义处**声明
+`requiresPermission() { return false }`——读源码时声明与实现同处一个文件，一眼可见。
+
+| 工具 | 作用 | 副作用 |
+| --- | --- | --- |
+| `think` | 记录一段结构化思考 | 无（只进对话历史） |
+| `todo_write` | 维护会话内的 todo 清单 | 写 `~/.sid-code/` 下的进度账本 |
+| `task_create` / `task_update` | 维护结构化任务账本 | 同上 |
+| `task_get` / `task_list` | 读结构化任务账本 | 无 |
+| `task_output` / `bg_task_get` / `bg_task_list` | 读后台任务的状态与产出 | 无 |
+| `cron_list` | 读定时任务列表 | 无 |
+| `enter_plan_mode` | 切到规划态 | 无（只改会话状态） |
+| `sub_agent` | 派子代理 | 见下方「唯一例外」 |
+
+四条边界，都实测过：
+
+- **`deny` / `ask` 规则仍然优先**。规则检查排在声明之前，写了 `deny: ["TodoWrite"]` 照样拒。
+- **只对内置工具生效**。MCP server、插件、自定义代理提供的工具即便实现了同名方法，
+  也一律忽略——声明是「我写的代码我担保」，外部来源不在这条担保范围内。
+- **`deny-write` 更严**。它是「不许改文件」的硬约束，放行要同时满足「声明免权限」
+  **且**工具自身报告只读。`todo_write` 会写进度账本（`readOnly()` 为 false），
+  所以在 `deny-write` 下仍被拒。
+- **`ask_user_question` 不在此列**。它的语义是「我需要你的输入」，不是「我不需要权限」。
+  在 `dontAsk`（一切需确认的都拒）下它仍然被拒。
+
+::: tip `sub_agent` 的唯一例外
+派子代理默认不需要确认，但 `isolation: "worktree"` 时仍会让你确认——它会真的
+`git worktree add` 一个新工作树、复制本地配置，属对磁盘的可见改动。agent 定义里
+（frontmatter）声明的 `isolation` 默认值同样触发确认。
+:::
+
 ## 哪些操作 `allow` 规则与 `always-allow` 都绕不过
 
 这是和权限规则**平行的一层**，位置在规则之前，所以 `allow` 规则和 `always-allow`

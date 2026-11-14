@@ -53,6 +53,16 @@ export const thinkTool: Tool<ThinkInput, string> = buildTool<ThinkInput, string>
     return true;
   },
 
+  /**
+   * B14：思考只进对话历史，不读写文件、不出网、不起子进程，不需要用户批准。
+   *
+   * 这条声明经 bridge 透传到 LegacyTool（`FORWARDED_KEYS`）——think 是新接口工具，
+   * 少了那行转发本声明会静默丢失（构建不报错、测试也不会红）。
+   */
+  requiresPermission() {
+    return false;
+  },
+
   // 能力字段：交执行器做运行时校验 + registry 生成 LLM 定义
   zodSchema: thinkSchema,
 

@@ -42,6 +42,16 @@ export class StructuredTaskListTool implements Tool {
     return true;
   }
 
+  /**
+   * B14：只读结构化任务账本，不需要用户批准。
+   *
+   * 权限链在 Step 13.6（见 permission/checker.ts 的 declaredNoPermission）直接放行；
+   * 旧实现只有一张无头模式的名单盯着这件事，交互模式下这些工具照样会弹确认。
+   */
+  requiresPermission(): boolean {
+    return false;
+  }
+
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as { status?: string };
     const statusFilter = params.status || "all";

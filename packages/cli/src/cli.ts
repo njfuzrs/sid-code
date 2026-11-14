@@ -2599,7 +2599,8 @@ export async function main(): Promise<void> {
       mcpManager.onToolsRefresh = (serverName, tools) => {
         const prefix = `mcp__${serverName}__`;
         toolRegistry.removeByPrefix(prefix);
-        for (const tool of tools) toolRegistry.register(tool);
+        // B14：MCP 工具来源显式标 mcp —— `requiresPermission()` 声明只对内置工具生效
+        for (const tool of tools) toolRegistry.register(tool, "mcp");
         // 动态刷新（IDE/重连）换了工具集，清 paramText 缓存避免陈旧参数文本。
         toolRegistry.invalidateParamTextCache();
       };
@@ -2627,7 +2628,7 @@ export async function main(): Promise<void> {
         mcpManager
           .connectAll(allMcpServers)
           .then(async (mcpTools) => {
-            for (const tool of mcpTools) toolRegistry.register(tool);
+            for (const tool of mcpTools) toolRegistry.register(tool, "mcp");
             // B22：_ctx_mcp_server_count 此前无人回填、恒为 0。计的是**连上的**数，不是配置数——
             // 后者在配置里就能看到，分析时真正缺的是「这个会话实际有几个 server 可用」。
             try {

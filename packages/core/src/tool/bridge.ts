@@ -53,6 +53,10 @@ const FORWARDED_KEYS: Record<ForwardedKey, true> = {
   backfillObservableInput: true,
   exemptFromLoopDetection: true,
   needsPermissionChecker: true,
+  // B14：不转发会让经 bridge 注册的工具丢掉「我不需要权限」的声明——`think` 正是
+  // 新接口 + bridge 的路径，丢了它交互模式又要为「记一条思考」弹确认，
+  // 且构建不报错、测试也不会红（除非哨兵显式盯住它）。
+  requiresPermission: true,
   consumesAgentId: true,
   // R3：不转发会让 bash / monitor 经 bridge 注册时丢掉「我要 _toolUseId」的声明，
   // 后台通知的 `<tool-use-id>` 锚点静默消失（构建不报错、测试也不会红）。

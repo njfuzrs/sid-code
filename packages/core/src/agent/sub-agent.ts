@@ -1428,7 +1428,8 @@ export class SubAgent {
       getCwd(),
     );
     const tools = new ToolRegistry();
-    for (const t of this.resolveCustomTools(task)) tools.register(t);
+    // B14：自定义代理工具来源标 custom —— 用户代码不享受 builtin 的免权限声明
+    for (const t of this.resolveCustomTools(task)) tools.register(t, "custom");
     const toolDefs = this.getCustomToolDefs(task);
 
     // 模型口径与 executeCustomInner 同源：modelOverride 优先，否则主模型。

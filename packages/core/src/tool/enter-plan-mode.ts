@@ -126,6 +126,16 @@ export class EnterPlanModeTool implements Tool {
     return true;
   }
 
+  /**
+   * B14：只切会话的规划态，不碰工作区文件，不需要用户批准。
+   *
+   * 权限链在 Step 13.6（见 permission/checker.ts 的 declaredNoPermission）直接放行；
+   * 旧实现只有一张无头模式的名单盯着这件事，交互模式下这些工具照样会弹确认。
+   */
+  requiresPermission(): boolean {
+    return false;
+  }
+
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     // 禁止在子代理上下文中进入 plan mode（防套娃）
     // 参考：Claude Code EnterPlanModeTool.ts:78-80

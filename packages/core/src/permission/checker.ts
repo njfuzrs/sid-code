@@ -26,6 +26,7 @@ import type { Config } from "../config/config.ts";
 import type { PermissionMode } from "./mode.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 import type { Tool, ToolUseContext } from "../tool/types.ts";
+import { getToolRegistrationSource } from "../tool/registry.ts";
 import { checkRules, extractMatchValue } from "./rules.ts";
 import type { PathRuleContext } from "./path-rule-matching.ts";
 import { AuditLogger } from "./audit.ts";
@@ -328,23 +329,66 @@ const READ_ONLY_TOOLS = new Set([
 const MAX_SESSION_MEMORY = 1000;
 
 /**
- * 无头会话的**本地记账工具**白名单：只写本地进度/任务账本，不碰工作区、网络、子进程。
+ * B14（方案 20261114）：读工具的 `requiresPermission()` 声明，判断能否整条权限链放行。
  *
- * 2026-10-26：`todo_write` 此前在无头模式被拒（`isNonInteractive()` 把 ask 落成 deny），
- * 而计划批准消息（`plan/prompt.ts` 的 `buildPlanApprovedMessage`）**强制**要求第一步调它。
- * 两处规则在 `-p` 下直接矛盾：每一份计划进入执行阶段的第一步必然失败，
- * 实测一次 plan 无头实跑就此把整个执行阶段报废（`todo_write` 被拒 → 模型转成只读交付）。
- * 不止 plan：`acceptEdits` 无头会话同样被拒（acceptEdits 分支只放行 `FILE_TOOLS`）。
+ * ## 为什么从「名单」改成「工具自报」
  *
- * 为什么**不复用** `READ_ONLY_TOOLS`：那个集合被三处共用——主链 Step 10、
- * plan 模式（`checkPlanMode`）、deny-write 模式（Step 13）。往里加 `todo_write`
- * 会同时放宽 plan 与 deny-write 两条语义，副作用面远超「无头会话」这一条。
- * 本集合只在「无头 + 已经走到 ask」这一条路径上生效，其余模式一条都没变。
+ * 此前这里是一张 `HEADLESS_LOCAL_LEDGER_TOOLS = ["todo_write", "task_create", "task_update"]`
+ * 名单，它只在**无头模式**这一条路径上生效（位置在 `isNonInteractive()` 之前），
+ * 于是同一批工具在交互模式下依然要用户为「记一条 todo」点确认。名单还必然漂移：
+ * 新增一个纯记账工具的人不会知道有这张表，`task_get` / `task_list` / `think` 就一直落在
+ * Step 14 默认 ask 上（实测：计划批准后第一步 `todo_write` 在无头实跑里被拒，整段执行报废）。
+ * 现在改由工具在自身定义处声明，名单消失。
  *
- * 判据（加新工具到本表前逐条核）：① 不写工作区文件；② 不出网；③ 不起子进程；
- * ④ 只改进程内账本或 `~/.sid-code/` 下的进度文件。任一条不满足就**不要**加。
+ * ## 三重 fail-closed
+ *
+ * 1. **来源必须是内置**：MCP / 插件 / 自定义代理工具即便实现了 `requiresPermission`
+ *    也一律忽略——那是外部代码，不享受「我写的我担保」这一层（判据见
+ *    `TOOL_REGISTRATION_SOURCE` 的注释）。
+ * 2. **只认显式的 `false`**：返回 `true`、返回 `undefined`、声明抛错都按「需要权限」处理。
+ * 3. **工具对象缺失**：调用方拿不到工具实例时同样返回 false。
  */
-const HEADLESS_LOCAL_LEDGER_TOOLS = new Set(["todo_write", "task_create", "task_update"]);
+function declaredNoPermission(tool: Tool | undefined, input: unknown): boolean {
+  if (!tool) return false;
+  if (getToolRegistrationSource(tool) !== "builtin") return false;
+  const declared = (tool as { requiresPermission?: (input?: unknown) => boolean })
+    .requiresPermission;
+  if (typeof declared !== "function") return false;
+  try {
+    return declared.call(tool, input) === false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 工具是否自报「只读」——两种接口形态都认。
+ *
+ * 迁移期 checker 可能拿到 `LegacyTool`（`readOnly()` 无参，registry 内部存储的形态）
+ * 或新版 `Tool`（`isReadOnly(input)` 有参，测试与直接构造的调用方）。`tool/registry.ts`
+ * 内部存的是 LegacyTool，但 bridge 归一后 `readOnly()` 已经调用了原 `isReadOnly`，
+ * 所以两条分支不会同时命中同一份语义两次。
+ */
+function toolReportsReadOnly(tool: Tool | undefined, input: unknown): boolean {
+  if (!tool) return false;
+  const legacy = (tool as { readOnly?: () => boolean }).readOnly;
+  if (typeof legacy === "function") {
+    try {
+      return legacy.call(tool) === true;
+    } catch {
+      return false;
+    }
+  }
+  const modern = (tool as { isReadOnly?: (input?: unknown) => boolean }).isReadOnly;
+  if (typeof modern === "function") {
+    try {
+      return modern.call(tool, input) === true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 /**
  * acceptEdits 模式下自动放行的文件系统命令（对齐 CC modeValidation.ts ACCEPT_EDITS_ALLOWED_COMMANDS）。
@@ -1431,7 +1475,7 @@ export class PermissionChecker implements Checker {
           // `cat ../README.md`（工作区内）反倒被 Step 2 的文本正则拦下。
           const readPath = await this.evaluateReadOnlyReadPaths(req);
           if (readPath) return readPath;
-          return this.allowAtToolLevel(req, filePath, resource, "工具级checkPermissions");
+          return this.allowAtToolLevel(req, filePath, resource, "工具级checkPermissions", tool);
         }
         // 越界（异仓 / 裸仓库形态 / 工作区外）不在这里放行，落到后续步骤 → 普通确认。
         log.info(
@@ -1442,7 +1486,7 @@ export class PermissionChecker implements Checker {
         // B2 补回：`git -C <本仓内目录> <只读子命令>` 在 isReadOnlyCommand 里因为不剥 `-C`
         // 判非只读，但它等价于「只对这一条 git 命令生效的 cd <dir>」，目标字面量、
         // 在工作区内、属本仓，按只读放行。模式硬约束与工具级 allow 完全相同。
-        return this.allowAtToolLevel(req, filePath, resource, "只读 git 本仓边界");
+        return this.allowAtToolLevel(req, filePath, resource, "只读 git 本仓边界", tool);
       } else {
         // Step 5.6: 工作区内 `cd` + 只读主体（B3）。
         //
@@ -1458,7 +1502,7 @@ export class PermissionChecker implements Checker {
           // （`cd <ws>/packages && cat ../README.md` 的 `../` 基准是 packages）。
           const readPath = await this.evaluateReadOnlyReadPaths(req, compound.stages);
           if (readPath) return readPath;
-          return this.allowAtToolLevel(req, filePath, resource, "工作区内 cd 复合只读");
+          return this.allowAtToolLevel(req, filePath, resource, "工作区内 cd 复合只读", tool);
         }
         if (compound.applicable) {
           // 适用但判不准：留一条可归因的日志，最终落普通确认
@@ -1552,7 +1596,7 @@ export class PermissionChecker implements Checker {
     if (req.toolName === "bash" && this.sandboxManager?.shouldAutoAllowBash()) {
       // ① 模式硬约束优先：plan / deny-write 是代码级只读，沙箱不构成放行理由
       if (this.config.permissionMode === "plan") {
-        return this.checkPlanMode(req, filePath, resource);
+        return this.checkPlanMode(req, filePath, resource, tool);
       }
       if (this.config.permissionMode === "deny-write") {
         log.info(
@@ -1602,7 +1646,7 @@ export class PermissionChecker implements Checker {
     st.step = "9";
     // Step 9: plan 模式（代码级强制只读，计划文件例外）
     if (this.config.permissionMode === "plan") {
-      return this.checkPlanMode(req, filePath, resource);
+      return this.checkPlanMode(req, filePath, resource, tool);
     }
 
     st.step = "10";
@@ -1647,7 +1691,20 @@ export class PermissionChecker implements Checker {
 
     st.step = "13";
     // Step 13: deny-write 模式
+    //
+    // B14：自报「不需要权限」**且真的只读**的工具在这里放行。deny-write 的语义是
+    // 「不许改文件」，不是「连记账都不许」——旧实现无条件 deny，于是 plan 模式落到
+    // deny-write 时 `todo_write` 连一行进度都记不了。
+    // 两个条件必须同时成立：只看声明会把 `todo_write` 放进来（它会写 progress 文件，
+    // `readOnly()` 为 false）；只看 readOnly 又会把「只读但会起子进程」的工具放进来。
     if (this.config.permissionMode === "deny-write") {
+      if (declaredNoPermission(tool, req.input) && toolReportsReadOnly(tool, req.input)) {
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 允许(deny-write+免权限只读工具)`,
+        );
+        return { allowed: true, decisionReason: { type: "mode", mode: "deny-write" } };
+      }
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式)`);
       return {
         allowed: false,
@@ -1673,6 +1730,21 @@ export class PermissionChecker implements Checker {
       };
     }
 
+    st.step = "13.6";
+    // Step 13.6（B14）：工具自报「我不需要权限」→ 放行。
+    //
+    // 位置刻意在 Step 13.5（破坏性确认）**之后**：`requiresPermission` 只是「我不写不跑」
+    // 的自述，不该盖过 MCP server 自己声明的 destructiveHint——那条更严格的信息优先。
+    // 也不放在 Step 10（`READ_ONLY_TOOLS`）：那张表被 plan / deny-write 共用，
+    // 而本声明与「只读」不是同一个概念（`todo_write` 会写 progress 文件）。
+    //
+    // 无头模式因此自动被覆盖：`isNonInteractive()` 的 deny 在阶段二（本函数返回 ask 之后），
+    // 这里先一步放行，不需要再单独维护一张「无头白名单」。
+    if (declaredNoPermission(tool, req.input)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(工具声明免权限)`);
+      return { allowed: true, decisionReason: { type: "other", reason: "工具声明不需要权限" } };
+    }
+
     st.step = "14";
     // Step 14: passthrough → ask（默认需要用户确认）
     log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(默认策略)`);
@@ -1694,7 +1766,7 @@ export class PermissionChecker implements Checker {
     options?: PermissionCheckOptions,
   ): Promise<Decision> {
     const decision = await this.checkUngated(req, tool, toolContext, options);
-    const gated = decision.allowed ? this.enforceModeHardConstraint(req, decision) : null;
+    const gated = decision.allowed ? this.enforceModeHardConstraint(req, decision, tool) : null;
     const final = gated ?? decision;
     return {
       ...final,
@@ -1783,7 +1855,11 @@ export class PermissionChecker implements Checker {
    * 计划文件（Step 3.5，精确匹配 getPlanFilePath）是唯一豁免——那是 plan 模式本身要写的东西。
    * 返回 null = 不拦。
    */
-  private enforceModeHardConstraint(req: PermissionRequest, decision: Decision): Decision | null {
+  private enforceModeHardConstraint(
+    req: PermissionRequest,
+    decision: Decision,
+    tool?: Tool,
+  ): Decision | null {
     const mode = this.config.permissionMode;
     if (mode !== "plan" && mode !== "deny-write") return null;
     if (decision.step === "3.5") return null;
@@ -1791,7 +1867,7 @@ export class PermissionChecker implements Checker {
     const resource = filePath || (req.input as { command?: string })?.command || "";
     let blocked: Decision | null = null;
     if (mode === "plan") {
-      const verdict = this.checkPlanMode(req, filePath, resource);
+      const verdict = this.checkPlanMode(req, filePath, resource, tool);
       if (!verdict.allowed) {
         blocked = {
           ...verdict,
@@ -1799,11 +1875,19 @@ export class PermissionChecker implements Checker {
         };
       }
     } else if (!READ_ONLY_TOOLS.has(req.toolName)) {
-      blocked = {
-        allowed: false,
-        reason: "deny-write 模式下不允许写操作",
-        decisionReason: { type: "mode", mode: "deny-write" },
-      };
+      // B14：与阶段一 Step 13 同一条判据——「声明免权限 **且** 真的只读」才放过。
+      // 这道总闸的名字就写着「覆盖 step 的放行」，所以两处必须同步改：只改 Step 13
+      // 会让阶段一的 ALLOW 在这里被静默改回 DENY（`step: "mode-gate"`），
+      // 表现是测试全绿而线上照旧弹确认——本 PR 实现时实测踩到过一次。
+      const exemptInDenyWrite =
+        declaredNoPermission(tool, req.input) && toolReportsReadOnly(tool, req.input);
+      if (!exemptInDenyWrite) {
+        blocked = {
+          allowed: false,
+          reason: "deny-write 模式下不允许写操作",
+          decisionReason: { type: "mode", mode: "deny-write" },
+        };
+      }
     }
     if (!blocked) return null;
     getLogger().info(
@@ -2177,14 +2261,10 @@ export class PermissionChecker implements Checker {
       return dontAskDecision;
     }
 
-    // 无头会话的本地记账工具：不放行就等于「批准了计划却不允许记进度」。
-    // 位置刻意在 isNonInteractive 之前、dontAsk 之后：dontAsk 是用户显式选的
-    // 「一切需确认的都拒」，本表只豁免「无人可问」这一种处境，不改 dontAsk 的语义。
-    // 也不放在阶段一的 Step 10：那会同时放宽 plan 与 deny-write（见集合注释）。
-    if (this.isNonInteractive() && HEADLESS_LOCAL_LEDGER_TOOLS.has(req.toolName)) {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(无头+本地记账)`);
-      return { allowed: true, decisionReason: { type: "other", reason: "无头会话的本地记账工具" } };
-    }
+    // 无头会话的本地记账工具不在这里特殊处理：B14 之后由工具的
+    // `requiresPermission()` 声明在**阶段一**的 Step 13.6 就放行了（早于本函数），
+    // 那张 `HEADLESS_LOCAL_LEDGER_TOOLS` 名单随之删除——名单必然漂移，
+    // `task_get` / `task_list` / `think` 从来没被列进去过。
 
     // 非交互模式：ask → deny
     if (this.isNonInteractive()) {
@@ -2361,10 +2441,11 @@ export class PermissionChecker implements Checker {
     filePath: string,
     resource: string,
     source: string,
+    tool?: Tool,
   ): Decision {
     const log = getLogger();
     if (this.config.permissionMode === "plan") {
-      return this.checkPlanMode(req, filePath, resource);
+      return this.checkPlanMode(req, filePath, resource, tool);
     }
     if (this.config.permissionMode === "deny-write") {
       log.info(
@@ -3154,7 +3235,12 @@ export class PermissionChecker implements Checker {
    * 把「计划模式只读」这条硬保证换成一个取决于进入前模式的条件——那是一次权限放宽，
    * 需要单独立项讨论，不能以「修死代码」的名义顺手打开。
    */
-  private checkPlanMode(req: PermissionRequest, filePath: string, resource: string): Decision {
+  private checkPlanMode(
+    req: PermissionRequest,
+    filePath: string,
+    resource: string,
+    tool?: Tool,
+  ): Decision {
     const log = getLogger();
 
     // 只读工具直接放行
@@ -3179,6 +3265,23 @@ export class PermissionChecker implements Checker {
       }
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+专用工具)`);
       return { allowed: true };
+    }
+
+    // B14：工具自报「我不需要权限」→ plan 模式同样放行。
+    //
+    // plan 是「代码级强制只读」，本来就不该拦记账类工具（`todo_write` / `task_*` /
+    // `think`）——它们不改工作区。此前靠 `PLAN_MODE_EXTRA_TOOLS` 逐个点名，名单外的
+    // 工具一律拒，于是 plan 会话里连「记一条 todo」都做不了。
+    //
+    // **必须放在 `PLAN_MODE_EXTRA_TOOLS` 之后**：`sub_agent` 也在那张表里，而它有一道
+    // 「plan 下只许 explore」的硬约束。放前面会让 `sub_agent(type: "general-purpose")`
+    // 用免权限声明直接跳过那次检查——一个工具同时属于两套判据时，严的那套必须先生效。
+    if (declaredNoPermission(tool, req.input)) {
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan模式+免权限工具)`,
+      );
+      return { allowed: true, decisionReason: { type: "other", reason: "工具声明不需要权限" } };
     }
 
     // 允许 write/edit 操作计划文件

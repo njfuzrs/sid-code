@@ -382,6 +382,16 @@ export class TodoWriteTool implements Tool {
     return false;
   }
 
+  /**
+   * B14：只改进程内的 progress 账本（~/.sid-code/ 下），不碰工作区、不出网、不起子进程，不需要用户批准。
+   *
+   * 权限链在 Step 13.6（见 permission/checker.ts 的 declaredNoPermission）直接放行；
+   * 旧实现只有一张无头模式的名单盯着这件事，交互模式下这些工具照样会弹确认。
+   */
+  requiresPermission(): boolean {
+    return false;
+  }
+
   isConcurrencySafe(): boolean {
     return true;
   }
