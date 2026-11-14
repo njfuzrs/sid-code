@@ -110,6 +110,27 @@ describe("① 判定入口：关思考 → 该模型最低档", () => {
     }
   });
 
+  test("查找精度：注册表模糊查找不外推（§4.3 的表逐行锁住）", () => {
+    // 命中：真名 / 大小写 / 日期快照 / 网关前缀 / preview 后缀。
+    // 「从正则换成注册表」带来的是**覆盖变大**，这是有意的：网关改名不必再配 compat。
+    for (const m of [
+      "glm-5.3",
+      "GLM-5.3",
+      "glm-5.3-0815",
+      "origin-glm-5.3",
+      "ali-glm-5.3",
+      "kimi-k3-preview",
+    ]) {
+      expect(isThinkingAlwaysOn(m), `${m} 应命中`).toBe(true);
+    }
+    // 不命中：版本外推（`glm-5.3.1` / `glm-5.4` / `kimi-k3.1` / `kimi-k4`）与相邻版本。
+    // `glm-5.3.1` 是旧正则**会**命中、注册表**不**命中的那一条 —— 单独写出来，防止有人
+    // 为了「顺手」把模糊查找放宽成前缀匹配。
+    for (const m of ["glm-5.3.1", "glm-5.4", "kimi-k3.1", "kimi-k4", "glm-5.30", "glm-5.2"]) {
+      expect(isThinkingAlwaysOn(m), `${m} 不应命中`).toBe(false);
+    }
+  });
+
   test("compat 声明恒思考但注册表没档位表 → 不猜（宁可维持旧行为）", () => {
     setModelCompat([{ name: "gw-custom", compat: { thinkingAlwaysOn: true } }] as any);
     // 未登记档位表：不知道最低档是哪个，发一个模型不认的 effort 是确定 400。
