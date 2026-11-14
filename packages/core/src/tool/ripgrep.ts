@@ -22,25 +22,67 @@ import { ensureRipgrepReleased } from "./ensure-ripgrep.ts";
 const MAX_BUFFER_SIZE = 20_000_000; // 20MB
 
 /**
- * rg 命令解析缓存。
- * undefined = 未解析；null = 不可用（触发 JS fallback）；string = 可执行 rg 命令/路径。
+ * rg 命令解析缓存的 Promise（模块级单例）。
+ * null = 尚未解析；resolve 值：null = 不可用（触发 JS fallback）；string = 可执行 rg 命令/路径。
+ *
+ * 缓存 Promise 而不是结果 —— `await` 之前检查、之后才写入，会让 N 个并发首次调用
+ * 同时穿过检查、各自 spawn 一次 `rg --version`（cache stampede，2026-11-13 缺陷文档 §6.2）。
+ * 叠加 probeRg 无超时时，N 个调用会各挂一个永不退出的探测进程，形态正好是「瞬时多个 rg 进程」。
+ * 缓存 Promise 后首个调用创建、其余复用，只 spawn 一次。
  */
-let cachedRgCommand: string | null | undefined;
+let cachedResolve: Promise<string | null> | null = null;
+
+/** 探测超时（毫秒）：`rg --version` 正常 <100ms，5s 是极宽松上限 */
+const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
+
+/** 超时后先 SIGTERM，再等这么久升级 SIGKILL（与搜索路径的两级终止同构） */
+const PROBE_KILL_GRACE_MS = 2_000;
+
+/**
+ * 探测超时的测试覆盖值。刻意不做成环境变量：探测正常 <100ms，5s 已经极宽松，
+ * 用户没有调它的场景；多一个环境变量只增加认知负担，还会让 ref/env.md
+ * 多出一条「不建议依赖」的内部读取点。
+ */
+let probeTimeoutMsOverride: number | undefined;
+
+/** 仅供测试：覆盖探测超时（毫秒）；传 undefined 恢复默认 */
+export function __setProbeTimeoutForTest(ms: number | undefined): void {
+  probeTimeoutMsOverride = ms;
+}
+
+function getProbeTimeoutMs(): number {
+  return probeTimeoutMsOverride ?? DEFAULT_PROBE_TIMEOUT_MS;
+}
 
 /**
  * 探测某个 rg 命令是否可执行（`rg --version` 退出码为 0）。
+ *
+ * 必须带超时：`rg --version` 在 macOS 首次运行 Gatekeeper 校验、二进制在慢速/网络盘上、
+ * 被杀软扫描时会卡住。它是 resolveRgCommand 的必经路径，而 resolveRgCommand 又是
+ * grep/glob 的 hasRipgrep() 的必经路径 —— 无超时的 await 会让整个工具静默卡死
+ * （2026-11-13 缺陷文档 §6.1）。
  */
 async function probeRg(cmd: string): Promise<boolean> {
+  let child: ReturnType<typeof spawn> | undefined;
+  let killTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutId = setTimeout(() => {
+    child?.kill("SIGTERM");
+    killTimeoutId = setTimeout(() => child?.kill("SIGKILL"), PROBE_KILL_GRACE_MS);
+  }, getProbeTimeoutMs());
+
   try {
-    const child = spawn([cmd, "--version"], { stdout: "pipe", stderr: "pipe" });
+    child = spawn([cmd, "--version"], { stdout: "pipe", stderr: "pipe" });
     return (await child.exited) === 0;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timeoutId);
+    clearTimeout(killTimeoutId);
   }
 }
 
 /**
- * 解析可用的 rg 命令（带模块级缓存）。
+ * 解析可用的 rg 命令（带模块级单例缓存）。
  *
  * 优先级：
  * 1. SID_RIPGREP_PATH 环境变量（用户/测试显式指定）
@@ -48,33 +90,39 @@ async function probeRg(cmd: string): Promise<boolean> {
  * 3. 系统 PATH 里的 rg（dev 模式 / 释放失败时的回退）
  * 4. null（都不可用，调用方回退到 JS/系统 grep 实现）
  *
- * 结果缓存到 cachedRgCommand，后续调用不再重复 spawn 探测。
+ * 缓存的是 Promise 而不是结果：并发首次调用复用同一个 Promise，只 spawn 一次探测。
  */
 export async function resolveRgCommand(): Promise<string | null> {
-  if (cachedRgCommand !== undefined) return cachedRgCommand;
-
-  const override = process.env.SID_RIPGREP_PATH?.trim();
-  if (override) {
-    return (cachedRgCommand = override);
+  if (!cachedResolve) {
+    const pending = doResolveRgCommand();
+    cachedResolve = pending;
+    // 解析意外抛错时不缓存 rejected Promise —— 否则后续每次调用都会复现同一个错误、
+    // 永远等不到重试。原实现的失败路径不写缓存，这里保持同一语义。
+    pending.catch(() => {
+      if (cachedResolve === pending) cachedResolve = null;
+    });
   }
+  return cachedResolve;
+}
+
+/** resolveRgCommand 的实际解析逻辑（只由缓存单例调用，不对外） */
+async function doResolveRgCommand(): Promise<string | null> {
+  const override = process.env.SID_RIPGREP_PATH?.trim();
+  if (override) return override;
 
   // 编译产物：优先用嵌入释放的 rg（dev 模式 ensureRipgrepReleased 返回 null）
   const released = await ensureRipgrepReleased();
-  if (released && (await probeRg(released))) {
-    return (cachedRgCommand = released);
-  }
+  if (released && (await probeRg(released))) return released;
 
   // 回退系统 PATH 里的 rg
-  if (await probeRg("rg")) {
-    return (cachedRgCommand = "rg");
-  }
+  if (await probeRg("rg")) return "rg";
 
-  return (cachedRgCommand = null);
+  return null;
 }
 
 /** 仅供测试：重置 rg 命令解析缓存 */
 export function __resetRgCommandCacheForTest(): void {
-  cachedRgCommand = undefined;
+  cachedResolve = null;
 }
 
 /**
