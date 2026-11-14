@@ -53,12 +53,15 @@ function buildLedgerSideUsage(): {
  * `fallbackModel` / `fallbackProvider`：多模型会话里主模型取「请求数最多者」，
  * 取不到时才回退到调用方（CLI 传的是当前配置的 model/provider）。
  * `now`：时间注入点，仅供测试使用，默认 `Date.now`。
+ * `logicalSessionId`：账本行的**去重键**（见下方 CP-12 注释）。缺省回退到
+ * `sessionState.sessionId`，仅供单测与不区分进程的调用方使用；生产调用方必须传。
  */
 export function buildUsageLedgerEntry(input: {
   sessionState: SessionState;
   fallbackModel?: string;
   fallbackProvider?: string;
   now?: () => number;
+  logicalSessionId?: string;
 }): UsageLedgerEntry | null {
   const n = input.sessionState.getNormalizedCacheUsage();
   if (n.promptTotal <= 0) return null; // 空会话不落行
@@ -70,7 +73,21 @@ export function buildUsageLedgerEntry(input: {
   const ident = getIdentity();
   return {
     ts: Math.floor((input.now ?? Date.now)() / 1000),
-    sessionId: input.sessionState.sessionId,
+    // CP-12：账本行的去重键必须是**逻辑会话 id**（resume 时 = 被恢复会话 id = 轨迹目录名），
+    // 不是 `sessionState.sessionId`（那是本进程新 id）。
+    //
+    // 两者的分离是刻意的（见 app.ts restoreSession）：进程 id 用于 crash marker / PID /
+    // trajectory，必须跨进程唯一；逻辑 id 用于 checkpoint / sidechain / jsonl 归属。
+    // 账本此前取的是前者，于是 resume 后同一逻辑会话在 `usage-ledger.jsonl` 里拆成两行：
+    // 新行 id 在 `trajectories/sessions/` 下没有目录（按 sessionId 关联账本与轨迹会失败），
+    // 而 `promptTotal` / `costUSD` 又因为 usage_stats 回灌是**会话**口径 —— 同一行里
+    // 主循环字段含 resume 前、`byAgent` 却是进程口径，按行求和会把 resume 前的用量算两遍。
+    //
+    // 回灌路径（改 key 后四字段天然同作用域，不需要另加回灌）：
+    // `usage_stats` → `SessionState.hydrateUsage`（costUSD / promptTotal / sideCostUSD）、
+    // `agent_usage` → `hydrateAgentUsageBaseline`（byAgent）、
+    // `side_call_stats` → `hydrateSideCallBaseline`（影子调用次数 / token）。
+    sessionId: input.logicalSessionId ?? input.sessionState.sessionId,
     model,
     provider,
     promptTotal: n.promptTotal,
