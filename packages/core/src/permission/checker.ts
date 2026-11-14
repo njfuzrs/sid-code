@@ -47,6 +47,7 @@ import { detectStructuredCriticalDanger, type DangerousFinding } from "./dangero
 import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
 import { guardOf } from "./decision-telemetry.ts";
+import { classifyBashShape } from "./bash-shape.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
 import {
@@ -1646,7 +1647,39 @@ export class PermissionChecker implements Checker {
     const decision = await this.checkUngated(req, tool, toolContext, options);
     const gated = decision.allowed ? this.enforceModeHardConstraint(req, decision) : null;
     const final = gated ?? decision;
-    return { ...final, mode: final.mode ?? this.effectiveMode() };
+    return {
+      ...final,
+      mode: final.mode ?? this.effectiveMode(),
+      ...this.bashShapeMetadata(req, final),
+    };
+  }
+
+  /**
+   * B12：给 bash 决策附上命令形状桶（`Decision.metadata.bashShape`）。
+   *
+   * 为什么在 `check()` 出口而不是各 Step 里各塞一次：判定面有十几条 return，逐处补
+   * 就是下一个新分支只记得其中几处；出口是唯一经过全部决策的地方。
+   *
+   * 为什么算在这里而不是 digest 里：`events.jsonl` 里的命令文本是截断的
+   * （本会话 51 条普通确认里 25 条超过 200 字符），从截断文本重跑分类会把长命令
+   * 整段误判成「非只读其他」——那个读数看起来像数据，其实是错的。
+   *
+   * 只对 bash 生效；非 bash 工具（read / write 的路径确认）不落这个字段。
+   */
+  private bashShapeMetadata(
+    req: PermissionRequest,
+    final: Decision,
+  ): { metadata?: Record<string, unknown> } {
+    if (req.toolName !== "bash") return {};
+    const command = (req.input as { command?: unknown } | null)?.command;
+    if (typeof command !== "string") return {};
+    const bashShape = classifyBashShape({
+      command,
+      workspacePath: this.pathValidator.getWorkspacePath(),
+      dangerous: final.decisionReason?.type === "dangerousCommand",
+    });
+    if (!bashShape) return {};
+    return { metadata: { ...final.metadata, bashShape } };
   }
 
   /** 当前生效的权限模式（skipPermissions 是与 permissionMode 正交的布尔，单独标出） */

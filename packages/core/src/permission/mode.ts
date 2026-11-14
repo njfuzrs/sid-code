@@ -15,6 +15,39 @@ export type PermissionMode =
   | "dangerously-skip-permissions";
 
 /**
+ * 权限模式切换的来源（固定枚举，不含任何自由文本）。
+ *
+ * B11：轨迹里原先只有 `SessionStart.data.permission_mode` 一个起点值和每条
+ * `PermissionDecision.data.mode` 的即时值，中间**没有任何事件**。于是「SessionStart 是
+ * default、后续决策全是 acceptEdits」这种最常见的形态，只能靠人回忆「好像按过 Shift+Tab」
+ * 来解释 —— 而进出 plan、企业策略强制回拨、CLAUDE.md 指定模式同样会改它。
+ *
+ * 各自的取值场景：
+ *  - `keyboard`：Shift+Tab 键盘循环
+ *  - `plan_enter` / `plan_exit`：进出 Plan Mode（`/plan`、enter_plan_mode / exit_plan_mode）
+ *  - `claude_md`：CLAUDE.md 的权限段指定
+ *  - `policy`：企业策略禁用了当前模式，强制拨回 default
+ *  - `command`：斜杠命令等其他显式入口（预留给后续接线）
+ */
+export type PermissionModeChangeSource =
+  | "keyboard"
+  | "plan_enter"
+  | "plan_exit"
+  | "claude_md"
+  | "policy"
+  | "command";
+
+/**
+ * 轨迹事件名：权限模式切换。
+ *
+ * 唯一的 producer 是 `cli/src/app.ts` 的 `setPermissionMode()`（静态门禁守着
+ * 「`config.permissionMode =` 只能出现在那个函数里」，见
+ * `tests/app/permission-mode-chokepoint.test.ts`）。字段口径 `{ from, to, source }`，
+ * 全部是固定枚举，可安全进本地轨迹。
+ */
+export const PERMISSION_MODE_CHANGED_EVENT_NAME = "PermissionModeChanged";
+
+/**
  * PermissionMode 的运行时清单。需要「判断一个字符串是不是合法模式」的地方从这里取，不要手抄。
  * 缺陷 13：session-recovery 的白名单是照着 Claude Code 的枚举抄的，漏了 4 个真模式、多了一个
  * 本仓不存在的 `bypassPermissions`，枚举变了也没有任何东西会红。
