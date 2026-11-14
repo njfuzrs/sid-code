@@ -119,7 +119,7 @@ describe("buildDiffAnsiLines", () => {
     expect(stripAnsi(collapsed!)).toContain("14"); // 隐藏 14 行
   });
 
-  test("词级配对时强调段加粗(含 bold 转义)", () => {
+  test("词级配对时强调段只用底色,全区域无 bold 转义", () => {
     const lines: DiffLine[] = [
       { type: "del", content: "const a = 1", oldLine: 1 },
       { type: "add", content: "const a = 2", newLine: 1 },
@@ -129,8 +129,12 @@ describe("buildDiffAnsiLines", () => {
       [1, "const a = 1"],
     ]);
     const out = build(lines, pairMap);
-    // bold 转义码 \x1b[1m
-    expect(out.some((l) => l.includes("\x1b[1m"))).toBe(true);
+    // 整行(含 +/- 前缀符号)都不得出现 bold 转义 \x1b[1m:字重全区域统一。
+    // 理由见 DiffRenderer.renderWordDiff 注释——CJK 按字切分 + 终端合成粗体会让
+    // 同一行散落个别加粗单字、配对行整行加粗,观感粗细/大小不一致。
+    expect(out.some((l) => l.includes("\x1b[1m"))).toBe(false);
+    // 变化词仍靠 emphasis 底色区分(背景色转义仍在)
+    expect(out[0]).toMatch(/\x1b\[48[;0-9]*m/);
     expect(stripAnsi(out[0])).toContain("const a = 1");
     expect(stripAnsi(out[1])).toContain("const a = 2");
   });
