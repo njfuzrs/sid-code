@@ -85,7 +85,7 @@ describe("/cost 耗时口径（D8）", () => {
 
     const out = await runCost();
     // 2s = 1200 + 800；formatDuration 对 2000ms 给 "2s"
-    expect(out).toContain("辅助调用耗时: 2s（本次启动后 2 次调用）");
+    expect(out).toContain("辅助调用耗时（逐次累计）: 2s（本次启动后 2 次调用）");
   });
 
   test("部分调用未采集耗时：写明采集覆盖，不让下界冒充总数", async () => {
@@ -94,7 +94,9 @@ describe("/cost 耗时口径（D8）", () => {
     recordSideCall(sideCall("bash-classifier")); // 未采集
 
     const out = await runCost();
-    expect(out).toContain("辅助调用耗时: 1s（本次启动后 1/3 次采集到耗时，其余未采集）");
+    expect(out).toContain(
+      "辅助调用耗时（逐次累计）: 1s（本次启动后 1/3 次采集到耗时，其余未采集）",
+    );
   });
 
   test("一次都没采集到：写「—」而不是 0（不把未知伪装成没花时间）", async () => {
@@ -102,8 +104,8 @@ describe("/cost 耗时口径（D8）", () => {
     recordSideCall(sideCall("bash-classifier"));
 
     const out = await runCost();
-    expect(out).toContain("辅助调用耗时: —（本次启动后 2 次调用均未采集耗时）");
-    expect(out).not.toContain("辅助调用耗时: 0");
+    expect(out).toContain("辅助调用耗时（逐次累计）: —（本次启动后 2 次调用均未采集耗时）");
+    expect(out).not.toContain("辅助调用耗时（逐次累计）: 0");
   });
 
   test("没有辅助调用：整行省略（正常路径不加噪音）", async () => {
@@ -118,7 +120,7 @@ describe("/cost 耗时口径（D8）", () => {
     // D15 分区版式把耗时段整体缩进两格（在「耗时」分区内），行首判断先 trimStart：
     // 三行的**相对顺序**才是被测契约，缩进属于版式细节。
     const apiIdx = lines.findIndex((l) => l.trimStart().startsWith("API 耗时（主循环）:"));
-    const sideIdx = lines.findIndex((l) => l.trimStart().startsWith("辅助调用耗时:"));
+    const sideIdx = lines.findIndex((l) => l.trimStart().startsWith("辅助调用耗时（逐次累计）:"));
     const toolIdx = lines.findIndex((l) => l.trimStart().startsWith("工具耗时:"));
     expect(apiIdx).toBeGreaterThanOrEqual(0);
     expect(sideIdx).toBeGreaterThan(apiIdx);

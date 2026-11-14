@@ -417,3 +417,54 @@ export class PrefixBreakTracker {
     this.prev = null;
   }
 }
+
+// ─── CP-9：进程内断裂记录（供 /cost 显示，与 cache-detection 的 recentBreaks 同形） ───
+
+/**
+ * 一条「本会话内真实发生的断裂」。**只记判据，不记任何内容** —— 与
+ * `emitPrefixBreakDiagnosis` 落 events.jsonl 同一条隐私契约。
+ *
+ * 为什么不复用 events.jsonl：`/cost` 是同步渲染命令，去读会话的 events 文件需要
+ * 定位目录 + 逐行解析（还可能读到上一次进程写的历史行），成本与失败面都远大于
+ * 在内存里留一份。`api/cache-detection.ts` 的 `recentBreaks` 已经是同一套做法。
+ */
+export interface PrefixBreakRecord {
+  /** 本次请求在会话内的序号（1 起；与 collector 落事件的 index 同源）。 */
+  index: number;
+  /** 断点所在的段类型（system_static / system_dynamic / tools / message）。 */
+  firstChangedKind?: string;
+  /** 断点若是消息，它在历史里的下标。 */
+  firstChangedMessageIndex?: number;
+  /** 字符级作废比例（0-1，分母是上一轮前缀长度）—— 显示「浪费约 z% 字符」用这个。 */
+  charWastedRatio: number;
+  /** 本地原因（主循环如实上报的那几类）。undefined = 未采集，不是「本地没改」。 */
+  cause?: string[];
+}
+
+/** 上限与 cache-detection 的 MAX_BREAK_RECORDS 同量级：足够覆盖一个长会话，又不会无界增长。 */
+const MAX_PREFIX_BREAK_RECORDS = 200;
+const recentPrefixBreaks: PrefixBreakRecord[] = [];
+
+/** 记录一次断裂（环形缓冲）。只有 `broken === true` 的轮次才该调它。 */
+export function recordPrefixBreak(record: PrefixBreakRecord): void {
+  recentPrefixBreaks.push(record);
+  if (recentPrefixBreaks.length > MAX_PREFIX_BREAK_RECORDS) {
+    recentPrefixBreaks.splice(0, recentPrefixBreaks.length - MAX_PREFIX_BREAK_RECORDS);
+  }
+}
+
+/** 取本会话的断裂记录（最新在后）。返回副本，调用方改不坏内部缓冲。 */
+export function getRecentPrefixBreaks(): PrefixBreakRecord[] {
+  return [...recentPrefixBreaks];
+}
+
+/**
+ * 清空记录（新会话 / /clear / 测试）。
+ *
+ * 必须与 `resetSideCallStats()` 挂在**同一个位置**（collector 的会话重置路径）：
+ * 漏了它，resume 或同进程 /clear 之后 `/cost` 会把上个会话的断裂算进新会话的次数，
+ * 而次数只增不减这种形态不会触发任何断言。
+ */
+export function clearRecentPrefixBreaks(): void {
+  recentPrefixBreaks.length = 0;
+}
