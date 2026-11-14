@@ -346,6 +346,17 @@ export class SessionState {
      * 否则一个跑了 30 轮的子代理在 ⟳ / /stats / SessionEnd 里只算 1 次。
      */
     requestCount = 1,
+    /**
+     * 计价时刻 —— 分时段定价的输入，缺省「现在」。
+     *
+     * 存在的唯一目的是**可测性**：`/cost` 的时段占比（`peakShare`）此前无法断言
+     * 「全程空闲 → 0」，因为测试跑在墙钟上，无法让本会话的所有请求都落进空闲窗口。
+     * 加了这个参数，测试就能把两次入账分别钉在高峰/空闲时刻。
+     *
+     * 生产调用点**一律不传**（行为与改动前逐位相同）。与
+     * `calculateCostBreakdown` 的同名参数（api/cost-tracker.ts）是同一个语义。
+     */
+    at?: Date,
   ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 初始化模型统计
@@ -409,7 +420,9 @@ export class SessionState {
     // 「四段之和 === costUSD」由同一行代码保证，不是两处各算后碰巧相等。
     // fallback 告警此前住在 calculateCost 的 fallback 分支里，改走 breakdown 后在这里补：
     // source 字段就是判据，不需要再 resolvePricing 一次。
-    const b = calculateCostBreakdown(model, usage, this.availableModels, prov, baseURL);
+    // `at` 只透传不参与其它判断：tier 判定与四段计价必须用**同一个时刻**，
+    // 否则「四段之和 === costUSD」这条等式会在跨时段边界的请求上破掉。
+    const b = calculateCostBreakdown(model, usage, this.availableModels, prov, baseURL, at);
     if (b.source === "fallback") this.warnUnknownPricing(model);
     // totalUSD 由 calculateCostBreakdown 内部求和，这里不再加一遍（加一遍会双计）。
     const cost = b.totalUSD;

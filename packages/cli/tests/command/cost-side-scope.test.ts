@@ -59,6 +59,8 @@ const SIDE_SAMPLE: SideCallStats = {
       model: "test-model",
       inputTokens: 243_000,
       outputTokens: 1_800,
+      // CP-10d：命中部分与 inputTokens 同源，渲染层据此显示「（命中 82%）」
+      cacheReadTokens: 200_000,
       costUSD: 0.0335,
       durationMs: 8_000,
     },
@@ -67,6 +69,7 @@ const SIDE_SAMPLE: SideCallStats = {
       model: "test-model",
       inputTokens: 304_000,
       outputTokens: 2_352,
+      cacheReadTokens: 250_000,
       costUSD: 0.0309,
       durationMs: 15_000,
     },
@@ -132,7 +135,9 @@ describe("D4 · 主循环 token 段与辅助调用互不包含", () => {
   test("注释区说明辅助调用同样计费、按用途拆分只含本次启动后", () => {
     const out = render(mainLoopSession(), SIDE_SAMPLE);
     expect(out).toContain("辅助调用 = 标题生成、记忆抽取、权限分类、摘要等");
-    expect(out).toContain("按用途拆分仅含本次启动后的调用");
+    // CP-5：作用域说明从「按用途拆分仅含本次启动后的调用」扩成「费用/耗时/按用途拆分」，
+    // 因为首行现在把辅助调用次数也标了同一个作用域。
+    expect(out).toContain("其费用/耗时/按用途拆分仅含本次启动后");
   });
 });
 
@@ -146,7 +151,7 @@ describe("D4 · 耗时与范围标注", () => {
 
   test("辅助调用耗时写明本次启动后的覆盖范围", () => {
     const out = render(mainLoopSession(), SIDE_SAMPLE);
-    expect(out).toContain("辅助调用耗时: 24s");
+    expect(out).toContain("辅助调用耗时（逐次累计）: 24s");
     expect(out).toContain("本次启动后 6 次调用");
   });
 });

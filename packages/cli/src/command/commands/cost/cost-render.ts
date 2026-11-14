@@ -23,7 +23,7 @@ import { stringWidth, applyColor } from "../../../ui/render-port/text.ts";
 import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../../../ui/constants/figures.ts";
 import { themeManager } from "../../../ui/themes/theme-manager.ts";
 import type { Color } from "@sid-code/shared/types/color.ts";
-import type { CostReport } from "@sid-code/core/session/cost-report.ts";
+import type { CostReport, CacheBreakEvidence } from "@sid-code/core/session/cost-report.ts";
 
 /** 渲染选项。`useColor=false`（非 TTY / 测试）时全部着色函数退化为原样返回。 */
 export interface RenderCostReportOptions {
@@ -49,6 +49,18 @@ export function fmtTokensCompact(n: number): string {
 /** 金额：面板统一 4 位小数（D15 数字规范——旧版 4 位/2 位混用）。 */
 export function fmtUSD(n: number): string {
   return n.toFixed(4);
+}
+
+/**
+ * 辅助调用明细里的金额（CP-10c）：真实发生过花费、但小于 $0.0001 的显示成 `<$0.0001`。
+ *
+ * 为什么不直接改 `fmtUSD`：表格里的费用列必须能验算（`token × 均价 ÷ 1e6` 与显示值
+ * 一致），把它变成 `<$0.0001` 会让验算无从比对。而明细行是**自由文本**，那里的
+ * `$0.0000` 只有一个后果 —— 用户以为这次调用免费，实际它在累加。两种场景的诉求相反，
+ * 所以刻意分成两个函数，而不是加一个全局开关。
+ */
+function fmtSideUSD(n: number): string {
+  return n > 0 && n < 0.0001 ? "<$0.0001" : `$${fmtUSD(n)}`;
 }
 
 /** 单价（USD/百万）：4 位小数，去尾零不补（0.0055 / 1.0959）。 */
@@ -139,8 +151,29 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
   // ── 首行：只放一个最重要的数（总花费），其余全部下放分区 ──
   // 窄列（<80）不带模型名：长网关名（origin-deepseek-v4-1-flash 28 列）会把首行顶过 70 列，
   // 折行后总花费就不是「第一眼」了。窄列下模型数在「费用构成」里仍可推导。
-  const headParts = [fmtDuration(r.durations.wallMs), `${fmtInt(r.main.requests)} 次请求`];
-  if (!narrow && r.byModel.length === 1) headParts.push(r.byModel[0]?.model ?? "");
+  //
+  // CP-5：请求数必须拆成**主循环 + 辅助调用**两个数，且辅助那半边带作用域标注。
+  //
+  // 旧写法只有一个 `31 次请求`，取自 `r.main.requests`（会话级快照，resume 后含历史）；
+  // 而 `/cost` 里其他所有辅助调用数字（费用、耗时、按用途拆分）都来自进程级单例，
+  // **只含本次启动**。同一个面板里两个数一个含历史、一个不含，用户把它们加起来
+  // 或做除法就得到错的比例。合成一个数会把这个口径差藏起来，拆开加标注才看得出来。
+  const sideCalls = r.side.calls;
+  const headParts = [fmtDuration(r.durations.wallMs)];
+  if (narrow) {
+    // 70 列放不下「主循环 N 次 · 辅助 M 次（本进程）」：用 a+b 的形式保住信息量，
+    // 作用域在注释区统一说明（「辅助调用 = 本次启动后」）。
+    headParts.push(`请求 ${fmtInt(r.main.requests)}+${fmtInt(sideCalls)}`);
+  } else {
+    headParts.push(
+      sideCalls > 0
+        ? `主循环 ${fmtInt(r.main.requests)} 次 · 辅助 ${fmtInt(sideCalls)} 次（本次启动后）`
+        : `主循环 ${fmtInt(r.main.requests)} 次请求`,
+    );
+  }
+  // 模型名阈值从 80 提到 100：首行多了「辅助 N 次（本次启动后）」约 20 列，
+  // 80-99 列终端会折行把总花费挤到第二行。100 列以上放得下两段信息。
+  if (opts.columns >= 100 && r.byModel.length === 1) headParts.push(r.byModel[0]?.model ?? "");
   lines.push(
     `${p.primary("本次会话花费")}  ${p.hero(`${cur}${fmtUSD(r.totals.costUSD)}`)}   ${p.secondary(headParts.filter(Boolean).join(" · "))}`,
   );
@@ -184,9 +217,17 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
           : row.durationCalls > 0
             ? ` · ≥${fmtDuration(row.durationMs)}（${row.durationCalls}/${row.calls} 次采集到耗时）`
             : "";
+      // CP-10d：token 列标成「发送」并附命中率。`tokensSent` 是 input 累计，
+      // `cacheReadTokens` 是其中命中缓存的部分，两者同源（同一次调用的 usage），
+      // 所以这里的比例与模型命中率可比。不显示的话用户只看到「325k token」，
+      // 完全看不出这 325k 里有九成按缓存价计费。
+      const hitNote =
+        row.tokensSent > 0 && row.cacheReadTokens > 0
+          ? `（命中 ${Math.round((row.cacheReadTokens / row.tokensSent) * 100)}%）`
+          : "";
       lines.push(
         `    ${p.secondary(
-          `${padEndWidth(row.label, 14)} ${row.calls} 次  ${cur}${fmtUSD(row.costUSD)}  ${fmtTokensCompact(row.tokensSent)} token${durNote}`,
+          `${padEndWidth(row.label, 14)} ${row.calls} 次  ${fmtSideUSD(row.costUSD)}  ${fmtTokensCompact(row.tokensSent)} token${hitNote}${durNote}`,
         )}`,
       );
     }
@@ -196,15 +237,29 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
 
   // ── 主循环 token 与单价（D12/D11）──
   lines.push(p.accent("主循环 token 与单价"));
-  // 单模型直接展示单价来源；多模型逐行带来源。
+  // 单模型直接展示来源；多模型逐行带来源。
   const single = r.byModel.length === 1 ? r.byModel[0] : undefined;
   if (single) {
-    // 单价币种用**原始价**的 currency（未折算）：网关 expr 价无 currency（USD）、注册表
-    // DeepSeek 是 CNY。标题写死 USD 会把 CNY 单价冒充美元价，用户拿它乘 token 直接算错 7 倍。
-    // 折算说明在注释区（「1 USD = 7.1 CNY」），这里只标币种。
+    // CP-4：这两行说的是**两件不同的事**，必须分开写：
+    //   ① 首行 = 实际均价（费用反推）+ 来源 + 时段；
+    //   ② 次行 = 牌价（`pricing` 的四个数字，高峰价；空闲由系数派生）。
+    //
+    // 旧实现只写 ①（但标成「单价」用的是牌价），于是全空闲会话里表格费用列是牌价的一半，
+    // 「token × 单价」永远算不出费用。把牌价移到这里之后，它仍然是用户最关心的
+    // 价目信息（「这一档多少钱」），只是不再冒充用来验算的那个数。
+    //
+    // 币种：均价固定 USD（费用是 USD），牌价用原始价的 currency —— 网关 expr 无 currency
+    // （USD）、注册表 DeepSeek 是 CNY。混成一个币种会让用户拿 CNY 单价乘 token 算错 7 倍。
     const unitCur = single.pricing?.currency ?? "USD";
-    const srcNote = `单价 ${unitCur}/百万 · 来源 ${pricingSourceLabel(single.pricingSource)} · ${tierNote(single)}`;
-    lines.push(`  ${p.secondary(srcNote)}`);
+    lines.push(
+      `  ${p.secondary(`主循环均价 USD/百万 · 来源 ${pricingSourceLabel(single.pricingSource)} · ${tierNote(single)}`)}`,
+    );
+    const priceLine = formatPriceLine(single, unitCur, narrow);
+    if (priceLine) lines.push(`  ${p.secondary(priceLine)}`);
+  }
+  if (r.main.breakdownCarried === false) {
+    // 旧快照回灌：四段费用是 0 而总额非 0。**不拿 0 冒充**，整段降级说明。
+    lines.push(`  ${p.warn("四段费用不可用（该快照早于分桶记账，只有总额可信）")}`);
   }
   if (narrow) {
     lines.push(`  ${p.secondary("token / 费用 / 占比")}`);
@@ -220,7 +275,9 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
     lines.push(`  ${padEndWidth("输出", 14)} ${fmtInt(r.main.outputTokens)}`);
   } else {
     const c1 = padEndWidth("token", 12);
-    const c2 = padEndWidth("单价", 10);
+    // CP-4：列头从「单价」改成「均价」—— 这一列现在是费用反推的加权均价，
+    // 不是牌价。名字不改，用户会拿它当价目表，然后发现乘出来对不上费用。
+    const c2 = padEndWidth("均价", 10);
     const c3 = padEndWidth("费用", 11);
     lines.push(`  ${padEndWidth("", 14)} ${c1} ${c2} ${c3}${p.secondary("占比")}`);
     // 标签列宽取 14：「输入·缓存命中」显示宽度 13（stringWidth，·占 1 列），
@@ -228,30 +285,32 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
     const tableRow = (
       label: string,
       tokens: number,
-      unitPrice: number | undefined,
+      avgPrice: number | undefined,
       usd: number,
       share: number,
     ) =>
-      `  ${padEndWidth(label, 14)} ${padStartWidth(fmtInt(tokens), 12)} ${padStartWidth(unitPrice === undefined ? "—" : fmtUnitPrice(unitPrice), 10)} ${padStartWidth(`${cur}${fmtUSD(usd)}`, 11)}  ${Math.round(share * 100)}%`;
+      `  ${padEndWidth(label, 14)} ${padStartWidth(fmtInt(tokens), 12)} ${padStartWidth(avgPrice === undefined ? "—" : fmtUnitPrice(avgPrice), 10)} ${padStartWidth(`${cur}${fmtUSD(usd)}`, 11)}  ${Math.round(share * 100)}%`;
     const sumUSD = Math.max(1e-12, r.totals.mainCostUSD);
-    // 单模型时单价来自那一条；多模型时该行是聚合值没有单一单价 → 显示 "—"。
+    // CP-4：四段费用与均价都取 main 聚合值（byModel 各段之和），**不再按 single 分支**。
+    // 多模型时旧实现四段全显示 $0.0000，用户既算不出也无法验算；聚合后
+    // 「该段 token × 均价 ÷ 1e6 === 该段费用」在单模型与多模型下都成立。
     // 0 值的命中/写入行同窄列一样整行省略：三段互斥的加法只依赖出现的行。
     lines.push(
       tableRow(
         "输入·未命中",
         r.main.uncachedTokens,
-        single?.pricing?.input,
-        single ? single.breakdown.uncachedUSD : 0,
-        (single ? single.breakdown.uncachedUSD : 0) / sumUSD,
+        r.main.avgPrice.uncached,
+        r.main.breakdown.uncachedUSD,
+        r.main.breakdown.uncachedUSD / sumUSD,
       ),
       ...(r.main.cacheHitTokens > 0
         ? [
             tableRow(
               "输入·缓存命中",
               r.main.cacheHitTokens,
-              single?.pricing?.cacheRead,
-              single ? single.breakdown.hitUSD : 0,
-              (single ? single.breakdown.hitUSD : 0) / sumUSD,
+              r.main.avgPrice.hit,
+              r.main.breakdown.hitUSD,
+              r.main.breakdown.hitUSD / sumUSD,
             ),
           ]
         : []),
@@ -260,18 +319,18 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
             tableRow(
               "输入·缓存写入",
               r.main.cacheWriteTokens,
-              single?.pricing?.cacheWrite,
-              single ? single.breakdown.writeUSD : 0,
-              (single ? single.breakdown.writeUSD : 0) / sumUSD,
+              r.main.avgPrice.write,
+              r.main.breakdown.writeUSD,
+              r.main.breakdown.writeUSD / sumUSD,
             ),
           ]
         : []),
       tableRow(
         "输出",
         r.main.outputTokens,
-        single?.pricing?.output,
-        single ? single.breakdown.outputUSD : 0,
-        (single ? single.breakdown.outputUSD : 0) / sumUSD,
+        r.main.avgPrice.output,
+        r.main.breakdown.outputUSD,
+        r.main.breakdown.outputUSD / sumUSD,
       ),
     );
   }
@@ -290,7 +349,18 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
   lines.push("");
 
   // ── 缓存 ──
-  if (r.main.cacheHitRate !== undefined || r.main.savingsUSD > 0) {
+  // 显示条件里必须有断裂记录（CP-8/CP-9）：断裂是「缓存出过问题」的直接证据，
+  // 而它恰恰可能发生在命中率算不出来的时候（首轮就断、或该协议不回报命中 token）。
+  // 旧条件只有「有命中率或省钱」，于是最该看到断裂的人反而看不到 —— 这是本 PR 修掉的
+  // 一类「信息被前置条件藏起来」的形态，别再把它加回去。
+  const hasPrefixBreaks =
+    r.cacheBreaks.prefixBreaks.available && r.cacheBreaks.prefixBreaks.count > 0;
+  if (
+    r.main.cacheHitRate !== undefined ||
+    r.main.savingsUSD > 0 ||
+    r.cacheBreaks.count > 0 ||
+    hasPrefixBreaks
+  ) {
     lines.push(p.accent("缓存"));
     // 1 位小数（D15 版式 91.7%）：数据层给的是精确百分比，取整会让 91.7 变成 92，
     // 与「命中率偏低」的阈值判断（同一份数值）产生肉眼可见的不一致。
@@ -299,10 +369,30 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
     lines.push(
       `  命中率 ${p.primary(rate)}   省下 ${p.success(`${cur}${fmtUSD(r.main.savingsUSD)}`)}`,
     );
-    if (r.cacheBreaks.count > 0 && r.cacheBreaks.latestReason) {
+    // CP-8：归因按**结构化字段**拼，不再把 `changes[]` 的中文句子整段塞进括号。
+    // 旧实现只显示次数 + 最弱的一条证据（hash 未变），更强的两条（消息前缀逐字节一致、
+    // 无重试）判过了却不显示，用户看到的结论比实际证据弱得多。
+    if (r.cacheBreaks.count > 0) {
       lines.push(
-        `  ${p.secondary(`缓存断裂 ${r.cacheBreaks.count} 次（${r.cacheBreaks.latestReason}）`)}`,
+        `  ${p.secondary(
+          `命中下降 ${r.cacheBreaks.count} 次（上游波动 ${r.cacheBreaks.upstreamCount} / 本地 ${r.cacheBreaks.localCount}）`,
+        )}`,
       );
+      const ev = r.cacheBreaks.latest;
+      if (ev) {
+        const detail = formatCacheBreakEvidence(ev, r.cacheBreaks.latestReason);
+        for (const d of detail) lines.push(`    ${p.secondary(d)}`);
+      }
+    }
+    // CP-9：字节侧断裂 —— 与上面那个 token 侧检测器**各报各的**。
+    // 只在检测器可用时显示：没有数据写「0 次」会把「没采集」伪装成「前缀一直健康」。
+    const pb = r.cacheBreaks.prefixBreaks;
+    if (pb.available && pb.count > 0) {
+      const waste =
+        pb.latestWastedRatio !== undefined
+          ? `，浪费约 ${(pb.latestWastedRatio * 100).toFixed(1)}% 字符`
+          : "";
+      lines.push(`  ${p.secondary(`本地前缀断裂 ${pb.count} 次（字节级${waste}）`)}`);
     }
     // D6：只在实测命中率确实偏低且样本足够时提示，且给的是可行动作（/cache --breaks）。
     //
@@ -323,9 +413,18 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
   if (r.perRequest) {
     lines.push(p.accent("单次请求"));
     const pr = r.perRequest;
-    lines.push(
-      `  费用 p50 ${cur}${fmtUSD(pr.p50)} · p95 ${cur}${fmtUSD(pr.p95)} · 最高 ${cur}${fmtUSD(pr.max)}`,
-    );
+    // CP-10b：p95 在样本不足时**不给数**，并且把 n 显示出来。
+    //
+    // 旧实现恒定输出 p50/p95/最高，而 D13 的缓冲只留最近 20 条 —— n=4 时
+    // 「p95」的数学含义是「第 4 个值」，它和「最高」是同一个数，用户看到
+    // p95 ≈ 最高会以为分布很平，实际只是样本太少。样本不足时说清样本量，
+    // 比给一个看起来精确的分位数诚实得多。
+    const PER_REQUEST_P95_MIN_SAMPLES = 20;
+    const haveP95 = pr.count >= PER_REQUEST_P95_MIN_SAMPLES;
+    const parts = [`p50 ${cur}${fmtUSD(pr.p50)}`];
+    if (haveP95) parts.push(`p95 ${cur}${fmtUSD(pr.p95)}`);
+    parts.push(`最高 ${cur}${fmtUSD(pr.max)}`);
+    lines.push(`  费用 ${parts.join(" · ")}（n=${pr.count}）`);
     for (const t of pr.top) {
       lines.push(
         `    ${p.secondary(
@@ -343,10 +442,13 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
   lines.push(p.accent("耗时"));
   lines.push(`  API 耗时（主循环）: ${fmtDuration(r.durations.apiMainMs)}`);
   if (r.side.calls > 0) {
+    // CP-10a：标签写清「逐次累计」—— 这个数是 N 次调用各自墙钟之和，不是它们占据的
+    // 那段时间（辅助调用与主循环可能重叠）。用户拿它和上面的「API 耗时（主循环）」
+    // 相加会得到一个比会话时长还大的数，然后以为计时坏了。口径写进标签是最省的解释。
     if (r.durations.sideDurationCalls === 0) {
-      lines.push(`  辅助调用耗时: —（本次启动后 ${r.side.calls} 次调用均未采集耗时）`);
+      lines.push(`  辅助调用耗时（逐次累计）: —（本次启动后 ${r.side.calls} 次调用均未采集耗时）`);
     } else {
-      const base = `  辅助调用耗时: ${fmtDuration(r.durations.sideApiMs)}`;
+      const base = `  辅助调用耗时（逐次累计）: ${fmtDuration(r.durations.sideApiMs)}`;
       lines.push(
         r.durations.sideDurationCalls < r.side.calls
           ? `${base}（本次启动后 ${r.durations.sideDurationCalls}/${r.side.calls} 次采集到耗时，其余未采集）`
@@ -355,6 +457,16 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
     }
   }
   lines.push(`  工具耗时: ${fmtDuration(r.durations.toolMs)}`);
+  // PR-A 的收尾：辅助调用自报尚未全部入账时给一行提示（**只提示不补账**）。
+  // 补账由会话结束时的 `reconcileSelfReports({ apply: true })` 做 —— 在这里补会让
+  // 在途调用的自报晚到几毫秒后重复入账。提示的作用是让用户知道「数字还会涨」，
+  // 而不是怀疑面板又算漏了（那正是 CP-1 的原始症状）。
+  const gap = r.selfReportGap?.pendingCalls ?? 0;
+  if (gap > 0) {
+    lines.push(
+      `  ${p.warn(`⚠ ${gap} 次辅助调用尚未自报入账（在途或刚结束），本次数字可能偏低；会话结束时会自动补账`)}`,
+    );
+  }
 
   // ── 有值才显示（D14）：预算 / 作废重发 ──
   if (r.budget) {
@@ -370,13 +482,27 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
 
   // ── 注释区：说明文字全部放这里，不挤正文（D15 文案规范）──
   // 每条拆成 ≤ 68 显示列的短行：注释区没有列对齐约束，拆行无代价；
-  // 写成长行则 70-110 列的终端全部折行挤乱版面。
   lines.push("");
   lines.push(
     p.secondary("· 会话时长是墙钟：含思考与空闲；API 耗时只算主循环请求，"),
     p.secondary("  子代理与辅助调用不含在内"),
+  );
+  // CP-10a 的口径说明只在真有辅助调用时才写：没有辅助调用时这行是纯噪音，
+  // 而且它的正文含「辅助调用耗时」字样，会让「无辅助调用 → 该行整段省略」的
+  // 既有契约（cost-api-duration.test.ts）变成假绿 —— 断言按子串匹配，看不见语境。
+  if (r.side.calls > 0) {
+    lines.push(
+      p.secondary("· 辅助调用耗时是逐次累计：N 次调用各花的时间之和，"),
+      p.secondary("  不是它们占据的那段墙钟，不能与上面的 API 耗时直接相加"),
+    );
+  }
+  lines.push(
     p.secondary("· 辅助调用 = 标题生成、记忆抽取、权限分类、摘要等，"),
-    p.secondary("  不经过主对话但同样计费；其按用途拆分仅含本次启动后的调用"),
+    p.secondary("  不经过主对话但同样计费；其费用/耗时/按用途拆分仅含本次启动后"),
+    p.secondary("· 请求数与费用是会话级（resume 后含历史）；"),
+    p.secondary("  标了「本次启动后」的辅助调用数字不含 resume 前的部分"),
+    p.secondary("· 均价 = 该段费用 ÷ 该段 token（由费用反推，含分时段加权）；"),
+    p.secondary("  牌价是当前档位价目，两者不同源，别拿牌价乘 token 对费用"),
   );
   if (r.totals.fxConverted) {
     const conv = r.totals.conversions
@@ -388,14 +514,116 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
   return lines.join("\n");
 }
 
-/** 该模型的价格时段说明（D11）：高峰占比 / 全程高峰 / 无分时段。 */
+/**
+ * 该模型的价格时段说明（CP-3）：**三态**，不是「占比」一个数。
+ *
+ * 旧版在这里签名收 `peakShare: number`（数据层用 `?? costUSD` 兜成恒 1），
+ * 于是全程空闲的会话显示「全程高峰时段」。现在数据层给出 `undefined` 表示
+ * 「拆分不可用」，渲染层必须把这件事说出来 —— 沉默或猜一个值都是在骗人。
+ *
+ * 措辞用「高峰**费用**占比」而不是「高峰占比」：账本另有一个 `peakRatio` 是
+ * 「高峰请求数 / 分时段请求数」，分母与范围都不同。两个都叫「高峰占比」时
+ * 用户会拿它们对照，然后发现对不上（CP-3 的原始症状之一）。
+ */
 function tierNote(row: NonNullable<CostReport["byModel"][number]>): string {
   if (!row.pricing?.peakWindows || row.pricing.peakWindows.length === 0) {
     return "无分时段";
   }
-  if (row.peakShare >= 0.999) return "全程高峰时段";
-  if (row.peakShare <= 0.001) return "全程空闲时段";
-  return `高峰占比 ${Math.round(row.peakShare * 100)}%（其余空闲价）`;
+  const share = row.peakShare;
+  // undefined 的三种来路见 cost-report.ts 的 resolvePeakShare：无费用 / 旧快照 / 两桶对不上。
+  // 对用户统一说「不可用」——三种来路的共同事实就是「没法给出可信的占比」。
+  if (share === undefined) return "时段拆分不可用（旧快照或无费用明细）";
+  if (share >= 0.999) return "全程高峰时段";
+  if (share <= 0.001) return "全程空闲时段";
+  return `高峰费用占比 ${Math.round(share * 100)}%（其余空闲价）`;
+}
+
+/**
+ * CP-8：把一条断裂的**结构化证据**拼成人话（最多三行，每行 ≤ 70 显示列）。
+ *
+ * ## 为什么按字段拼，而不是直接显示 `changes`
+ *
+ * `changes` 是给人看的句子、可以有多条（system 变了 + tools 变了 + TTL 过期），
+ * 渲染层若直接 join 会得到 90+ 列的一行，70 列终端必然折行；更要紧的是它**没有强弱之分** ——
+ * 而判定「这是不是上游波动」恰恰依赖三条证据同时成立（hash 未变、消息前缀一致、无重试）。
+ * 字段化之后，面板显示的证据与聚合统计用的判据是同一份，不会出现「面板说上游、账本说本地」。
+ *
+ * `verdict` 取自 `categories`（结构化），不解析中文文案 —— 文案改一个字的代价是
+ * 历史统计整体漂移，而那种漂移没有任何东西会红（P0-2 修掉的反模式）。
+ */
+function formatCacheBreakEvidence(ev: CacheBreakEvidence, fallbackReason: string | null): string[] {
+  const lines: string[] = [
+    `最近一次 ${fmtInt(ev.previousCacheReadTokens)}→${fmtInt(ev.currentCacheReadTokens)}（-${ev.dropPercent}%）`,
+  ];
+  // 三态逐条说清：「不可判」必须显式写出来，不能省略（省略 = 暗示「没变化」）。
+  const evidence: string[] = [];
+  evidence.push(
+    ev.prefixHashSame === true
+      ? "system/tools 未变"
+      : ev.prefixHashSame === false
+        ? "system/tools 已变"
+        : "system/tools 不可判",
+  );
+  evidence.push(
+    ev.messagePrefixSame === true
+      ? "消息前缀逐字节一致"
+      : ev.messagePrefixSame === false
+        ? "消息前缀被改写"
+        : "消息前缀不可判",
+  );
+  if (ev.precededByRetry === true) evidence.push("两次请求间有重试");
+  else if (ev.precededByRetry === false) evidence.push("两次请求间无重试");
+  lines.push(`证据 ${evidence.join("、")}`);
+  const verdict = cacheBreakVerdict(ev, fallbackReason);
+  if (verdict) lines.push(`→ ${verdict}`);
+  return lines;
+}
+
+/** 归因结论（CP-8）：按 `categories` 结构化映射，不解析文案。 */
+function cacheBreakVerdict(ev: CacheBreakEvidence, fallbackReason: string | null): string | null {
+  const cats = ev.categories;
+  // 顺序有意义：一条断裂可能同时带多个类别，先给「本地可优化」的结论 ——
+  // 用户能改的那些必须排在「改不动」的前面，否则它会以为自己无能为力。
+  if (cats.includes("message_history")) return "本地消息历史被改写，可优化";
+  if (cats.includes("prefix_break")) return "本地前缀断裂，可优化";
+  if (cats.includes("system_prompt") || cats.includes("tools") || cats.includes("tool_order")) {
+    return "本地 system/tools 变化，可优化";
+  }
+  if (cats.includes("compact")) return "压缩改写了历史前缀，属正常行为";
+  if (cats.includes("server_fluctuation")) return "上游缓存波动（网关或厂商），本地不可控";
+  if (cats.includes("ttl_expiry")) return "空闲超过缓存 TTL，属正常行为";
+  if (cats.includes("model")) return "换了模型，必然全量重算";
+  // 兜底用产出侧那句人话（`changes` 已含具体原因），但不拼多条 —— 一行放不下。
+  return fallbackReason;
+}
+
+/**
+ * 牌价行（CP-4）：`pricing` 里的四个数字 —— **高峰价**，空闲价由 `offPeakMultiplier` 派生。
+ *
+ * 单独成行而不是塞进上面那行：这一行的语义是「价目表」（多少钱一档），上一行是
+ * 「我实际按什么价结算」（均价）。两件事在一行里并列，用户必然会拿牌价乘 token 去验算，
+ * 然后发现对不上费用 —— 这正是本缺陷的原始形态。
+ *
+ * 窄列（<80）省略「USD/百万」与「（高峰价；…）」里的重复口径：70 列放不下
+ * 60+ 显示列的行，折行会把「输入/命中/输出」三个数拆散到两行，读者对不上号。
+ */
+function formatPriceLine(
+  row: NonNullable<CostReport["byModel"][number]>,
+  currency: string,
+  narrow: boolean,
+): string | null {
+  const p = row.pricing;
+  if (!p) return null;
+  // cacheRead / cacheWrite 在定价表里是可缺省的（调用方按比例近似），显示时如实留空。
+  const price = (n: number | undefined) => (n === undefined ? "—" : fmtUnitPrice(n));
+  const unit = narrow ? "" : ` ${currency}/百万`;
+  const nums = `输入 ${price(p.input)} / 命中 ${price(p.cacheRead)} / 输出 ${price(p.output)}`;
+  const hasPeak = (p.peakWindows?.length ?? 0) > 0;
+  const offPeak = p.offPeakMultiplier;
+  if (!hasPeak) return `牌价${unit} ${nums}`;
+  const tier = narrow ? "" : "高峰价；";
+  const off = offPeak !== undefined && offPeak !== 1 ? `空闲 ×${offPeak}` : "空闲同价";
+  return `牌价${unit} ${nums}（${tier}${off}）`;
 }
 
 /** 后台闸门状态里 /cost 关心的三个字段（窄接口，便于测试注入假状态）。 */

@@ -108,7 +108,12 @@ import {
   setSideStatsObserver,
 } from "./side-call-sink.ts";
 import { SUBAGENT_COST_EVENT_NAME } from "../agent/usage-sink.ts";
-import { PrefixBreakTracker, fingerprintPrefix } from "./prefix-break-probe.ts";
+import {
+  PrefixBreakTracker,
+  fingerprintPrefix,
+  recordPrefixBreak,
+  clearRecentPrefixBreaks,
+} from "./prefix-break-probe.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import {
   initStreamObserver,
@@ -767,6 +772,10 @@ export class TraceCollector {
 
     // 重置辅助调用统计（避免跨会话污染）
     resetSideCallStats();
+    // CP-9：字节侧断裂记录同为进程级单例，不清零则 /cost 会把上个会话的断裂
+    // 算进新会话的次数。它只增不减，不会触发任何断言 —— 挂在 resetSideCallStats
+    // 旁边是刻意的：两者都是「进程内辅助统计」，清理时机必须一致。
+    clearRecentPrefixBreaks();
     // 缺陷 24：billing-sink 的时段计数同为模块级单例，不清零则 peakRatio 跨会话混算
     resetPriceTierCounts();
     // T1.2：按调用方聚合只清本进程记录（基线由 resume 回灌，见 telemetry/agent-usage.ts）
@@ -3139,6 +3148,30 @@ export class TraceCollector {
           ...(d.judgeDisagreement ? { judge_disagreement: true } : {}),
         },
       });
+
+      // CP-9：进程内再留一份**断裂记录**，供 `/cost` 同步渲染时直接取数。
+      //
+      // 为什么不复用上面落的事件：`/cost` 是同步命令，要从 events.jsonl 取数得先定位
+      // 会话目录、再逐行解析（还可能读到上一次进程写的历史行），失败面远大于往内存数组
+      // 里 push 一条。`api/cache-detection.ts` 的 `recentBreaks` 已经是同一套做法。
+      //
+      // 只在 broken 时记：「未断裂」不是一次事件，记进去会把次数虚高 —— 这次显示的是
+      // 「本地前缀断裂 M 次」，用户拿它判断要不要优化前缀，分母混进健康轮次就毫无意义。
+      if (d.broken) {
+        recordPrefixBreak({
+          index,
+          ...(d.firstChangedKind !== undefined
+            ? { firstChangedKind: d.firstChangedKind as string }
+            : {}),
+          ...(d.firstChangedMessageIndex !== undefined
+            ? { firstChangedMessageIndex: d.firstChangedMessageIndex }
+            : {}),
+          charWastedRatio: d.charWastedRatio,
+          ...(localCauses !== undefined
+            ? { cause: localCauses.length > 0 ? localCauses : ["none_local"] }
+            : {}),
+        });
+      }
     } catch {
       /* 可观测性不影响主流程 */
     }
