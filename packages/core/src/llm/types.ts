@@ -59,6 +59,27 @@ export interface ToolResultMediaBlock {
 }
 
 /** 工具结果块 */
+/**
+ * 工具结果在 TUI 的呈现档位 —— **唯一权威定义**。
+ *
+ * 放在 `llm/types.ts` 而不是 `tool/types.ts`，因为 `ToolResultBlock` 是它的落盘处，
+ * 而 `tool/types.ts` 已经依赖本模块（`ContentBlock` / `ToolResultMediaBlock`）。
+ * 反向 import 会成环；但更重要的理由是**不允许两处定义**：本字段曾经在 `ToolResultBlock`
+ * 里另写一份内联联合（`"hidden" | "summary" | "compact"`），新增档位时那份不会跟着变，
+ * 于是「工具声明了 X 档、UI 收到时被类型收窄回旧集合」——正是 PR #813 那类漏网的温床。
+ * `tool/types.ts` 现在 re-export 本类型，既有 import 路径全部不变。
+ *
+ * - `"hidden"` —— 整条卡片不渲染（连 `⏺ 工具名` 都没有）。
+ * - `"summary"` —— 保留卡片、丢弃 `⎿` 正文，由 header 摘要用用户语言说明发生了什么。
+ * - `"compact"` —— 保留卡片与正文（`resultDisplay.content` 不置空），默认折叠成零行正文、
+ *   只在标题行给结果规模；`ctrl+o` 与普通工具走同一套阶梯展开。适用于「正文是真实工作
+ *   内容、只是太占行」的读写搜索类工具（read / grep / glob / bash）。
+ * - `"full"` —— 保留卡片与正文，且**正文完整展示、不做任何行数截断**。适用于「整段回执
+ *   本身就是需要一次看全的信息」的工具（`enter_worktree` / `exit_worktree` 的路径语义提示）。
+ *   详情与不折的判据见 `tool/types.ts` 的 `ToolCapabilityFields.resultDisplayMode` 说明。
+ */
+export type ToolResultDisplayMode = "hidden" | "summary" | "compact" | "full";
+
 export interface ToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
@@ -92,7 +113,7 @@ export interface ToolResultBlock {
    *
    * 缺省（`undefined`）= 原样展示 content，是绝大多数工具的行为，字段不出现、零破坏。
    */
-  resultDisplayMode?: "hidden" | "summary" | "compact";
+  resultDisplayMode?: ToolResultDisplayMode;
   /**
    * 本次结果是否是**权限层拒绝**（不是工具执行失败）。
    *
@@ -301,6 +322,47 @@ export function accumulateUsage(target: Usage, eventUsage: Usage | undefined): U
     target.reasoningTokens = (target.reasoningTokens ?? 0) + eventUsage.reasoningTokens;
   }
   return target;
+}
+
+/**
+ * 流式调用取 usage 的**唯一实现**：只认真正携带 usage 的那两个事件。
+ *
+ * ## 为什么必须收口（缺陷 CP-1，2026-11-13 实测）
+ *
+ * 全仓曾有 7 个辅助调用点各自写同一段取数逻辑：
+ *
+ * ```ts
+ * } else if (event.type === "message_stop" && (event as any).usage) {
+ *   usage = (event as any).usage;
+ * }
+ * ```
+ *
+ * `message_stop` 在 {@link StreamEvent} 里**没有 usage 字段**，所有 provider 也从不往它上面
+ * 挂 usage —— 于是这 7 条链的**成功路径** usage 恒为 null、`recordSideCall` 恒不触发。
+ * 更隐蔽的是它们在 `BILLING_SELF_REPORTED_LABELS` 里被豁免了发生侧计费（因为"我自己会报"），
+ * 两头都不记账 → 钱静默漏了 199 次（轨迹实测）。`as any` 让类型系统完全拦不住。
+ *
+ * ## 口径
+ *
+ * - `message_start`：Anthropic 族在这里给全量输入侧用量（`message.usage`）。
+ * - `message_delta`：Anthropic 族给增量、OpenAI 族给流尾累计值，两条都靠
+ *   {@link accumulateUsage} 累加/取末值，与主循环同口径。
+ * - 其余事件一律忽略。**不要**在这里加 `message_stop` 分支：它没有 usage，
+ *   加了就退回那个"永不触发"的写法（静态门禁
+ *   `tests/llm/billing-self-reported-labels.test.ts` 会拦住）。
+ *
+ * `acc` 传 null 表示"还没见过 usage"，返回 null 表示整条流都没给过用量 —— 调用方据此
+ * 决定是否记账，**不要用 0 冒充"没花 token"**（漏记与全零在账本上长得一样）。
+ */
+export function collectStreamUsage(acc: Usage | null, event: StreamEvent): Usage | null {
+  switch (event.type) {
+    case "message_start":
+      return accumulateUsage(acc ?? { inputTokens: 0, outputTokens: 0 }, event.message.usage);
+    case "message_delta":
+      return accumulateUsage(acc ?? { inputTokens: 0, outputTokens: 0 }, event.usage);
+    default:
+      return acc;
+  }
 }
 
 /**

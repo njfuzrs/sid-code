@@ -650,7 +650,16 @@ export function buildCompletedToolCall(
   //
   // 降级发生在数据层而非渲染层，是为了让 `displayMode` 这一字段的含义保持单一：
   // 「带 compact 的卡片 = 默认折叠有收益」，渲染层不需要再重复判一次行数。
-  const rawDisplayMode = isError ? undefined : block.resultDisplayMode;
+  // `full` 档与错误路径不冲突：full 只表示「正文完整可见、不做行数截断」，而错误结果本来
+  // 就更该整段可见（tool/types.ts 硬约束 ②）。若在这里连 full 一起降级成 undefined，
+  // `enter_worktree` 的「无法切回主工作区: …」这类多行错误又会被组件层折回 3 行。
+  // 其余档位保持原有语义：错误结果不走 compact/summary/hidden（执行器也不会给错误 block
+  // 打标记，此处再守一道，防御未来有人手工构造 block）。
+  const rawDisplayMode = isError
+    ? block.resultDisplayMode === "full"
+      ? "full"
+      : undefined
+    : block.resultDisplayMode;
   const maxInlineLines = isShellTool(toolName)
     ? COMPACT_MAX_INLINE_LINES_SHELL
     : COMPACT_MAX_INLINE_LINES;

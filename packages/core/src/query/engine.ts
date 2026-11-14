@@ -530,7 +530,8 @@ export class QueryEngine {
       recordError: this.deps.traceCollector
         ? (input) => this.deps.traceCollector!.recordError(input)
         : undefined,
-      // Step 0：Session Memory 每轮收尾钩子（fire-and-forget，内部按双阈值决定是否提取）。
+      // Step 0：Session Memory 每轮收尾钩子（内部按双阈值决定是否提取；返回真实更新链的
+      // promise，loop 侧不 await，但要交给 runBackgroundTask 的闸门，见 CP-7）。
       updateSessionMemory: this.sessionMemory
         ? () => this.sessionMemory!.updateSessionMemory()
         : undefined,

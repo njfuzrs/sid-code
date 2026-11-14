@@ -57,6 +57,12 @@ export interface InitSessionMemoryOptions {
    * 只有显式传 `filePath` 的测试可以省略它。
    */
   sessionId?: string;
+  /**
+   * 测试注入点：替换 fork 执行器（缺省 `runForkedAgent`）。生产代码不要传。
+   * 与 `memory/extract/extractor.ts` 的 `ExtractContext.runFork` 同一形态 ——
+   * 「后台闸门等的是真实工作」只能靠一个会挂住的假 fork 来验证（CP-7/C1）。
+   */
+  runFork?: typeof runForkedAgent;
 }
 
 /**
@@ -117,7 +123,7 @@ export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemory
         { role: "user", content: [{ type: "text", text: promptText }] },
       ];
 
-      await runForkedAgent(mainContext, {
+      await (opts.runFork ?? runForkedAgent)(mainContext, {
         promptMessages,
         canUseTool: opts.canUseTool,
         // 不设 maxTurns（对齐 CC）：轨迹 166 次 run 中 65 次（39%）恰好停在 5 轮，
@@ -144,6 +150,8 @@ export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemory
     updateSessionMemory: async () => {
       if (pending) {
         log.debug("SESSION_MEM", "上一次更新尚未完成，跳过本轮");
+        // 本轮没有真实工作：返回已 resolve 的 promise。不能把上一轮那条链
+        // 冒充成本轮的时长 —— 闸门会拿它当"这一笔在跑多久"，串行就失真。
         return;
       }
       pending = runUpdate()
@@ -151,7 +159,12 @@ export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemory
         .finally(() => {
           pending = null;
         });
-      // fire-and-forget
+      // CP-7：必须把真实工作的 promise 交出去。`runBackgroundTask` 的闸门等的就是这个
+      // 返回值 —— 这里若 fire-and-forget，几个微任务后 `inFlight` 就被清空，串行、
+      // 退出排空（pre-flush drain）与 `/cost` 的「进行中」提示全部失效，而
+      // `admitted/deferred` 统计看上去完全正常。调用方（`query/loop.ts`）不 await
+      // 它，所以主循环收尾延迟不变。
+      return pending;
     },
 
     getContent: readContent,

@@ -9,7 +9,7 @@
 
 import type { GoalState, EvidenceEntry } from "./state.ts";
 import type { Provider } from "../llm/provider.ts";
-import type { Message } from "../llm/types.ts";
+import { collectStreamUsage, type Message, type Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
@@ -373,6 +373,8 @@ async function callEvaluatorModel(
   try {
     let responseText = "";
     let tokensUsed = 0;
+    // 缺陷 CP-1：usage 只从 message_start / message_delta 取（见 collectStreamUsage）。
+    let usage: Usage | null = null;
     const { streamWithResilience } = await import("../llm/resilient-stream.ts");
     // B3（D8）：改走漏斗而非直连——此前 429/523 等可重试错误在这里 1ms 内直接失败。
     // 收紧参数：目标评估是轻量分类任务，只值得轻量重试，deadlineAt 与本函数的
@@ -416,19 +418,24 @@ async function callEvaluatorModel(
       }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         responseText += event.delta.text;
-      } else if (event.type === "message_stop" && (event as any).usage) {
-        const u = (event as any).usage;
-        // P1-3: 累计评估器 token 供 GoalGateDecision 记账
-        tokensUsed = (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
-        recordSideCall({
-          label: "goal-evaluator",
-          model,
-          inputTokens: u.inputTokens ?? 0,
-          outputTokens: u.outputTokens ?? 0,
-          cacheReadTokens: u.cacheReadInputTokens ?? 0,
-          cacheCreationTokens: u.cacheCreationInputTokens ?? 0,
-        });
       }
+      usage = collectStreamUsage(usage, event);
+    }
+
+    // 缺陷 CP-1：此前取数写在 `message_stop` 分支里，而该事件从不携带 usage，
+    // 于是这条链的成功路径永远不记账（却被 BILLING_SELF_REPORTED_LABELS 豁免了
+    // 发生侧计费）。改成流结束后按收集到的 usage 记账一次。
+    if (usage) {
+      // P1-3: 累计评估器 token 供 GoalGateDecision 记账
+      tokensUsed = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+      recordSideCall({
+        label: "goal-evaluator",
+        model,
+        inputTokens: usage.inputTokens ?? 0,
+        outputTokens: usage.outputTokens ?? 0,
+        cacheReadTokens: usage.cacheReadInputTokens ?? 0,
+        cacheCreationTokens: usage.cacheCreationInputTokens ?? 0,
+      });
     }
 
     return { text: responseText, tokensUsed };

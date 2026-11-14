@@ -15,7 +15,7 @@
  *      （usage < target）则跳过 autoCompact；不够则继续 autoCompact。
  */
 
-import type { Message } from "../../llm/types.ts";
+import { collectStreamUsage, type Message, type Usage } from "../../llm/types.ts";
 import type { Provider } from "../../llm/provider.ts";
 import { getLogger } from "../../debug/index.ts";
 import { estimateTextTokens, estimateMessagesTokens } from "../../context/token.ts";
@@ -167,7 +167,7 @@ async function summarizeSegment(
         },
       );
       let s = "";
-      let usage: any = null;
+      let usage: Usage | null = null;
       // T7：叠加 StreamLifecycle（sideCall preset），overall 收敛到 45s 段超时之内。
       // 提供比 45s 硬 deadline 更细粒度的 idle/content stall 检测。
       const lifecycle = createStreamLifecycle({
@@ -194,9 +194,8 @@ async function summarizeSegment(
         }
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           s += event.delta.text;
-        } else if (event.type === "message_stop" && (event as any).usage) {
-          usage = (event as any).usage;
         }
+        usage = collectStreamUsage(usage, event);
       }
       return { summary: s, streamUsage: usage };
     },

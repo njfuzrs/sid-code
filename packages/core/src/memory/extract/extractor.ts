@@ -1,8 +1,13 @@
 /**
  * 后台记忆提取调度器（Task 3）
  *
- * 在每轮对话结束后（end_turn），fire-and-forget 地跑一个 Forked Agent，
+ * 在每轮对话结束后（end_turn）跑一个 Forked Agent，
  * 从对话中提取值得记住的信息写入记忆目录。
+ *
+ * ⚠️ 「不阻塞主循环」与「不把 promise 交出去」是两件事：`executeExtract` 返回**真实
+ * 提取链**的 promise，由 `query/loop.ts` 交给 `runBackgroundTask` 的闸门等待
+ * （CP-7：返回 void 会让闸门的串行 / 退出排空 / `/cost` 进行中提示全部失效）。
+ * 调用方不 await 它，所以主循环收尾延迟不变。
  *
  * 互斥机制：若主代理本轮已直接写入记忆（save_memory / Write 到 memoryDir），
  * 则跳过本轮后台提取，避免重复写入。
@@ -52,7 +57,10 @@ export function sortManifestHeaders(headers: MemoryHeader[]): MemoryHeader[] {
 
 /** 提取系统句柄 */
 export interface ExtractMemoriesHandle {
-  /** 每轮对话结束后调用（fire-and-forget） */
+  /**
+   * 每轮对话结束后调用。返回**真实提取链**的 promise（跳过时为已 resolve），
+   * 供 `runBackgroundTask` 的闸门等待串行与退出排空 —— 调用方不 await 它。
+   */
   executeExtract: () => Promise<void>;
   /** 会话关闭前调用，等待进行中的提取完成 */
   drainPending: (timeoutMs?: number) => Promise<void>;
@@ -242,8 +250,12 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
         logMemoryExtract({ outcome: "skipped", reason: "interval", seq, interval });
         return;
       }
-      void start(seq, false);
-      // fire-and-forget：不 await
+      return start(seq, false);
+      // CP-7：把真实工作的 promise 交出去，而不是 `void` 掉。`runBackgroundTask`
+      // 的闸门等的就是这个返回值 —— fire-and-forget 会让它在几个微任务后清空
+      // `inFlight`，于是「串行」「退出排空」「/cost 进行中提示」全部失效，
+      // 而 admitted/deferred 统计看上去完全正常（CP-7 就是这么藏了三个月）。
+      // 调用方（`query/loop.ts`）不 await 它，所以主循环收尾延迟不变。
     },
 
     drainPending: async (timeoutMs = 60_000) => {
