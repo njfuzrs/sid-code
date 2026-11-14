@@ -222,6 +222,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 ### 3.5 diff 渲染：增删行靠颜色 + 符号，走 RawAnsi 快路径 ✅
 
 - 增行 `+` 绿、删行 `-` 红、上下文行常态（`DiffRenderer.tsx` / `diffAnsiLines.ts`）。
+- **字重全区域统一，任何一段都不加粗** ✅：词级变化词只靠 emphasis 底色，行首 `+`/`-` 只靠状态色，不用 `bold`。曾经给变化词和符号都加过 `bold`，在 CJK 上会呈现两种"粗细参差"：① `diffWordsWithSpace` 对中文按**字**切分，一行中文里散落个别加粗单字；② 中文字体普遍无真 bold，终端用合成粗体顶替（笔画变宽、字形变糊，像字号变了）；③ 配对行走 `renderWordDiff`、未配对行走 `colorizeLine`，两行差异大时几乎整行被判成变化 → 同一块 diff 里「这一行整行加粗、紧邻行不加粗」。双通道靠「`+`/`-` 字形 + 状态色 + emphasis 底色」维持，不依赖 bold。回归测试 `tests/ui/components/diff-uniform-weight.test.tsx`。
 - 语法高亮走 `CodeColorizer.tsx`。
 - **RawAnsi 快路径** ✅：端口的 `RawAnsi`（`render-port/components.ts`）接收"已按列宽换行的 ANSI 行数组"，单个 Yoga leaf + 常量 measure 直接 `output.write()`，跳过 `<Ansi>→React 树→Yoga→squash→重序列化` 的往返。长 diff / 高亮代码这类已是终端就绪的内容用它（`diffAnsiLines.ts` 生产 ANSI 行 → `DiffRenderer` 已在用）。
 - ANSI 由 TS 侧（`diffAnsiLines.ts`）生产即可，不需要 cc 的 NAPI ColorDiff（Rust 模块）——RawAnsi 只关心"喂进来的是终端就绪 ANSI 行"，不关心谁生产。
