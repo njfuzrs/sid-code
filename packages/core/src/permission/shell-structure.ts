@@ -39,9 +39,21 @@ export type { HeredocBlock, HeredocExtraction } from "../tool/bash/heredoc.ts";
 /** 管道的分隔符类型：`|` 连接同一管道的两段，其余分隔符开启新管道 */
 type BoundaryKind = "pipe" | "break";
 
+/**
+ * 开启新管道的分隔符。第一条管道为 `"start"`。
+ *
+ * 为什么把类型细化到这一层（B3）：`cd <工作区> && git log` 与 `cd <工作区> ; git log`
+ * 的语义不同——`&&` 后 cd 失败整条链就停了，而 `;` 后 cd 失败仍会在**原目录**继续跑。
+ * 只读判定必须能看见这个差别，否则 `cd 不存在; git log` 会被当成「在目标目录里跑」放行。
+ * `break` 粗粒度保留在 {@link BoundaryKind} 里是给状态机内部用的，对外这一层要能区分。
+ */
+export type PipelineBoundary = "start" | "&&" | "||" | ";" | "&" | "\n";
+
 /** 一条管道：`a | b | c` 的 stages 是 `["a", "b", "c"]` */
 export interface CommandPipeline {
   stages: string[];
+  /** 本管道**前面**的分隔符（第一条为 `"start"`）。`|` 不开启新管道，不出现在这里。 */
+  boundary: PipelineBoundary;
 }
 
 /**
@@ -65,16 +77,22 @@ export interface CommandPipeline {
 export function splitCommandStructure(cmd: string): CommandPipeline[] {
   const { stripped } = extractHeredocBlocks(cmd);
   const pipelines: string[][] = [];
+  /** 与 pipelines 一一对应：该管道前面的分隔符 */
+  const boundaries: PipelineBoundary[] = [];
   let stages: string[] = [];
   let current = "";
+  /** 下一条管道的前置分隔符（尚未被某个管道消费） */
+  let pendingBoundary: PipelineBoundary = "start";
 
-  const emit = (kind: BoundaryKind) => {
+  const emit = (kind: BoundaryKind, boundary: PipelineBoundary = "start") => {
     const trimmed = current.trim();
     if (trimmed) stages.push(trimmed);
     current = "";
     if (kind === "break" && stages.length > 0) {
       pipelines.push(stages);
+      boundaries.push(pendingBoundary);
       stages = [];
+      pendingBoundary = boundary;
     }
   };
 
@@ -170,13 +188,13 @@ export function splitCommandStructure(cmd: string): CommandPipeline[] {
     }
 
     if (ch === "&" && next === "&") {
-      emit("break");
+      emit("break", "&&");
       i += 2;
       continue;
     }
 
     if (ch === "|" && next === "|") {
-      emit("break");
+      emit("break", "||");
       i += 2;
       continue;
     }
@@ -189,7 +207,7 @@ export function splitCommandStructure(cmd: string): CommandPipeline[] {
     }
 
     if (ch === ";") {
-      emit("break");
+      emit("break", ";");
       i++;
       continue;
     }
@@ -202,7 +220,7 @@ export function splitCommandStructure(cmd: string): CommandPipeline[] {
       const prevCh = i > 0 ? stripped[i - 1] : "";
       const prevIsDigit = prevCh >= "0" && prevCh <= "9";
       if (!prevIsDigit && prevCh !== ">") {
-        emit("break");
+        emit("break", "&");
         i++;
         continue;
       }
@@ -210,7 +228,7 @@ export function splitCommandStructure(cmd: string): CommandPipeline[] {
 
     // 换行：shell 里等价于 `;`。引号 / 子 shell 内的换行已在上面被原样保留。
     if (ch === "\n") {
-      emit("break");
+      emit("break", "\n");
       i++;
       continue;
     }
@@ -220,7 +238,7 @@ export function splitCommandStructure(cmd: string): CommandPipeline[] {
   }
 
   emit("break");
-  return pipelines.map((s) => ({ stages: s }));
+  return pipelines.map((s, idx) => ({ stages: s, boundary: boundaries[idx] ?? "start" }));
 }
 
 /**

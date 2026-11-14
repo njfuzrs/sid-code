@@ -40,10 +40,13 @@ export interface ReadOnlyGitBoundaryResult {
 }
 
 /**
- * `-C` 目标必须是字面量：含变量、通配、命令替换、重定向/分隔符、转义、`~` 的一律拒绝。
+ * `-C` / `cd` 目标必须是字面量：含变量、通配、命令替换、重定向/分隔符、转义、`~` 的一律拒绝。
  * `~` 也算非字面量——它要按家目录展开，`path.resolve` 会解析成 `<cwd>/~/x`，与 git 语义不符。
+ *
+ * 导出给 `readonly-compound.ts`（B3 的 `cd` 目标判定）复用：两处判的是同一件事
+ * （「这个路径 token 能不能直接交给 path.resolve」），各写一份正则迟早漂移。
  */
-const NON_LITERAL_PATH = /[$`~*?[\]{}()<>|;&\n\\]/;
+export const NON_LITERAL_PATH = /[$`~*?[\]{}()<>|;&\n\\]/;
 
 /** 把 `-C` / `cd` 的字面量目标解析成绝对路径；不是字面量返回 null。 */
 function resolveLiteralPath(raw: string, base: string): string | null {
