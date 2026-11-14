@@ -197,7 +197,55 @@ describe("B12：PermissionDecision 的危险成因与 bash 形状落盘", () => 
     expect(decision?.data.execution_context).toBe("forked");
   });
 
-  test("env_prefix_vars / git_trust 未接线时键不落盘（缺失 ≠ 空数组）", async () => {
+  test("非白名单 env 前缀 → env_prefix_vars 只记名（GIT_DIR 属 B1 白名单外）", async () => {
+    const checker = new PermissionChecker({ ...defaultConfig() } as never, {}, dir);
+    const d = await checker.check({
+      toolName: "bash",
+      input: { command: "GIT_DIR=/tmp/x git status" },
+    });
+
+    const events = await withCollector("b12-envprefix", async () => {
+      logPermissionAllow("bash", {
+        source: "rule",
+        needsPrompt: false,
+        context: "main",
+        reasonType: d.decisionReason?.type,
+        step: d.step,
+        mode: d.mode,
+        ...decisionFactsOf(d),
+      });
+    });
+
+    const decision = events.find((e) => e.event === "PermissionDecision");
+    // 只记名不记值：值可能是路径 / 密钥，进轨迹没有收益
+    expect(decision?.data.env_prefix_vars).toEqual(["GIT_DIR"]);
+  });
+
+  test("cd 前缀 → git_trust 按 cd 目标的仓库归属落值（workspace 不在仓库里 = none）", async () => {
+    const checker = new PermissionChecker({ ...defaultConfig() } as never, {}, dir);
+    const d = await checker.check({
+      toolName: "bash",
+      input: { command: `cd ${dir} && git status` },
+    });
+
+    const events = await withCollector("b12-gittrust", async () => {
+      logPermissionAllow("bash", {
+        source: "rule",
+        needsPrompt: false,
+        context: "main",
+        reasonType: d.decisionReason?.type,
+        step: d.step,
+        mode: d.mode,
+        ...decisionFactsOf(d),
+      });
+    });
+
+    const decision = events.find((e) => e.event === "PermissionDecision");
+    // tmpdir 不在任何 git 仓库里（ownCommonDir 与目标都不可知）→ none
+    expect(decision?.data.git_trust).toBe("none");
+  });
+
+  test("无 cd 前缀且前缀无变量时两个键都不落（缺失 ≠ 空数组）", async () => {
     const checker = new PermissionChecker({ ...defaultConfig() } as never, {}, dir);
     const d = await checker.check({ toolName: "bash", input: { command: "git status" } });
 
@@ -214,8 +262,7 @@ describe("B12：PermissionDecision 的危险成因与 bash 形状落盘", () => 
     });
 
     const decision = events.find((e) => e.event === "PermissionDecision");
-    // PR-1 合入后这两个字段会有值；在此之前「键不落盘」是正确形态，
-    // 落一个空数组会被读成「看了，没有变量」——那是另一种事实。
+    // 不适用时键不落盘：落空数组会被读成「看了，没有变量」——那是另一种事实
     expect("env_prefix_vars" in (decision?.data ?? {})).toBe(false);
     expect("git_trust" in (decision?.data ?? {})).toBe(false);
   });

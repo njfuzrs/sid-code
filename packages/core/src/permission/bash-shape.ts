@@ -21,8 +21,10 @@
  * 与 A.3 一致是有意的：基线数字（§1.4）出自那份脚本，判据不同就无法对拍。
  */
 
-import { isReadOnlyCommand } from "../tool/bash/read-only-validation.ts";
+import { isForbiddenAssignmentName, isReadOnlyCommand } from "../tool/bash/read-only-validation.ts";
 import { stripLeadingCdAndEnv } from "../query/repeated-readonly-guard.ts";
+import { resolveGitRepoTrust, type GitRepoTrust } from "./git-repo-trust.ts";
+import * as path from "node:path";
 
 /**
  * bash 命令的形状桶。固定枚举，只进本地轨迹。
@@ -66,4 +68,60 @@ export function classifyBashShape(input: {
   return isReadOnlyCommand(stripLeadingCdAndEnv(input.command))
     ? "cd_workspace_readonly"
     : "cd_workspace_nonreadonly";
+}
+
+/** 前导变量赋值 `NAME=value`（值可带引号），与 `stripLeadingCdAndEnv` 同一条正则 */
+const LEADING_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|[^\s]*)\s+/;
+/** 前导 `cd <arg> &&|;`，与 `stripLeadingCdAndEnv` 同一条正则 */
+const LEADING_CD_STEP = /^cd\s+(?:"[^"]*"|'[^']*'|[^\s&;|]+)\s*(?:&&|;)\s*/;
+
+/**
+ * 命令行前缀里的**非白名单**环境变量名（只记名，不记值）。
+ *
+ * B1 的变量白名单（`isForbiddenAssignmentName`：`GIT_*` / `*PATH` / `*_OPTIONS` /
+ * `PAGER` 等）收窄后，「还有多少确认是被 env 前缀拖进来的」要能直接数出来。
+ * 只扫**前导**赋值（`FOO=1 git status`、`FOO=1 cd x && git status` 这类，
+ * 与 `stripLeadingCdAndEnv` 同一语境），不解析整条命令 —— 后者会给每条 bash 决策
+ * 再加一次完整 parse，而观测不该拖慢权限判定。
+ *
+ * 返回空数组 = 前缀里没有（或全是白名单）变量；调用方据此不落字段。
+ */
+export function collectEnvPrefixVars(command: string): string[] {
+  const out: string[] = [];
+  let s = command.trim();
+  let prev: string;
+  do {
+    prev = s;
+    const assign = LEADING_ASSIGNMENT.exec(s);
+    if (assign) {
+      const name = assign[1]!;
+      if (isForbiddenAssignmentName(name)) out.push(name);
+      s = s.slice(assign[0].length).trim();
+      continue;
+    }
+    const cd = LEADING_CD_STEP.exec(s);
+    if (cd) {
+      s = s.slice(cd[0].length).trim();
+      continue;
+    }
+  } while (s !== prev);
+  return out;
+}
+
+/**
+ * `cd` 目标的 git 仓库归属（B4 的 `own` / `foreign` / `bare` / `none`）。
+ *
+ * 用来拆「工作区内 cd + 只读」这个桶里还有多少是**换仓**（foreign）导致的真确认。
+ * 只在有 `cd` 前缀时算；目标按工作区根解析（相对路径当作相对工作区，`-` / `~` 这类
+ * 非字面量在这里按字面拼，只影响统计口径、不影响权限判定 —— 精确解析在 PR-2 才接）。
+ */
+export function resolveCdTargetGitTrust(input: {
+  command: string;
+  workspacePath: string;
+  ownCommonDir: string | null;
+}): GitRepoTrust | undefined {
+  const m = LEADING_CD.exec(input.command);
+  if (!m) return undefined;
+  const target = path.resolve(input.workspacePath, m[1]!);
+  return resolveGitRepoTrust(target, input.ownCommonDir);
 }
