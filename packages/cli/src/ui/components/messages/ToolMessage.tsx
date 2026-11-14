@@ -106,12 +106,17 @@ export interface ToolMessageProps {
   /**
    * 呈现档位（源自 `IndividualToolCallDisplay.displayMode`）。
    *
-   * 只有 `"compact"` 在本组件里改变行为：默认折叠成**零行正文**、标题行给结果规模，
-   * `ctrl+o` 与普通工具走同一套阶梯展开。`"hidden"` 已在 `ToolGroupMessage` 被过滤掉，
-   * `"summary"` 的结果正文在上游（`buildCompletedToolCall`）已被置空，到这里与
-   * 「无正文」等价。缺省 = 原样展示。
+   * - `"compact"`：默认折叠成**零行正文**、标题行给结果规模，`ctrl+o` 与普通工具走同一套
+   *   阶梯展开。
+   * - `"full"`：正文**完整展示**，连组件层默认的 3 行兜底截断也不施加（见
+   *   `ToolResultDisplay` 的 `unlimited`）。短回执工具用——它只有几行、但每行都不可省，
+   *   折掉任意几行就是信息损失（`enter_worktree` / `exit_worktree` 的路径语义提示）。
+   * - `"hidden"` 已在 `ToolGroupMessage` 被过滤掉；`"summary"` 的结果正文在上游
+   *   （`buildCompletedToolCall`）已被置空，到这里与「无正文」等价。
+   *
+   * 缺省 = 原样展示（仍有组件层 3 行兜底）。
    */
-  displayMode?: "hidden" | "summary" | "compact";
+  displayMode?: "hidden" | "summary" | "compact" | "full";
 }
 
 export const ToolMessage: React.FC<ToolMessageProps> = ({
@@ -449,6 +454,9 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
                 isError={isError}
                 renderOutputAsMarkdown={renderOutputAsMarkdown}
                 maxLines={3}
+                // full 档：正文完整可见，不施加上面那个 3 行兜底（见 ToolResultDisplay 的 unlimited）。
+                // 判据放在数据层（工具自报 resultDisplayMode），本组件只执行，不按工具名猜。
+                unlimited={displayMode === "full"}
                 overflowDirection="bottom"
               />
             )}

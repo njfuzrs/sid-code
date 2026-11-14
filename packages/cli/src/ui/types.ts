@@ -65,10 +65,12 @@ export interface ToolResultDisplay {
    * - `"summary"` —— 只渲染 header 行，`content` 已在 `buildCompletedToolCall` 里置空。
    * - `"compact"` —— 正文**不置空**（与 summary 的关键区别，硬约束①），默认折叠成零行
    *   正文、标题行给结果规模，`ctrl+o` 与普通工具走同一套阶梯展开。
+   * - `"full"` —— 正文**不置空且不做行数截断**（连组件层默认的 `maxLines=3` 也不施加）。
+   *   用于「整段回执必须一次看全」的短回执工具（见 core `tool/types.ts` 的判据）。
    *
-   * 缺省 = 原样展示。完整设计见 `tool/types.ts` 的 `resultDisplayMode`。
+   * 缺省 = 原样展示（组件层仍有 3 行兜底截断）。完整设计见 `tool/types.ts` 的 `resultDisplayMode`。
    */
-  displayMode?: "hidden" | "summary" | "compact";
+  displayMode?: "hidden" | "summary" | "compact" | "full";
 }
 
 /** 单个工具调用的展示数据 */

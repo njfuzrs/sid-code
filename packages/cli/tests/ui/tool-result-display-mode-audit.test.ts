@@ -54,6 +54,9 @@ import { ReadManyTool } from "@sid-code/core/tool/read-many.ts";
 import { WebFetchTool } from "@sid-code/core/tool/web-fetch.ts";
 import { WebSearchTool } from "@sid-code/core/tool/web-search.ts";
 import { LSPTool } from "@sid-code/core/tool/lsp.ts";
+import { EnterWorktreeTool } from "@sid-code/core/tool/enter-worktree.ts";
+import { ExitWorktreeTool } from "@sid-code/core/tool/exit-worktree.ts";
+import type { ToolResultDisplayMode } from "@sid-code/core/tool/types.ts";
 import type { SearchBackend } from "@sid-code/core/tool/search-backends/types.ts";
 import { bashResultDisplayMode } from "@sid-code/core/tool/bash.ts";
 import { toLegacyTool } from "@sid-code/core/tool/bridge.ts";
@@ -123,11 +126,33 @@ const EXPECTED_COMPACT = [
 ].sort();
 
 /**
+ * 期望为 `"full"`（保留正文、且**不做任何行数截断**）的工具。
+ *
+ * 判据见 `tool/types.ts`：输出虽短，但**每一行都承担不可省的语义**，折掉任意几行就是
+ * 信息损失。与 `"compact"` 的分界：compact 的正文「多到需要折」，full 的正文「少但一行
+ * 都不能少」。
+ *
+ * ⚠️ 这两个工具曾经躺在 `EXPECTED_UNDECLARED` 里，注释写着「短回执，不折」——**那是假的**。
+ * 「未声明」只表示不走数据层的 compact 折叠，`ToolResultDisplay` 仍有一层与档位无关的
+ * `maxLines=3` 组件层截断（`DEFAULT_MAX_LINES`）。enter_worktree 的成功回执是 5 个逻辑行，
+ * 其中路径提示那行按终端宽度折成 2 视觉行 → 共 6 视觉行，于是屏幕上显示前 3 行 +
+ * `… 3 行已折叠`，折掉的正是 CG-2/H3 那段「此后写文件请用 worktree 路径」的提示
+ * （台账基线：worktree 内写到主仓路径 53 次 / 4 会话）。PR #813 的真实漏网。
+ *
+ * 教训：**「不折」必须是显式声明，不能靠「没声明」来暗示**。想在屏幕上完整看到几行，
+ * 就得在工具侧声明 `"full"` —— 光不进任何档位名单，等于交给组件层兜底折 3 行。
+ */
+const EXPECTED_FULL = [
+  "enter_worktree", // 3 行回执 + 2 行路径语义提示，后者是「写文件用哪个前缀」的唯一出处
+  "exit_worktree", // 回执含「此后写文件请用主仓路径」「worktree 已删除」等语义说明
+].sort();
+
+/**
  * 期望**不声明** `resultDisplayMode` 的工具清单（显式白名单，双向对账）。
  *
  * ## 为什么需要这份清单
  *
- * 上面三个 `EXPECTED_*` 做的是「已声明的必须对上」，对「新工具压根没声明」是**静默通过**的。
+ * 上面几个 `EXPECTED_*` 做的是「已声明的必须对上」，对「新工具压根没声明」是**静默通过**的。
  * 这正是本仓漏掉 `ls` / `read_many` / `web_fetch` / `web_search` / `lsp` 的机制原因——
  * 它们的输出规模早就远超一屏（`ls` 实测 85 行、`web_fetch` 上限 100000 字符），
  * 却因为审计里没有它们的位置，一直没人评估「该不该折」。
@@ -136,11 +161,20 @@ const EXPECTED_COMPACT = [
  * 加进这里**不等于**判定它永远不该折叠——真觉得该折，就去工具自身声明档位，
  * 再从本清单删掉（而不是在这里留个"待办"）。
  *
+ * ## ⚠️ 进这份清单 = 接受组件层 3 行兜底截断
+ *
+ * 这是本清单最容易被误读的一处（PR #813 就栽在这里）：清单成员只是**没声明档位**，
+ * 屏幕上仍然是「超过 3 视觉行就折成 3 行 + `… N 行已折叠`」。所以：
+ *   - 输出**稳定 ≤ 3 视觉行**的工具，进这里没问题（折不了，也就无所谓档位）；
+ *   - 输出**会超过 3 行、且每一行都不能少**的短回执，必须声明 `"full"` 并进 `EXPECTED_FULL`；
+ *   - 输出**可能很长**的，声明 `"compact"` 并进 `EXPECTED_COMPACT`。
+ * 判断不了就先跑一次，看它真实的输出行数（别按工具名的直觉判）。
+ *
  * ## 当前不折的判据（逐个记，避免下一个人重新论证）
  *
- * - 短回执 / 交互卡片：`edit` `write` `notebook_edit`（走 diff 专用渲染，有
- *   `DIFF_COLLAPSE_MAX_LINES`）、`ask_user_question`、`save_memory`、`send_message`、
- *   `schedule_wakeup`、`task_stop`、`cron_*`、`team_*`、`enter_worktree` / `exit_worktree`、
+ * - 短回执 / 交互卡片（输出本身 ≤ 3 行，或走专用渲染）：`edit` `write` `notebook_edit`
+ *   （走 diff 专用渲染，有 `DIFF_COLLAPSE_MAX_LINES`）、`ask_user_question`、`save_memory`、
+ *   `send_message`、`schedule_wakeup`、`task_stop`、`cron_*`、`team_*`、
  *   `hypothesis_*`（默认关闭的实验工具）。
  * - 已由专用渲染 / header 摘要承担：`task_output`（`extractTaskOutputDisplay`）、
  *   `bg_task_list`（`extractTaskListDisplay`）、`bg_task_get`、`task_get`、`task_list`。
@@ -158,8 +192,6 @@ const EXPECTED_UNDECLARED = [
   "cron_delete",
   "cron_list",
   "edit",
-  "enter_worktree",
-  "exit_worktree",
   "hypothesis_challenge",
   "hypothesis_register",
   "notebook_edit",
@@ -223,6 +255,11 @@ function makeInstances() {
     // WebSearchTool 的档位是常量字段（与 backend 无关），构造只需要一个实例桩。
     // 它是旧版工具形态（`name()` 方法），与 read/grep/glob 一样直接进列表，不经 bridge。
     new WebSearchTool(stubSearchBackend),
+    // full 档（2026-11-13 补）：短回执 + 路径语义提示，6 个视觉行被组件层 maxLines=3
+    // 折掉 3 行——正是 PR #813 的漏网（白名单写「短回执不折」，实际折了）。构造无副作用，
+    // 直接进列表参与实例对账。
+    new EnterWorktreeTool(),
+    new ExitWorktreeTool(),
   ];
 }
 
@@ -253,7 +290,12 @@ function scanSourceForDisplayModeTools(): Map<string, string> {
       if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
       const src = readFileSync(join(dir, file), "utf8");
       // 常量形态：resultDisplayMode = "hidden" / resultDisplayMode: "compact"
-      const constMatch = src.match(/resultDisplayMode\s*[:=]\s*["'](hidden|summary|compact)["']/);
+      // ⚠️ 字符集必须与 `ToolResultDisplayMode` 的成员同步。漏掉一个档位的后果是**静默漏扫**：
+      // 声明了该档的工具不会被收进 found，「无遗漏」断言于是认为没有多余项、而「未声明清单」
+      // 会把它当成未声明 —— 两个方向都是假绿。`full` 就是在补 #813 时新增的档。
+      const constMatch = src.match(
+        /resultDisplayMode\s*[:=]\s*["'](hidden|summary|compact|full)["']/,
+      );
       // 函数形态：resultDisplayMode(input...) { }  或  resultDisplayMode = (input, result) => ...
       const fnMatch = /resultDisplayMode\s*[:=(]/.test(src);
       if (!constMatch && !fnMatch) continue;
@@ -353,7 +395,7 @@ function scanAllToolNames(): Set<string> {
 function resultBlock(
   toolUseId: string,
   content: string,
-  opts: { isError?: boolean; mode?: "hidden" | "summary" | "compact" } = {},
+  opts: { isError?: boolean; mode?: ToolResultDisplayMode } = {},
 ) {
   return {
     type: "tool_result" as const,
@@ -389,16 +431,28 @@ describe("工具结果呈现档位对账审计", () => {
     expect(actual).toEqual(EXPECTED_COMPACT);
   });
 
+  test("【实例对账】full 档工具集合 === EXPECTED_FULL（双向相等）", () => {
+    const actual = makeInstances()
+      .filter((t) => (t as any).resultDisplayMode === "full")
+      .map((t) => t.name())
+      .sort();
+    expect(actual).toEqual(EXPECTED_FULL);
+  });
+
   test("【源码扫描·无遗漏】自报 resultDisplayMode 的工具都在期望名单里", () => {
     const scanned = scanSourceForDisplayModeTools();
     // 防正则漂移扫空后假绿
     expect(scanned.size).toBeGreaterThanOrEqual(
-      EXPECTED_HIDDEN.length + EXPECTED_SUMMARY.length + EXPECTED_COMPACT.length,
+      EXPECTED_HIDDEN.length +
+        EXPECTED_SUMMARY.length +
+        EXPECTED_COMPACT.length +
+        EXPECTED_FULL.length,
     );
     const known = new Set([
       ...EXPECTED_HIDDEN,
       ...EXPECTED_SUMMARY,
       ...EXPECTED_COMPACT,
+      ...EXPECTED_FULL,
       ...FUNCTION_FORM_TOOLS,
     ]);
     const unexpected = [...scanned.keys()].filter((n) => !known.has(n));
@@ -415,6 +469,7 @@ describe("工具结果呈现档位对账审计", () => {
       ...EXPECTED_HIDDEN,
       ...EXPECTED_SUMMARY,
       ...EXPECTED_COMPACT,
+      ...EXPECTED_FULL,
       ...FUNCTION_FORM_TOOLS,
     ].filter((n) => !scanned.has(n));
     expect(
@@ -764,5 +819,62 @@ describe("行为回归：正文丢弃 / 错误可见 / 模型侧不变", () => {
     const block = resultBlock("t6", LEAKED_PROMPT, { mode: "hidden" });
     buildCompletedToolCall(block, "todo_write");
     expect(block.content).toBe(LEAKED_PROMPT);
+  });
+});
+
+describe("行为回归：full 档正文完整、不被任何折叠判据吞掉", () => {
+  // 5 个逻辑行 / 6 个视觉行 —— `enter_worktree` 成功回执的真实形态：「已创建并进入
+  // Worktree。/ 路径 / 分支」3 行 + 路径语义提示 2 行，其中最后一行很长，按终端列宽
+  // 折成 2 个视觉行。组件层默认 `maxLines=3` 正好折掉 3 行，折掉的正是那段路径提示
+  // —— PR #813 的漏网形态。
+  const WORKTREE_RECEIPT = [
+    "已创建并进入 Worktree。",
+    "路径: /repo/.sid-code/worktrees/thinking-off-floor",
+    "分支: worktree-thinking-off-floor",
+    "主仓根: /repo（不是当前工作树）",
+    "⚠️ 此前在该仓库读过的文件路径指向主仓，写入会落到主仓而不是这个 worktree；" +
+      "此后写文件请用 /repo/.sid-code/worktrees/thinking-off-floor 下的路径。",
+  ].join("\n");
+
+  test("full 档：正文原样保留、displayMode 透传为 full", () => {
+    const card = buildCompletedToolCall(
+      resultBlock("f1", WORKTREE_RECEIPT, { mode: "full" }),
+      "enter_worktree",
+    );
+    expect(card.resultDisplay?.content).toBe(WORKTREE_RECEIPT);
+    expect(card.resultDisplay?.displayMode).toBe("full");
+  });
+
+  test("full 档不被 compact 的「少量行降级」误吞", () => {
+    // 3 行正文 <= COMPACT_MAX_INLINE_LINES(5)。若降级判据把 full 也当成 compact 一并处理，
+    // displayMode 会变 undefined → 渲染层退回 3 行兜底截断 → 修复等于没做。
+    const threeLines = "已创建并进入 Worktree。\n路径: /repo/w\n分支: worktree-x";
+    const card = buildCompletedToolCall(
+      resultBlock("f2", threeLines, { mode: "full" }),
+      "exit_worktree",
+    );
+    expect(card.resultDisplay?.displayMode).toBe("full");
+  });
+
+  test("硬约束②：full 档的错误结果照旧完整可见", () => {
+    // 错误比成功回执更该整段可见。`isError ? undefined : ...` 的老写法会把 full 一起降级，
+    // 于是多行错误又被折回 3 行 —— history-adapter 为此单独放行了 full。
+    const errBody = "无法切回主工作区: boom\n第二行原因\n第三行建议";
+    const card = buildCompletedToolCall(
+      resultBlock("f3", errBody, { isError: true, mode: "full" }),
+      "exit_worktree",
+    );
+    expect(card.resultDisplay?.displayMode).toBe("full");
+    expect(card.resultDisplay?.content).toBe(errBody);
+    expect(card.resultDisplay?.isError).toBe(true);
+  });
+
+  test("对照组：同长度正文只要不声明档位，就交给组件层兜底折 3 行", () => {
+    // 这条不是缺陷断言，是**判据存档**：它锁住「进 EXPECTED_UNDECLARED 不等于不折」这个事实。
+    // 数据层不丢正文（content 完整），折行发生在渲染层 —— 所以只有整帧测试
+    // （tool-message-full.test.tsx）能真正抓到它，本条只说明数据层这一侧没有拦。
+    const card = buildCompletedToolCall(resultBlock("f4", WORKTREE_RECEIPT), "enter_worktree");
+    expect(card.resultDisplay?.displayMode).toBeUndefined();
+    expect(card.resultDisplay?.content).toBe(WORKTREE_RECEIPT);
   });
 });

@@ -66,6 +66,18 @@ export class EnterWorktreeTool implements Tool {
   // packages/core/tests/tool/worktree-tools-not-deferred.test.ts。
   readonly searchHint = "git worktree isolation branch 隔离 工作树 分支";
 
+  /**
+   * 正文完整展示、不做行数截断（`"full"` 档）。
+   *
+   * 成功回执 = 3 行（已创建 / 路径 / 分支）+ 2 行路径语义提示（CG-2/H3），后者是「此后
+   * 在这个仓库写文件用哪个前缀」的唯一出处，台账基线是 worktree 内写到主仓路径
+   * 53 次 / 4 会话。组件层默认的 `maxLines=3` 兜底会把它整段折掉——PR #813 的真实漏网：
+   * 审计白名单把本工具判为「短回执，不折」，屏幕上却是「… 3 行已折叠」。
+   *
+   * 判据（为什么不是调大全局行数、不是 compact）见 `tool/types.ts` 的 `resultDisplayMode`。
+   */
+  readonly resultDisplayMode = "full" as const;
+
   name(): string {
     return "enter_worktree";
   }

@@ -4,7 +4,7 @@
  * 旧版 LegacyTool 接口保留用于渐进式迁移
  */
 
-import type { ContentBlock } from "../llm/types.ts";
+import type { ContentBlock, ToolResultDisplayMode } from "../llm/types.ts";
 import type { z } from "zod/v4";
 
 /**
@@ -45,15 +45,15 @@ export interface DisplayModeResultView {
 }
 
 /**
- * 工具结果在 TUI 的呈现档位（见 `ToolCapabilityFields.resultDisplayMode` 的完整说明）。
+ * 工具结果在 TUI 的呈现档位 —— **权威定义在 `llm/types.ts`**（`ToolResultBlock` 是它的
+ * 落盘处），本模块只 re-export，保持既有 import 路径不变。
  *
- * - `"hidden"` —— 整条卡片不渲染（连 `⏺ 工具名` 都没有）。
- * - `"summary"` —— 保留卡片、丢弃 `⎿` 正文，由 header 摘要用用户语言说明发生了什么。
- * - `"compact"` —— 保留卡片与正文（`resultDisplay.content` 不置空），默认折叠成零行正文、
- *   只在标题行给结果规模；`ctrl+o` 与普通工具走同一套阶梯展开。适用于「正文是真实工作
- *   内容、只是太占行」的读写搜索类工具（read / grep / glob / bash）。
+ * 为什么不把定义收在这里：本模块已经依赖 `llm/types.ts`（`ContentBlock`），反向 import 会成环；
+ * 更关键的是**不允许两处定义**——`ToolResultBlock` 曾经另写一份内联联合，新增档位时那份不会
+ * 跟着变，于是「工具声明了新档、UI 收到时被类型收窄回旧集合」。各档语义见
+ * `ToolCapabilityFields.resultDisplayMode` 的完整说明。
  */
-export type ToolResultDisplayMode = "hidden" | "summary" | "compact";
+export type { ToolResultDisplayMode };
 
 /**
  * ToolSearch 协议字段 + 中断行为 —— 新旧两版接口共享的"能力声明"。
@@ -339,7 +339,7 @@ export interface ToolCapabilityFields<Input = unknown> {
    * 两个执行器，收益不成比例）。改用**同等效果的最小手术**：`output` 继续单份走模型侧，
    * 由工具自报 UI 该怎么处理它。模型侧行为**零改动** —— 这是本字段的硬约束。
    *
-   * ## 两档语义
+   * ## 各档语义
    *
    * - `"hidden"` —— **整条卡片不渲染**（连 `⏺ 工具名` 那行都没有）。
    *   对标 cc 的三重叠加：`userFacingName()` 返 `''`（`AssistantToolUseMessage.tsx:158`
@@ -366,6 +366,24 @@ export interface ToolCapabilityFields<Input = unknown> {
    *   把 183 行计划模式引导打到屏幕上）、`ask_user_question`（渲染
    *   `● User answered Claude's questions:` + 逐题 `· 问 → 答`）、`exit_plan_mode` 的做法。
    *   适用于「这一步用户该知道，但模型侧正文不适合直接展示」的模式切换 / 交互类工具。
+   *
+   * - `"full"` —— 保留卡片与正文，且正文**完整展示、不做任何行数截断**（标题行照常给规模）。
+   *   适用于「整段回执本身就是需要一次看全的信息」的工具。
+   *
+   *   判据：输出虽短（几行），但**每一行都承担不可省的语义**，折掉任意几行就是信息损失。
+   *   实例 `enter_worktree` / `exit_worktree`：正文 = 3 行回执 + 2 行路径语义提示
+   *   （CG-2/H3——进入 worktree 后上下文里仍留着主仓绝对路径，提示必须当场可见；台账基线
+   *   worktree 内写到主仓路径 53 次 / 4 会话）。
+   *
+   *   ⚠️ 这一档存在的原因是**折叠有两层判据，而原先只声明了其中一层**：`"compact"` 管的是
+   *   数据层「折成零行正文」；`ToolResultDisplay` 另有一层**与档位无关**的 `maxLines=3`
+   *   （`DEFAULT_MAX_LINES`）组件层截断，未声明档位的工具同样被它折。所以把短回执留在
+   *   「未声明」里等于**假装不折**——屏幕上仍然是 `… 3 行已折叠`（PR #813 的真实漏网：
+   *   审计白名单把 `enter_worktree` 判为「短回执，不折」，实际折掉 3 行，且折掉的正是
+   *   上面那段路径语义提示）。`"full"` 是唯一能表达「这几行必须完整可见」的出口。
+   *
+   *   反向判据：输出长度**随调用而变、且可能很长**的工具不要用本档（如 `cron_list` /
+   *   `sub_agent`），那会让单张卡片铺满屏；它们该用 `"compact"` 或留在默认档。
    *
    * 未声明（`undefined`）= 原样展示 `output`，是绝大多数读写/搜索类工具的正确默认。
    *
