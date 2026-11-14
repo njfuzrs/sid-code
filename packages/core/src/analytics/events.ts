@@ -873,7 +873,16 @@ export type MemoryGuardKind =
    * 它和 `secret_rejected` / `index_full` 混在一个计数里，就看不出「到底有多少条
    * agent 自造经验被拦下来」——而那正是这个缺陷的原始指标。
    */
-  | "feedback_no_quote";
+  | "feedback_no_quote"
+  /**
+   * P0-4（MD7）：用户否定过某做法（存在 tombstone），本次写入又回到同一个 key，
+   * 但正文没有显式引用那条否定条目。
+   *
+   * 单列一格的理由与 `feedback_no_quote` 同：它要回答的是「用户否定过的做法
+   * 又被写回来几次」——这正是 §2.2 那条把 agent 行为固化成经验的记忆能自我强化的原因。
+   * 混进别的计数器就答不出这个问题。
+   */
+  | "negation_unreferenced";
 
 /**
  * 后台记忆抽取的一次 end_turn 去向（记忆横向剖析 T2）。

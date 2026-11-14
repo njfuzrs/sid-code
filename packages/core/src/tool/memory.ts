@@ -12,16 +12,19 @@ import type {
   PermissionResult,
   ToolUseContext,
 } from "./types.ts";
-import type { MemoryStore, MemorySetResult } from "../memory/store.ts";
+import type { MemoryStore, MemoryEntry, MemorySetResult } from "../memory/store.ts";
 import { formatEvictionNotice } from "../memory/store.ts";
 import {
   MEMORY_SOURCES,
   MEMORY_TYPES,
   MEMORY_EXTRACT_QUERY_SOURCE,
   isMemorySource,
+  isNegationEntry,
+  referencesNegation,
   type MemorySource,
   type MemoryType,
 } from "../memory/types.ts";
+import { stripMemoryTypePrefix } from "../memory/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
 import { z } from "zod/v4";
@@ -155,6 +158,15 @@ const memorySchema = lazySchema(() =>
       .describe(
         "记忆来源（可选，缺省 inferred）：user_explicit（用户明确要求记住 / 明确表态）/ inferred（你自己的推断）/ agent_action（你这次自己做了什么，而不是用户的信息）。只在主会话里标 user_explicit；后台提取写入一律记为 agent_action，该路径传入的值会被忽略",
       ),
+    // P0-4：否定记录（tombstone）。用户明确说「不要 X」时落一条 feedback，
+    // 用 negates 指向「记录 X 做法的那条记忆的 key」——之后任何人再往那个 key
+    // 写回同样的做法，都必须显式引用这条否定（否则被拒）。
+    negates: z
+      .string()
+      .optional()
+      .describe(
+        "否定记录（可选，仅 type=feedback）：当用户明确说「不要 X」时，填**记录 X 做法的那条记忆的 key**（如 'proactive-move-doc-to-done'）。填了它这条就成为否定记录：之后往该 key 写回 X 会被要求先显式引用本条。正文必须包含用户原话与生效日期",
+      ),
   }),
 );
 
@@ -238,6 +250,8 @@ export class MemoryTool implements Tool {
       scope?: "global" | "project" | "team" | "agent";
       /** P0-3：模型可选的来源标注（内存提取路径会被覆写，见 `resolveWriteSource`） */
       source?: string;
+      /** P0-4：本条目否定（推翻）哪个 key 的做法；只在建立 tombstone 时传 */
+      negates?: string;
       /** forked / 子代理执行器注入的来源标记（见 agent/forked-agent.ts、agent/sub-agent.ts） */
       _agentId?: string;
       /** 执行器注入的调用方标签；同时是 P0-2 原话闸门与 P0-3 来源覆写的判据，主会话/子代理为 undefined */
@@ -267,6 +281,10 @@ export class MemoryTool implements Tool {
     // P0-3：来源判据。**必须在 execute 里算**，不能交给权限层 —— forked 路径上
     // `updatedInput` 会被丢弃（见 forked-agent 的注释），权限层的改写到不了 execute。
     const source = resolveWriteSource(params._querySource, params.source);
+    // P0-4：否定记录的目标 key 归一化。模型可能写 `feedback_x.md` / `project_x` / `x`，
+    // 三种写法都指向同一条记忆，落盘前统一成 key 形态 —— 否则判据里的相等比较
+    // 会因为一个 `feedback_` 前缀而静默失配（失败形态是「闸门不触发」，没人会发现）。
+    const negates = normalizeNegationTarget(params.negates);
 
     if (key.length === 0) {
       return { output: "错误: key 不能为空", isError: true };
@@ -345,6 +363,64 @@ export class MemoryTool implements Tool {
 
     log.info("TOOL", `▶ 保存记忆 [${scope}] ${key}`);
 
+    // ─── P0-4（MD7）：否定记录的两条结构约束 ───
+    //
+    // ① `negates` 只允许 feedback + project/global：否定约束是「用户的表态」，
+    //    reference 是外部指针、user 是画像，两者都不是「不要这样做」的载体；
+    //    team / agent 两条线走各自的 store，negates 落不下去 —— 静默丢失比拒绝更坏。
+    if (negates !== undefined) {
+      if (type !== "feedback") {
+        return {
+          output:
+            `错误: negates 只用于 type=feedback（收到 type=${type}）。\n` +
+            "否定记录是用户的表态「不要 X」，只有反馈类记忆能承载它；" +
+            "若要记别的类型，去掉 negates 参数即可。",
+          isError: true,
+        };
+      }
+      if (scope === "team" || scope === "agent") {
+        return {
+          output: `错误: negates 仅在 project / global 范围可用（收到 scope=${scope}）。`,
+          isError: true,
+        };
+      }
+    }
+
+    // ② 存在否定记录时，往被否定的 key 回写必须显式引用它。
+    //
+    // 判据是**结构性的**：tombstone 的 `negates` 指向哪个 key，就往哪个 key 的
+    // 后续写入上挂一道「先引用我」的要求。它挡的是「同 key 回写」——换个 key
+    // 再写一遍同样的做法，这条闸门挡不住（中文语义等价无法用字符串判定），
+    // 那部分靠提取提示词的硬规则与人工核实，不在本判据的承诺范围内。
+    const conflict = findUnreferencedNegation(await this.store.list(), key, value, {
+      buildingNegation: negates !== undefined,
+    });
+    if (conflict) {
+      log.warn(
+        "TOOL",
+        `✗ 拒绝未引用否定记录的写入 [${scope}] ${key}（被 ${conflict.tombstoneKey} 否定）`,
+      );
+      try {
+        const { logMemoryGuard } = await import("../analytics/events.ts");
+        logMemoryGuard({ kind: "negation_unreferenced", via: "save_memory", scope });
+      } catch {
+        /* 埋点失败不影响拒绝行为 */
+      }
+      return {
+        output:
+          `错误: 用户明确否定过这个做法，记录在记忆 \`${conflict.tombstoneKey}\`（它 negates 了 \`${conflict.negates}\`）。\n` +
+          `判据: 存在否定记录时，往被否定的 key 回写必须在正文里**显式引用它**——` +
+          `写入内容看起来一样，但那只是措辞相同，不是「这次是例外」的证据。\n` +
+          `改正方式（二选一）:\n` +
+          `  1. 正文里写出否定记录的 key：\`推翻 ${conflict.tombstoneKey}：<为什么这次不适用>\`\n` +
+          `  2. 用行首标签声明例外：\`例外：<为什么这次是例外>\`\n` +
+          `若你其实只是想把这件事原样写回来，那它就不该保存——用户已经说过不要。\n` +
+          `（这条闸门只覆盖 save_memory 的同 key 回写；用 edit 直接改写记忆文件仍是绕过面，` +
+          `见方案文档 §8.1。）`,
+        isError: true,
+      };
+    }
+
     // team scope：写入团队共享记忆目录（落盘后由 watcher 同步到共享目录）
     if (scope === "team") {
       const { getTeamMemoryOptions } = await import("../memory/team/runtime.ts");
@@ -404,7 +480,8 @@ export class MemoryTool implements Tool {
     try {
       // PR-A（A2）：`set()` 现在回传淘汰明细 —— 满额时这次写入的真实代价
       // 必须出现在工具结果里，模型同一轮就能看到并决定删掉临时记忆。
-      const result = await this.store.set(key, value, scope, { type, source });
+      // P0-4：`negates` 只在建立 tombstone 时有值，落盘后成为判据的结构依据。
+      const result = await this.store.set(key, value, scope, { type, source, negates });
 
       log.info("TOOL", `✓ 记忆已保存 [${scope}] ${key}`);
 
@@ -446,6 +523,57 @@ export function resolveWriteSource(
 ): MemorySource | undefined {
   if (querySource === MEMORY_EXTRACT_QUERY_SOURCE) return "agent_action";
   return isMemorySource(modelProvided) ? modelProvided : undefined;
+}
+
+/**
+ * 归一化否定目标 key（P0-4）。
+ *
+ * 模型给的可能是 `proactive-move-doc`、`feedback_proactive-move-doc` 甚至
+ * `feedback_proactive-move-doc.md`——三者指向同一条记忆。判据是**相等比较**，
+ * 不归一化就会因为一个前缀静默失配，而失败形态是「闸门根本不触发」，没人会发现。
+ * 复用 `stripMemoryTypePrefix`（与文件名生成同一套前缀口径），不另抄一条正则。
+ */
+export function normalizeNegationTarget(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim().replace(/\.md$/, "").trim();
+  if (!trimmed) return undefined;
+  return stripMemoryTypePrefix(trimmed) || undefined;
+}
+
+/**
+ * 找出「本次写入撞上了哪条否定记录」（P0-4 的代码判据）。
+ *
+ * ─── 判据是结构的，不是语义的 ───
+ *
+ * 「用户说不要 X」与「这次又要写 X」的语义等价在中文里无法用字符串判定。
+ * 所以这里只做一件**能精确判定**的事：tombstone 的 `negates` 指向哪个 key，
+ * 就往那个 key 的后续写入上挂一道「必须显式引用我」的要求。
+ * 换个 key 再写一遍同样的做法，这条判据**挡不住**——那是提示词与人工核实的职责，
+ * 不在本函数的承诺范围内（见方案文档 P0-4 的「判据的诚实说明」）。
+ *
+ * 三条排除：
+ * 1. 本次写入的 key 就是 tombstone 自己 → 更新否定条目本身，不该被自己挡住；
+ * 2. 本次写入自带 `negates` → 这是在建立 / 更新否定记录，不是在回写被否定的做法；
+ * 3. 正文显式引用了该 tombstone（key 或 `推翻：`/`例外：` 标签）→ 放行。
+ */
+export function findUnreferencedNegation(
+  entries: readonly Pick<MemoryEntry, "key" | "value" | "negates">[],
+  key: string,
+  value: string,
+  opts?: { buildingNegation?: boolean },
+): { tombstoneKey: string; negates: string } | null {
+  if (opts?.buildingNegation) return null;
+  const target = normalizeNegationTarget(key);
+  if (!target) return null;
+  for (const e of entries) {
+    if (!isNegationEntry(e.negates)) continue;
+    if (e.key === key) continue; // 否定条目自己
+    const negTarget = normalizeNegationTarget(e.negates);
+    if (!negTarget || negTarget !== target) continue;
+    if (referencesNegation(value, e.key, e.negates)) continue;
+    return { tombstoneKey: e.key, negates: e.negates };
+  }
+  return null;
 }
 
 function preview(value: string): string {
