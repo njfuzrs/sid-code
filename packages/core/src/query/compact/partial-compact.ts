@@ -17,7 +17,7 @@
  * （例如未来的 /compact-up-to 命令、或某个触发点判断"压到这里就够了"时调用）。
  */
 
-import type { Message } from "../../llm/types.ts";
+import { collectStreamUsage, type Message, type Usage } from "../../llm/types.ts";
 import type { Provider } from "../../llm/provider.ts";
 import { getLogger } from "../../debug/index.ts";
 import { estimateMessagesTokens } from "../../context/token.ts";
@@ -348,7 +348,7 @@ async function runPartialSummaryRequest(
         },
       );
       let s = "";
-      let usage: any = null;
+      let usage: Usage | null = null;
       const lifecycle = createStreamLifecycle({
         idleTimeoutMs: LIFECYCLE_PRESETS.sideCall.idleTimeoutMs,
         contentProgressTimeoutMs: LIFECYCLE_PRESETS.sideCall.contentProgressTimeoutMs,
@@ -369,9 +369,8 @@ async function runPartialSummaryRequest(
         }
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           s += event.delta.text;
-        } else if (event.type === "message_stop" && (event as any).usage) {
-          usage = (event as any).usage;
         }
+        usage = collectStreamUsage(usage, event);
       }
       return { summary: s, streamUsage: usage };
     },

@@ -263,6 +263,108 @@ export function shouldChargeBilledRequest(req: BilledRequest): boolean {
 }
 
 /**
+ * 消费侧 `recordSideCall` 的 label → 发生侧 `querySource` 的映射（缺陷 CP-2 对账用）。
+ *
+ * ## 为什么需要两套命名
+ *
+ * 发生侧按**调用链**命名（`memory_recall` / `compact` / `hook_agent`…，同一个 querySource
+ * 被多条链共用，如三个 compact 实现都写 `compact`）；消费侧按**功能**命名
+ * （`memory-recall` / `auto-compact` / `context-collapse` / `partial-compact`…）。
+ * 对账要把两端对齐，就需要一层映射。
+ *
+ * ## 为什么映射表只能有一份
+ *
+ * 第一版对账的失败形态就是「两份映射各自维护、慢慢漂移」——一个 label 改名字，
+ * 一边改了另一边没改，对账从此恒报差额或恒报 0，而两种都看不出来。
+ * 这张表必须与 {@link BILLING_SELF_REPORTED_LABELS} **相邻**：它们描述的是同一批链的两端。
+ * 反查断言在 `tests/llm/self-report-reconcile.test.ts`（每个豁免 querySource 至少被覆盖一次）。
+ */
+export const SELF_REPORTED_LABEL_TO_QUERY_SOURCE: ReadonlyMap<string, string> = new Map([
+  ["memory-recall", "memory_recall"],
+  ["auto-compact", "compact"],
+  ["context-collapse", "compact"],
+  ["partial-compact", "compact"],
+  ["hook-runner", "hook_agent"],
+  ["goal-evaluator", "goal_eval"],
+  ["tool-classifier", "tool_classifier"],
+  ["bash-classifier", "bash_classifier"],
+  ["web-fetch-extract", "web_fetch_extract"],
+  ["title-generation", "title_generation"],
+]);
+
+/**
+ * 发生侧「让给消费侧自报」的用量累计桶（缺陷 CP-2 对账的分子侧）。
+ *
+ * 键含 `model + provider + baseURL` 三个计价维度：同一个 querySource 跨模型时不能合并成
+ * 一桶（补账要按 (model, endpoint) 求价，合并会把两档价算成一档）。
+ */
+export interface SelfReportExpectedBucket {
+  querySource: string;
+  model: string;
+  provider: string;
+  baseURL?: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/**
+ * 发生侧看到的「本该由消费侧自报」的用量。会话维度：SessionEnd 补账后清空，
+ * `/clear` 经 {@link resetSelfReportExpected} 归零（由 side-call-sink 的会话重置一并触发）。
+ */
+let expectedSelfReports = new Map<string, SelfReportExpectedBucket>();
+
+/**
+ * 累计一条「已豁免发生侧计费、应由消费侧自报」的计费事件（缺陷 CP-2）。
+ *
+ * 只统计 `accounted === false` 的：被 usage-sink 票据认领的（`accounted` 已置 true）
+ * 由子代理 sink 入账，不属于「让给自报」的池子，计进来会让对账恒报假差额。
+ */
+function recordSelfReportExpected(req: BilledRequest): void {
+  const qs = req.callerLabel;
+  if (!qs || !BILLING_SELF_REPORTED_LABELS.has(qs)) return;
+  if (req.accounted) return;
+  const key = [qs, req.model, req.provider, req.baseURL ?? ""].join("\u0000");
+  let bucket = expectedSelfReports.get(key);
+  if (!bucket) {
+    bucket = {
+      querySource: qs,
+      model: req.model,
+      provider: req.provider,
+      ...(req.baseURL !== undefined && { baseURL: req.baseURL }),
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    };
+    expectedSelfReports.set(key, bucket);
+  }
+  bucket.calls += 1;
+  bucket.inputTokens += req.usage.inputTokens ?? 0;
+  bucket.outputTokens += req.usage.outputTokens ?? 0;
+  bucket.cacheReadTokens += req.usage.cacheReadInputTokens ?? 0;
+  bucket.cacheCreationTokens += req.usage.cacheCreationInputTokens ?? 0;
+}
+
+/** 发生侧「让给消费侧自报」的用量快照（对账用；只读副本，防止调用方改内部状态）。 */
+export function getSelfReportExpected(): SelfReportExpectedBucket[] {
+  return [...expectedSelfReports.values()].map((b) => ({ ...b }));
+}
+
+/**
+ * 清零对账的分子侧。
+ *
+ * 必须由「会话结束补账之后」与「/clear 换会话」两处调用：不清零会让同一会话
+ * 退出两次（SIGHUP + 正常退出）补两笔钱——错向是高估，比漏记更难发现。
+ */
+export function resetSelfReportExpected(): void {
+  expectedSelfReports = new Map();
+}
+
+/**
  * 泛化调用方标签：只表示「走了哪条通道」，不表示「哪个任务在花钱」。
  *
  * `runForkedAgent` 把 `querySource` 写死成 `agent:fork`（`agent/forked-agent.ts`），
@@ -401,6 +503,10 @@ export function recordBilledRequest(req: BilledRequest): void {
     } catch {
       /* 调用方聚合失败不影响入账 */
     }
+    // 缺陷 CP-2：把「发生侧看到、但让给消费侧自报」的用量记到对账分子侧。
+    // 必须放在票据认领（上面 `usageAccounting` 那段）**之后**：被认领的
+    // `accounted` 已置 true，由子代理 sink 入账，不属于"让给自报"的池子。
+    recordSelfReportExpected(req);
     notifyObservers(req);
   } catch {
     /* 计费上报绝不影响流 */

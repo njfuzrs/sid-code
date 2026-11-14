@@ -176,3 +176,104 @@ describe("非流式影子调用必须走 sendNonStreamingSideCall", () => {
     expect(n).toBeGreaterThanOrEqual(4);
   });
 });
+
+/**
+ * 缺陷 CP-1 防复发：流式 usage 取数必须走 `collectStreamUsage`。
+ *
+ * ## 它拦的是什么
+ *
+ * 坏形态是这个（曾在 7 个辅助调用点各写一遍）：
+ *
+ * ```ts
+ * } else if (event.type === "message_stop" && (event as any).usage) {
+ * ```
+ *
+ * `message_stop` 在 `StreamEvent` 里**没有 usage 字段**，provider 也从不往它上面挂 usage。
+ * `as any` 让类型系统彻底失声，于是这 7 条链的成功路径 usage 恒为 null、
+ * `recordSideCall` 恒不触发；而它们又都在 `BILLING_SELF_REPORTED_LABELS` 里被豁免了
+ * 发生侧计费 —— 两头都不记，钱静默漏了 199 次（轨迹实测）。
+ *
+ * ## 为什么判据是「同一行同时出现 message_stop 与 .usage」
+ *
+ * 取数必然把两者写在同一个条件表达式里，跨行写法在本仓不存在（真要跨行，
+ * 这个门禁拦不住，但 `collectStreamUsage` 是唯一实现这件事由 review 兜）。
+ * 判据读**代码**不读注释：`types.ts` 的 `collectStreamUsage` 文档注释里就引用了
+ * 这个坏形态作为反例，不剥注释会把文档自己报出来。
+ */
+
+/** 剥掉注释（`//` 行注释、`/* *\/` 块注释），**保留字符串内容与换行**。
+ *
+ * ⚠️ 必须保留字符串内容：坏形态的 `message_stop` 就在字符串字面量里，
+ * 早期版本把引号内字符也替换成空格，于是每处都被当成"没有 message_stop"跳过，
+ * 门禁恒绿（2026-11-13 变异自证实测抓到）。字符串里的 `//` 也不该被当注释。 */
+function stripComments(src: string): string {
+  let out = "";
+  let i = 0;
+  let quote: string | null = null;
+  while (i < src.length) {
+    const ch = src[i];
+    if (quote) {
+      out += ch;
+      if (ch === "\\") {
+        out += src[i + 1] ?? "";
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
+        out += src[i] === "\n" ? "\n" : " ";
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+describe("流式 usage 取数必须走 collectStreamUsage（缺陷 CP-1 防复发）", () => {
+  test("src 内不再出现「message_stop 与 .usage 同处一行」的取数写法", () => {
+    const files = SRC_ROOTS.flatMap((r) => walk(r));
+    // 扫描器自证：根目录解析错了会扫出 0 个文件，然后这个测试恒绿。
+    expect(files.length).toBeGreaterThan(300);
+
+    const offenders: string[] = [];
+    let scannedFiles = 0;
+
+    for (const f of files) {
+      const src = readFileSync(f, "utf-8");
+      if (!src.includes("message_stop")) continue;
+      scannedFiles += 1;
+      const lines = stripComments(src).split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const code = lines[i];
+        if (!code.includes("message_stop")) continue;
+        // 原 bug 形态：同一行既拿 message_stop 当判据，又用 .usage 取数。
+        if (!/\.usage\b/.test(code)) continue;
+        offenders.push(`${f.replace(/.*\/packages\//, "packages/")}:${i + 1}: ${lines[i].trim()}`);
+      }
+    }
+
+    // 判据本身要有分母：src 里确实有人处理 message_stop（provider 收尾、mocks），
+    // 否则上面的 include 判断一旦失效这个测试就恒绿。
+    expect(scannedFiles).toBeGreaterThanOrEqual(5);
+    expect(offenders).toEqual([]);
+  });
+});

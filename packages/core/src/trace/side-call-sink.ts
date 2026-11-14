@@ -13,6 +13,13 @@
  * hookSystem / sessionState，传参改面太大。全局 sink 是最轻量的接入方式。
  */
 
+// 缺陷 CP-2：对账要按发生侧 querySource 聚合已自报量，映射表与对账基线的唯一实现在
+// billing-sink（依赖方向 trace → llm 是单向的：billing-sink 不引用本模块）。
+import {
+  resetSelfReportExpected,
+  SELF_REPORTED_LABEL_TO_QUERY_SOURCE,
+} from "../llm/billing-sink.ts";
+
 export interface SideCallRecord {
   label: string;
   model: string;
@@ -319,8 +326,66 @@ export function getSessionSideStats(): SideCallSnapshot {
 /**
  * /clear：会话维度归零（清基线 + 把 mark 挪到末尾）。进程内记录保留给 trajectory ——
  * trajectory 不随 /clear 重开，它的 side_* 口径不该被 /clear 改写。
+ *
+ * 缺陷 CP-2 的对账分子侧（`billing-sink` 的 expected）也在这里归零：两边必须同一个
+ * 会话口径，否则 /clear 之后会出现「新会话 reported 从 0 起，expected 还带着旧会话的
+ * 几万 token」——对账恒报一笔不存在的漏账，而它看起来像真漏。
  */
 export function resetSessionSideStats(): void {
   _baseline = null;
   _sessionMark = _calls.length;
+  resetSelfReportExpected();
+}
+
+/**
+ * 已自报的 token 按**发生侧 querySource** 聚合（缺陷 CP-2 对账的减数侧，会话维度）。
+ *
+ * 与 {@link getSessionSideStats} 的区别：那个按消费侧 label 分组（展示用），
+ * 这里按 querySource 分组 —— 只有换算到同一套命名，才能和计费事件的发生侧口径相减。
+ *
+ * 未知 label（如补账写入的 `self-report-gap:*`）不计入：补账补的就是差额，
+ * 把它算进 reported 会让下一轮对账看不出漏报（补账动作会被记成"已经自报过"）。
+ */
+export function getReportedSelfReportTokens(): Map<
+  string,
+  {
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  }
+> {
+  const out = new Map<
+    string,
+    {
+      calls: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+    }
+  >();
+  for (let i = _sessionMark; i < _calls.length; i++) {
+    const c = _calls[i]!;
+    const qs = SELF_REPORTED_LABEL_TO_QUERY_SOURCE.get(c.label);
+    if (!qs) continue;
+    let b = out.get(qs);
+    if (!b) {
+      b = {
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      };
+      out.set(qs, b);
+    }
+    b.calls += 1;
+    b.inputTokens += c.inputTokens;
+    b.outputTokens += c.outputTokens;
+    b.cacheReadTokens += c.cacheReadTokens;
+    b.cacheCreationTokens += c.cacheCreationTokens;
+  }
+  return out;
 }

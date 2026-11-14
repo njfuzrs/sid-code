@@ -304,6 +304,47 @@ export function accumulateUsage(target: Usage, eventUsage: Usage | undefined): U
 }
 
 /**
+ * 流式调用取 usage 的**唯一实现**：只认真正携带 usage 的那两个事件。
+ *
+ * ## 为什么必须收口（缺陷 CP-1，2026-11-13 实测）
+ *
+ * 全仓曾有 7 个辅助调用点各自写同一段取数逻辑：
+ *
+ * ```ts
+ * } else if (event.type === "message_stop" && (event as any).usage) {
+ *   usage = (event as any).usage;
+ * }
+ * ```
+ *
+ * `message_stop` 在 {@link StreamEvent} 里**没有 usage 字段**，所有 provider 也从不往它上面
+ * 挂 usage —— 于是这 7 条链的**成功路径** usage 恒为 null、`recordSideCall` 恒不触发。
+ * 更隐蔽的是它们在 `BILLING_SELF_REPORTED_LABELS` 里被豁免了发生侧计费（因为"我自己会报"），
+ * 两头都不记账 → 钱静默漏了 199 次（轨迹实测）。`as any` 让类型系统完全拦不住。
+ *
+ * ## 口径
+ *
+ * - `message_start`：Anthropic 族在这里给全量输入侧用量（`message.usage`）。
+ * - `message_delta`：Anthropic 族给增量、OpenAI 族给流尾累计值，两条都靠
+ *   {@link accumulateUsage} 累加/取末值，与主循环同口径。
+ * - 其余事件一律忽略。**不要**在这里加 `message_stop` 分支：它没有 usage，
+ *   加了就退回那个"永不触发"的写法（静态门禁
+ *   `tests/llm/billing-self-reported-labels.test.ts` 会拦住）。
+ *
+ * `acc` 传 null 表示"还没见过 usage"，返回 null 表示整条流都没给过用量 —— 调用方据此
+ * 决定是否记账，**不要用 0 冒充"没花 token"**（漏记与全零在账本上长得一样）。
+ */
+export function collectStreamUsage(acc: Usage | null, event: StreamEvent): Usage | null {
+  switch (event.type) {
+    case "message_start":
+      return accumulateUsage(acc ?? { inputTokens: 0, outputTokens: 0 }, event.message.usage);
+    case "message_delta":
+      return accumulateUsage(acc ?? { inputTokens: 0, outputTokens: 0 }, event.usage);
+    default:
+      return acc;
+  }
+}
+
+/**
  * 给携带 usage 的事件盖上「产出它的 provider」的章（D5，多 Provider 层审计）。
  *
  * 盖在 ModelFallback —— 它是唯一同时知道「这个事件从哪个 provider 实例出来」的位置
