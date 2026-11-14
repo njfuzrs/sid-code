@@ -8867,6 +8867,15 @@ export class App {
       sessionState: this.sessionState,
       fallbackModel: this.config.model,
       fallbackProvider: this.config.provider,
+      // CP-12：落行必须用**逻辑会话 id**（resume 时 = 被恢复会话 id = 轨迹目录名），
+      // 不能在 core 里默认取 `sessionState.sessionId`（本进程新 id）。
+      // 取进程 id 的后果：resume 后同一会话在 usage-ledger.jsonl 里拆成两行，
+      // 新行 id 在 trajectories/sessions/ 下没有对应目录；而这一行的 promptTotal /
+      // costUSD 经 usage_stats 回灌是会话口径、byAgent 是进程口径 —— 同一行两种作用域，
+      // 按行求和会把 resume 前的用量算两遍。四条回灌路径见 buildUsageLedgerEntry 注释。
+      // 延迟到调用时取（不在构造期捕获），与 checkpoint / transcript_path 同口径 ——
+      // 构造函数早于 restoreSession，捕获局部变量会把进程 id 定死。
+      logicalSessionId: this.getLogicalSessionId(),
     });
   }
 
@@ -9307,6 +9316,14 @@ export class App {
       process.stderr.write(`[runHeadless] SessionEnd hook 失败: ${hookErr?.message ?? hookErr}\n`);
     }
     // B3：无头模式退出也结束会话持久化（幂等）
+    //
+    // CP-12：`-p` 路径此前**从不落 usage_stats / side_call_stats / agent_usage**
+    // （`persistUsageStats` 只挂在 TUI 的每轮 done 上）。它单独看不明显，因为那时账本
+    // 按进程 id 拆两行、每行只含自己那段，按 sessionId 求和恰好对；但账本改成
+    // 逻辑会话 id 单行后，resume 这一行只含第二段 —— 变成**少算**，比双计更难发现。
+    // 单行化的前提是「同一行所有字段同一会话作用域」，所以这里必须补落盘，
+    // 否则修复本身会把「拆行」换成「丢账」。放在 finalize 之前：appendMetadata 需要 store 还开着。
+    this.persistUsageStats();
     this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
     try {
@@ -9782,6 +9799,8 @@ export class App {
       );
     }
     // B3：stream-json 无头模式退出也结束会话持久化（幂等）
+    // CP-12：与 runHeadless 同理 —— 不落 usage_stats 时，单行账本在 resume 后会少算前一段。
+    this.persistUsageStats();
     this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
     try {

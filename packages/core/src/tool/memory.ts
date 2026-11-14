@@ -57,6 +57,20 @@ const HOW_LINE_RE = new RegExp(`${LABEL_LEAD}how to apply${LABEL_TAIL}`, "im");
  */
 const SNAPSHOT_RE = /(截至|截止到|进度|阶段状态|pr[-_ ]?status|progress|status\b|周报|活动日志)/i;
 
+/**
+ * P0-2（MD2）：后台提取代理写 feedback 时，正文里必须有「」包住的用户原话。
+ *
+ * 判据是「有原话可引」，不是「像不像一条规矩」。本缺陷的原始形态是
+ * `feedback_browser_batch_screenshot` 这类条目：内容是 agent 自己的操作步骤
+ * （怎么批量截图、按什么顺序跑命令），整条没有任何一句来自用户。这类文本再流畅，
+ * 也不可能包含一对包住 ≥4 字的「」——所以才用这个结构性判据，而不是关键词黑名单
+ * （「做法」「步骤」这类词在真正的用户原话里也会出现）。
+ *
+ * 为什么门槛是 4 字：`「X」` 这种单字引用多半是行文里的强调（「他说『要』」），
+ * 不足以承载一句用户原话；20 字以上又会把「以后都跑 lint」这类短而明确的指令挡掉。
+ */
+const USER_QUOTE_RE = /「[^」]{4,}」/;
+
 export interface MemoryWriteQuality {
   hasWhy: boolean;
   hasHow: boolean;
@@ -143,6 +157,14 @@ export class MemoryTool implements Tool {
    */
   readonly consumesAgentId = true as const;
 
+  /**
+   * P0-2（MD2）：声明读执行器注入的 `_querySource`（契约见 `tool/types.ts`）。
+   * 后台提取代理写 feedback 时的「必须带用户原话」闸门靠在它上面——`_agentId` 只能
+   * 分辨到 "forked" 粒度，会把 auto-dream / session-memory-update 一起拦掉。
+   * 拿不到时（主会话 / 子代理 / 直接 execute）闸门不触发，这是安全默认。
+   */
+  readonly consumesQuerySource = true as const;
+
   constructor(store: MemoryStore, agentType?: string) {
     this.store = store;
     this.agentType = agentType;
@@ -196,6 +218,8 @@ export class MemoryTool implements Tool {
       scope?: "global" | "project" | "team" | "agent";
       /** forked / 子代理执行器注入的来源标记（见 agent/forked-agent.ts、agent/sub-agent.ts） */
       _agentId?: string;
+      /** P0-2：本次 fork 的任务标签（只在自报 consumesQuerySource 时有值，主会话/子代理为 undefined） */
+      _querySource?: string;
     };
 
     if (!params.key || !params.value) {
@@ -255,6 +279,41 @@ export class MemoryTool implements Tool {
           `这类信息应该放在 .env 或环境变量, 通过 process.env 在运行时读取.\n` +
           `如需保存与凭证相关的元信息, 请仅描述类型 (例如 "用户使用 GitHub Personal Access Token 调 API"), ` +
           `不要把凭证明文写入 value 字段.`,
+        isError: true,
+      };
+    }
+
+    // P0-2（MD2）：后台提取代理写 feedback 类记忆时，正文里必须有「」包住的用户原话。
+    //
+    // 为什么只拦 memory-extract：主模型写记忆通常就是用户当轮明确要求的事，它手上的
+    // 原话就在上下文里；而提取代理面对的是「用户没反对」的静默采纳，把 agent 自己的
+    // 操作步骤复述成 feedback（本缺陷的原始形态）时，没有任何原话可引。
+    //
+    // 为什么用 _querySource 而不是 via：via 只能分辨到 "forked" 粒度，那个粒度同时
+    // 覆盖 auto-dream / session-memory-update —— 按 via 拦会把它们的写入一起打掉，
+    // 而且失败形态是「写入静默减少」，没人会发现。
+    //
+    // 拿不到 _querySource（主会话 / 子代理 / 直接调 execute）一律放行：
+    // 那是安全默认，见 tool/types.ts 的 consumesQuerySource 契约。
+    if (
+      type === "feedback" &&
+      params._querySource === "memory-extract" &&
+      !USER_QUOTE_RE.test(value)
+    ) {
+      log.warn("TOOL", `✗ 拒绝保存缺少用户原话的 feedback 记忆 [${scope}] ${key}`);
+      try {
+        const { logMemoryGuard } = await import("../analytics/events.ts");
+        logMemoryGuard({ kind: "feedback_no_quote", via: "save_memory", scope });
+      } catch {
+        /* 埋点失败不影响拒绝行为 */
+      }
+      return {
+        output:
+          "错误: feedback 类记忆必须在正文里逐字引用用户原话（用「」包住，至少 4 个字）。\n" +
+          "判据: 没有原话的 feedback 多半是 agent 自己推断出来的「用户会喜欢这样」，" +
+          "而不是用户真的说过——本缺陷的原始形态就是把 agent 的操作步骤写成了经验。\n" +
+          "改正方式: 把你依据的那句用户原话原样放进 value，例如 用户说「以后提交前都跑一遍 lint」。\n" +
+          "若找不到这样一句原话，这条就不是 feedback：它是 agent 自己的操作步骤，不要保存。",
         isError: true,
       };
     }

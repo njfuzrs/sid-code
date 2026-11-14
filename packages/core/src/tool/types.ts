@@ -252,6 +252,28 @@ export interface ToolCapabilityFields<Input = unknown> {
   consumesToolUseId?: true;
 
   /**
+   * P0-2（MD2）：工具自报「我需要知道本次 fork 是哪个后台任务」，执行器据此注入
+   * `_querySource = <ForkedAgentOptions.querySource>`。
+   *
+   * ## 为什么不能从 `_agentId` 反推
+   *
+   * 注入给工具的是写死的 `"forked-agent"`，`writeVia()` 由此只能分辨到 `"forked"`
+   * 粒度——而 `"forked"` 同时覆盖 memory-extract / auto-dream / session-memory-update
+   * 三个后台任务。闸门一旦写成 `via === "forked"`，就会出现「本意只拦提取代理、
+   * 实际连梦境整理也拦」的误伤（且没人会发现：它们的写入静默减少）。
+   *
+   * ## 契约
+   *
+   * - 类型是 `true`：本字段只有「声明」一种含义。
+   * - 声明者**必须真的读它**，并为「拿不到」准备**安全默认**：主会话、子代理、
+   *   直接调 `execute()` 的路径都不会注入（它们没有 querySource 这个概念），
+   *   拿不到时不能因此拒绝写入——那会把主模型路径一起废掉。
+   * - 只在 `runForkedAgent` 的执行链上注入；当前唯一消费者是 `save_memory`
+   *   （P0-2 的 feedback 原话校验只对 `memory-extract` 生效）。
+   */
+  consumesQuerySource?: true;
+
+  /**
    * D11：单请求 strict 工具超过上游上限（Anthropic 20 个）时，谁先保住 strict。
    *
    * 数值越大越优先，未声明为 0。只在超限时起作用，不影响「发不发 strict」本身。

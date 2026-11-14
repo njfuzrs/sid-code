@@ -767,10 +767,14 @@ export async function runForkedAgent(
           // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃。
           // 只给自报 consumesAgentId 的工具注入（契约见 tool/types.ts）：无差别注入会把内部
           // 字段漏给 StructuredOutput 的 schema 校验与 MCP server 的 arguments。
+          // P0-2（MD2）：同时按需注入本次 fork 的任务标签。不能从 `_agentId` 反推 ——
+          // 它写死为 "forked-agent"，writeVia() 只能分辨到 "forked" 粒度，而那个粒度
+          // 同时覆盖 memory-extract / auto-dream / session-memory-update。
           const res = await tool.execute(
             {
               ...(validation.data as Record<string, unknown>),
               ...(tool.consumesAgentId ? { _agentId: "forked-agent" } : {}),
+              ...(tool.consumesQuerySource ? { _querySource: options.querySource } : {}),
             },
             signal,
           );
