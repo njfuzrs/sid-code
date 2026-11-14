@@ -138,6 +138,23 @@ export interface CacheBreakReport {
    * undefined = 调用方没传 messages，不可判 —— 聚合时**不要**当成 false。
    */
   messagePrefixChanged?: boolean;
+  /**
+   * system + tools + 工具顺序的组合前缀 hash 是否与上一次请求相同。
+   *
+   * CP-8：这是 `previousPrefixHash === currentPrefixHash` 的**结构化形式**，与它同源同处
+   * 产出（同一个表达式）。存在的理由是让渲染层能直接读布尔值拼文案，而不是拿两个 hash
+   * 字符串在显示层做比较 —— 后者会让「面板显示什么」与「聚合统计判了什么」变成两份判据。
+   * undefined = 没有可比对象（首次响应）。
+   */
+  prefixHashSame?: boolean;
+  /**
+   * 消息前缀是否逐字节一致（尾部追加不算变化）。
+   *
+   * CP-8：与 `messagePrefixChanged` 是同一事实的两种写法，在产出点由同一个表达式写入。
+   * 为什么两个都留：`messagePrefixChanged` 已被聚合/遥测消费（改它的含义会让新旧记录
+   * 不可比），而三态语义（undefined = 不可判）在显示层读 `Same` 这个名字更不容易搞反。
+   */
+  messagePrefixSame?: boolean;
   /** 改写时：第一条不一致的消息下标 */
   firstChangedMessageIndex?: number;
   /** 改写时：上一轮可缓存前缀里被作废的比例（0~1，按序列化字符估算，分母是上一轮总长） */
@@ -385,10 +402,14 @@ export class CacheBreakDetector {
       currentCacheReadTokens: params.cacheReadTokens,
       previousPrefixHash: prevPrefixHash,
       currentPrefixHash: currPrefixHash,
+      // CP-8：结构化证据与上面两个 hash **同一个表达式**给出（同源，不会漂移）。
+      prefixHashSame: prevPrefixHash === currPrefixHash,
       precededByRetry: params.precededByRetry,
       ...(msgDiff
         ? {
             messagePrefixChanged: msgDiff.changed,
+            // 同一事实的第二种写法：三态原样传递（undefined = 不可判）。
+            messagePrefixSame: !msgDiff.changed,
             ...(msgDiff.changed
               ? {
                   firstChangedMessageIndex: msgDiff.firstChangedIndex,

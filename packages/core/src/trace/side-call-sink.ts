@@ -63,11 +63,19 @@ export interface SideCallStats {
     model: string;
     inputTokens: number;
     outputTokens: number;
+    /**
+     * 本次调用命中缓存的输入 token（CP-10d）。
+     *
+     * 与 `inputTokens` 配对才能显示「命中率」：`tokensSent` 是 **input 的累计**，
+     * 分母与 `cacheReadTokens` 同源，所以按 label 汇总后算出的比例与模型的
+     * 缓存命中率是可比的。缺了它，`/cost` 的辅助调用行只能显示「发送 325k token」，
+     * 用户看不出这 325k 里有九成是命中价。
+     */
+    cacheReadTokens: number;
     costUSD: number;
     /** undefined = 未采集（不是 0） */
     durationMs?: number;
-  }>;
-  /** T13.4：失败统计 */
+  }> /** T13.4：失败统计 */;
   failed: number;
   timedOut: number;
   /** 缺陷 16：成功但无 usage 的调用数（成本未知，不是 0） */
@@ -189,6 +197,7 @@ export function getSideStats(): SideCallStats {
       model: c.model,
       inputTokens: c.inputTokens,
       outputTokens: c.outputTokens,
+      cacheReadTokens: c.cacheReadTokens,
       costUSD: c.costUSD,
       ...(c.durationMs !== undefined && { durationMs: c.durationMs }),
     });

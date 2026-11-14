@@ -10,6 +10,8 @@
 import { getBackgroundGateStats } from "@sid-code/core/agent/background-task-gate.ts";
 import { getSideStats } from "@sid-code/core/trace/side-call-sink.ts";
 import { getRecentCacheBreaks } from "@sid-code/core/api/cache-detection.ts";
+import { getRecentPrefixBreaks } from "@sid-code/core/trace/prefix-break-probe.ts";
+import { reconcileSelfReports } from "@sid-code/core/llm/self-report-reconcile.ts";
 import { resolveEffectiveCostLimit } from "@sid-code/core/llm/quota.ts";
 import { buildCostReport } from "@sid-code/core/session/cost-report.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
@@ -47,10 +49,22 @@ export class CostCommand implements LocalCommandModule {
     // 读不到 config（部分测试只给 sessionState）时按未设置处理，预算段整段省略。
     const costLimitUSD = resolveEffectiveCostLimit(config?.quota?.costLimit, config?.costLimit);
 
+    // CP-9：字节侧断裂记录（与 getRecentCacheBreaks 是两个独立检测器，各报各的）
+    // 与 PR-A 的对账差额都从进程级单例取**只读快照**，本命令不写任何状态。
+    const prefixBreaks = getRecentPrefixBreaks();
+    // PR-A 收尾：差额只提示不补账（补账在会话结束的 reconcileSelfReports({ apply: true })）。
+    const { gaps } = reconcileSelfReports();
+    const pendingCalls = gaps.reduce(
+      (sum, g) => sum + Math.max(0, g.expectedCalls - g.reportedCalls),
+      0,
+    );
+
     const report = buildCostReport(ss, {
       sideStats: getSideStats(),
       gateStats: this.readGateStats(),
       cacheBreaks: getRecentCacheBreaks(),
+      prefixBreaks,
+      ...(pendingCalls > 0 ? { selfReportGap: { pendingCalls } } : {}),
       ...(costLimitUSD > 0 ? { costLimitUSD } : {}),
     });
 
