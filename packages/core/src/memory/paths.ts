@@ -19,7 +19,7 @@
  */
 
 import { homedir } from "os";
-import { join, isAbsolute, resolve, sep, basename, dirname } from "path";
+import { join, isAbsolute, resolve, sep, basename, dirname, relative } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { getSidHome, isInsideSidHome } from "../config/paths.ts";
@@ -448,6 +448,42 @@ export function isAnyPrivateMemPath(absolutePath: string, cwd: string = process.
     const nd = resolve(d);
     return target === nd || target.startsWith(nd + sep);
   });
+}
+
+/**
+ * 从一条私有记忆文件的路径反推它所属的**记忆目录**（索引 `MEMORY.md` 所在目录）。
+ *
+ * 与 `isAnyPrivateMemPath` 覆盖同一批目录，但需要具体到**哪一条线**：
+ * 索引是每条线各一份（project / global / agents/<type>），所以「索引是否已截断」
+ * 必须按那一条线的 MEMORY.md 判 —— 拿 project 的索引去判 global 的写入，
+ * 会在项目记忆满、全局记忆空时把全局写入误拦（也会反过来漏拦）。
+ *
+ * 返回 null = 不是任何一条私有记忆线的文件。**不覆盖 team 目录**：
+ * 团队记忆的索引与容量口径不同，且它有自己的写入闸门（`isTeamMemPath`）。
+ *
+ * ⚠️ 会经 `getAutoMemPath` fork git，属于**昂贵判定**。调用方必须先用
+ * `isAnyPrivateMemPath` 或自己的廉价否定把非记忆路径挡掉，不要对每次文件写入都调它。
+ */
+export function resolvePrivateMemDir(
+  absolutePath: string,
+  cwd: string = process.cwd(),
+): string | null {
+  const target = resolve(absolutePath);
+  const under = (dir: string) => target === dir || target.startsWith(dir + sep);
+
+  const projectDir = resolve(getAutoMemPath(cwd));
+  if (under(projectDir)) return projectDir;
+
+  const globalRoot = resolve(join(getSidHome(), "memory"));
+  if (!under(globalRoot)) return null;
+
+  // agent 记忆：`<globalRoot>/agents/<sanitized-type>/…` —— 它有自己的 MEMORY.md，
+  // 直接按 global 根判会读到另一份索引。取不到类型段时退回 global 根。
+  const parts = relative(globalRoot, target).split(sep);
+  if (parts.length >= 2 && parts[0] === "agents" && parts[1]) {
+    return join(globalRoot, "agents", parts[1]);
+  }
+  return globalRoot;
 }
 
 /**

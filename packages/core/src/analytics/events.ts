@@ -882,7 +882,16 @@ export type MemoryGuardKind =
    * 又被写回来几次」——这正是 §2.2 那条把 agent 行为固化成经验的记忆能自我强化的原因。
    * 混进别的计数器就答不出这个问题。
    */
-  | "negation_unreferenced";
+  | "negation_unreferenced"
+  /**
+   * P1-1（MD3）：索引已满时，同 key 更新换掉了旧条目的首行结论，却没有 `推翻：` / `纠正：`
+   * 声明。
+   *
+   * 单列一格的理由与 `feedback_no_quote` / `negation_unreferenced` 同：它要回答的是
+   * 「一个 key 被静默换了主题几次」——这正是 MD3 的定义，混进别的计数器就答不出来。
+   * `via` 区分 `save_memory` 与 `write_edit`：两者都要挡住，只挡一条等于没挡（模型换条路就绕过）。
+   */
+  | "conclusion_replace";
 
 /**
  * 后台记忆抽取的一次 end_turn 去向（记忆横向剖析 T2）。
