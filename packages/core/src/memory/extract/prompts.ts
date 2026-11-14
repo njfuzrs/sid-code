@@ -10,6 +10,7 @@
  */
 
 import { MEMORY_TYPE_DESCRIPTIONS } from "../types.ts";
+import type { VerifyTarget } from "./verify.ts";
 
 /**
  * ⚠️ 这里**刻意没有** team scope 分流段（2026-10-24 移除）。
@@ -35,6 +36,11 @@ export function buildExtractPrompt(
    * 新建的条目进不了索引、且后台路径会被权限层拒绝，只能更新已有 key。
    */
   capacityLine?: string,
+  /**
+   * P1-2（MD5）：本轮要核实的那条旧记忆。传了它就把「不要验证」段换成核实段 ——
+   * 这是**唯一**允许去查项目源码的轮次，且只对这一个条目有效。
+   */
+  verifyTarget?: VerifyTarget | null,
 ): string {
   const truncated = capacityLine?.includes("已截断") ?? false;
   const capacitySection = capacityLine
@@ -48,6 +54,44 @@ export function buildExtractPrompt(
   const typeList = Object.entries(MEMORY_TYPE_DESCRIPTIONS)
     .map(([k, v]) => `- **${k}**: ${v}`)
     .join("\n");
+
+  // P1-2（MD5）：核实段与「不要验证」段**二选一**。
+  //
+  // 刻意不写成「加一段额外允许」：两段同时存在时，模型会看到「不要为确认旧记忆
+  // 是否仍然准确去读代码」和「去核实这条记忆的前提」，冲突之下它多半选保守的那条
+  // （少做一件事不吃亏），核实就永远不会发生。所以有核实目标时整段替换。
+  const verifySection = verifyTarget
+    ? `## 本轮额外任务：核实一条旧记忆（唯一允许查源码的轮次）
+
+清单里这条记忆已经 ${verifyTarget.idleDays} 天没有被读过${
+        verifyTarget.neverRead ? "（而且从没被读过）" : ""
+      }：
+
+  key: ${verifyTarget.key} | filename: ${verifyTarget.filename}
+
+本轮**额外允许**你为**这一条**去查证，仅限这一条、只用一轮：
+- 可以 grep / read 项目源码、跑 git 命令，确认它的前提是否仍然成立
+- 不要顺手核实清单里的其它条目 —— 其它条目这轮仍然按下面的「不要验证」处理
+
+写回规则（二选一，别两条都做）：
+- 前提**已不成立** → 用 \`save_memory\` 更新同一个 key（${verifyTarget.key}），正文以
+  \`纠正：<旧结论为什么不成立>\` 开头，写清新的结论与依据。**不要**新建一个 key。
+- 前提**仍成立** → **什么都不做**。不要为了「证明核实过」而重写文件 ——
+  重写会把 mtime 推新，让新鲜度判断把它当成「最近改过」。
+
+## 其它条目仍然不要验证（预算只够写，不够查）
+
+上面那一轮核实是**唯一**的例外。除此之外，你只有很少几轮，只依据对话里已经出现的
+内容判断与保存：
+- 不要为清单里的其它条目去 grep / glob / read 项目源码、不要跑 git
+- 唯一允许的读取是现有记忆文件本身（为了用相同 key 更新它）。`
+    : `## 不要验证（预算只够写，不够查）
+
+你只有很少几轮。**只依据上面对话里已经出现的内容**判断与保存：
+- 不要 grep / glob / read 项目源码去核实对话里的说法
+- 不要跑 git 命令、不要查看提交历史
+- 不要为了确认旧记忆是否仍然准确去读代码 —— 那是 autoDream 的职责
+唯一允许的读取是现有记忆文件本身（为了用相同 key 更新它）。`;
 
   return `你是后台记忆提取代理。回顾上面的对话，提取值得长期记住的信息并保存。
 
@@ -108,13 +152,7 @@ ${capacitySection}按索引保留优先级排序（user → feedback → project
 
 ${existingMemoriesManifest}
 
-## 不要验证（预算只够写，不够查）
-
-你只有很少几轮。**只依据上面对话里已经出现的内容**判断与保存：
-- 不要 grep / glob / read 项目源码去核实对话里的说法
-- 不要跑 git 命令、不要查看提交历史
-- 不要为了确认旧记忆是否仍然准确去读代码 —— 那是 autoDream 的职责
-唯一允许的读取是现有记忆文件本身（为了用相同 key 更新它）。
+${verifySection}
 
 ## 约束
 

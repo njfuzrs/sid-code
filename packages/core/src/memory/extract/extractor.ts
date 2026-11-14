@@ -24,6 +24,8 @@ import { isAutoMemPath } from "../paths.ts";
 import { logMemoryExtract } from "../../analytics/events.ts";
 import { indexTypeRank } from "../index-budget.ts";
 import { formatIndexCapacity, readIndexCapacity } from "../index-capacity.ts";
+import { readMemoryReadStats } from "../read-stats.ts";
+import { pickVerifyTarget, resolveVerifyEvery, shouldVerifyThisRound } from "./verify.ts";
 import { MEMORY_EXTRACT_QUERY_SOURCE, type MemoryHeader } from "../types.ts";
 import { MEMORY_FORK_REQUIRED_TOOLS } from "../../agent/fork-prefix.ts";
 
@@ -78,6 +80,11 @@ export interface ExtractContext {
    * 由调用方经 `resolveMemoryExtractInterval` 解析 env / settings 后传入。
    */
   interval?: number;
+  /**
+   * P1-2（MD5）：每 N 次提取换一轮去核实一条旧记忆（缺省 5；0 = 关闭）。
+   * 由调用方经 `resolveVerifyEvery` 解析 env / settings 后传入。
+   */
+  verifyEvery?: number;
   /** 测试注入点：替换 fork 执行器（缺省 runForkedAgent）。生产代码不要传。 */
   runFork?: typeof runForkedAgent;
 }
@@ -148,9 +155,19 @@ export function extractWrittenPaths(messages: Message[], memoryDir: string): str
 export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle {
   const log = getLogger();
   const interval = Math.max(1, Math.floor(ctx.interval ?? 1));
+  // P1-2（MD5）：核实间隔。0 = 关闭（显式关闭是合法意图，不要回落成缺省）。
+  const verifyEvery = Math.max(0, Math.floor(ctx.verifyEvery ?? resolveVerifyEvery()));
   let pending: Promise<void> | null = null;
   /** 本会话第几个触发抽取的 end_turn（跳过的也占号，影子模拟要靠它对齐） */
   let seq = 0;
+  /**
+   * 本会话**真跑**了几次提取（跳过的不计）。
+   *
+   * P1-2 的核实间隔按它算，而不是按 `seq`：节流（`interval > 1`）时两者会错位 ——
+   * 用 `seq` 判会让「每 N 次提取核实一次」在 interval=3 时变成「每 3N 个 end_turn」，
+   * 名义间隔与实际触发频率对不上，而遥测里看不出这个偏差。
+   */
+  let ranCount = 0;
   /**
    * 自上次真跑以来是否有被节流跳过的 end_turn（T2 第 3 条的积压）。
    * 只需要布尔：fork 每次都看完整对话，补跑一次就覆盖了全部积压轮次。
@@ -176,9 +193,21 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
     // 扫描现有记忆构建清单。T3：按索引保留优先级排序 + 头部给出容量状态。
     const headers = sortManifestHeaders(await scanMemoryFiles(ctx.memoryDir));
     const manifest = formatMemoryManifest(headers);
+
+    // P1-2（MD5）：低频轮次把「多写一条」换成「核实一条旧的」。
+    //
+    // 计数用 `ranCount`（真跑次数）而不是 `runSeq`（end_turn 序号）：节流 interval>1 时
+    // 两者错位，用 seq 判会让「每 N 次提取核实一次」实际变成「每 N×interval 个 end_turn」，
+    // 名义间隔与真实触发频率对不上，而遥测里看不出这个偏差。
+    ranCount += 1;
+    const verifyTarget = shouldVerifyThisRound(ranCount, verifyEvery)
+      ? pickVerifyTarget(headers, readMemoryReadStats(ctx.memoryDir), { memoryDir: ctx.memoryDir })
+      : null;
+
     const promptText = buildExtractPrompt(
       manifest,
       formatIndexCapacity(readIndexCapacity(ctx.memoryDir)),
+      verifyTarget,
     );
 
     const promptMessages: Message[] = [
@@ -188,7 +217,10 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
     const result = await (ctx.runFork ?? runForkedAgent)(mainContext, {
       promptMessages,
       canUseTool: ctx.canUseTool,
-      maxTurns: 5,
+      // P1-2：核实轮次多给一轮（`maxTurns` 5 → 6）。这一轮就是核实的成本：
+      // 同一轮里既要查证又要写回，5 轮的紧预算装不下，会让核实永远半途而废。
+      // 代价是提取产出下降（主动接受，写在 verify.ts 与 Agent Note 里）。
+      maxTurns: verifyTarget ? 6 : 5,
       // P0-3：这个字面量是 `save_memory` 判定「本次写入来自后台提取」的**唯一判据**
       // （见 memory/types.ts 的 `MEMORY_EXTRACT_QUERY_SOURCE`）。改字面量就会静默失效：
       // 来源照样写 `inferred`，那道强制覆写不再生效，而没有任何东西会红。
@@ -210,6 +242,11 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
       catchUp,
+      // P1-2：核实轮次的占比与效果要可观测 —— 「核实后写了 / 核实了没写」是这条
+      // 改动是否在起作用的唯一信号。不记 key（漏斗纪律），只记布尔与是否复用现有 key。
+      ...(verifyTarget
+        ? { verifyIdleDays: verifyTarget.idleDays, verifyNeverRead: verifyTarget.neverRead }
+        : {}),
     });
     if (written.length > 0 && ctx.appendSystemMessage) {
       ctx.appendSystemMessage({
