@@ -24,7 +24,7 @@ import { isAutoMemPath } from "../paths.ts";
 import { logMemoryExtract } from "../../analytics/events.ts";
 import { indexTypeRank } from "../index-budget.ts";
 import { formatIndexCapacity, readIndexCapacity } from "../index-capacity.ts";
-import type { MemoryHeader } from "../types.ts";
+import { MEMORY_EXTRACT_QUERY_SOURCE, type MemoryHeader } from "../types.ts";
 import { MEMORY_FORK_REQUIRED_TOOLS } from "../../agent/fork-prefix.ts";
 
 /**
@@ -189,7 +189,10 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
       promptMessages,
       canUseTool: ctx.canUseTool,
       maxTurns: 5,
-      querySource: "memory-extract",
+      // P0-3：这个字面量是 `save_memory` 判定「本次写入来自后台提取」的**唯一判据**
+      // （见 memory/types.ts 的 `MEMORY_EXTRACT_QUERY_SOURCE`）。改字面量就会静默失效：
+      // 来源照样写 `inferred`，那道强制覆写不再生效，而没有任何东西会红。
+      querySource: MEMORY_EXTRACT_QUERY_SOURCE,
       // D16：轨迹里 forked 的工具调用 98% 落在这几个上（edit 4099 / save_memory 1429 / read 732）
       requiredTools: MEMORY_FORK_REQUIRED_TOOLS,
       timeoutMs: 60_000,

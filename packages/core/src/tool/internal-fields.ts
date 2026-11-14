@@ -33,6 +33,12 @@ export const INTERNAL_FIELDS = [
   // 而不是把上一轮的旧通知当成刚挂的这次等待的结果。
   // 必须剥离：模型伪造它会让通知指向别的调用，锚点反而变成误导。
   "_toolUseId",
+  // P0-3（2026-11-14）：fork 的调用方标签（`memory-extract` / `memory-recall` /
+  // `auto-dream` …），由 forked / 子代理执行器在剥离后注入给自报
+  // `consumesQuerySource: true` 的工具（当前只有 `save_memory`）。
+  // 它决定「这次写入是后台提取代理发起的吗」，而那个判据直接决定记忆来源的强制覆写。
+  // 必须剥离：模型伪造它就能把自己伪装成用户直写、把 `agent_action` 洗成可信来源。
+  "_querySource",
 ] as const;
 
 /**

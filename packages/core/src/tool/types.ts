@@ -252,6 +252,38 @@ export interface ToolCapabilityFields<Input = unknown> {
   consumesToolUseId?: true;
 
   /**
+   * P0-3（2026-11-14）：工具自报「我会读执行器注入的 `_querySource`」，
+   * 执行器据此按需注入 `_querySource = <fork 的调用方标签>`。
+   *
+   * ## 为什么需要
+   *
+   * 记忆提取代理（`querySource = "memory-extract"`）与用户直写共用同一个 `save_memory`
+   * 工具，但两者的**证据等级完全不同**：提取代理没有用户输入可依据，写出来的东西只能是
+   * 「它这一轮看到 / 做了什么」的转述；用户直写则可能是「记住我的偏好」这种明确表态。
+   * 这个区分必须落到 `source` 字段上，而它**不能靠模型自报** —— 让最没有判据的角色
+   * 给证据定级，正是本缺陷的成因。
+   *
+   * ## 为什么不用 `_agentId`
+   *
+   * `_agentId` 只说「是 fork 还是子代理」，说不出**哪个** fork。会话摘要
+   * （`session-memory-update`）、召回（`memory-recall`）、auto-dream 同样是 fork，
+   * 它们写入的记忆不该与提取代理混为一谈。`_querySource` 才是那个精确标签。
+   *
+   * ## 契约
+   *
+   * - 类型是 `true`：本字段只有「声明」一种含义。
+   * - 声明者**必须真的读它**，并为拿不到准备安全默认（无头 / 直接调 `execute()` 时
+   *   不会被注入）。`save_memory` 拿不到时按「非提取路径」处理（不覆写）。
+   * - 与 `consumesAgentId` 独立：`save_memory` 两个都声明（`_agentId` 用于埋点的
+   *   `via` 维度，`_querySource` 用于来源判据）。
+   *
+   * ⚠️ 漏声明的失败形态是**静默**的：工具收不到 `_querySource` → 提取代理的写入
+   * 按缺省 `inferred` 落盘，那道强制覆写不再生效，没有任何报错。
+   * 对账门禁：`tests/tool/consumes-querysource-audit.test.ts`。
+   */
+  consumesQuerySource?: true;
+
+  /**
    * D11：单请求 strict 工具超过上游上限（Anthropic 20 个）时，谁先保住 strict。
    *
    * 数值越大越优先，未声明为 0。只在超限时起作用，不影响「发不发 strict」本身。

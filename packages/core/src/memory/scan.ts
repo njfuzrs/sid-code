@@ -9,6 +9,8 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { readdir, stat } from "fs/promises";
 import {
+  DEFAULT_MEMORY_SOURCE,
+  isMemorySource,
   isMemoryType,
   type MemoryHeader,
   type MemoryFrontmatter,
@@ -126,6 +128,9 @@ export function parseFrontmatter(text: string): Partial<MemoryFrontmatter> {
   if (fields.description !== undefined) result.description = fields.description;
   if (fields.type !== undefined && isMemoryType(fields.type))
     result.type = fields.type as MemoryType;
+  // P0-3：老文件（P0-3 之前写的）没有这一行 ⇒ 不填，由取用处兜成 `inferred`。
+  // 非法值同样不填（而不是猜一个）：`source` 只有三档，猜错会把「无从判断」伪装成结论。
+  if (fields.source !== undefined && isMemorySource(fields.source)) result.source = fields.source;
   return result;
 }
 
@@ -235,6 +240,9 @@ export async function scanMemoryFiles(
         description: fm.description ?? null,
         name: fm.name ?? filename.replace(/\.md$/, ""),
         type: fm.type,
+        // P0-3：缺省 `inferred`（老文件 / 没写这一行 / 值非法）。在**唯一的构造点**兜底，
+        // 下游只消费不兜底，避免索引、召回、淘汰三处各定一套缺省口径。
+        source: fm.source ?? DEFAULT_MEMORY_SOURCE,
       };
       return header;
     }),

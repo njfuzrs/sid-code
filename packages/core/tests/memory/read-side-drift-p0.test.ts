@@ -96,6 +96,8 @@ describe("annotateIndexAges：把年龄带进索引行", () => {
         key: "old",
         value: "v",
         scope: "project" as const,
+        // P0-3 起 MemoryEntry.source 必填；本用例只验索引年龄注解，取缺省档即可
+        source: "inferred" as const,
         createdAt: 0,
         updatedAt: Date.now() - 47 * DAY,
       },
@@ -106,6 +108,7 @@ describe("annotateIndexAges：把年龄带进索引行", () => {
         key: "fresh",
         value: "v",
         scope: "project" as const,
+        source: "inferred" as const,
         createdAt: 0,
         updatedAt: Date.now(),
       },
@@ -142,7 +145,17 @@ describe("annotateIndexAges：把年龄带进索引行", () => {
     const justOver = Date.now() - (DAY + 1000);
     expect(memoryAgeDays(justOver)).toBe(1);
     const m = new Map([
-      ["k", { key: "k", value: "v", scope: "project" as const, createdAt: 0, updatedAt: justOver }],
+      [
+        "k",
+        {
+          key: "k",
+          value: "v",
+          scope: "project" as const,
+          source: "inferred" as const,
+          createdAt: 0,
+          updatedAt: justOver,
+        },
+      ],
     ]);
     expect(annotateIndexAges("- [k](reference_k.md) — x", m)).toContain("⏳");
   });

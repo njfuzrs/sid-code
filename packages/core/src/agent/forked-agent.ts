@@ -759,10 +759,15 @@ export async function runForkedAgent(
           // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃。
           // 只给自报 consumesAgentId 的工具注入（契约见 tool/types.ts）：无差别注入会把内部
           // 字段漏给 StructuredOutput 的 schema 校验与 MCP server 的 arguments。
+          //
+          // P0-3：`_querySource` 同批按需注入（只给自报 `consumesQuerySource` 的工具）。
+          // 它是 `save_memory` 判定「本次写入来自后台提取代理吗」的**唯一判据** ——
+          // 漏注入的失败形态是静默的：来源按缺省 `inferred` 落盘，强制覆写不再生效。
           const res = await tool.execute(
             {
               ...(validation.data as Record<string, unknown>),
               ...(tool.consumesAgentId ? { _agentId: "forked-agent" } : {}),
+              ...(tool.consumesQuerySource ? { _querySource: options.querySource } : {}),
             },
             signal,
           );
