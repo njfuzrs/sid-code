@@ -1079,3 +1079,329 @@ export function writeTargetsFromExpansion(expansion: ShellCommandExpansion): str
 export function extractBashWriteTargets(cmd: string): string[] {
   return writeTargetsFromExpansion(expandShellCommand(cmd));
 }
+
+/**
+ * 读类命令的「哪些参数是文件路径」（B5）。
+ *
+ * ## 为什么和写目标表分开
+ *
+ * 两张表回答的是不同问题，判据方向也相反：
+ * - 写目标**宁多勿少**——漏一个就是一条免确认写入（`cp x .git/hooks/pre-commit`）；
+ * - 读路径**宁准勿滥**——多认一个非路径 token（`head -n 5` 的 `5`）会被解析成
+ *   `<cwd>/5`，虽然落在工作区内不会误报，但把「这到底是不是路径」的成本转嫁给了用户。
+ *
+ * 所以写目标表里那些 `ALL_ARGS_WRITE` 兜底命令（`tee`/`mkdir`/`rm`）在这里没有对应项，
+ * 而读表里列出的命令在写表里也基本没有。
+ *
+ * ## 数据来源
+ *
+ * 命令与参数位置照 claude-code 的 `PATH_EXTRACTORS`（`tools/BashTool/pathValidation.ts`）首批，
+ * 覆盖本仓 `READ_ONLY_COMMANDS` 里所有带文件参数的只读命令。**`git` 刻意不在表里**：
+ * 它的路径参数（`git show HEAD:f`、`git -C <dir>`）由只读 git 的边界判定管，
+ * 两处一起管会让同一个路径被两条口径各判一次，结论打架时没人说得清哪条对。
+ */
+interface ReadPathSpec {
+  /** 取全部非选项参数 */
+  all?: boolean;
+  /** 首个非选项参数不是路径（`grep` 的模式 / `sed` 的脚本 / `jq` 的 filter） */
+  firstIsPattern?: boolean;
+  /** 只取前 N 个非选项参数（`find` 的起点、`diff` 的两个操作数） */
+  take?: number;
+  /**
+   * 这些选项本身就携带模式/脚本，出现时首个位置参数不再是模式。
+   * 与 `valueOpts` 分开写：`grep -f pat.txt` 里 `-f` 既是「带值选项」又是「模式来源」。
+   */
+  patternOpts?: ReadonlySet<string>;
+  /** 带独立取值的选项：下一个 token 是它的值，不是路径 */
+  valueOpts?: ReadonlySet<string>;
+}
+
+const READ_PATH_SPECS: Readonly<Record<string, ReadPathSpec>> = {
+  // ── 全部位置参数都是被读取的文件 ──
+  cat: { all: true },
+  head: { all: true, valueOpts: new Set(["-n", "-c", "--lines", "--bytes"]) },
+  tail: {
+    all: true,
+    valueOpts: new Set(["-n", "-c", "-s", "--lines", "--bytes", "--sleep-interval"]),
+  },
+  less: {
+    all: true,
+    valueOpts: new Set(["-b", "-h", "-j", "-o", "-O", "-p", "-P", "-t", "-T", "-x", "-y", "-z"]),
+  },
+  more: { all: true },
+  wc: { all: true, valueOpts: new Set(["--files0-from"]) },
+  file: {
+    all: true,
+    valueOpts: new Set(["-e", "-f", "-m", "--exclude", "--files-from", "--magic-file"]),
+  },
+  stat: { all: true, valueOpts: new Set(["-c", "--format", "--printf"]) },
+  du: {
+    all: true,
+    valueOpts: new Set([
+      "-d",
+      "-B",
+      "-t",
+      "-X",
+      "--max-depth",
+      "--block-size",
+      "--threshold",
+      "--exclude",
+      "--exclude-from",
+    ]),
+  },
+  df: { all: true },
+  ls: {
+    all: true,
+    valueOpts: new Set([
+      "-w",
+      "-I",
+      "-T",
+      "--ignore",
+      "--width",
+      "--hide",
+      "--format",
+      "--sort",
+      "--time",
+      "--color",
+      "--block-size",
+      "--time-style",
+      "--quoting-style",
+    ]),
+  },
+  tree: {
+    all: true,
+    valueOpts: new Set(["-L", "-P", "-I", "-o", "--charset", "--filelimit", "--timefmt"]),
+  },
+  tac: { all: true },
+  nl: { all: true, valueOpts: new Set(["-b", "-n", "-w", "-s", "-v", "-i", "-l"]) },
+  od: { all: true, valueOpts: new Set(["-A", "-j", "-N", "-t"]) },
+  xxd: { all: true, valueOpts: new Set(["-c", "-g", "-l", "-o", "-s"]) },
+  strings: { all: true, valueOpts: new Set(["-a", "-n", "-t", "-e"]) },
+  readlink: { all: true },
+  realpath: { all: true },
+  // 数据处理：位置参数全是输入文件
+  paste: { all: true },
+  comm: { all: true },
+  column: { all: true, valueOpts: new Set(["-s", "-o", "-c", "--separator"]) },
+  sort: {
+    all: true,
+    valueOpts: new Set([
+      "-k",
+      "-t",
+      "-S",
+      "-T",
+      "-o",
+      "--key",
+      "--field-separator",
+      "--buffer-size",
+      "--temporary-directory",
+      "--output",
+    ]),
+  },
+  uniq: {
+    all: true,
+    valueOpts: new Set(["-f", "-s", "-w", "--skip-fields", "--skip-chars", "--check-chars"]),
+  },
+  cut: {
+    all: true,
+    valueOpts: new Set([
+      "-d",
+      "-f",
+      "-b",
+      "-c",
+      "--delimiter",
+      "--fields",
+      "--bytes",
+      "--characters",
+    ]),
+  },
+
+  // ── 首个位置参数是模式/脚本 ──
+  grep: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-e", "-f", "--regexp", "--file"]),
+    valueOpts: new Set([
+      "-e",
+      "-f",
+      "-m",
+      "-A",
+      "-B",
+      "-C",
+      "-d",
+      "-D",
+      "--regexp",
+      "--file",
+      "--max-count",
+      "--after-context",
+      "--before-context",
+      "--context",
+      "--include",
+      "--exclude",
+    ]),
+  },
+  egrep: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-e", "-f"]),
+    valueOpts: new Set(["-e", "-f", "-m", "-A", "-B", "-C"]),
+  },
+  fgrep: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-e", "-f"]),
+    valueOpts: new Set(["-e", "-f", "-m", "-A", "-B", "-C"]),
+  },
+  rg: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-e", "-f", "--regexp", "--file"]),
+    valueOpts: new Set([
+      "-e",
+      "-f",
+      "-m",
+      "-A",
+      "-B",
+      "-C",
+      "-g",
+      "-t",
+      "-T",
+      "-j",
+      "--regexp",
+      "--file",
+      "--max-count",
+      "--after-context",
+      "--before-context",
+      "--context",
+      "--glob",
+      "--type",
+      "--type-not",
+      "--threads",
+    ]),
+  },
+  ag: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-e", "--regexp"]),
+    valueOpts: new Set(["-e", "-m", "-A", "-B", "-C", "-g", "--regexp", "--max-count"]),
+  },
+  ack: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-e", "--regexp"]),
+    valueOpts: new Set(["-e", "-m", "-A", "-B", "-C", "-g", "--regexp", "--max-count"]),
+  },
+  sed: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-e", "-f", "--expression", "--file"]),
+    valueOpts: new Set(["-e", "-f", "--expression", "--file"]),
+  },
+  awk: {
+    all: true,
+    firstIsPattern: true,
+    patternOpts: new Set(["-f", "--file"]),
+    valueOpts: new Set(["-f", "-F", "-v", "--file", "--field-separator", "--assign"]),
+  },
+  jq: {
+    all: true,
+    firstIsPattern: true,
+    valueOpts: new Set(["-e", "-f", "--arg", "--argjson", "--slurpfile", "--rawfile"]),
+  },
+  yq: {
+    all: true,
+    firstIsPattern: true,
+    valueOpts: new Set(["-e", "-f", "--arg", "--argjson", "--from-file"]),
+  },
+
+  // ── 只取前 N 个位置参数 ──
+  find: { take: 1 },
+  diff: {
+    take: 2,
+    valueOpts: new Set([
+      "-U",
+      "-C",
+      "-x",
+      "-I",
+      "--label",
+      "--unified",
+      "--context",
+      "--from-file",
+      "--to-file",
+    ]),
+  },
+};
+
+/**
+ * 从一次展开结果里提取「读类命令会读到的文件路径」。
+ *
+ * 与 `writeTargetsFromExpansion` 同源（同一份 `expandShellCommand` 结果），
+ * 所以 `sh -c 'cat /etc/hosts'` 的内层同样被看到。
+ *
+ * 输入重定向（`< file` / `n< file`）也算读路径：它不经过任何命令参数，
+ * 但结论和 `cat file` 一样——这个文件会被读。`<<` / `<<<` 不是文件（heredoc 正文 /
+ * here-string），跳过。
+ */
+export function readTargetsFromExpansion(expansion: ShellCommandExpansion): string[] {
+  const targets = new Set<string>();
+  for (const { program, args } of expansion.commands) {
+    for (const t of readTargetsForCommand(program, args)) targets.add(t);
+  }
+  return [...targets].filter((t) => t !== "" && t !== "-");
+}
+
+function readTargetsForCommand(program: string, args: string[]): string[] {
+  const spec = READ_PATH_SPECS[program];
+  const positional: string[] = [];
+  const inputRedirects: string[] = [];
+  let patternGiven = false;
+  let afterDoubleDash = false;
+
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (REDIRECT_TOKEN_RE.test(a)) {
+      // 输入重定向的目标是被读取的文件；`<<`(heredoc) / `<<<`(here-string) 不是
+      if (/^(\d*)?<$/.test(a)) {
+        const target = args[k + 1];
+        if (target) inputRedirects.push(target);
+        k++;
+      } else if (/[<>]$/.test(a)) {
+        k++;
+      }
+      continue;
+    }
+    if (afterDoubleDash) {
+      positional.push(a);
+      continue;
+    }
+    if (a === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (a.startsWith("-") && a !== "-") {
+      if (spec?.patternOpts?.has(a)) patternGiven = true;
+      if (spec?.valueOpts?.has(a)) k++;
+      continue;
+    }
+    positional.push(a);
+  }
+
+  if (!spec) return inputRedirects;
+
+  const skip = spec.firstIsPattern && !patternGiven ? 1 : 0;
+  let picked = skip > 0 ? positional.slice(skip) : positional;
+  if (spec.take !== undefined) picked = picked.slice(0, spec.take);
+  return [...inputRedirects, ...picked];
+}
+
+/**
+ * 提取 bash 命令会读取的文件路径（B5 的工作区校验用）。
+ *
+ * 覆盖范围见 `READ_PATH_SPECS`：只读命令里有文件参数的常见一族。
+ * 表外的命令返回空数组（等于不做工作区校验）——这是**刻意**的：
+ * 把任意程序的位置参数当路径会大面积误报（`echo /etc` 只是打印一个字符串），
+ * 而 PR-3 要修的是 `cat`/`grep`/`ls` 这一类的静默越界读。
+ */
+export function extractBashReadTargets(cmd: string): string[] {
+  return readTargetsFromExpansion(expandShellCommand(cmd));
+}

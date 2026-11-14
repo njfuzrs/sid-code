@@ -61,6 +61,21 @@ export interface ReadOnlyCompoundResult {
   readOnly: boolean;
   /** 不放行时的短原因，进日志与决策理由 */
   reason?: string;
+  /**
+   * `readOnly` 为真时：命令里每个**主体段**（非 `cd` 段）及其有效 cwd 候选。
+   *
+   * B5 的读路径校验需要「按该段的有效 cwd 解析」——同一条命令里 `cat a && cd sub && cat b`
+   * 的两个 `a`/`b` 基准目录不同，用整条命令的起始 cwd 去解析后一个会把工作区内的路径
+   * 误判成越界。这里把 PR-2 已经算好的 cwd 链原样带出来，避免第二套 cd 链实现。
+   */
+  stages?: ReadOnlyCompoundStage[];
+}
+
+export interface ReadOnlyCompoundStage {
+  /** 该段的命令原文（管道用 ` | ` 连接） */
+  unit: string;
+  /** 进入本段时可能成立的 cwd（`;` 连接会留下多个候选） */
+  cwds: string[];
 }
 
 /**
@@ -112,6 +127,24 @@ export function judgeReadOnlyCompoundBash(input: ReadOnlyCompoundInput): ReadOnl
   let history = new Set<string>();
   /** 是否已经出现过 cd —— cd 之前的相对路径输入重定向不随 cd 改变含义 */
   let sawCd = false;
+  /**
+   * B5：每个主体段及其有效 cwd。只读放行时由读路径校验消费（见 `ReadOnlyCompoundStage`）。
+   * 与判定同一次遍历产出，避免 B5 再走一遍 cd 链——两套口径迟早漂移。
+   */
+  const stages: ReadOnlyCompoundStage[] = [];
+  /**
+   * B5 专用的 cwd：**cd 成功后确定的那个目录**，不掺 `;` 的失败回退。
+   *
+   * 为什么不直接用 `possible`：`cd A && cat ../f` 里 `possible` 是
+   * `possible = boundary === "&&" ? next : next ∪ history`，而 `boundary` 记的是**进入**
+   * 本 pipeline 的分隔符——cd 作为第一个 pipeline 时它是空值，于是走了 else 分支，
+   * 把 cd 前的目录也并了进来。用它去解析 `../f` 会多算出一个工作区外的路径，
+   * 把该放行的判成越界（实测：`cd <ws>/packages && cat ../README.md` 被误判）。
+   *
+   * 用「cd 成功后的目录」是安全的：`;` 的回退目录要么是会话起始 cwd、要么是上一个
+   * 已判过在工作区内的 cd 结果，两者都在工作区内，少算它不会漏掉任何越界读。
+   */
+  let stagesCwds: string[] = [startCwd];
 
   for (const pipeline of pipelines) {
     const boundary = pipeline.boundary;
@@ -157,6 +190,8 @@ export function judgeReadOnlyCompoundBash(input: ReadOnlyCompoundInput): ReadOnl
       }
       // `&&`：cd 失败整条链就停了，只剩成功路径；`;`：失败仍留在原目录，并上候选
       possible = boundary === "&&" ? next : new Set([...next, ...history]);
+      // B5 的读路径解析用「cd 成功后的目录」，理由见 stagesCwds 的声明处
+      stagesCwds = [...next];
       if (possible.size > MAX_CWD_CANDIDATES) {
         return { applicable: true, readOnly: false, reason: "cd 链过长，无法静态确定目录" };
       }
@@ -180,15 +215,22 @@ export function judgeReadOnlyCompoundBash(input: ReadOnlyCompoundInput): ReadOnl
           return { applicable: true, readOnly: false, reason: r.reason ?? "git 段不在本仓" };
         }
       }
+      stages.push({ unit, cwds: [...stagesCwds] });
       continue;
     }
 
     if (!isReadOnlyCommand(unit)) {
       return { applicable: true, readOnly: false, reason: "主体不是只读命令" };
     }
+    // 只取 `possible`，**不要并 `history`**：`cd X && cat ../f` 里 cd 失败整条链就停了，
+    // 主体段的有效 cwd 只有 X。把 cd 前的目录也塞进候选会让 `../f` 多解析出一个
+    // 工作区外的路径（cwd=工作区根时 `../f` 就跑到外面去了），把该放行的判成越界。
+    // 判定本身（上面几处）仍用 possible ∪ history —— 那是「多判一次」的保守方向，与
+    // 「按哪段 cwd 解析读路径」是两回事。
+    stages.push({ unit, cwds: [...stagesCwds] });
   }
 
-  return { applicable: true, readOnly: true };
+  return { applicable: true, readOnly: true, stages };
 }
 
 /** `cd` 单段的解析结果。`isCd` 为真但 `target` 为 null 表示「是 cd，但目标不可静态解析」。 */
