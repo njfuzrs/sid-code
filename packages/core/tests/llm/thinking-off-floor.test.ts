@@ -146,17 +146,71 @@ describe("① 判定入口：关思考 → 该模型最低档", () => {
   });
 });
 
+/**
+ * 从源码里截出某个顶层函数的函数体（大括号配平）。
+ *
+ * 为什么需要：`effort.ts` 的 `finalizeThinkingControl` 是整个判定链的**上游**
+ * （`locked-on` 在那里落地），但它所在的模块同时是通用能力层，整文件扫模型名会命中
+ * `CLAUDE_CODE_EFFORT_LEVEL` 这个**合法**的 env 变量名（`/claude/i` 直接命中），
+ * 于是只能按函数体扫。
+ *
+ * ⚠ 简化：不处理字符串 / 模板字面量里的花括号。这只用于扫描代码，扫错位置会以
+ * 「找不到函数」或「花括号不配平」抛错，不会静默放过。
+ */
+function extractFunctionBody(src: string, fnName: string): string {
+  const start = src.search(new RegExp(`function\\s+${fnName}\\s*\\(`));
+  if (start < 0) throw new Error(`源码里找不到函数 ${fnName}（门禁扫不到 = 形同虚设）`);
+  const open = src.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) return src.slice(open, i + 1);
+  }
+  throw new Error(`函数 ${fnName} 的花括号不配平（门禁无法确定扫描范围）`);
+}
+
 describe("② 门禁：规则在代码、模型事实在数据", () => {
   test("判定入口与恒思考判定都不含模型名字面量（新增模型只加数据，不改代码）", () => {
-    // 两个文件同守一条规则：「关思考发什么档」与「能不能关」都不得按模型名判。
-    // 只扫其中一个，另一个明天就能长出一份正则名单来 —— 那正是本次修掉的形态。
-    for (const file of ["thinking-off-floor.ts", "always-thinking.ts"]) {
-      const src = readFileSync(join(import.meta.dir, "../../src/llm/dialect", file), "utf8");
+    // 三处同守一条规则：「关思考发什么档」与「能不能关」都不得按模型名判，
+    // 上游「判定落在哪」（`finalizeThinkingControl`）同样不得。
+    // 只扫前两个，上游明天就能长出一份正则名单来 —— 那正是本次修掉的形态。
+    const base = join(import.meta.dir, "../../src/llm");
+    const targets: ReadonlyArray<{ rel: string; fn?: string }> = [
+      { rel: "dialect/thinking-off-floor.ts" },
+      { rel: "dialect/always-thinking.ts" },
+      // 上游：`locked-on` 在这里落地。整文件扫会命中合法的 env 变量名
+      // `CLAUDE_CODE_EFFORT_LEVEL`，所以只扫这一个函数体。
+      { rel: "effort.ts", fn: "finalizeThinkingControl" },
+    ];
+    for (const { rel, fn } of targets) {
+      const src = readFileSync(join(base, rel), "utf8");
       // 先去掉注释：文件头刻意写了 GLM / Anthropic 的事故背景，那是说明不是判据。
       const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-      expect(code, `${file} 出现了模型名字面量`).not.toMatch(
+      const scanned = fn ? extractFunctionBody(code, fn) : code;
+      expect(scanned, `${rel}${fn ? ` 的 ${fn}` : ""} 出现了模型名字面量`).not.toMatch(
         /\b(glm|kimi|claude|grok|deepseek|gpt|qwen|o[0-9])/i,
       );
+    }
+  });
+
+  test("族级不变量：o-series 全族恒思考（漏标 thinkingMode 会被这条抓住）", () => {
+    // 这条补的是「有 values 没 mode」那个缺口：`o3` / `o3-pro` 曾经只登记了档位表、
+    // 没标 always-on，而当时两条门禁都不管这个方向，`/think off` 在它们身上落回「不发」。
+    //
+    // ⚠ 为什么**不**写成「always-on ⇔ 有非空档位表」（方案 §4.3/§4.4 曾这么建议，已否决）：
+    // 「支持 reasoning_effort 档位」与「思考能否关闭」是两个正交维度 ——
+    // `glm-5.2` / `grok-4.3` / `grok-build-0.1` / `grok-4.20-0309-reasoning`
+    // 都**有档位表但能关思考**，双向恒等式会把它们误判成恒思考（或让门禁恒红）。
+    // 档位表只说「有档可压」，不说「关不掉」。
+    //
+    // 为什么 o-series 可以立族级判据：这一族 5 个模型**全部**不接受关闭思考
+    // （openai-reasoning-models.md:51），是注册表里唯一「族 = 恒思考」的封闭集合。
+    // glm-openai（17 条里 3 条）与 grok-openai（6 条里 3 条）都是混合族，不能这么判。
+    const oSeries = getRegistryEntries().filter(([, e]) => e.protocolKind === "o-series");
+    // 防空集：清单为空时下面的循环不执行，断言必须自己兜底。
+    expect(oSeries.length, "o-series 族一条都没匹配到，这条判据形同虚设").toBeGreaterThanOrEqual(5);
+    for (const [name, entry] of oSeries) {
+      expect(entry.thinkingMode, `${name} 属于 o-series 却没声明 always-on`).toBe("always-on");
     }
   });
 
