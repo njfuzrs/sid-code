@@ -126,6 +126,41 @@ export interface PermissionDecisionEvent {
    *   ④ `decide` 走了，但 resolve 被 app.ts 的 `settled` 去重吞掉。
    */
   prompt?: PromptObservation;
+  /**
+   * B12：命中的危险模式名与严重度（`decisionReason.type === "dangerousCommand"` 时才有）。
+   *
+   * 补它之前，`reasonType=dangerousCommand` 是一个**平桶**：硬编码模式（`rm -rf /` 类）、
+   * A2 注入校验器、A6 展开超限、LLM 分类器全部混在一起，想知道「本会话 8 条危险确认
+   * 分别是哪类」只能把命令文本捞出来重跑一遍判据。
+   *
+   * 取值是固定标签或短枚举（`rm-rf-root` / `injection:<id>` / `sed:<reason>` /
+   * `LLM:<risk>` / `展开超限`），**不含命令片段**；`guard` 仍是「哪道结构性闸门」的更窄口径。
+   */
+  dangerPattern?: string;
+  /** B12：危险命令的严重度（`critical` / `high` / …），随 `dangerPattern` 一起落 */
+  dangerSeverity?: string;
+  /**
+   * B12：bash 命令的形状桶（`classifyBashShape`：危险 / 无 cd / cd 到工作区外 /
+   * 工作区内 cd + 只读 / 工作区内 cd + 非只读）。
+   *
+   * 为什么由 checker 在决策时算：`events.jsonl` 里的命令文本是截断的，从截断文本重跑
+   * 分类会把长命令整段误判成「非只读其他」，那个读数看起来像数据但其实是错的。
+   */
+  bashShape?: string;
+  /**
+   * B12：命令行前缀里的非白名单环境变量名（只记名，不记值）。B1 的变量白名单收窄后，
+   * 「还有多少确认是被 env 前缀拖进来的」要能直接数出来，而不是靠肉眼扫命令。
+   *
+   * 由 PR-1 的变量白名单判定填值；PR-0 先把字段与映射打通，未接线时字段缺省不落。
+   */
+  envPrefixVars?: string[];
+  /**
+   * B12：`cd` 目标的 git 仓库归属（`own` / `foreign` / `bare` / `none`），B4 的判定结果。
+   * 「工作区内 cd + 只读」这个桶里还有多少是换仓（foreign）导致的真确认，靠它拆分。
+   *
+   * 同样由 PR-1 的判定函数填值；PR-0 只打通字段与映射。
+   */
+  gitTrust?: string;
 }
 
 /**
@@ -239,6 +274,77 @@ export function autoClassifierOf(decision: {
 }): string | undefined {
   const v = decision.metadata?.autoClassifier;
   return typeof v === "string" ? v : undefined;
+}
+
+/**
+ * B12：取危险命令的成因二元组（模式名 + 严重度）。
+ *
+ * 与 `guardOf` 的分工：`guard` 回答「哪道结构性闸门」（只认闭集：A2 注入校验器 /
+ * A6 展开超限），`dangerPattern` 回答「命中的是哪条危险模式」——范围更宽，
+ * 包含硬编码模式名、`sed:<reason>`、`LLM:<risk>`。两者都只取固定标签或短枚举，
+ * 不含命令片段，因为这个字段要进本地轨迹。
+ *
+ * `decisionReason` 被 headless / dontAsk / 模式总闸覆盖时取不到，此时返回空对象
+ * （那几条路径本来也不是「危险确认」，不该带危险成因）。
+ */
+export function dangerOf(decision: {
+  decisionReason?: { type?: string; pattern?: unknown; severity?: unknown } | null;
+}): { dangerPattern?: string; dangerSeverity?: string } {
+  const r = decision.decisionReason;
+  if (!r || r.type !== "dangerousCommand") return {};
+  return {
+    ...(typeof r.pattern === "string" ? { dangerPattern: r.pattern } : {}),
+    ...(typeof r.severity === "string" ? { dangerSeverity: r.severity } : {}),
+  };
+}
+
+/**
+ * B12：取 bash 命令形状桶（`Decision.metadata.bashShape`，由 checker 在 `check()` 出口
+ * 统一算好，见 `permission/bash-shape.ts`）。非 bash 工具 / 未算出时返回 undefined。
+ */
+export function bashShapeOf(decision: { metadata?: Record<string, unknown> }): string | undefined {
+  const v = decision.metadata?.bashShape;
+  return typeof v === "string" ? v : undefined;
+}
+
+/** B12：取命令行前缀里的非白名单环境变量名（`Decision.metadata.envPrefixVars`） */
+export function envPrefixVarsOf(decision: {
+  metadata?: Record<string, unknown>;
+}): string[] | undefined {
+  const v = decision.metadata?.envPrefixVars;
+  return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : undefined;
+}
+
+/** B12：取 `cd` 目标的 git 仓库归属（`Decision.metadata.gitTrust`） */
+export function gitTrustOf(decision: { metadata?: Record<string, unknown> }): string | undefined {
+  const v = decision.metadata?.gitTrust;
+  return typeof v === "string" ? v : undefined;
+}
+
+/**
+ * B12：一次取齐决策上的危险成因与命令形状，供 `logPermissionAllow` / `logPermissionDeny`
+ * 的调用点直接 spread。
+ *
+ * 为什么合成一个而不是让 7 个调用点各写 4 行：这几个字段的取法完全一样，散开写就是
+ * 下一个新鉴权分支漏抄几行、字段在轨迹里静默缺失（B11 的 `confirm_via` 就是这么丢的：
+ * 上游都带了，collector 没映射，单测只断言到观察者入参）。
+ */
+export function decisionFactsOf(decision: {
+  decisionReason?: { type?: string; pattern?: unknown; severity?: unknown } | null;
+  metadata?: Record<string, unknown>;
+}): {
+  dangerPattern?: string;
+  dangerSeverity?: string;
+  bashShape?: string;
+  envPrefixVars?: string[];
+  gitTrust?: string;
+} {
+  return {
+    ...dangerOf(decision),
+    ...(bashShapeOf(decision) ? { bashShape: bashShapeOf(decision) } : {}),
+    ...(envPrefixVarsOf(decision) ? { envPrefixVars: envPrefixVarsOf(decision) } : {}),
+    ...(gitTrustOf(decision) ? { gitTrust: gitTrustOf(decision) } : {}),
+  };
 }
 
 let _observer: ((event: PermissionDecisionEvent) => void) | null = null;

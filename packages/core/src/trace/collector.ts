@@ -1889,6 +1889,17 @@ export class TraceCollector {
       ...(e.guard ? { guard: e.guard } : {}),
       // A9：auto 档分类器回退人工的成因
       ...(e.autoClassifier ? { auto_classifier: e.autoClassifier } : {}),
+      // B12：命中的危险模式名 / 严重度。此前 reason_type=dangerousCommand 是一个平桶，
+      // 硬编码模式、注入校验器、展开超限、LLM 分类器全混在一起，分不开。
+      ...(e.dangerPattern ? { danger_pattern: e.dangerPattern } : {}),
+      ...(e.dangerSeverity ? { danger_severity: e.dangerSeverity } : {}),
+      // B12：bash 命令形状桶（checker 决策时算好）。digest 的「确认成因」分桶只读它，
+      // 不从截断后的命令文本重跑判据 —— 那会把长命令整段误判成「非只读其他」。
+      ...(e.bashShape ? { bash_shape: e.bashShape } : {}),
+      // B12：env 前缀非白名单变量名（只记名不记值）与 cd 目标的 git 仓库归属。
+      // PR-1 的判定函数填值，未接线时字段缺省不落。
+      ...(e.envPrefixVars?.length ? { env_prefix_vars: e.envPrefixVars } : {}),
+      ...(e.gitTrust ? { git_trust: e.gitTrust } : {}),
       // B21：弹窗生命周期观测。字段名用 prompt_lifecycle 而不是 prompt —— 后者与
       // UserPromptSubmit 的 data.prompt（用户输入原文）重名，上传前的 LOCAL_ONLY 剥离
       // 是按字段名匹配的，同名会把用户输入一起剥掉。
@@ -3107,6 +3118,23 @@ export class TraceCollector {
       const d = this.prefixTracker.observe(fp);
       if (!d) return; // 首轮
 
+      // CP-9：这次断裂的本地归因。优先级 ——
+      // ① 主循环如实上报的具体原因（compact / hook / 注入 …），最可信；
+      // ② 字节探针自己看到的「transient 块被丢弃」：它**不依赖上报**，从相邻两轮的
+      //    指纹里直接就能看到。不判这一条，harness 自己的 transient 注入
+      //    （reminderParts，见 query/reminder-inject.ts）造成的断裂会被记成
+      //    `none_local`，在归因数据里等同「本地没有原因」——已知的本地行为被记成未知；
+      // ③ 上报了空数组 = 本地确实没改写 → none_local；
+      // ④ 根本没上报（子代理 / 老版本）= 未采集，字段缺失而非落 []。
+      let cause: string[] | undefined;
+      if (localCauses !== undefined && localCauses.length > 0) {
+        cause = localCauses;
+      } else if (d.transientDropped) {
+        cause = ["transient_dropped"];
+      } else if (localCauses !== undefined) {
+        cause = ["none_local"];
+      }
+
       this.appendHookEvent({
         event: "prefix_break" as any,
         session_id: this.metadata.session_id,
@@ -3123,11 +3151,9 @@ export class TraceCollector {
                   ? { first_changed_message_index: d.firstChangedMessageIndex }
                   : {}),
                 wasted_ratio: Number((d.wastedRatio ?? 0).toFixed(4)),
-                // 发现 14：断裂的本地来源。只在 broken 时落，且只落主循环如实上报的那几类；
+                // 发现 14：断裂的本地来源。只在 broken 时落，口径见上面 `cause` 的计算；
                 // 未上报（子代理 / 老版本）时字段缺失而非落 []——「没采集」与「采了但本地没改」是两回事。
-                ...(localCauses !== undefined
-                  ? { cause: localCauses.length > 0 ? localCauses : ["none_local"] }
-                  : {}),
+                ...(cause !== undefined ? { cause } : {}),
               }
             : {}),
           prev_segments: d.prevSegmentCount,
@@ -3167,9 +3193,7 @@ export class TraceCollector {
             ? { firstChangedMessageIndex: d.firstChangedMessageIndex }
             : {}),
           charWastedRatio: d.charWastedRatio,
-          ...(localCauses !== undefined
-            ? { cause: localCauses.length > 0 ? localCauses : ["none_local"] }
-            : {}),
+          ...(cause !== undefined ? { cause } : {}),
         });
       }
     } catch {

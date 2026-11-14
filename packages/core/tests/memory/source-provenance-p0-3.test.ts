@@ -91,7 +91,9 @@ describe("T-M9：querySource=memory-extract 时 source 被 execute 强制覆写"
     const tool = new MemoryTool(makeStore());
     const res = await tool.execute({
       key: "pref",
-      value: "用户偏好用 pnpm 管理依赖",
+      // P0-2 起 feedback 必须带「」包住 ≥4 字的用户原话（PR #830 合入的闸门），
+      // 本用例测的是来源覆写，所以先满足那道闸门的前提。
+      value: "用户说「以后都用 pnpm 管理依赖」",
       type: "feedback",
       // 模型自称「这是用户明确说的」——但本次写入来自后台提取代理，它没有用户输入可依据
       source: "user_explicit",
@@ -111,7 +113,9 @@ describe("T-M9：querySource=memory-extract 时 source 被 execute 强制覆写"
     const tool = new MemoryTool(makeStore());
     const res = await tool.execute({
       key: "pref",
-      value: "用户偏好用 pnpm 管理依赖",
+      // P0-2 起 feedback 必须带「」包住 ≥4 字的用户原话（PR #830 合入的闸门），
+      // 本用例测的是来源覆写，所以先满足那道闸门的前提。
+      value: "用户说「以后都用 pnpm 管理依赖」",
       type: "feedback",
       source: "user_explicit",
       // 没有 _querySource ⇒ 主会话路径
@@ -124,7 +128,9 @@ describe("T-M9：querySource=memory-extract 时 source 被 execute 强制覆写"
     const tool = new MemoryTool(makeStore());
     await tool.execute({
       key: "pref",
-      value: "用户偏好用 pnpm 管理依赖",
+      // P0-2 起 feedback 必须带「」包住 ≥4 字的用户原话（PR #830 合入的闸门），
+      // 本用例测的是来源覆写，所以先满足那道闸门的前提。
+      value: "用户说「以后都用 pnpm 管理依赖」",
       type: "feedback",
       source: "user_explicit",
       _querySource: "session-memory-update",

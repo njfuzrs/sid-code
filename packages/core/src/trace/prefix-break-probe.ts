@@ -69,6 +69,13 @@ export interface PrefixSegment {
   hash: string;
   /** 段的字符长度 —— 用于估算"断在这里浪费了多少" */
   length: number;
+  /**
+   * message 段里带 `transient: true` 的块数量（0 时省略，不落字段）。
+   *
+   * 只记**数量**，不记内容 —— 与 `flat` 同一条隐私契约（该字段也绝不落盘，
+   * 只活到相邻两轮比较完）。用途见 `PrefixBreakDiagnosis.transientDropped`。
+   */
+  transientBlocks?: number;
 }
 
 /** 一轮请求的前缀指纹 */
@@ -154,6 +161,18 @@ export interface PrefixBreakDiagnosis {
    * ⚠️ 这个字段存在的意义是**让假收益在数据里自己现形**，而不是靠人事后复盘。
    */
   judgeDisagreement: boolean;
+
+  /**
+   * 断点所在的**同一条**消息：上一轮带 `transient: true` 块，这一轮没有。
+   *
+   * 这是「本地确实改写了前缀，但改写者是 harness 自己的 transient 注入」的直接证据 ——
+   * 最典型的是召回记忆 / ambient reminder 只进发送副本、活不过下一轮
+   * （`query/reminder-inject.ts` 的不变量 3）。不判这一条，这类断裂会被归因成
+   * `none_local`（"本地没有原因"），把已知的本地行为记成未知（CP-9）。
+   *
+   * 只在 true 时落字段（false / 不适用时省略），避免每条健康记录都带一个恒 null。
+   */
+  transientDropped?: boolean;
 }
 
 /**
@@ -231,7 +250,14 @@ export function fingerprintPrefix(
   messages.forEach((m, i) => {
     // 段（message 级判据）用结构序列化：它要的正是"这条消息的结构变没变"
     const s = safeStringify(m);
-    segments.push({ kind: "message", messageIndex: i, hash: h(s), length: s.length });
+    const transientBlocks = countTransientBlocks(m);
+    segments.push({
+      kind: "message",
+      messageIndex: i,
+      hash: h(s),
+      length: s.length,
+      ...(transientBlocks > 0 ? { transientBlocks } : {}),
+    });
     // 字符级判据用 wire 文本：**刻意不同源**。用同一个串会让这一层退化成
     // 段判据的换单位重演，拦不住"结构变了、字节没变"的假收益。
     // 详见 flattenTextForWire 的注释。
@@ -317,6 +343,34 @@ function flattenTextForWire(m: unknown): string {
 }
 
 /**
+ * 统计一条消息里带 `transient: true` 的块数量。
+ *
+ * 只数**块**，且只认显式 `=== true`：`transient` 缺省（普通历史消息）与任何其它值
+ * 都不算。这样判据的口径与 `query/reminder-inject.ts` 打标记的那一处完全对齐，
+ * 不会因为某个 provider 适配层加了别的布尔字段而误判。
+ *
+ * 为什么不看块内容：`transient` 块一旦被丢弃，对比两轮只能看到"这一块没了"；
+ * 内容本身对归因没有增量信息，而读它就等于把用户对话内容带进一个只该算长度的模块
+ * （见 `flat` 的隐私注释）。
+ */
+function countTransientBlocks(m: unknown): number {
+  if (!m || typeof m !== "object") return 0;
+  const content = (m as { content?: unknown }).content;
+  if (!Array.isArray(content)) return 0;
+  let n = 0;
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      (block as { transient?: unknown }).transient === true
+    ) {
+      n++;
+    }
+  }
+  return n;
+}
+
+/**
  * 比较两轮指纹，定位第一个变化的段。
  *
  * **纯尾部追加不算断裂** —— 这正是健康形态：前缀完全没动，只在末尾加了新消息，
@@ -369,6 +423,14 @@ export function diagnosePrefixBreak(
     if (a.hash !== b.hash || a.kind !== b.kind) {
       // 浪费量 = 从断点起到本轮前缀结尾的字符数（这一段之后全部要重算）
       const wasted = curr.segments.slice(i).reduce((s, x) => s + x.length, 0);
+      // CP-9：断点这条消息上一轮带 transient 块、这一轮没有 → 丢掉的是 harness 自己的
+      // transient 注入（reminderParts 只进发送副本，见 query/reminder-inject.ts）。
+      // 要求两侧都是 message 段：链错位（kind 不同）时谈不上"同一条消息"。
+      const transientDropped =
+        a.kind === "message" &&
+        b.kind === "message" &&
+        (a.transientBlocks ?? 0) > 0 &&
+        (b.transientBlocks ?? 0) === 0;
       return {
         ...base,
         broken: true,
@@ -377,6 +439,7 @@ export function diagnosePrefixBreak(
         firstChangedMessageIndex: b.messageIndex,
         wastedRatio: curr.totalLength > 0 ? wasted / curr.totalLength : 0,
         judgeDisagreement: disagree(true),
+        ...(transientDropped ? { transientDropped: true } : {}),
       };
     }
   }
