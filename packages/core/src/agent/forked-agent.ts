@@ -650,8 +650,15 @@ export async function runForkedAgent(
             reasonType: "other",
             agentId: forkAgentId,
             // B19 / B20：forked 的裁决来自调用方注入的 canUseTool，不经 PermissionChecker，
-            // 没有管线 step / mode 可取。step 记固定位置标签 "forked"（「在 forked 闸门判的」
-            // 是事实），mode **不填**——填主会话的模式等于编造，这条路根本不看模式。
+            // 没有管线 step 可取。step 记固定位置标签 "forked"（「在 forked 闸门判的」是事实）。
+            //
+            // B12：mode 填**fork 的策略名**（`fork:memory-extract` 形态），不要留空也不要
+            // 填主会话的权限模式。此前留空的理由是「这条路根本不看模式，填主会话模式等于编造」，
+            // 但空字段的代价是：digest 按 mode 切片时，forked 的拒绝全部落在 unknown 桶里，
+            // 分不出是哪条旁路（记忆提取 / dream / session-memory / `/btw`）在拒。
+            // 策略名本身就是这条路唯一有意义的「模式」，`fork:` 前缀保证它不会与
+            // sid 原生 PermissionMode 混在一起统计。
+            mode: forkAgentId,
             step: "forked",
             toolUseId: tu.id,
             ...(decision.behavior === "deny" && decision.denyKind
@@ -684,7 +691,8 @@ export async function runForkedAgent(
           context: "forked",
           reasonType: "other",
           agentId: forkAgentId,
-          // 同 deny：固定位置标签，mode 不填（理由见 deny 分支注释）
+          // 同 deny：固定位置标签，mode 填 fork 策略名（B12，理由见 deny 分支注释）
+          mode: forkAgentId,
           step: "forked",
           toolUseId: tu.id,
           // 与 deny 同口径：forked 的每次工具调用都要留下入参摘要，否则「fork 读了哪些

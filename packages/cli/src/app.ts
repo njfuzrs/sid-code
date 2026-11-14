@@ -18,6 +18,10 @@ import {
   isBypassDisabledByPolicy,
   isModeDisabledByPolicy,
 } from "@sid-code/core/permission/mode-policy.ts";
+import {
+  PERMISSION_MODE_CHANGED_EVENT_NAME,
+  type PermissionModeChangeSource,
+} from "@sid-code/core/permission/mode.ts";
 // 工具进度路由判定（纯函数，静态引入：onToolProgress 是同步回调，不能 await import）
 import { routeToolProgress } from "./ui/tool-progress-route.ts";
 import { formatStartupWarning } from "./ui/startup-warning.ts";
@@ -983,10 +987,14 @@ export class App {
   /** /debug 命令用：轨迹采集器实例（doInit 后赋值） */
   private traceCollector: import("@sid-code/core/trace/collector.ts").TraceCollector | null = null;
   /**
-   * B23：collector 建好之前产生的 `ProjectRulesPermission` 事件。启动时的 applyProjectRules
+   * B23：collector 建好之前产生的轨迹事件。启动时的 applyProjectRules
    * 早于 initTraceCollector，不缓存的话「仓库 CLAUDE.md 想在启动时改权限档」这条恰好最该留痕的记录会丢。
+   *
+   * B11：队列带上事件名 —— 同一个窗口期还会产生 `PermissionModeChanged`
+   * （企业策略回拨、CLAUDE.md 模式采纳都在 init 早期），两条事件共用一个 flush 点，
+   * 不要为新事件再复制一套 pending 逻辑。
    */
-  private pendingProjectRulesPermissionEvents: Record<string, unknown>[] = [];
+  private pendingTraceEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
   /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
   private fileReadTracker:
     | import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker
@@ -2400,7 +2408,7 @@ export class App {
     // 新策略禁用了当前所处的权限模式：拨回默认并告知（启动时的 fail-fast 只在启动判断）
     const mode = this.config.permissionMode;
     if (mode && mode !== "default" && isModeDisabledByPolicy(String(mode))) {
-      this.config.permissionMode = "default";
+      this.setPermissionMode("default", "policy");
       this.config.skipPermissions = false;
       this.config.yesMode = false;
       this.tuiStateUpdater?.({ permissionMode: "default" });
@@ -2408,7 +2416,7 @@ export class App {
     } else if (isBypassDisabledByPolicy() && this.config.skipPermissions) {
       this.config.skipPermissions = false;
       this.config.yesMode = false;
-      this.config.permissionMode = "default";
+      this.setPermissionMode("default", "policy");
       this.tuiStateUpdater?.({ permissionMode: "default" });
       this.notifyStatus("perm_mode_switch", "企业策略已禁用 bypass 模式，已切回默认", 8000);
     }
@@ -4835,13 +4843,14 @@ export class App {
       await import("@sid-code/core/query/init-helpers.ts");
     const traceCollectorInstance = await initTraceCollector(this.config, this.hookSystem);
     this.traceCollector = traceCollectorInstance;
-    // B23：启动时 CLAUDE.md 的权限段在 collector 建好之前就处理完了，补发缓存的事件
+    // B23 / B11：启动期的 CLAUDE.md 权限段、企业策略回拨、模式切换都发生在 collector
+    // 建好之前，这里按事件名补发缓存的事件
     if (traceCollectorInstance) {
-      for (const data of this.pendingProjectRulesPermissionEvents) {
-        traceCollectorInstance.recordCustomEvent(PROJECT_RULES_PERMISSION_EVENT_NAME, data);
+      for (const e of this.pendingTraceEvents) {
+        traceCollectorInstance.recordCustomEvent(e.event, e.data);
       }
     }
-    this.pendingProjectRulesPermissionEvents = [];
+    this.pendingTraceEvents = [];
     // §3.1/§3.3：将 traceCollector 注入 QueryEngine，用于异常路径持久化
     if (traceCollectorInstance && this.queryEngine) {
       (this.queryEngine as any).deps.traceCollector = traceCollectorInstance;
@@ -6265,11 +6274,41 @@ export class App {
 
   /** B23：CLAUDE.md 权限段被采纳 / 剔除的轨迹事件；collector 未就绪时先缓存 */
   private recordProjectRulesPermissionEvent(data: Record<string, unknown>): void {
+    this.recordTraceEventWhenReady(PROJECT_RULES_PERMISSION_EVENT_NAME, data);
+  }
+
+  /**
+   * 写一条自定义轨迹事件；collector 未就绪时进 pending 队列，由 initTraceCollector
+   * 之后的 flush 点按事件名补发。启动早期的权限相关事件（B23 / B11）共用这一条通道。
+   */
+  private recordTraceEventWhenReady(event: string, data: Record<string, unknown>): void {
     if (this.traceCollector) {
-      this.traceCollector.recordCustomEvent(PROJECT_RULES_PERMISSION_EVENT_NAME, data);
-    } else if (this.pendingProjectRulesPermissionEvents.length < 32) {
-      this.pendingProjectRulesPermissionEvents.push(data);
+      this.traceCollector.recordCustomEvent(event, data);
+    } else if (this.pendingTraceEvents.length < 32) {
+      this.pendingTraceEvents.push({ event, data });
     }
+  }
+
+  /**
+   * 权限模式切换的**唯一出口**：赋值 + 落 `PermissionModeChanged { from, to, source }`。
+   *
+   * B11：此前 `config.permissionMode` 在 app.ts 里有 6 处直接赋值，只有 CLAUDE.md 那处
+   * 记了 `ProjectRulesPermission`；Shift+Tab、进出 Plan Mode、企业策略回拨都不留痕。
+   * 于是「SessionStart 说 default、后续决策全是 acceptEdits」这种形态，轨迹里没有任何
+   * 事实能说出「什么时候、因为什么切过去的」，只能靠人回忆。
+   *
+   * 口径：`from === to` 不写事件（没有发生切换），赋值本身仍然执行 ——
+   * 调用方不需要自己判「值没变就不调」，那正是原先 6 处各写各的时漂移的来源。
+   */
+  private setPermissionMode(next: string, source: PermissionModeChangeSource): void {
+    const from = this.config.permissionMode;
+    this.config.permissionMode = next;
+    if (from === next) return;
+    this.recordTraceEventWhenReady(PERMISSION_MODE_CHANGED_EVENT_NAME, {
+      from,
+      to: next,
+      source,
+    });
   }
 
   private applyProjectRules(
@@ -6331,7 +6370,7 @@ export class App {
     );
     if (modeResolution.kind === "apply") {
       const from = this.config.permissionMode;
-      this.config.permissionMode = modeResolution.mode;
+      this.setPermissionMode(modeResolution.mode, "claude_md");
       log.info("APP", `CLAUDE.md 权限模式: ${modeResolution.mode}`);
       this.recordProjectRulesPermissionEvent({
         field: "permissionMode",
@@ -7856,7 +7895,7 @@ export class App {
     log.info("PLAN", "激活 Plan Mode");
 
     // 进入前的权限模式已由 enter_plan_mode 在 planManager.enter() 时记下（P2-1：唯一事实源）
-    this.config.permissionMode = "plan";
+    this.setPermissionMode("plan", "plan_enter");
 
     // 同步 TUI 状态
     this.tuiStateUpdater?.({ permissionMode: "plan", isPlanMode: true });
@@ -7880,7 +7919,7 @@ export class App {
     // 与 planManager.prePlanMode、checker.prePlanMode 共三份，只有这一份被赋过值。
     // 以 plan 模式启动的会话没有「之前」，getPrePlanMode() 为 null → 恢复成 default。
     const restored = override || this.planManager?.getPrePlanMode() || "default";
-    this.config.permissionMode = restored;
+    this.setPermissionMode(restored, "plan_exit");
 
     // 同步 TUI 状态
     this.tuiStateUpdater?.({ permissionMode: restored, isPlanMode: false });
@@ -8155,7 +8194,7 @@ export class App {
       return;
     }
 
-    this.config.permissionMode = next;
+    this.setPermissionMode(next, "keyboard");
     // ⚠️ 关键：skipPermissions / yesMode 是「粘性」执行开关，checker 直接读它们做早退放行
     //（checker.ts:567 skipPermissions 全放行 / :630 yesMode 自动批准），与 permissionMode 正交。
     // 若不同步,从 dangerously-skip-permissions/always-allow 循环走后,状态栏显示已切成 default,

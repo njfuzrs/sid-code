@@ -381,8 +381,8 @@ function forkCtx(command: string): ForkedAgentContext {
   };
 }
 
-describe("forked 路径：带 tool_use_id 与 step=forked，不编造 mode", () => {
-  test("canUseTool 拒绝 → 事件 step=forked、tool_use_id 与模型给的 id 一致、无 mode", async () => {
+describe("forked 路径：带 tool_use_id 与 step=forked，mode 填 fork 策略名", () => {
+  test("canUseTool 拒绝 → 事件 step=forked、tool_use_id 与模型给的 id 一致、mode=fork:btw", async () => {
     const got: PermissionDecisionEvent[] = [];
     setPermissionDecisionObserver((e) => got.push(e));
     await runForkedAgent(forkCtx("rm -rf x"), {
@@ -393,7 +393,10 @@ describe("forked 路径：带 tool_use_id 与 step=forked，不编造 mode", () 
     });
     const deny = got.find((e) => e.outcome === "deny")!;
     expect(deny).toMatchObject({ context: "forked", step: "forked", toolUseId: "toolu_fork_1" });
-    expect(Object.keys(deny)).not.toContain("mode");
+    // B12 起改为填 fork 策略名，不再留空：留空时 digest 按 mode 切片，forked 的拒绝全落
+    // unknown 桶，分不出是哪条旁路（btw / 记忆提取 / dream）在拒。
+    // `fork:` 前缀保证它不会与 sid 原生 PermissionMode 混在一起统计。
+    expect(deny.mode).toBe("fork:btw");
   });
 });
 

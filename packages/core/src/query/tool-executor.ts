@@ -67,7 +67,7 @@ import {
   structuredErrorCode,
   type PermissionSource,
 } from "../analytics/events.ts";
-import { guardOf, autoClassifierOf } from "../permission/decision-telemetry.ts";
+import { guardOf, autoClassifierOf, decisionFactsOf } from "../permission/decision-telemetry.ts";
 
 /**
  * GAP-06：executeSingleTool 内部返回载体——在标准 tool_result ContentBlock 之外，
@@ -1120,6 +1120,8 @@ export async function resolveToolPermission(
       step: decision.step,
       mode: decision.mode,
       toolUseId: block.id,
+      // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属（只进本地轨迹）
+      ...decisionFactsOf(decision),
     });
     return null;
   }
@@ -1298,6 +1300,8 @@ export async function resolveToolPermission(
         toolUseId: block.id,
         guard: guardOf(decision),
         autoClassifier: autoClassifierOf(decision),
+        // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属
+        ...decisionFactsOf(decision),
       });
       const denyContent = `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`;
       // B33：PermissionDenied hook 接线（此前 15 个预留事件之一，有 fire 方法无调用点）。
@@ -1337,6 +1341,8 @@ export async function resolveToolPermission(
       toolUseId: block.id,
       guard: guardOf(decision),
       autoClassifier: autoClassifierOf(decision),
+      // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属
+      ...decisionFactsOf(decision),
     });
     return null;
   }
@@ -1366,6 +1372,8 @@ export async function resolveToolPermission(
     toolUseId: block.id,
     // headless 把 A2 / A6 的危险确认落成拒绝时，靠它分开是哪道闸门（step 都是 headless:2）
     guard: guardOf(decision),
+    // B12：危险成因 / bash 形状
+    ...decisionFactsOf(decision),
   });
   // B33：规则直拒同样 fire PermissionDenied。headless 把 ask 自动拒（reasonType="other"）
   // 记作 auto，deny 规则命中记作 rule —— 两者处置相反，hook 侧需要能分开。

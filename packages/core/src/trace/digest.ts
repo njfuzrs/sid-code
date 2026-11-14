@@ -1782,6 +1782,27 @@ export interface SessionLevelMetrics {
   hitl_wait_total_ms: number;
   hitl_wait_p95_ms?: number;
   /**
+   * B13：主循环确认按**成因**分桶（次数 + 有计时的样本数 + 合计墙钟）。
+   *
+   * 补它之前，「等人确认: 82 次 计时 82 次共 682.8s」是个总数，回答不了「哪些确认本可以
+   * 没有」—— 为这一个问题写过 5 个临时脚本、重跑 3 遍 `PermissionChecker`，而且修复前后
+   * 没有可比口径。分桶后就地能读。
+   *
+   * 判据与附录 A.3 的脚本一致，且**是上界估计**：只看「命令以 `cd <目标>` 开头 +
+   * 剥掉前缀后主体是否只读」，不看 B4 的 git 仓库身份（换仓后的 `cd` 会被 PR-2 收紧）。
+   * 所以「工作区内 cd + 只读」这个桶里还有一部分实际仍需确认，读数时要带这个前提。
+   *
+   * 桶名（与 `permission/bash-shape.ts` 的枚举一一对应）：
+   *  - `工作区内 cd + 只读` / `cd 到工作区外` / `非只读其他`：主循环 bash 确认；
+   *  - `危险：<模式名>`：命中危险命令的确认（模式名取自 B12 的 `danger_pattern`）；
+   *  - `路径：工作区外读/写`：非 bash 工具的 pathValidation 确认；
+   *  - 其余非 bash 工具按 `reason_type` 分桶。
+   *
+   * 键恒落（缺省空数组）：老轨迹没有 `bash_shape` 字段，那时的确认全归「未分类」，
+   * 与「分桶没生效」靠 `n > 0` 区分。
+   */
+  hitl_cause_buckets?: Array<{ bucket: string; n: number; timed_n: number; total_ms: number }>;
+  /**
    * F4：定时器迟到（`TimerDrift`）事件总数。
    *
    * 它回答的是「事件循环有没有真的被占满」——这是排查"看门狗为什么迟到"的第一手证据。
@@ -4813,6 +4834,19 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
               : "均无计时（弹窗后被中断）",
           ),
       );
+      // B13：确认成因。总数回答不了「哪些确认本来可以没有」，分桶就地能读。
+      // 标注「主循环」：子代理 / forked 的确认不在分母里（它们不是模型选择弹窗的结果）。
+      if (m.hitl_cause_buckets && m.hitl_cause_buckets.length > 0) {
+        L.push(c("gray", "  确认成因（主循环）:"));
+        for (const b of m.hitl_cause_buckets) {
+          L.push(
+            c("gray", `    ${b.bucket}: ${b.n} 次`) +
+              (b.timed_n > 0
+                ? c("gray", `，计时 ${b.timed_n} 次共 ${s(b.total_ms)}`)
+                : c("gray", "，无计时")),
+          );
+        }
+      }
     }
     // 口径自证：端到端必然 ≥ 首字节。违反说明两个口径的基准点不一致——
     // 这个不变量比数值本身更值得断言（TTFT 曾因基准不重设而虚高到反超端到端）。
@@ -5832,6 +5866,46 @@ export function groupProviderHealth(stats: readonly ProviderDigestStats[]): Prov
 }
 
 /**
+ * B13：把一条**主循环**确认归到成因桶。
+ *
+ * 判据取自 `events.jsonl` 的 `PermissionDecision.data`，顺序与附录 A.3 的脚本一致：
+ * 危险优先 → bash 的 `bash_shape` → 非 bash 的 `reason_type`。
+ *
+ * 为什么不用「命令文本重新分类」：`PermissionDecision` 里的命令是截断过的
+ * （本会话 51 条普通确认里 25 条超过 200 字符），从截断文本重跑判据会把长命令整段
+ * 误判成「非只读其他」。`bash_shape` 是 checker 在决策时用**完整命令**算好的。
+ *
+ * 老轨迹（PR-0 之前）没有 `bash_shape` 字段：那时所有 bash 确认归「未分类」，
+ * 并与「分桶没生效」（桶数组为空）区分开 —— 前者是本会话的读数不可用，后者是没接线。
+ */
+function hitlCauseBucketOf(data: Record<string, unknown>): string {
+  const tool = typeof data.tool_name === "string" ? data.tool_name : "";
+  const reasonType = typeof data.reason_type === "string" ? data.reason_type : undefined;
+  if (tool !== "bash") {
+    // 非 bash 工具的 pathValidation 就是「读写工作区外路径」，单列一桶；
+    // 其余按 reason_type 分（rule / mode / safetyCheck / …），不在这里枚举
+    return reasonType === "pathValidation"
+      ? "路径：工作区外读/写"
+      : `工具：${reasonType ?? "未分类"}`;
+  }
+  if (typeof data.danger_pattern === "string" && data.danger_pattern) {
+    return `危险：${data.danger_pattern}`;
+  }
+  const bashShape = typeof data.bash_shape === "string" ? data.bash_shape : undefined;
+  switch (bashShape) {
+    case "cd_workspace_readonly":
+      return "工作区内 cd + 只读";
+    case "cd_outside_workspace":
+      return "cd 到工作区外";
+    case "cd_workspace_nonreadonly":
+    case "no_cd_prefix":
+      return "非只读其他";
+    default:
+      return "未分类（老轨迹无 bash_shape）";
+  }
+}
+
+/**
  * P0-2：从 events 派生**会话级**指标，供 session-index 长期留存。
  *
  * 与 `aggregateProviderStats` 共用同一份 TTFT 判据（`StreamPhase("first_content")`
@@ -5873,6 +5947,8 @@ export function aggregateSessionMetrics(
   let hitlSamples = 0;
   let hitlPrompts = 0;
   const hitlWaits: number[] = [];
+  // B13：主循环确认按成因分桶。桶名 → {次数, 有计时的样本数, 合计墙钟}
+  const hitlCauseBuckets = new Map<string, { n: number; timedN: number; totalMs: number }>();
   // T6：轮级人工等待（TurnComplete.hitl_wait_ms），与上面弹窗级的 hitlWaits 不同源
   let turnHitlTotalMs = 0;
   let turnHitlN = 0;
@@ -5992,6 +6068,18 @@ export function aggregateSessionMetrics(
       hitlPrompts++;
       const ms = e.data.duration_ms;
       if (typeof ms === "number" && ms >= 0) hitlWaits.push(ms);
+      // B13：主循环确认按成因分桶。只对 main 分：子代理 / forked 的确认成因与
+      // 「模型要不要弹窗」是另一件事，混进同一组桶会让占比失去意义。
+      if (e.data.execution_context === "main") {
+        const bucket = hitlCauseBucketOf(e.data);
+        const cur = hitlCauseBuckets.get(bucket) ?? { n: 0, timedN: 0, totalMs: 0 };
+        cur.n++;
+        if (typeof ms === "number" && ms >= 0) {
+          cur.timedN++;
+          cur.totalMs += ms;
+        }
+        hitlCauseBuckets.set(bucket, cur);
+      }
     }
 
     // B9（PR-7）：冲突事件计数 + B11：冲突弹窗等待并入同一份 HITL 汇总。
@@ -6111,6 +6199,10 @@ export function aggregateSessionMetrics(
     hitl_wait_n: sortedHitl.length,
     hitl_wait_total_ms: sortedHitl.reduce((a, b) => a + b, 0),
     hitl_wait_p95_ms: percentile(sortedHitl, 0.95),
+    // B13：主循环确认按成因分桶，按次数降序（读者先看最大那桶）
+    hitl_cause_buckets: [...hitlCauseBuckets.entries()]
+      .map(([bucket, v]) => ({ bucket, n: v.n, timed_n: v.timedN, total_ms: v.totalMs }))
+      .sort((a, b) => b.n - a.n),
     timer_drift_total: timerDriftTotal,
     timer_drift_during_hitl: timerDriftDuringHitl,
     conflict_count: conflictCount,
