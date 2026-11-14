@@ -10,6 +10,7 @@ import { describe, test, expect } from "bun:test";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import {
+  GIT_DANGER_DISPLAY,
   matchGitDanger,
   normalizeGitGlobalOptions,
 } from "@sid-code/core/permission/git-danger-patterns.ts";
@@ -182,5 +183,76 @@ describe("git 全局选项不能绕过危险检测", () => {
     expect(matchGitDanger("git -C /tmp status")).toBeNull();
     expect(matchGitDanger("git --no-pager log --oneline")).toBeNull();
     expect(matchGitDanger("git --version")).toBeNull();
+  });
+});
+
+/**
+ * B6：`git worktree remove --force` 此前与 `git log` 同一级别——default 下是普通确认
+ * （ASK step=14），always-allow（`-y`）下 `ALLOW step=8-mode` 直接放行。不带 force 时 git 会
+ * 拒绝删除有未提交改动或 locked 的 worktree，所以只有 force 形态是「一并删掉、不可恢复」的。
+ * 本仓并行开发时 worktree 数量上百（`harness-bench/wt/*`、`.sid-code/worktrees/*`），
+ * 误删一次就丢别人的在途改动，故按本仓工作方式补进危险模式（超出 CC，见 Agent Note）。
+ */
+describe("git worktree 强删列入危险模式（B6）", () => {
+  const FORCE_COMMANDS = [
+    "git worktree remove --force /tmp/wt-x",
+    "git worktree remove -f /tmp/wt-x",
+    "git worktree remove -ff /tmp/wt-x",
+    "git worktree remove /tmp/wt-x --force",
+    "git -C . worktree remove --force /tmp/wt-x",
+  ];
+
+  test("force 变体命中（含 -ff、flag 在末尾、带 -C 全局选项）", () => {
+    for (const command of FORCE_COMMANDS) {
+      expect(matchGitDanger(command)?.name).toBe("git 强删 worktree");
+    }
+  });
+
+  test("不带 force 的写法不命中：git 自己会拒绝删有改动的 worktree", () => {
+    for (const command of [
+      "git worktree remove /tmp/wt-x",
+      "git worktree prune",
+      "git worktree list",
+      "git worktree add /tmp/wt-y main",
+    ]) {
+      expect(matchGitDanger(command)).toBeNull();
+    }
+  });
+
+  test("default / acceptEdits / always-allow 下都落到 Step 2 危险确认", async () => {
+    for (const command of FORCE_COMMANDS) {
+      for (const cfg of [{}, { permissionMode: "acceptEdits" }, { yesMode: true }]) {
+        const r = await check(command, cfg);
+        expect(r.allowed).toBe(false);
+        expect(r.needsConfirmation).toBe(true);
+        // Step 2 是危险命令拦截；修前这里是 step=14（普通确认）/ 8-mode（always-allow 放行）
+        expect(r.step).toBe("2");
+        expect(r.decisionReason?.type).toBe("dangerousCommand");
+      }
+    }
+  });
+
+  test("不带 force 的三条不落到危险确认", async () => {
+    for (const command of [
+      "git worktree remove /tmp/wt-x",
+      "git worktree prune",
+      "git worktree list",
+    ]) {
+      const r = await check(command, { yesMode: true });
+      expect(r.decisionReason?.type).not.toBe("dangerousCommand");
+    }
+  });
+
+  test("确认框展示规则同源：GIT_DANGER_DISPLAY 也命中（标红 + 安全默认）", () => {
+    // display 是静态正则、不做 git 全局选项归一化（`git -C x <cmd>` 在 UI 侧不标红，
+    // 与 push / reset 等既有项一致，拦截层不受影响：checker 会走归一化串），
+    // 所以这里只断言不带全局选项的写法。
+    for (const command of FORCE_COMMANDS.slice(0, 4)) {
+      const hit = GIT_DANGER_DISPLAY.find((d) => d.pattern.test(command));
+      expect(hit?.label).toContain("worktree");
+    }
+    expect(GIT_DANGER_DISPLAY.some((d) => d.pattern.test("git worktree remove /tmp/wt-x"))).toBe(
+      false,
+    );
   });
 });
