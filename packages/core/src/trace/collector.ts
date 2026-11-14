@@ -92,10 +92,21 @@ import type { Message, Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { resetPriceTierCounts, flushInFlightBilledRequests } from "../llm/billing-sink.ts";
+import { resetSelfReportExpected } from "../llm/billing-sink.ts";
+import {
+  applySelfReportGaps,
+  reconcileSelfReports,
+  type SelfReportGap,
+} from "../llm/self-report-reconcile.ts";
 import { resetAgentUsageProcess } from "../telemetry/agent-usage.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
-import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
+import {
+  resetSideCallStats,
+  getSideStats,
+  recordSideCall,
+  setSideStatsObserver,
+} from "./side-call-sink.ts";
 import { SUBAGENT_COST_EVENT_NAME } from "../agent/usage-sink.ts";
 import { PrefixBreakTracker, fingerprintPrefix } from "./prefix-break-probe.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
@@ -360,6 +371,14 @@ export class TraceCollector {
    * 单向置位、不重置：一个会话里只要撞过一次墙钟，这个事实就成立。
    */
   private hitMaxDuration = false;
+  /**
+   * 缺陷 CP-2：本会话收尾时对账出的「自报链漏账」差额（未补账前为空）。
+   *
+   * 为什么落在 SessionEnd 事件的 data 里而不是只打日志：`warn.log` 会被轮转/被忽略，
+   * 而这条差额是「账本金额被补过」的唯一证据。下一班人查「为什么账本比 provider 账单
+   * 多一点/少一点」时，第一现场就是这里。
+   */
+  private selfReportGap: { gaps: SelfReportGap[]; comparedQuerySources: number } | undefined;
   /** B26：本轮以 StructuredOutput 交付收尾（{@link recordStructuredOutputDelivered}），收尾归 end_turn */
   private hitStructuredOutputDelivered = false;
   private budgetExceededSource: "budget_rule" | "quota" | "remote" | undefined;
@@ -2138,6 +2157,49 @@ export class TraceCollector {
     }
   }
 
+  /**
+   * 缺陷 CP-2（2026-11-13）：自报链的运行时对账与补账。**必须在写账本之前**执行。
+   *
+   * ## 为什么补账走 `recordSideCall`
+   *
+   * 它内部用会话注入的计价器（app.ts 的 `setSideCostCalculator` → 与主循环同一个
+   * `SessionState.calculateCost`），并同步通知 `setSideCostObserver` → `addSideCost`。
+   * 于是账本行的 `total_cost_usd` 当场就包含这笔钱 —— 如果这里自己算钱再塞进
+   * 某个局部变量，账本读的是 SessionState，会看不到补账（"补了但账本没变"）。
+   *
+   * ## 为什么补完就清零
+   *
+   * 同一会话可能退出两次（SIGHUP 收尾 + 正常退出）：不清零会补两笔，
+   * 错向是高估——比漏记更难发现（"成本数字终于上来了"极易被误读成修好了）。
+   */
+  private reconcileSelfReportedCosts(): void {
+    try {
+      const result = reconcileSelfReports();
+      if (result.gaps.length === 0) return;
+      applySelfReportGaps(result.gaps, (r) => recordSideCall(r));
+      this.selfReportGap = {
+        gaps: result.gaps,
+        comparedQuerySources: result.comparedQuerySources,
+      };
+      for (const gap of result.gaps) {
+        getLogger().warn(
+          "BILLING",
+          `辅助调用自报漏账已补账：${gap.querySource}（消费侧 label ${
+            gap.labels.join("/") || "未登记"
+          }）漏报 ${gap.inputTokens} 输入 / ${gap.outputTokens} 输出 token；` +
+            `发生侧 ${gap.expectedCalls} 次 vs 消费侧已自报 ${gap.reportedCalls} 次`,
+        );
+      }
+      getLogger().warn(
+        "BILLING",
+        `自报对账：${result.gaps.length}/${result.comparedQuerySources} 条链有差额，其余已对齐`,
+      );
+      resetSelfReportExpected();
+    } catch {
+      /* 对账失败不影响收尾：宁可少一次补账，也不能阻断 SessionEnd 落盘 */
+    }
+  }
+
   private async handleSessionEnd(input: SessionEndInput): Promise<void> {
     if (!this.initialized) return;
     // /clear 换会话的竞态护栏：App 对 SessionEnd(clear) 只等有限时间（慢用户 hook 不能卡住 /clear），
@@ -2386,6 +2448,11 @@ export class TraceCollector {
       };
     }
 
+    // 缺陷 CP-2：自报链对账与补账。**必须排在下面的 sideCallStats 与 App 的账本取数之前** ——
+    // 补账走 recordSideCall，它同步通知 addSideCost，账本行的 total_cost_usd 才含这笔钱。
+    // 正常路径（消费侧报得对）gap 为空，这里什么都不做、不打日志。
+    this.reconcileSelfReportedCosts();
+
     // 辅助 LLM 调用统计汇总（影子调用 sink → metadata）
     this.syncSideCallMetadata();
 
@@ -2399,6 +2466,9 @@ export class TraceCollector {
       data: {
         reason: input.reason,
         exit_status: this.metadata.exit_status,
+        // 缺陷 CP-2：自报链漏账的差额（只在这条会话真的补过账时存在）。
+        // 字段缺席 = 全部对齐，不是"没对账"——对账的分母在 comparedQuerySources 里。
+        ...(this.selfReportGap ? { selfReportGap: this.selfReportGap } : {}),
         // T13.4：side-call 失败统计
         sideCallStats:
           sideStats.apiCalls > 0

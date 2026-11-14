@@ -62,7 +62,12 @@ function makeMockProvider() {
         type: "content_block_delta",
         delta: { type: "text_delta", text: "<summary>摘要内容</summary>" },
       };
-      yield { type: "message_stop", usage: { inputTokens: 10, outputTokens: 5 } };
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      };
+      yield { type: "message_stop" };
     },
   };
 }
