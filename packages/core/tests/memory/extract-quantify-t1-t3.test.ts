@@ -442,6 +442,9 @@ describe("T3 写入对齐容量", () => {
       description: null,
       name,
       type,
+      // P0-3 起 MemoryHeader.source 必填（index/recall 的排序判据）；
+      // 本用例只验 type 优先级与 mtime，来源取缺省档即可。
+      source: "inferred",
     });
     const sorted = sortManifestHeaders([
       h("r", "reference", 9),

@@ -352,28 +352,61 @@ function collectRedirects(node: BashASTNode, targets: string[]): void {
 /**
  * 从 AST 中提取所有简单命令节点
  */
-export function extractSimpleCommands(
-  node: BashASTNode,
-): Array<{ command: string; args: string[] }> {
-  const commands: Array<{ command: string; args: string[] }> = [];
-  collectSimpleCommands(node, commands);
-  return commands;
+/** `extractSimpleCommands` 的元素：一段简单命令（程序名 + 参数 + 前导变量赋值） */
+export interface SimpleCommand {
+  /** 程序名。独立变量赋值语句（`B=origin/x`）为空串，只有 {@link extractShellStatements} 会产出 */
+  command: string;
+  args: string[];
+  /** 前导变量赋值（`VAR=x cmd`），由 `parseSimpleCommand` 从 token 流里摘出 */
+  envPrefix?: Record<string, string>;
 }
 
-function collectSimpleCommands(
-  node: BashASTNode,
-  out: Array<{ command: string; args: string[] }>,
-): void {
+export function extractSimpleCommands(node: BashASTNode): SimpleCommand[] {
+  return collectSimpleCommands(node, false);
+}
+
+/**
+ * 与 {@link extractSimpleCommands} 相同，但**保留独立变量赋值语句**（`command === ""`，
+ * 只有 `envPrefix`）。
+ *
+ * 只读判定需要它：`GIT_DIR=<dir>` 单独一行、下一行才是 `git status` 时，那条赋值语句本身
+ * 不导出，但同名变量可能早在别处被 `export` 过，重新赋值会改变子进程看到的值。为不依赖
+ * 运行时会话状态，这类变量出现在独立赋值里同样要判非只读，而 `extractSimpleCommands`
+ * 会把 command 为空的条目整个丢掉，判不到它。
+ */
+export function extractShellStatements(node: BashASTNode): SimpleCommand[] {
+  return collectSimpleCommands(node, true);
+}
+
+function collectSimpleCommands(node: BashASTNode, includeAssignments: boolean): SimpleCommand[] {
+  const out: SimpleCommand[] = [];
+  collectInto(node, out, includeAssignments);
+  return out;
+}
+
+function collectInto(node: BashASTNode, out: SimpleCommand[], includeAssignments: boolean): void {
   switch (node.type) {
-    case "simple":
-      if (node.command) out.push({ command: node.command, args: node.args });
+    case "simple": {
+      const envPrefix = node.envPrefix;
+      if (node.command) {
+        out.push(
+          envPrefix
+            ? { command: node.command, args: node.args, envPrefix }
+            : { command: node.command, args: node.args },
+        );
+        break;
+      }
+      if (includeAssignments && envPrefix && Object.keys(envPrefix).length > 0) {
+        out.push({ command: "", args: [], envPrefix });
+      }
       break;
+    }
     case "pipeline":
     case "sequence":
-      for (const cmd of node.commands) collectSimpleCommands(cmd, out);
+      for (const cmd of node.commands) collectInto(cmd, out, includeAssignments);
       break;
     case "redirect":
-      collectSimpleCommands(node.target, out);
+      collectInto(node.target, out, includeAssignments);
       break;
     default:
       break;

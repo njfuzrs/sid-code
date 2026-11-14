@@ -22,7 +22,17 @@ import { readdir, stat, unlink, rename, copyFile, writeFile } from "fs/promises"
 import { getLogger } from "../debug/logger.ts";
 import { getAutoMemPath, getLegacyWorktreeMemPath } from "./paths.ts";
 import { sidHomePath } from "../config/paths.ts";
-import { MEMORY_LIMITS, MEMORY_TYPES, isMemoryType, type MemoryType } from "./types.ts";
+import {
+  DEFAULT_MEMORY_SOURCE,
+  MEMORY_LIMITS,
+  MEMORY_TYPES,
+  isIndexVisibleMemory,
+  isMemorySource,
+  isMemoryType,
+  memorySourceRank,
+  type MemorySource,
+  type MemoryType,
+} from "./types.ts";
 import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
 // P0-3：freshness 此前唯一的生产引用在 recall.ts 内，而 recall 自己零接线 ⇒ 整条不可达。
 // 索引注入是主路径，把它接到这里，freshness 才第一次真正到达模型。
@@ -52,6 +62,14 @@ export interface MemoryEntry {
   type?: MemoryType;
   /** 一行描述（新增，用于 MEMORY.md 索引与召回） */
   description?: string;
+  /**
+   * 记忆来源（P0-3）。
+   *
+   * 必填而不是可选：`set()` 是唯一的写入闸，在那里兜一次缺省，
+   * 下游（索引过滤 / 召回排序 / 淘汰排序）就不用各自 `?? "inferred"` ——
+   * 三处各写一遍必然漂成三个缺省口径，而它们本该是同一条事实。
+   */
+  source: MemorySource;
 }
 
 /** 旧版 JSON 存储格式（仅用于迁移） */
@@ -383,6 +401,7 @@ function parseMemoryFile(
   let name: string | undefined;
   let description: string | undefined;
   let type: MemoryType | undefined;
+  let source: MemorySource | undefined;
   let created: number | undefined;
   let updated: number | undefined;
   let body: string;
@@ -395,6 +414,9 @@ function parseMemoryFile(
     if (fields.name !== undefined) name = fields.name;
     if (fields.description !== undefined) description = fields.description;
     if (fields.type !== undefined && isMemoryType(fields.type)) type = fields.type as MemoryType;
+    // P0-3：老文件没有这一行 ⇒ 缺省 `inferred`（见下方返回处）。非法值同样落到缺省：
+    // `source` 只有三档，猜一个会把「无从判断」伪装成结论。
+    if (fields.source !== undefined && isMemorySource(fields.source)) source = fields.source;
     if (fields.created !== undefined) created = Number(fields.created) || undefined;
     if (fields.updated !== undefined) updated = Number(fields.updated) || undefined;
     body = text
@@ -418,6 +440,9 @@ function parseMemoryFile(
     value: body,
     scope,
     type,
+    // P0-3：老文件（本次修复前写入的）没有 `source:` 这一行 ⇒ `inferred`。
+    // 不猜成 `user_explicit`：那等于把「无从判断」直接抬成最高可信度。
+    source: source ?? DEFAULT_MEMORY_SOURCE,
     // 读侧同样过归一化：本次修复前写入的旧文件，frontmatter 里已经存着 `## 标题`。
     // 只修写入端的话，那些历史条目会一直把陈述句标题漏进索引（索引重建也照抄 desc）。
     description: description ? normalizeMemoryDesc(description, body) : undefined,
@@ -435,6 +460,9 @@ function serializeMemoryFile(entry: MemoryEntry): string {
     `name: ${entry.key}`,
     `description: ${desc}`,
     `type: ${type}`,
+    // P0-3：来源落盘。写在 `type` 之后是有意的 —— 它是**这条记忆的可信度**，
+    // 与分类相邻最容易被读 frontmatter 的人（与模型）看到。
+    `source: ${entry.source ?? DEFAULT_MEMORY_SOURCE}`,
     `created: ${entry.createdAt}`,
     `updated: ${entry.updatedAt}`,
     "---",
@@ -1108,7 +1136,7 @@ export class MemoryStore {
     key: string,
     value: string,
     scope: "global" | "project" = "project",
-    opts?: { type?: MemoryType; description?: string },
+    opts?: { type?: MemoryType; description?: string; source?: MemorySource },
   ): Promise<MemorySetResult> {
     await this.load();
     const log = getLogger();
@@ -1138,6 +1166,11 @@ export class MemoryStore {
       scope,
       type: opts?.type || existing?.type || inferMemoryType(key, value),
       description: opts?.description || existing?.description,
+      // P0-3：三条来源的优先级是「本次显式给的 > 原条目已有的 > 缺省 inferred」。
+      // **中间那一条不能省**：不带 source 的普通更新（比如 /memory set 改正文）
+      // 若退回缺省，会把一条 `user_explicit` 记忆静默降级成 `inferred` ——
+      // 那是信息丢失，而调用方根本没打算改动来源。
+      source: opts?.source ?? existing?.source ?? DEFAULT_MEMORY_SOURCE,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };
@@ -1228,8 +1261,14 @@ export class MemoryStore {
     const evicted: MemoryEviction[] = [];
     if (entries.size > MEMORY_LIMITS.STORE_MAX_ENTRIES) {
       const readStats = readMemoryReadStats(dir);
-      // 元组按字典序比较：类型（逆序）→ 读次数（升序）→ 写入时间（升序）
-      const victimRank = (e: MemoryEntry): [number, number, number] => [
+      // 元组按字典序比较：来源（逆序）→ 类型（逆序）→ 读次数（升序）→ 写入时间（升序）
+      //
+      // P0-3 把**来源**放在第一优先级，是因为它决定了「这条记忆模型看得见吗」：
+      // `agent_action` 不进 MEMORY.md 索引（见 isIndexVisibleMemory），模型根本读不到。
+      // 不让它先被淘汰，就会出现「一条永远看不见的条目挤掉一条模型正在依赖的记忆」——
+      // 修复本身制造的新缺陷，而且完全不报错。
+      const victimRank = (e: MemoryEntry): [number, number, number, number] => [
+        -memorySourceRank(e.source),
         -indexTypeRank(e.type),
         readStats[files.get(e.key) ?? ""]?.readCount ?? 0,
         e.updatedAt,
@@ -1241,7 +1280,7 @@ export class MemoryStore {
         .sort((a, b) => {
           const ra = victimRank(a);
           const rb = victimRank(b);
-          return ra[0] - rb[0] || ra[1] - rb[1] || ra[2] - rb[2];
+          return ra[0] - rb[0] || ra[1] - rb[1] || ra[2] - rb[2] || ra[3] - rb[3];
         });
       const toRemove = sorted.slice(0, entries.size - MEMORY_LIMITS.STORE_MAX_ENTRIES);
       for (const old of toRemove) {
@@ -1622,7 +1661,21 @@ export class MemoryStore {
     const indexPath = join(dir, INDEX_FILE);
     const files = dir === this.globalDir ? this.globalFiles : this.projectFiles;
 
-    if (entries.size === 0) {
+    // ─── P0-3：`agent_action` 不进索引 ───
+    //
+    // 索引会**全量注入 system prompt**，模型把它读成「记忆里的事实」。而 `agent_action`
+    // 的内容恰恰是「agent 自己上一次做了什么」—— 二者混同就是本次缺陷本身：
+    // 一条「我改代码前先跑 X」的行为记录进了索引，下一个会话的模型就把它当成用户的偏好，
+    // 并且按它行动、再把行动结果写回记忆，形成自我强化。
+    //
+    // 过滤放在**渲染索引之前**（而不是只在 `set()` 里不写）：入口不止 `set()` ——
+    // 提取代理走 write/edit 工具直接改盘，`load()` 也会重建索引，只堵一个入口等于没堵。
+    const visible = [...entries.values()].filter((e) => isIndexVisibleMemory(e.source));
+    const hiddenBySource = entries.size - visible.length;
+
+    // 过滤后为空 ⇒ 索引文件不该存在（否则留下一个只有表头的空索引，
+    // 与 P1-10「写空残留」的形态相同，而模型读到空索引会以为记忆库是空的）。
+    if (visible.length === 0) {
       if (existsSync(indexPath)) {
         try {
           await unlink(indexPath);
@@ -1638,7 +1691,7 @@ export class MemoryStore {
     // 恰好是「写下来后一直有用」的 user / feedback。改为按类型优先级分组、组内仍按
     // `updatedAt` 倒序。代价点破：截断掉的换成了 project / reference（拿「更省」侧的
     // 召回面换「更准」侧的偏好不丢）；分组只带来一次性前缀变化，组内重排频率与现状相同。
-    const sorted = [...entries.values()].sort(
+    const sorted = visible.sort(
       (a, b) => indexTypeRank(a.type) - indexTypeRank(b.type) || b.updatedAt - a.updatedAt,
     );
     const entryLines = sorted.map((e) => {
@@ -1651,13 +1704,15 @@ export class MemoryStore {
     const { content, entryCount, truncated } = buildTruncatedIndex(entryLines);
     if (truncated) {
       // C3-C 可观测：同一截断状态只报一次（旧实现 load / set 各重建一次 → 连打两条）。
-      // 签名带上 entries 与 entryCount：归档收敛后再截断时，数字会变，值得再报一条。
-      const signature = `${entries.size}/${entryCount}`;
+      // 签名带上可见条数与 entryCount：归档收敛后再截断时，数字会变，值得再报一条。
+      // 用 `visible.length` 而不是 `entries.size`：分母必须是「有资格进索引的条数」，
+      // 把 agent_action 算进去会让告警说「201 条只列出 132 条」，而实际待列的是 150 条。
+      const signature = `${visible.length}/${entryCount}`;
       if (indexTruncationWarnSignature.get(dir) !== signature) {
         indexTruncationWarnSignature.set(dir, signature);
         getLogger().warn(
           "MEMORY",
-          `索引已截断：${entries.size} 条记忆只列出 ${entryCount} 条（scope 目录 ${dir}）——` +
+          `索引已截断：${visible.length} 条记忆只列出 ${entryCount} 条（scope 目录 ${dir}）——` +
             `未列出的记忆在磁盘上但不进上下文，模型看不见它们`,
         );
       }
@@ -1681,7 +1736,16 @@ export class MemoryStore {
       const { logMemoryIndexHealth } = await import("../analytics/events.ts");
       logMemoryIndexHealth({
         scope,
-        fileCount: diskFiles.length,
+        // P0-3：分母要扣掉「按设计就不进索引」的那部分（`agent_action`）。
+        //
+        // 不扣的话 `orphan_count` 会恒 > 0 —— 而告警规则判的就是 `!== 0`，
+        // 于是 P0-1 / P1-6 / P1-7 / P1-10 四个缺陷共用的那条告警会被
+        // 「一条正常工作的过滤」长期误触，最后没人看它（恒红的门禁等于没有门禁）。
+        //
+        // 口径差异说明：`hiddenBySource` 是**内存视角**的数（load 到且判为 agent_action），
+        // 磁盘上真实存在但没 load 进来的 agent_action 文件**不扣** —— 它们本来就该
+        // 计入 orphan（那是「磁盘上有、模型看不见」的真实异常，和设计上的不可见不是一回事）。
+        fileCount: Math.max(0, diskFiles.length - hiddenBySource),
         indexEntryCount: entryCount,
         shadowedCount: this.shadowedFiles.filter((s) => s.scope === scope).length,
         truncated,
@@ -1793,6 +1857,9 @@ export class MemoryStore {
           ...e,
           scope,
           type,
+          // P0-3：legacy JSON 里没有 source（那时还没这个字段）⇒ 一律 `inferred`，
+          // 不按内容猜 —— 迁移只做格式转换，不做语义升级。
+          source: e.source ?? DEFAULT_MEMORY_SOURCE,
           description: e.description,
         };
         await Bun.write(join(targetDir, filename), serializeMemoryFile(migrated));

@@ -14,7 +14,14 @@ import type {
 } from "./types.ts";
 import type { MemoryStore, MemorySetResult } from "../memory/store.ts";
 import { formatEvictionNotice } from "../memory/store.ts";
-import { MEMORY_TYPES, type MemoryType } from "../memory/types.ts";
+import {
+  MEMORY_SOURCES,
+  MEMORY_TYPES,
+  MEMORY_EXTRACT_QUERY_SOURCE,
+  isMemorySource,
+  type MemorySource,
+  type MemoryType,
+} from "../memory/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
 import { z } from "zod/v4";
@@ -56,6 +63,20 @@ const HOW_LINE_RE = new RegExp(`${LABEL_LEAD}how to apply${LABEL_TAIL}`, "im");
  * 正文里顺带提一个 PR 号是正常引用。
  */
 const SNAPSHOT_RE = /(截至|截止到|进度|阶段状态|pr[-_ ]?status|progress|status\b|周报|活动日志)/i;
+
+/**
+ * P0-2（MD2）：后台提取代理写 feedback 时，正文里必须有「」包住的用户原话。
+ *
+ * 判据是「有原话可引」，不是「像不像一条规矩」。本缺陷的原始形态是
+ * `feedback_browser_batch_screenshot` 这类条目：内容是 agent 自己的操作步骤
+ * （怎么批量截图、按什么顺序跑命令），整条没有任何一句来自用户。这类文本再流畅，
+ * 也不可能包含一对包住 ≥4 字的「」——所以才用这个结构性判据，而不是关键词黑名单
+ * （「做法」「步骤」这类词在真正的用户原话里也会出现）。
+ *
+ * 为什么门槛是 4 字：`「X」` 这种单字引用多半是行文里的强调（「他说『要』」），
+ * 不足以承载一句用户原话；20 字以上又会把「以后都跑 lint」这类短而明确的指令挡掉。
+ */
+const USER_QUOTE_RE = /「[^」]{4,}」/;
 
 export interface MemoryWriteQuality {
   hasWhy: boolean;
@@ -125,6 +146,15 @@ const memorySchema = lazySchema(() =>
       .describe(
         "记忆范围：global（全局，所有项目）/ project（当前项目，默认）/ team（团队共享，同步给所有协作者）/ agent（当前子代理类型的跨会话领域经验，仅在子代理内可用）",
       ),
+    // P0-3：来源由**模型可选标注**，但后台提取路径会被强制覆写成 `agent_action`——
+    // 那条路径的模型没有判据（它没有用户输入可依据），让它自报等于让它给证据定级。
+    // 语义见 memory/types.ts 的 `MEMORY_SOURCES`。
+    source: z
+      .enum(MEMORY_SOURCES)
+      .optional()
+      .describe(
+        "记忆来源（可选，缺省 inferred）：user_explicit（用户明确要求记住 / 明确表态）/ inferred（你自己的推断）/ agent_action（你这次自己做了什么，而不是用户的信息）。只在主会话里标 user_explicit；后台提取写入一律记为 agent_action，该路径传入的值会被忽略",
+      ),
   }),
 );
 
@@ -142,6 +172,18 @@ export class MemoryTool implements Tool {
    * 从此失真（不报错，只是数字变错——属于静默失败）。
    */
   readonly consumesAgentId = true as const;
+
+  /**
+  /**
+   * 声明读执行器注入的 `_querySource`（契约见 `tool/types.ts`）。它同时是两个判据的
+   * **唯一来源**，漏声明都会静默失效：
+   *   - P0-2：后台提取代理写 feedback 时的「必须带用户原话」闸门。`_agentId` 只能分辨到
+   *     "forked" 粒度，会把 auto-dream / session-memory-update 一起拦掉。
+   *   - P0-3：`resolveWriteSource` 判定「本次写入是否来自后台提取代理」，那是来源强制覆写
+   *     的唯一判据（拿不到 ⇒ 按缺省 `inferred` 落盘）。
+   * 拿不到时（主会话 / 子代理 / 直接 execute）两个判据都不触发，这是安全默认。
+   */
+  readonly consumesQuerySource = true as const;
 
   constructor(store: MemoryStore, agentType?: string) {
     this.store = store;
@@ -194,8 +236,12 @@ export class MemoryTool implements Tool {
       value: string;
       type?: string;
       scope?: "global" | "project" | "team" | "agent";
+      /** P0-3：模型可选的来源标注（内存提取路径会被覆写，见 `resolveWriteSource`） */
+      source?: string;
       /** forked / 子代理执行器注入的来源标记（见 agent/forked-agent.ts、agent/sub-agent.ts） */
       _agentId?: string;
+      /** 执行器注入的调用方标签；同时是 P0-2 原话闸门与 P0-3 来源覆写的判据，主会话/子代理为 undefined */
+      _querySource?: string;
     };
 
     if (!params.key || !params.value) {
@@ -218,6 +264,9 @@ export class MemoryTool implements Tool {
     const value = params.value.trim();
     const scope = params.scope || "project";
     const via = writeVia(params._agentId);
+    // P0-3：来源判据。**必须在 execute 里算**，不能交给权限层 —— forked 路径上
+    // `updatedInput` 会被丢弃（见 forked-agent 的注释），权限层的改写到不了 execute。
+    const source = resolveWriteSource(params._querySource, params.source);
 
     if (key.length === 0) {
       return { output: "错误: key 不能为空", isError: true };
@@ -255,6 +304,41 @@ export class MemoryTool implements Tool {
           `这类信息应该放在 .env 或环境变量, 通过 process.env 在运行时读取.\n` +
           `如需保存与凭证相关的元信息, 请仅描述类型 (例如 "用户使用 GitHub Personal Access Token 调 API"), ` +
           `不要把凭证明文写入 value 字段.`,
+        isError: true,
+      };
+    }
+
+    // P0-2（MD2）：后台提取代理写 feedback 类记忆时，正文里必须有「」包住的用户原话。
+    //
+    // 为什么只拦 memory-extract：主模型写记忆通常就是用户当轮明确要求的事，它手上的
+    // 原话就在上下文里；而提取代理面对的是「用户没反对」的静默采纳，把 agent 自己的
+    // 操作步骤复述成 feedback（本缺陷的原始形态）时，没有任何原话可引。
+    //
+    // 为什么用 _querySource 而不是 via：via 只能分辨到 "forked" 粒度，那个粒度同时
+    // 覆盖 auto-dream / session-memory-update —— 按 via 拦会把它们的写入一起打掉，
+    // 而且失败形态是「写入静默减少」，没人会发现。
+    //
+    // 拿不到 _querySource（主会话 / 子代理 / 直接调 execute）一律放行：
+    // 那是安全默认，见 tool/types.ts 的 consumesQuerySource 契约。
+    if (
+      type === "feedback" &&
+      params._querySource === "memory-extract" &&
+      !USER_QUOTE_RE.test(value)
+    ) {
+      log.warn("TOOL", `✗ 拒绝保存缺少用户原话的 feedback 记忆 [${scope}] ${key}`);
+      try {
+        const { logMemoryGuard } = await import("../analytics/events.ts");
+        logMemoryGuard({ kind: "feedback_no_quote", via: "save_memory", scope });
+      } catch {
+        /* 埋点失败不影响拒绝行为 */
+      }
+      return {
+        output:
+          "错误: feedback 类记忆必须在正文里逐字引用用户原话（用「」包住，至少 4 个字）。\n" +
+          "判据: 没有原话的 feedback 多半是 agent 自己推断出来的「用户会喜欢这样」，" +
+          "而不是用户真的说过——本缺陷的原始形态就是把 agent 的操作步骤写成了经验。\n" +
+          "改正方式: 把你依据的那句用户原话原样放进 value，例如 用户说「以后提交前都跑一遍 lint」。\n" +
+          "若找不到这样一句原话，这条就不是 feedback：它是 agent 自己的操作步骤，不要保存。",
         isError: true,
       };
     }
@@ -320,7 +404,7 @@ export class MemoryTool implements Tool {
     try {
       // PR-A（A2）：`set()` 现在回传淘汰明细 —— 满额时这次写入的真实代价
       // 必须出现在工具结果里，模型同一轮就能看到并决定删掉临时记忆。
-      const result = await this.store.set(key, value, scope, { type });
+      const result = await this.store.set(key, value, scope, { type, source });
 
       log.info("TOOL", `✓ 记忆已保存 [${scope}] ${key}`);
 
@@ -339,6 +423,29 @@ export class MemoryTool implements Tool {
 
 function isMemoryTypeValue(v: unknown): v is MemoryType {
   return typeof v === "string" && (MEMORY_TYPES as readonly string[]).includes(v);
+}
+
+/**
+ * 解析这次写入的记忆来源（P0-3 的**代码判据**）。
+ *
+ * 为什么不能只让模型在 schema 里自报：本缺陷的写入现场是**后台提取代理**——
+ * 它没有用户输入可依据，写出来的东西只能是「它这一轮看到 / 做了什么」的转述。
+ * 让它自己标 `user_explicit`，等于让最没有判据的角色给证据定级。
+ * 所以那条路径（`querySource === "memory-extract"`）**无条件覆写**，模型传什么都不看。
+ *
+ * 其余路径（主会话 / 其它 fork）模型显式给合法值就用它：`user_explicit` 的判据
+ * 只有「用户刚说过这句话」这个会话事实，工具侧看不到，只能由模型提供。
+ *
+ * 返回 `undefined` 表示「本次没指定」——交给 `MemoryStore.set()` 按
+ * 「原条目已有 > 缺省 inferred」兜底。**不要在这里补 `inferred`**：
+ * 那会让一次普通的正文更新把 `user_explicit` 静默降级（信息丢失且无感）。
+ */
+export function resolveWriteSource(
+  querySource: string | undefined,
+  modelProvided: unknown,
+): MemorySource | undefined {
+  if (querySource === MEMORY_EXTRACT_QUERY_SOURCE) return "agent_action";
+  return isMemorySource(modelProvided) ? modelProvided : undefined;
 }
 
 function preview(value: string): string {

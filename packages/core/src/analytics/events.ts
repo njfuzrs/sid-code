@@ -363,6 +363,16 @@ export function logPermissionAllow(
     toolUseId?: string;
     guard?: string;
     autoClassifier?: string;
+    /**
+     * B12：危险模式名 / 严重度 / bash 命令形状桶 / env 前缀变量名 / git 仓库归属。
+     * **只进本地轨迹**，不进遥测 payload（外发 schema 不变）。口径见
+     * `permission/decision-telemetry.ts` 对应字段注释。
+     */
+    dangerPattern?: string;
+    dangerSeverity?: string;
+    bashShape?: string;
+    envPrefixVars?: string[];
+    gitTrust?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -401,6 +411,12 @@ export function logPermissionAllow(
     ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
     ...(opts.guard ? { guard: opts.guard } : {}),
     ...(opts.autoClassifier ? { autoClassifier: opts.autoClassifier } : {}),
+    // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属（只进本地轨迹）
+    ...(opts.dangerPattern ? { dangerPattern: opts.dangerPattern } : {}),
+    ...(opts.dangerSeverity ? { dangerSeverity: opts.dangerSeverity } : {}),
+    ...(opts.bashShape ? { bashShape: opts.bashShape } : {}),
+    ...(opts.envPrefixVars?.length ? { envPrefixVars: opts.envPrefixVars } : {}),
+    ...(opts.gitTrust ? { gitTrust: opts.gitTrust } : {}),
   });
 }
 
@@ -453,6 +469,12 @@ export function logPermissionDeny(
     toolUseId?: string;
     guard?: string;
     autoClassifier?: string;
+    /** B12：同 logPermissionAllow，只进本地轨迹 */
+    dangerPattern?: string;
+    dangerSeverity?: string;
+    bashShape?: string;
+    envPrefixVars?: string[];
+    gitTrust?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -488,6 +510,12 @@ export function logPermissionDeny(
     ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
     ...(opts.guard ? { guard: opts.guard } : {}),
     ...(opts.autoClassifier ? { autoClassifier: opts.autoClassifier } : {}),
+    // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属（只进本地轨迹）
+    ...(opts.dangerPattern ? { dangerPattern: opts.dangerPattern } : {}),
+    ...(opts.dangerSeverity ? { dangerSeverity: opts.dangerSeverity } : {}),
+    ...(opts.bashShape ? { bashShape: opts.bashShape } : {}),
+    ...(opts.envPrefixVars?.length ? { envPrefixVars: opts.envPrefixVars } : {}),
+    ...(opts.gitTrust ? { gitTrust: opts.gitTrust } : {}),
   });
 }
 
@@ -837,7 +865,15 @@ export type MemoryGuardKind =
   | "empty_archived"
   | "shadowed"
   /** 横向剖析 T3：索引已截断时后台代理想新建 key 被拒（主模型路径不受此限） */
-  | "index_full";
+  | "index_full"
+  /**
+   * P0-2（MD2）：后台提取代理写 feedback 类记忆时，正文里没有「」包住的用户原话。
+   *
+   * 为什么单列一格：这条闸门的立意是「没有原话 = 这条经验是代理自己推断出来的」。
+   * 它和 `secret_rejected` / `index_full` 混在一个计数里，就看不出「到底有多少条
+   * agent 自造经验被拦下来」——而那正是这个缺陷的原始指标。
+   */
+  | "feedback_no_quote";
 
 /**
  * 后台记忆抽取的一次 end_turn 去向（记忆横向剖析 T2）。

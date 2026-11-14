@@ -1889,6 +1889,17 @@ export class TraceCollector {
       ...(e.guard ? { guard: e.guard } : {}),
       // A9：auto 档分类器回退人工的成因
       ...(e.autoClassifier ? { auto_classifier: e.autoClassifier } : {}),
+      // B12：命中的危险模式名 / 严重度。此前 reason_type=dangerousCommand 是一个平桶，
+      // 硬编码模式、注入校验器、展开超限、LLM 分类器全混在一起，分不开。
+      ...(e.dangerPattern ? { danger_pattern: e.dangerPattern } : {}),
+      ...(e.dangerSeverity ? { danger_severity: e.dangerSeverity } : {}),
+      // B12：bash 命令形状桶（checker 决策时算好）。digest 的「确认成因」分桶只读它，
+      // 不从截断后的命令文本重跑判据 —— 那会把长命令整段误判成「非只读其他」。
+      ...(e.bashShape ? { bash_shape: e.bashShape } : {}),
+      // B12：env 前缀非白名单变量名（只记名不记值）与 cd 目标的 git 仓库归属。
+      // PR-1 的判定函数填值，未接线时字段缺省不落。
+      ...(e.envPrefixVars?.length ? { env_prefix_vars: e.envPrefixVars } : {}),
+      ...(e.gitTrust ? { git_trust: e.gitTrust } : {}),
       // B21：弹窗生命周期观测。字段名用 prompt_lifecycle 而不是 prompt —— 后者与
       // UserPromptSubmit 的 data.prompt（用户输入原文）重名，上传前的 LOCAL_ONLY 剥离
       // 是按字段名匹配的，同名会把用户输入一起剥掉。

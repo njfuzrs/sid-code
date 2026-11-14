@@ -66,7 +66,7 @@ import {
   logToolSuccess,
   logToolFailure,
 } from "../analytics/events.ts";
-import { guardOf } from "../permission/decision-telemetry.ts";
+import { guardOf, decisionFactsOf } from "../permission/decision-telemetry.ts";
 
 /** 中断后未执行工具的占位结果文案（N 进 N 出；未 fire PreToolUse，故不补 Failure） */
 export const SUBAGENT_ABORTED_TOOL_RESULT = "工具未执行：子代理已被中断";
@@ -422,6 +422,8 @@ async function checkPermission(
       step: decision.step,
       mode: decision.mode,
       guard: guardOf(decision),
+      // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属（只进本地轨迹）
+      ...decisionFactsOf(decision),
     };
     if (!decision.allowed) {
       const reason = decision.reason || "子代理不允许此操作";

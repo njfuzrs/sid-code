@@ -33,6 +33,14 @@ export const INTERNAL_FIELDS = [
   // 而不是把上一轮的旧通知当成刚挂的这次等待的结果。
   // 必须剥离：模型伪造它会让通知指向别的调用，锚点反而变成误导。
   "_toolUseId",
+  // 本次 fork 的后台任务标签（`memory-extract` / `memory-recall` / `auto-dream` /
+  // `session-memory-update` …），由 forked / 子代理执行器在剥离后注入给自报
+  // `consumesQuerySource: true` 的工具（当前只有 `save_memory`）。
+  // 它同时是**两个判据**的唯一来源，缺任一都会静默失效：
+  //   - P0-2：feedback「必须带用户原话」闸门只对 `memory-extract` 生效
+  //   - P0-3：记忆来源强制覆写为 `agent_action`
+  // 必须剥离：模型伪造它既能绕过原话闸门，也能把自己的写入洗成「用户说的」。
+  "_querySource",
 ] as const;
 
 /**

@@ -32,7 +32,7 @@
 import { existsSync } from "fs";
 import { scanMemoryFiles, formatMemoryManifest, stripFrontmatter } from "./scan.ts";
 import { buildFreshnessWarning } from "./freshness.ts";
-import { MEMORY_LIMITS, type RelevantMemory } from "./types.ts";
+import { MEMORY_LIMITS, memorySourceRank, type RelevantMemory } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
@@ -169,6 +169,16 @@ export async function findRelevantMemories(
   const surfaced = opts?.alreadySurfaced ?? new Set<string>();
   const candidates = headers.filter((h) => !surfaced.has(h.filename));
   if (candidates.length === 0) return [];
+
+  // ─── P0-3：按来源重排候选 ───
+  //
+  // 排序影响 manifest 的呈现顺序，而选择器是 LLM：靠前的条目被选中的概率显著更高。
+  // 不排序时「agent 自己上次做了什么」和「用户亲口说的偏好」并列在同一张清单里、
+  // 权重相同 —— 而那正是本缺陷要修的错位。
+  //
+  // 用 `Array.prototype.sort`（V8 / JSC 都是稳定排序）：同档内保持 `scanMemoryFiles`
+  // 原本的 mtime 降序，「近期记忆优先」这条既有语义不能因为这次改动被顺手改掉。
+  candidates.sort((a, b) => memorySourceRank(a.source) - memorySourceRank(b.source));
 
   const manifest = formatMemoryManifest(candidates);
   const validFilenames = new Set(candidates.map((h) => h.filename));
