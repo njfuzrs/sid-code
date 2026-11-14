@@ -14,7 +14,14 @@ import type {
 } from "./types.ts";
 import type { MemoryStore, MemorySetResult } from "../memory/store.ts";
 import { formatEvictionNotice } from "../memory/store.ts";
-import { MEMORY_TYPES, type MemoryType } from "../memory/types.ts";
+import {
+  MEMORY_SOURCES,
+  MEMORY_TYPES,
+  MEMORY_EXTRACT_QUERY_SOURCE,
+  isMemorySource,
+  type MemorySource,
+  type MemoryType,
+} from "../memory/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
 import { z } from "zod/v4";
@@ -139,6 +146,15 @@ const memorySchema = lazySchema(() =>
       .describe(
         "记忆范围：global（全局，所有项目）/ project（当前项目，默认）/ team（团队共享，同步给所有协作者）/ agent（当前子代理类型的跨会话领域经验，仅在子代理内可用）",
       ),
+    // P0-3：来源由**模型可选标注**，但后台提取路径会被强制覆写成 `agent_action`——
+    // 那条路径的模型没有判据（它没有用户输入可依据），让它自报等于让它给证据定级。
+    // 语义见 memory/types.ts 的 `MEMORY_SOURCES`。
+    source: z
+      .enum(MEMORY_SOURCES)
+      .optional()
+      .describe(
+        "记忆来源（可选，缺省 inferred）：user_explicit（用户明确要求记住 / 明确表态）/ inferred（你自己的推断）/ agent_action（你这次自己做了什么，而不是用户的信息）。只在主会话里标 user_explicit；后台提取写入一律记为 agent_action，该路径传入的值会被忽略",
+      ),
   }),
 );
 
@@ -158,10 +174,14 @@ export class MemoryTool implements Tool {
   readonly consumesAgentId = true as const;
 
   /**
-   * P0-2（MD2）：声明读执行器注入的 `_querySource`（契约见 `tool/types.ts`）。
-   * 后台提取代理写 feedback 时的「必须带用户原话」闸门靠在它上面——`_agentId` 只能
-   * 分辨到 "forked" 粒度，会把 auto-dream / session-memory-update 一起拦掉。
-   * 拿不到时（主会话 / 子代理 / 直接 execute）闸门不触发，这是安全默认。
+  /**
+   * 声明读执行器注入的 `_querySource`（契约见 `tool/types.ts`）。它同时是两个判据的
+   * **唯一来源**，漏声明都会静默失效：
+   *   - P0-2：后台提取代理写 feedback 时的「必须带用户原话」闸门。`_agentId` 只能分辨到
+   *     "forked" 粒度，会把 auto-dream / session-memory-update 一起拦掉。
+   *   - P0-3：`resolveWriteSource` 判定「本次写入是否来自后台提取代理」，那是来源强制覆写
+   *     的唯一判据（拿不到 ⇒ 按缺省 `inferred` 落盘）。
+   * 拿不到时（主会话 / 子代理 / 直接 execute）两个判据都不触发，这是安全默认。
    */
   readonly consumesQuerySource = true as const;
 
@@ -216,9 +236,11 @@ export class MemoryTool implements Tool {
       value: string;
       type?: string;
       scope?: "global" | "project" | "team" | "agent";
+      /** P0-3：模型可选的来源标注（内存提取路径会被覆写，见 `resolveWriteSource`） */
+      source?: string;
       /** forked / 子代理执行器注入的来源标记（见 agent/forked-agent.ts、agent/sub-agent.ts） */
       _agentId?: string;
-      /** P0-2：本次 fork 的任务标签（只在自报 consumesQuerySource 时有值，主会话/子代理为 undefined） */
+      /** 执行器注入的调用方标签；同时是 P0-2 原话闸门与 P0-3 来源覆写的判据，主会话/子代理为 undefined */
       _querySource?: string;
     };
 
@@ -242,6 +264,9 @@ export class MemoryTool implements Tool {
     const value = params.value.trim();
     const scope = params.scope || "project";
     const via = writeVia(params._agentId);
+    // P0-3：来源判据。**必须在 execute 里算**，不能交给权限层 —— forked 路径上
+    // `updatedInput` 会被丢弃（见 forked-agent 的注释），权限层的改写到不了 execute。
+    const source = resolveWriteSource(params._querySource, params.source);
 
     if (key.length === 0) {
       return { output: "错误: key 不能为空", isError: true };
@@ -379,7 +404,7 @@ export class MemoryTool implements Tool {
     try {
       // PR-A（A2）：`set()` 现在回传淘汰明细 —— 满额时这次写入的真实代价
       // 必须出现在工具结果里，模型同一轮就能看到并决定删掉临时记忆。
-      const result = await this.store.set(key, value, scope, { type });
+      const result = await this.store.set(key, value, scope, { type, source });
 
       log.info("TOOL", `✓ 记忆已保存 [${scope}] ${key}`);
 
@@ -398,6 +423,29 @@ export class MemoryTool implements Tool {
 
 function isMemoryTypeValue(v: unknown): v is MemoryType {
   return typeof v === "string" && (MEMORY_TYPES as readonly string[]).includes(v);
+}
+
+/**
+ * 解析这次写入的记忆来源（P0-3 的**代码判据**）。
+ *
+ * 为什么不能只让模型在 schema 里自报：本缺陷的写入现场是**后台提取代理**——
+ * 它没有用户输入可依据，写出来的东西只能是「它这一轮看到 / 做了什么」的转述。
+ * 让它自己标 `user_explicit`，等于让最没有判据的角色给证据定级。
+ * 所以那条路径（`querySource === "memory-extract"`）**无条件覆写**，模型传什么都不看。
+ *
+ * 其余路径（主会话 / 其它 fork）模型显式给合法值就用它：`user_explicit` 的判据
+ * 只有「用户刚说过这句话」这个会话事实，工具侧看不到，只能由模型提供。
+ *
+ * 返回 `undefined` 表示「本次没指定」——交给 `MemoryStore.set()` 按
+ * 「原条目已有 > 缺省 inferred」兜底。**不要在这里补 `inferred`**：
+ * 那会让一次普通的正文更新把 `user_explicit` 静默降级（信息丢失且无感）。
+ */
+export function resolveWriteSource(
+  querySource: string | undefined,
+  modelProvided: unknown,
+): MemorySource | undefined {
+  if (querySource === MEMORY_EXTRACT_QUERY_SOURCE) return "agent_action";
+  return isMemorySource(modelProvided) ? modelProvided : undefined;
 }
 
 function preview(value: string): string {

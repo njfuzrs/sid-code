@@ -252,24 +252,45 @@ export interface ToolCapabilityFields<Input = unknown> {
   consumesToolUseId?: true;
 
   /**
-   * P0-2（MD2）：工具自报「我需要知道本次 fork 是哪个后台任务」，执行器据此注入
+   * 工具自报「我需要知道本次 fork 是哪个后台任务」，执行器据此注入
    * `_querySource = <ForkedAgentOptions.querySource>`。
    *
-   * ## 为什么不能从 `_agentId` 反推
+   * ## 为什么需要（同一个字段服务两个判据）
    *
-   * 注入给工具的是写死的 `"forked-agent"`，`writeVia()` 由此只能分辨到 `"forked"`
-   * 粒度——而 `"forked"` 同时覆盖 memory-extract / auto-dream / session-memory-update
-   * 三个后台任务。闸门一旦写成 `via === "forked"`，就会出现「本意只拦提取代理、
-   * 实际连梦境整理也拦」的误伤（且没人会发现：它们的写入静默减少）。
+   * - **P0-2（MD2）feedback 原话闸门**：提取代理写 feedback 时必须带用户原话。
+   *   闸门只能对 `memory-extract` 生效 —— 注入给工具的 `_agentId` 是写死的
+   *   `"forked-agent"`，`writeVia()` 由此只能分辨到 `"forked"` 粒度，而那同时覆盖
+   *   memory-extract / auto-dream / session-memory-update。闸门写成 `via === "forked"`
+   *   就会出现「本意只拦提取代理、实际连梦境整理也拦」的误伤（且没人会发现：
+   *   它们的写入静默减少）。
+   * - **P0-3 记忆来源强制覆写**：提取代理与用户直写共用同一个 `save_memory`，
+   *   但两者的**证据等级完全不同** —— 提取代理没有用户输入可依据，写出来的东西只能是
+   *   「它这一轮看到 / 做了什么」的转述；用户直写则可能是「记住我的偏好」这种明确表态。
+   *   这个区分必须落到 `source` 字段上，而它**不能靠模型自报** —— 让最没有判据的角色
+   *   给证据定级，正是本缺陷的成因。
+   *
+   * ## 为什么不用 `_agentId`
+   *
+   * 同上：它只说「是 fork 还是子代理」，说不出**哪个** fork。会话摘要
+   * （`session-memory-update`）、召回（`memory-recall`）、auto-dream 同样是 fork，
+   * 它们写入的记忆不该与提取代理混为一谈。`_querySource` 才是那个精确标签。
    *
    * ## 契约
    *
    * - 类型是 `true`：本字段只有「声明」一种含义。
    * - 声明者**必须真的读它**，并为「拿不到」准备**安全默认**：主会话、子代理、
-   *   直接调 `execute()` 的路径都不会注入（它们没有 querySource 这个概念），
-   *   拿不到时不能因此拒绝写入——那会把主模型路径一起废掉。
-   * - 只在 `runForkedAgent` 的执行链上注入；当前唯一消费者是 `save_memory`
-   *   （P0-2 的 feedback 原话校验只对 `memory-extract` 生效）。
+   *   直接调 `execute()` 的路径都不会注入（它们没有 querySource 这个概念）。
+   *   拿不到时不能因此拒绝写入 —— 那会把主模型路径一起废掉；
+   *   同理 `save_memory` 拿不到时按「非提取路径」处理（不覆写来源）。
+   * - 只在 `runForkedAgent` 的执行链上注入。
+   * - 与 `consumesAgentId` 独立：`save_memory` 两个都声明（`_agentId` 用于埋点的
+   *   `via` 维度，`_querySource` 用于原话闸门与来源判据）。
+   *
+   * ⚠️ 漏声明的失败形态是**静默**的：工具收不到 `_querySource` → P0-2 的原话闸门
+   * 不触发、P0-3 的强制覆写让提取代理的写入按缺省 `inferred` 落盘，两处都不报错。
+   * 与 `consumesAgentId` / `consumesToolUseId` 不同，本字段**暂无双向对账门禁**
+   * （那两个的清单化审计见 `tests/tool/consumes-{agentid,tooluseid}-audit.test.ts`），
+   * 漏声明目前只能靠 review 与 `save_memory` 的端到端用例发现。
    */
   consumesQuerySource?: true;
 

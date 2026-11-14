@@ -22,6 +22,71 @@ export const MEMORY_TYPE_DESCRIPTIONS: Record<MemoryType, string> = {
   reference: "外部引用（外部系统的指针：URL、dashboard、ticket）",
 };
 
+/**
+ * 记忆来源（P0-3 / MD6）：这条记忆是**谁**提供的，而不是「它讲了什么」。
+ *
+ * 封闭三档，按可信度降序：
+ * - `user_explicit`：用户明确要求记住 / 明确表态的内容（最高可信）
+ * - `inferred`：模型自己的推断（**缺省值**；P0-3 之前写入的老记忆没有该字段，
+ *   解析时一律按此档处理 —— 把它们当 `user_explicit` 等于凭空抬高可信度）
+ * - `agent_action`：正文记录的是 agent 自己这一次的行为 / 流程，而不是用户的信息
+ *
+ * ─── 为什么必须落盘，而不是只在内存里分个类 ───
+ *
+ * 记忆是**跨会话累积**的资产：一次污染写进磁盘，后续每个会话都会把它当既有事实读回来，
+ * 而且没有任何一个时刻有人能在写入时拦住它（后台提取代理是异步跑的）。
+ * 落盘之后至少有两条代码判据可用：`agent_action` 不进索引（模型不会每轮被动读到），
+ * 召回排序时排在最后（不主动推给模型）。它仍然留在磁盘上可被显式 Read ——
+ * 「不显眼」而不是「删掉」，因为判断它有没有价值只需要「移出视野」这一档权力。
+ */
+export const MEMORY_SOURCES = ["user_explicit", "inferred", "agent_action"] as const;
+export type MemorySource = (typeof MEMORY_SOURCES)[number];
+
+/** 未标注来源时的缺省档：最保守的一档，不假装它来自用户 */
+export const DEFAULT_MEMORY_SOURCE: MemorySource = "inferred";
+
+/**
+ * 后台记忆提取代理的 `querySource` 标记。
+ *
+ * 单点定义（`extract/extractor.ts` 传它，`tool/memory.ts` 判它）：
+ * 判定「这次写入是不是后台提取代理发起的」只有这一条判据，写成两个字面量
+ * 就会出现「改了一处、另一处不匹配」——而失败形态是**静默降级**：
+ * 来源照样写 `inferred`，没有任何报错，只是那道强制覆写不再生效。
+ */
+export const MEMORY_EXTRACT_QUERY_SOURCE = "memory-extract";
+
+/** 判断字符串是否为合法记忆来源 */
+export function isMemorySource(v: unknown): v is MemorySource {
+  return typeof v === "string" && (MEMORY_SOURCES as readonly string[]).includes(v);
+}
+
+/**
+ * 召回优先级（小 = 优先，与 `MEMORY_SOURCES` 的声明顺序同序）。
+ *
+ * `user_explicit` 先于 `inferred` 先于 `agent_action`：同一个查询下，
+ * 用户亲口说的偏好比模型推断更该被推到模型面前。
+ * 未标注来源按 `inferred` 处理（与解析侧同一口径，两处不能各定一套）。
+ */
+export function memorySourceRank(source: MemorySource | undefined): number {
+  const s = source ?? DEFAULT_MEMORY_SOURCE;
+  const i = (MEMORY_SOURCES as readonly string[]).indexOf(s);
+  return i < 0 ? MEMORY_SOURCES.indexOf(DEFAULT_MEMORY_SOURCE) : i;
+}
+
+/**
+ * 这条记忆是否该进 `MEMORY.md` 索引（P0-3 的核心判据）。
+ *
+ * `agent_action` **不进**：索引会全量注入 system prompt，模型把它读成「记忆里的事实」——
+ * 而 `agent_action` 的内容恰恰是「agent 自己上次做了什么」，二者混同就是本缺陷本身
+ * （docs-research 里那条把 agent 行为固化成经验的记忆，就是这么被反复强化的）。
+ *
+ * 代价点破：不进索引 = 不会被动出现在上下文里，只能靠召回或显式 Read 拿到。
+ * 这是**有意的**：后台提取写的东西宁可不显眼，也不能冒充用户的偏好。
+ */
+export function isIndexVisibleMemory(source: MemorySource | undefined): boolean {
+  return (source ?? DEFAULT_MEMORY_SOURCE) !== "agent_action";
+}
+
 /** 记忆文件 frontmatter 结构 */
 export interface MemoryFrontmatter {
   /** 记忆名称（kebab-case slug，唯一标识） */
@@ -30,6 +95,8 @@ export interface MemoryFrontmatter {
   description: string;
   /** 记忆类型 */
   type: MemoryType;
+  /** 记忆来源（P0-3；老文件没有这一行 ⇒ 解析为 `inferred`） */
+  source?: MemorySource;
 }
 
 /**
@@ -48,6 +115,14 @@ export interface MemoryHeader {
   name: string | null;
   /** 记忆类型（解析失败时为 undefined） */
   type: MemoryType | undefined;
+  /**
+   * 记忆来源（P0-3）。
+   *
+   * **必定有值**（不是可选）：解析侧统一把「没写这一行」兜成 `inferred`，
+   * 让下游（索引过滤 / 召回排序 / 淘汰排序）不必各写一遍 `?? "inferred"`——
+   * 三处各写一次就会漂成三种缺省口径，而它们本该是同一件事实。
+   */
+  source: MemorySource;
 }
 
 /** 召回的记忆（包含完整正文 + 新鲜度信息） */

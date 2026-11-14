@@ -57,8 +57,9 @@ const FORWARDED_KEYS: Record<ForwardedKey, true> = {
   // R3：不转发会让 bash / monitor 经 bridge 注册时丢掉「我要 _toolUseId」的声明，
   // 后台通知的 `<tool-use-id>` 锚点静默消失（构建不报错、测试也不会红）。
   consumesToolUseId: true,
-  // P0-2：不转发会让 save_memory 经 bridge 注册时丢掉「我要 _querySource」的声明，
-  // feedback 原话闸门静默失效（构建不报错、测试也不会红）。
+  // 不转发会让经 bridge 注册的 `save_memory` 丢掉「我要 _querySource」的声明，
+  // 两个判据同时静默失效：P0-2 的 feedback 原话闸门不触发、P0-3 的来源强制覆写不生效
+  // （构建不报错、测试也不会红）。
   consumesQuerySource: true,
   strictPriority: true,
   jitAffectedPaths: true,
