@@ -113,14 +113,18 @@ describe("buildThinkingWire —— 线格式层（主循环 + side-call 共用�
     expect(buildThinkingWire(params, "claude-opus-5").dropEffort).toBe(true);
   });
 
-  test("恒思考模型 off → applier 强制 adaptive（不变），线上不出现 disabled", () => {
+  test("恒思考模型 off → applier 强制 adaptive；side-call 走 adaptive + 最低档（不再「什么都不发」）", () => {
     const w = mainLoopWire("claude-opus-5-5", false);
     expect(w.param).toEqual({ thinking: { type: "adaptive" } });
     const side = buildThinkingWire(
       { model: "claude-opus-5-5", thinking: SIDE_CALL_NO_THINK } as SendParams,
       "claude-opus-5-5",
     );
-    expect(side.param).toEqual({});
+    // 2026-11-13 契约变更：旧版是「side-call 什么都不发」= 服务端默认档（Opus 5.5 是 medium），
+    // 比「最低档」贵，用户敲 `/think off` 想省反而按更高档跑。现在统一落到该模型档位表
+    // 最低的一档（规则见 `dialect/thinking-off-floor.ts`），与主循环的兜底同源。
+    expect(side.param).toEqual({ thinking: { type: "adaptive" } });
+    expect(side.effortFloor).toBe("low");
   });
 
   test("旧模型 off → 不发（现状不变）", () => {

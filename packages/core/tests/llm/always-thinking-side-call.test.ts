@@ -7,11 +7,20 @@
  * 「该模型始终思考，不支持关闭思考」→ 该错误分类为 `TerminalError("invalid_request")`
  * → **零重试**直接判"主 Provider 失败且无可用 fallback"。实测 11 次真实请求全灭。
  *
- * 本文件锁四件事：
- *   ① 恒思考模型 + 关思考 → 不下发 thinking 字段（不是发 disabled）
- *   ② 恒思考模型 + 开思考 → 照常下发 enabled（**别把能力一起关掉**）
+ * ## 2026-11-13 起本文件的前提变了（旧版是「降级为不下发」）
+ *
+ * PR3 当时只做到「不发 `disabled`」——等价于让服务端按**它自己的默认档**跑。
+ * GLM-5.3 / Kimi K3 的默认档是 `max`，于是 `/think off` 想省反而拉满（本次修复的病）。
+ * 现在的正确形态是官方迁移建议的 **`enabled + 该模型最低档`**
+ * （规则见 `dialect/thinking-off-floor.ts`）。本文件的期望同步改成新契约：
+ *
+ *   ① 恒思考模型 + 关思考 → `enabled + low`（**不是** disabled，也**不是**什么都不发）
+ *   ② 恒思考模型 + 开思考 → 照常按用户档位下发（兜底不得污染 on 路径）
  *   ③ 非恒思考模型不受影响（负向对照：别把降级过度泛化）
  *   ④ compat 显式声明可覆盖内置名单（网关改名场景的唯一出口）
+ *
+ * 「什么都没登记」的情形（compat 只声明恒思考、注册表无档位表）仍维持不下发 —— 不知道
+ * 最低档是哪个就不编，发一个模型不认的 effort 是确定 400。该分支由 ④ 覆盖。
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
@@ -44,19 +53,20 @@ describe("PR3 恒思考模型的 thinking 降级", () => {
     setModelCompat([]);
   });
 
-  test("① glm-5.3 + side-call 关思考 → 不下发 thinking（改造前是 {type:'disabled'} 必 400）", () => {
+  test("① glm-5.3 + side-call 关思考 → enabled + 最低档（改造前是 disabled 必 400，上一版是不发）", () => {
     const body = wireBody("glm-5.3", SIDE_CALL_NO_THINK);
-    expect(body.thinking).toBeUndefined();
-    // 连键都不能有：`{thinking: undefined}` 经 JSON.stringify 会消失，但下游若做
-    // `"thinking" in body` 判断就会拿到 true —— 本仓已记过「显式 undefined 击穿默认值」的坑。
-    expect("thinking" in body).toBe(false);
+    expect(body.thinking).toEqual({ type: "enabled" });
+    // 关键：不是「不发」——不发等于服务端默认 max，用户想省反而更贵。
+    expect(body.reasoning_effort).toBe("low");
   });
 
-  test("① 变体：带版本后缀的 glm-5.3-flash 同样降级", () => {
-    expect("thinking" in wireBody("glm-5.3-flash", SIDE_CALL_NO_THINK)).toBe(false);
+  test("① 变体：带版本后缀的 glm-5.3-flash 同样兜底", () => {
+    const body = wireBody("glm-5.3-flash", SIDE_CALL_NO_THINK);
+    expect(body.thinking).toEqual({ type: "enabled" });
+    expect(body.reasoning_effort).toBe("low");
   });
 
-  test("② glm-5.3 + 主循环开思考 → 照常下发 enabled（别把能力一起关掉）", () => {
+  test("② glm-5.3 + 主循环开思考 → 照常下发 enabled + 用户档位（别把能力一起关掉）", () => {
     const body = wireBody("glm-5.3", { enabled: true, budgetTokens: 0 }, "max");
     expect(body.thinking).toEqual({ type: "enabled" });
     expect(body.reasoning_effort).toBe("max");
@@ -67,16 +77,18 @@ describe("PR3 恒思考模型的 thinking 降级", () => {
     expect(wireBody("deepseek-v4", SIDE_CALL_NO_THINK).thinking).toEqual({ type: "disabled" });
   });
 
-  test("③ 负向对照：名单是精确匹配，glm-5.30 不是 glm-5.3", () => {
+  test("③ 负向对照：未登记档位表的相似名不会借走恒思考数据", () => {
     expect(isThinkingAlwaysOn("glm-5.3")).toBe(true);
     expect(isThinkingAlwaysOn("glm-5.3-flash")).toBe(true);
+    // 模糊查找不命中 `glm-5.30`（它不是 5.3 的快照/改名形态）
     expect(isThinkingAlwaysOn("glm-5.30")).toBe(false);
     expect(isThinkingAlwaysOn("glm-5.2")).toBe(false);
     expect(isThinkingAlwaysOn("")).toBe(false);
   });
 
   test("④ compat thinking_always_on 覆盖内置名单（网关把模型改了名的唯一出口）", () => {
-    // 该名字命中不了内置名单（`^glm-5\.3\b` 匹配不到），靠用户显式声明生效。
+    // 该名字命中不了内置名单（也查不到档位表），靠用户显式声明生效。
+    // 没有档位表 → 不知道最低档是哪个 → 维持「不下发」（不猜）。
     // 仍需是 Chat Completions 族才会走到这段装配，故取一个 deepseek 族的名字。
     setModelCompat([{ name: "deepseek-gw", compat: { thinkingAlwaysOn: true } }] as any);
     expect("thinking" in wireBody("deepseek-gw", SIDE_CALL_NO_THINK)).toBe(false);
