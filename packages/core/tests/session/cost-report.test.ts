@@ -31,6 +31,9 @@ import {
   resetSideCallStats,
   getSideStats,
 } from "../../src/trace/side-call-sink.ts";
+// 方案 B4 的一致性断言要同时读两侧：面板的 `peakShare`（按**费用**算）与账本的
+// `getPeakRatio()`（按**请求次数**算）。两者数据源不同，所以只能锁「同向」不能锁相等。
+import { recordPriceTier, getPeakRatio, resetBillingSink } from "../../src/llm/billing-sink.ts";
 import type { Usage } from "../../src/llm/types.ts";
 
 /** 取证会话当时的网关 expr 价（USD/1M，方案 2.3 节人工核对值）。 */
@@ -401,9 +404,8 @@ describe("D11：单价来源 / 端点 / 高峰占比", () => {
       },
     ]);
     const usage = { inputTokens: 10_000, outputTokens: 100 };
-    // updateUsage 按「现在」计价——分时段价下两次入账可能落不同档，用 at 控制不可行
-    // （updateUsage 不接收 at），所以这里直接驱动 peak/offpeak 两段都进 modelUsage：
-    // 手动改系统时钟不可行，改用两次入账 + 断言「peak + offpeak === costUSD」这个恒等式。
+    // CP-3 起 `updateUsage` 接收 `at`（分时段计价的输入），可以显式钉住档位；
+    // 本用例不钉，只锁「peak + offpeak === costUSD」这个与时刻无关的恒等式。
     ss.updateUsage("tiered-model", usage, 0, "openai", undefined);
     const stats = ss.modelUsage["tiered-model"]!;
     const sum = (stats.peakCostUSD ?? 0) + (stats.offpeakCostUSD ?? 0);
@@ -424,6 +426,98 @@ describe("D11：单价来源 / 端点 / 高峰占比", () => {
     expect(row).toBeDefined();
     expect(row!.pricing?.input).toBeCloseTo(GW.input, 8);
     expect(row!.peakShare).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * 方案 B4：面板 `peakShare` 与账本 `peakRatio` 的**同向**一致性。
+ *
+ * 为什么必须是「两侧都读」的交叉断言：两个指标口径不同（一个数费用、一个数请求次数），
+ * 分别住在两层（`session/cost-report.ts` 的 `resolvePeakShare` 与 `llm/billing-sink.ts`
+ * 的 `getPeakRatio`），历史上正是这两个出口**各自错了一次**才出现「越在空闲时段干活，
+ * 面板越说你在付高峰价」。单侧断言只能各守一半：把 `resolvePeakShare` 的 `?? 0`
+ * 改回 `?? stats.costUSD`，面板侧变 1；把 `getPeakRatio` 的空分母判据改坏，账本侧变味。
+ * 这条用例两侧都读，任一侧背向就红。
+ */
+describe("B4 一致性：全空闲时面板 peakShare 与账本 peakRatio 同向", () => {
+  /** 分时段模型：`peakWindows` 是 UTC 小时区间 `[1, 4)`。 */
+  function tieredSession(id: string): SessionState {
+    const ss = new SessionState(id);
+    ss.setAvailableModels([
+      {
+        name: "tiered-model",
+        provider: "openai",
+        pricing: {
+          input: 0.3,
+          output: 1.2,
+          peakWindows: [{ startHour: 1, endHour: 4 }],
+          offPeakMultiplier: 0.5,
+        },
+      },
+    ]);
+    return ss;
+  }
+
+  function peakShareOf(ss: SessionState): number | undefined {
+    const r = buildCostReport(ss, {
+      sideStats: getSideStats(),
+      gateStats: IDLE_GATE,
+      cacheBreaks: [],
+    });
+    return r.byModel.find((m) => m.model === "tiered-model")!.peakShare;
+  }
+
+  test("全空闲：两侧同时为 0", () => {
+    resetBillingSink();
+    const ss = tieredSession("b4-offpeak");
+    // UTC 12:00 落在 [1,4) 之外 → 空闲档。传 at 而不是靠「现在」，用例与跑测试的时刻无关。
+    ss.updateUsage(
+      "tiered-model",
+      { inputTokens: 10_000, outputTokens: 100 },
+      0,
+      "openai",
+      undefined,
+      false,
+      1,
+      new Date("2026-01-01T12:00:00Z"),
+    );
+    const stats = ss.modelUsage["tiered-model"]!;
+    // 前提自证：有费用、且确实没进高峰桶 —— 否则下面的 0 === 0 只是「两个空值相等」
+    expect(stats.costUSD).toBeGreaterThan(0);
+    expect(stats.peakCostUSD ?? 0).toBe(0);
+    expect(stats.offpeakCostUSD ?? 0).toBeGreaterThan(0);
+
+    // 账本侧：发生侧在算出 tier 后记一次观测量（生产路径见 billing-sink 的 recordPriceTier）
+    recordPriceTier("offpeak");
+
+    expect(getPeakRatio()).toBe(0);
+    expect(peakShareOf(ss)).toBe(0);
+    resetBillingSink();
+  });
+
+  test("对照（全高峰）：两侧同时为 1 —— 不是只修了 0 那半边", () => {
+    resetBillingSink();
+    const ss = tieredSession("b4-peak");
+    ss.updateUsage(
+      "tiered-model",
+      { inputTokens: 10_000, outputTokens: 100 },
+      0,
+      "openai",
+      undefined,
+      false,
+      1,
+      new Date("2026-01-01T02:00:00Z"), // 落在 [1,4) → 高峰档
+    );
+    const stats = ss.modelUsage["tiered-model"]!;
+    expect(stats.costUSD).toBeGreaterThan(0);
+    expect(stats.peakCostUSD ?? 0).toBeGreaterThan(0);
+    expect(stats.offpeakCostUSD ?? 0).toBe(0);
+
+    recordPriceTier("peak");
+
+    expect(getPeakRatio()).toBe(1);
+    expect(peakShareOf(ss)).toBe(1);
+    resetBillingSink();
   });
 });
 

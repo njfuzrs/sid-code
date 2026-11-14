@@ -173,7 +173,14 @@ function isLocalCategory(categories?: ReadonlyArray<string>): boolean {
 /** D14：缓存断裂摘要。 */
 export interface CacheBreakSummary {
   count: number;
-  /** 最近一条的人类可读归因（如「本地前缀 hash 没变，服务端缓存波动」）。渲染层附在次数后。 */
+  /**
+   * 最近一条的人类可读归因（产出侧 `changes` 的原文，如「本地前缀 hash 未变（…），
+   * 命中下降疑为服务端缓存波动」）。
+   *
+   * **只作兜底**：渲染层优先按 `latest` 的三条结构化证据拼文案（CP-8），
+   * 只有当 `categories` 一个都映射不到结论时才回落这一句 ——
+   * 别再把它当成「渲染层附在次数后」的主路径（那是 CP-9 修掉之前的行为）。
+   */
   latestReason: string | null;
   /**
    * 归因计数（**按 `categories` 结构化统计，不解析 changes 字符串**）：
