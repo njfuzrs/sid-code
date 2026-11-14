@@ -41,9 +41,16 @@
  */
 
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
-import { isAnyPrivateMemPath } from "./paths.ts";
+import { isAnyPrivateMemPath, resolvePrivateMemDir } from "./paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import { invalidateMemoryCaches } from "./store.ts";
+// P1-1（MD3）：索引已满时，同 key 覆盖的「结论级替换」必须留痕。
+import { findConclusionReplacement } from "./conclusion-guard.ts";
+import { readIndexCapacity } from "./index-capacity.ts";
+import { stripFrontmatter } from "./scan.ts";
+import { getSidHome } from "../config/paths.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
 // P1-12 指标 ③：防线触发计数（恒 0 的曲线本身是信号）。
 import { logMemoryGuard } from "../analytics/events.ts";
 
@@ -88,4 +95,73 @@ export function checkPrivateMemSecrets(
 export function afterMemoryFileWrite(filePath: string, cwd: string = process.cwd()): void {
   if (!isAnyPrivateMemPath(filePath, cwd)) return;
   invalidateMemoryCaches();
+}
+
+/**
+ * P1-1（MD3）：索引已满时，**经 write / edit 覆盖已有记忆文件**的结论级替换必须留痕。
+ *
+ * ## 为什么必须落在这条路径上
+ *
+ * `save_memory` 那道闸门（tool/memory.ts）只覆盖一条写入方式。后台提取代理的
+ * `WRITE_TOOLS` 里有 `write` / `edit`，且被授权写整个记忆目录 —— 它被 save_memory 拒了
+ * 之后换条路照样能改（P0-4 的回告里已经把这条绕过面写明，见 `negation_unreferenced`）。
+ * 判据只落在一条路径上的闸门，防的是「模型恰好选了那条路」，不是「模型改不掉」。
+ *
+ * ## 判据顺序（性能与安全的权衡）
+ *
+ * 1. 廉价否定：不在配置根下的路径一定不是记忆文件，直接放行 —— 这条闸门挂在
+ *    write/edit 的**每次调用**上，不能为普通源码文件付 fork git 的成本（与
+ *    `checkPrivateMemSecrets` 同一个前置）。
+ * 2. 新建文件没有「旧结论」可替换，放行。
+ * 3. 纯字符串判据（`findConclusionReplacement`）先跑：绝大多数普通写入到这里就早退。
+ * 4. 只有「看起来是一次结论级替换」时才做昂贵判定：反推记忆目录 + 读索引容量。
+ *
+ * @returns 拒绝原因（调用方据此拒绝写入）；放行返回 null。
+ */
+export function checkMemoryConclusionReplace(
+  filePath: string,
+  nextContent: string,
+  cwd: string = process.cwd(),
+): string | null {
+  const target = resolve(filePath);
+  const home = resolve(getSidHome());
+  if (target !== home && !target.startsWith(home + sep)) return null;
+
+  // 新建文件不可能是「替换旧结论」；edit 的空文件分支同理（旧正文为空）
+  if (!existsSync(target)) return null;
+
+  let oldText: string;
+  try {
+    oldText = readFileSync(target, "utf8");
+  } catch {
+    // 读不动旧文件时不能凭空判定「结论被替换了」——放手交给后续写入，失败形态是漏拦而非误拦
+    return null;
+  }
+
+  const conflict = findConclusionReplacement(
+    stripFrontmatter(oldText),
+    stripFrontmatter(nextContent),
+  );
+  if (!conflict) return null;
+
+  // ─── 只有可能命中时才做昂贵判定 ───
+  const memDir = resolvePrivateMemDir(target, cwd);
+  if (!memDir) return null; // 不是记忆文件：上面那条判据只是在普通文件上碰巧成立的字符串比较
+  if (!readIndexCapacity(memDir).truncated) return null; // 索引没满：新建 key 可行，不必收紧同 key 覆盖
+
+  getLogger().warn("TOOL", `✗ 拒绝结论级替换未留痕的记忆写入: ${target}`);
+  // P1-12 指标 ③：与 secret 闸门同一套计数口径（恒 0 也是信号）
+  logMemoryGuard({ kind: "conclusion_replace", via: "write_edit" });
+  return (
+    `这次写入把这条记忆的**主题陈述**换掉了，但没有留下「结论级替换」的痕迹。\n` +
+    `判据: 索引已满（新 key 大多落不进模型可见的索引），所以同一个 key 的更新必须说清\n` +
+    `「这是修正旧结论」还是「补充细节」。旧条目的首行结论是:\n` +
+    `  ${conflict.oldConclusion}\n` +
+    `这次的新内容里没有它。\n` +
+    `改正方式（二选一）:\n` +
+    `  1. 正文里显式写 \`推翻：<旧结论为什么不成立>\`\n` +
+    `  2. 正文里显式写 \`纠正：<新结论>\`\n` +
+    `若你其实只是补充细节、修措辞，请保留旧条目的首行结论原句。\n` +
+    `（「更新：」「补充：」不算声明 —— 它们和「追加」是同一个意思。）`
+  );
 }

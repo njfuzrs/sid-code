@@ -25,6 +25,11 @@ import {
   type MemoryType,
 } from "../memory/types.ts";
 import { stripMemoryTypePrefix } from "../memory/paths.ts";
+// P1-1（MD3）：索引已满时，同 key 覆盖的「结论级替换」必须留痕。
+// 与 write-guard.ts 里 edit/write 那条路径**同一个判据实现** —— 两条路径各写一份
+// 判据，迟早漂移成两套口径（这个仓库已经因此踩过 B14 那类缺陷）。
+import { findConclusionReplacement } from "../memory/conclusion-guard.ts";
+import { readIndexCapacity } from "../memory/index-capacity.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
 import { z } from "zod/v4";
@@ -478,6 +483,50 @@ export class MemoryTool implements Tool {
     }
 
     try {
+      // ─── P1-1（MD3）：索引已满时，同 key 更新的「结论级替换」必须留痕 ───
+      //
+      // 只在**索引已满**时生效。索引没满时新建 key 可行，不该把同 key 覆盖也一并收紧——
+      // 那会让正常迭代记忆的成本上升，而这条闸门要解决的只是「索引满 → 写入压力
+      // 全压到老 key → 老 key 被静默换了主题」这条放大链。
+      //
+      // 与 write/edit 那条路径（write-guard.ts 的 `checkMemoryConclusionReplace`）用**同一个
+      // 判据实现**：判据只落一条路径时，模型被拒后换条路就绕过去了，那是 P0-4 的回告里
+      // 已经写明过的绕过面。
+      {
+        const memoryDir =
+          scope === "global" ? this.store.getGlobalMemoryDir() : this.store.getProjectMemoryDir();
+        if (memoryDir && readIndexCapacity(memoryDir).truncated) {
+          const existing = await this.store.get(key);
+          if (existing) {
+            const replaced = findConclusionReplacement(existing.value, value);
+            if (replaced) {
+              log.warn("TOOL", `✗ 拒绝结论级替换未留痕的记忆更新 [${scope}] ${key}`);
+              try {
+                const { logMemoryGuard } = await import("../analytics/events.ts");
+                logMemoryGuard({ kind: "conclusion_replace", via: "save_memory", scope });
+              } catch {
+                /* 埋点失败不影响拒绝行为 */
+              }
+              return {
+                output:
+                  `错误: 这次更新把记忆 \`${key}\` 的**主题陈述**换掉了，但没有留下「结论级替换」的痕迹。\n` +
+                  `判据: 索引已满（新 key 大多落不进模型可见的索引），所以同一个 key 的更新必须\n` +
+                  `说清「这是修正旧结论」还是「补充细节」。旧条目的首行结论是:\n` +
+                  `  ${replaced.oldConclusion}\n` +
+                  `这次的新内容里没有它。\n` +
+                  `改正方式（二选一）:\n` +
+                  `  1. 正文里显式写 \`推翻：<旧结论为什么不成立>\`\n` +
+                  `  2. 正文里显式写 \`纠正：<新结论>\`\n` +
+                  `若你其实只是补充细节、修措辞，请保留旧条目的首行结论原句。\n` +
+                  `（「更新：」「补充：」不算声明 —— 它们和「追加」是同一个意思。）\n` +
+                  `若这条其实是另一件事，用新的 key 保存它。`,
+                isError: true,
+              };
+            }
+          }
+        }
+      }
+
       // PR-A（A2）：`set()` 现在回传淘汰明细 —— 满额时这次写入的真实代价
       // 必须出现在工具结果里，模型同一轮就能看到并决定删掉临时记忆。
       // P0-4：`negates` 只在建立 tombstone 时有值，落盘后成为判据的结构依据。
