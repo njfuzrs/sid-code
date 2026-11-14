@@ -917,7 +917,19 @@ export function logMemoryExtract(opts: {
   inputTokens?: number;
   outputTokens?: number;
   catchUp?: boolean;
+  /**
+   * P1-2（MD5）：本轮是不是核实轮次（`verify` 出现即表示是），以及核实目标的闲置天数 /
+   * 是否从未被读过。
+   *
+   * 为什么要记：这条改动主动拿「更省」换「更准」——每 N 轮把一次提取的产出换成一次核实。
+   * 没有这一组字段，上线后无法回答「核实轮次占了多少」「核实的都是哪些条目」，
+   * 也就无法判断这笔账划不划算。仍然遵守漏斗纪律：不记 key、不记内容、不记路径。
+   */
+  verifyIdleDays?: number;
+  verifyNeverRead?: boolean;
 }): void {
+  const verify =
+    opts.verifyIdleDays !== undefined || opts.verifyNeverRead !== undefined ? true : undefined;
   emit(EVENT_NAMES.MEMORY_EXTRACT, {
     extract_outcome: v(opts.outcome),
     ...(opts.reason ? { skip_reason: v(opts.reason) } : {}),
@@ -927,6 +939,9 @@ export function logMemoryExtract(opts: {
     ...(opts.inputTokens !== undefined ? { input_tokens: opts.inputTokens } : {}),
     ...(opts.outputTokens !== undefined ? { output_tokens: opts.outputTokens } : {}),
     ...(opts.catchUp ? { catch_up: true } : {}),
+    ...(verify ? { verify: true } : {}),
+    ...(opts.verifyIdleDays !== undefined ? { verify_idle_days: opts.verifyIdleDays } : {}),
+    ...(opts.verifyNeverRead !== undefined ? { verify_never_read: opts.verifyNeverRead } : {}),
   });
 }
 
