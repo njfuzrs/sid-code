@@ -692,8 +692,12 @@ export function validateQuotedNewline(command: string): InjectionFinding | null 
  *
  * 检测各类会"在运行期动态生成命令文本"的构造（对标 cc COMMAND_SUBSTITUTION_PATTERNS）：
  *   $(...) / `...` / <(...) / >(...) / ${...} / $[...] 等。这些让静态检查无法预知
- *   实际执行内容。注意：sid 已有 DANGEROUS_PATTERNS "命令替换注入" 覆盖 `...`/$(...)，
- *   本校验器补齐 cc 列表里 sid 未覆盖的进程替换、Zsh =() 、$[] 等变体。
+ *   实际执行内容。
+ *
+ * 边界：`$()` / 反引号**不在本表**——它们由 `shell-command-variants.ts` 的
+ *   `detectCommandSubstitutionDanger` 按「替换出现的位置」判（命令位 / 参数即代码 → high，
+ *   参数位不报），本校验器只补 cc 列表里剩下的进程替换、Zsh =() 、$[] 等变体。
+ *   两处不能互相代替：位置判定看不见 `=(`，本表也分不清 `echo $(date)` 与 `$(curl x)`。
  */
 const COMMAND_SUBSTITUTION_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
   { pattern: /<\(/, message: "进程替换 <()" },
@@ -709,8 +713,15 @@ const COMMAND_SUBSTITUTION_PATTERNS: Array<{ pattern: RegExp; message: string }>
 ];
 
 export function validateProcessSubstitution(command: string): InjectionFinding | null {
+  // heredoc 正文不是命令文本：`python3 - <<'PY' ⏎ a=(1 2) ⏎ PY` 的 `=(` 是 Python
+  // 元组，`cat > f <<'EOF' ⏎ <(x) ⏎ EOF` 的 `<(` 是待写入的日志内容。不剥正文就扫，
+  // 最普通的「把一段脚本/文档走 heredoc 交给 stdin」全部误报成 injection high。
+  //
+  // 只剥正文、不剥 `<<` 记号（它被换成 `<<__SID_HD_n__` 留在 stripped 里），
+  // 所以heredoc 记号本身的判定面不变。
+  const { stripped } = extractHeredocBlocks(command);
   // 用 fullyUnquoted——引号内的这些字符是字面数据，安全
-  const { fullyUnquoted } = extractQuotedContent(command);
+  const { fullyUnquoted } = extractQuotedContent(stripped);
   for (const { pattern, message } of COMMAND_SUBSTITUTION_PATTERNS) {
     if (pattern.test(fullyUnquoted)) {
       return {
