@@ -1023,8 +1023,10 @@ export interface QueryDeps {
    */
   sessionStore?: import("../session/store.ts").SessionStore;
   /**
-   * Step 0：Session Memory 提取触发（每轮收尾调用，fire-and-forget）。
+   * Step 0：Session Memory 提取触发（每轮收尾调用，经 `runBackgroundTask` 闸门串行）。
    * 内部按双阈值（token 增长 + 工具调用次数/自然断点）决定是否真正提取。可选。
+   * 返回**真实更新链**的 promise（CP-7）：`query/loop.ts` 不 await 它，但闸门会用
+   * 它判断「这一笔还在跑」，串行 / 退出排空 / `/cost` 进行中提示都依赖这一点。
    */
   updateSessionMemory?: () => Promise<void>;
   /**
@@ -1032,8 +1034,9 @@ export interface QueryDeps {
    */
   recordSessionMemoryToolCall?: () => void;
   /**
-   * 后台记忆提取触发（每轮 end_turn 收尾调用，fire-and-forget）。
+   * 后台记忆提取触发（每轮 end_turn 收尾调用，经 `runBackgroundTask` 闸门串行）。
    * 内部判断主代理本轮是否已写入记忆（互斥），未写则跑 forked agent 提取。可选。
+   * 返回**真实提取链**的 promise，理由同 `updateSessionMemory`（CP-7）。
    */
   extractMemories?: () => Promise<void>;
   /**
