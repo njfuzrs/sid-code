@@ -2787,8 +2787,22 @@ async function* queryLoopBody(
       // 召回要花一次 sideQuery，而同一条用户消息的后续轮次查询意图没变，
       // 每轮都召回等于把 token 成本乘上轮数，却拿不到新信息（北极星「更省」）。
       //
-      // 走 reminderParts（user 消息尾部）而不是 system prompt 的 recalledMemories 字段：
-      // 召回结果随每条用户消息变化，塞静态前缀会击穿 prompt cache。
+      // 落在 user 消息尾部而不是 system prompt 的 recalledMemories 字段：召回结果随
+      // 每条用户消息变化，塞静态前缀会击穿 prompt cache。
+      //
+      // 走 **persistentReminderParts**（写回最后一条 user 消息）而不是 reminderParts。
+      // 两个通道都只影响 user 消息尾部，差别在寿命：reminderParts 只进发送副本
+      // （`reminder-inject.ts` 打 `transient: true`），**活不过本轮的第 1 次请求** ——
+      // 工具循环第 2 次请求起模型看不到召回的记忆，且该条 user 消息尾部少一整块，
+      // 前缀在那里断裂、后半段全部重算（成本面板里那次 `none_local` 断裂的根因）。
+      //
+      // 更硬的理由是周边三条假设全都要求内容留在上下文里：
+      // ① `memory/recall.ts` 的 alreadySurfaced 把已注入的记忆排除在后续召回之外；
+      // ② `cli/src/app.ts` 的 surfacedRecalledMemories 同理（会话内一次即够）；
+      // ③ `RECALL_SESSION_MAX_BYTES` 是「两次压缩之间」的**累计**预算。
+      // transient 让这三条同时落空：内容消失、又不会重新召回，直到压缩才重置。
+      //
+      // 与 D9（MCP instructions，见本文件 1944 行起的注释）和下面的 IDE 增量同一口径。
       //
       // 失败不阻断：召回是增强项，`findRelevantMemories` 内部已把 sideQuery 失败
       // 降级为返回空数组，这里再兜一层异常（与 IDE 增量同处理方式）。
@@ -2798,7 +2812,7 @@ async function* queryLoopBody(
           if (recallQuery.trim()) {
             const recalled = await deps.drainRecalledMemories(recallQuery);
             if (recalled) {
-              reminderParts.push(recalled);
+              persistentReminderParts.push(recalled);
               log.info("QUERY_LOOP", "注入语义召回记忆（SID_CODE_MEMORY_RECALL）");
             }
           }
