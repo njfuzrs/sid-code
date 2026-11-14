@@ -298,3 +298,80 @@ describe("B1 · forked-agent 路径同样按需注入", () => {
     expect(seen.consumer_probe).toEqual({ b: 2, _agentId: "forked-agent" });
   });
 });
+
+/**
+ * P0-2（MD2）：`_querySource` 的注入链路。
+ *
+ * 为什么单独守这一环：save_memory 的 feedback 原话闸门看的是 `_querySource`，
+ * 而单测里那一路是**直接传参**调 execute —— forked-agent 漏注入时那些用例仍然全绿，
+ * 真实链路里闸门却永远不触发（恒绿门禁，比没有门禁更危险）。
+ *
+ * 顺带守住剥离侧：模型在入参里自塞 `_querySource` 必须被覆盖掉。闸门只对
+ * memory-extract 生效，模型若能把自己的写入伪装成主会话路径，闸门等于没有。
+ */
+describe("P0-2 · forked-agent 注入 _querySource（仅声明者，且模型伪造无效）", () => {
+  /** 一轮里并发调三个工具：未声明 / 声明 / 声明且伪造了字段 */
+  function threeProbeTurn() {
+    const mk = (index: number, id: string, name: string, json: string) => [
+      {
+        type: "content_block_start",
+        index,
+        content_block: { type: "tool_use", id, name },
+      },
+      {
+        type: "content_block_delta",
+        index,
+        delta: { type: "input_json_delta", partial_json: json },
+      },
+      { type: "content_block_stop", index },
+    ];
+    return [
+      ...mk(0, "q1", "plain_probe", '{"a":1}'),
+      ...mk(1, "q2", "qs_probe", '{"b":2}'),
+      ...mk(2, "q3", "forged_probe", '{"c":3,"_querySource":"main"}'),
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { outputTokens: 5 } },
+    ];
+  }
+
+  test("声明者拿到本次 fork 的 querySource；未声明者没有；伪造值被剥离后覆盖", async () => {
+    const seen: Record<string, any> = {};
+    const mkProbe = (name: string, consumesQuerySource: boolean) =>
+      ({
+        name: () => name,
+        description: () => "probe",
+        inputSchema: () => ({ type: "object", properties: {} }),
+        readOnly: () => true,
+        ...(consumesQuerySource ? { consumesQuerySource: true } : {}),
+        execute: async (input: any) => {
+          seen[name] = input;
+          return { output: "ok" };
+        },
+      }) as any;
+
+    const provider = mockProvider([threeProbeTurn(), endTurn()]);
+    const registry = new ToolRegistry();
+    registry.register(mkProbe("plain_probe", false));
+    registry.register(mkProbe("qs_probe", true));
+    registry.register(mkProbe("forged_probe", true));
+    await runForkedAgent(
+      {
+        systemPrompt: "system",
+        messages: [{ role: "user", content: [{ type: "text", text: "原始对话" }] }],
+        provider: provider as any,
+        toolRegistry: registry,
+        model: "mock-model",
+      } as any,
+      {
+        promptMessages: [{ role: "user", content: [{ type: "text", text: "跑一次" }] }],
+        canUseTool: () => ({ behavior: "allow" }),
+        maxTurns: 2,
+        querySource: "memory-extract",
+      },
+    );
+
+    expect("_querySource" in seen.plain_probe).toBe(false);
+    expect(seen.qs_probe).toEqual({ b: 2, _querySource: "memory-extract" });
+    // 模型塞的 "main" 必须被 harness 的值覆盖 —— 否则它一句话就能绕过闸门。
+    expect(seen.forged_probe).toEqual({ c: 3, _querySource: "memory-extract" });
+  });
+});
