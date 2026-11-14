@@ -7,7 +7,7 @@
 import type { Provider } from "../llm/provider.ts";
 import type { Config } from "../config/config.ts";
 import type { HookSystem } from "../hook/system.ts";
-import type { ToolDefinition, Message } from "../llm/types.ts";
+import { collectStreamUsage, type Message, type ToolDefinition, type Usage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
@@ -555,7 +555,7 @@ async function runSummaryRequest(
         },
       );
       let s = "";
-      let usage: any = null;
+      let usage: Usage | null = null;
       // T7：给 side-call 流消费叠加 StreamLifecycle（sideCall preset：idle 30s / content 60s /
       // overall 60s），在 withSideCallDeadline 的 60s 硬 deadline 之内提供更细粒度的 stall 检测。
       // 超时触发时 abort 合并 signal → 下方 signal.aborted 检查退出（不依赖底层 reader settle）。
@@ -581,9 +581,8 @@ async function runSummaryRequest(
         }
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           s += event.delta.text;
-        } else if (event.type === "message_stop" && (event as any).usage) {
-          usage = (event as any).usage;
         }
+        usage = collectStreamUsage(usage, event);
       }
       return { summary: s, streamUsage: usage };
     },

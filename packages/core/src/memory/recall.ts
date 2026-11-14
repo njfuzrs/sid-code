@@ -38,6 +38,7 @@ import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
+import { collectStreamUsage, type Usage } from "../llm/types.ts";
 
 /** 轻量 LLM 调用签名（依赖注入，便于测试） */
 export type SideQueryFn = (opts: {
@@ -286,7 +287,7 @@ export function makeSideQuery(
           },
         );
         let t = "";
-        let usage: any = null;
+        let usage: Usage | null = null;
         for await (const event of stream) {
           // 纵深防御：记忆召回 side-call 检查 signal，防止 provider 层超时失效时挂死
           // H10：抛出携带 abort reason 的错误（mergeTimeoutSignal 超时段 reason="side-call-timeout"），
@@ -301,9 +302,8 @@ export function makeSideQuery(
           }
           if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
             t += event.delta.text;
-          } else if (event.type === "message_stop" && (event as any).usage) {
-            usage = (event as any).usage;
           }
+          usage = collectStreamUsage(usage, event);
         }
         return { text: t, streamUsage: usage };
       },

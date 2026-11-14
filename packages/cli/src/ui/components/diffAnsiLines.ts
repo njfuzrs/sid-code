@@ -7,11 +7,13 @@
  *
  * 视觉与 React 路径保持一致:
  * - 右对齐行号槽(宽度 = 最大行号位数 + 1)
- * - 行首 +/- 符号加粗(色盲友好,不只靠背景色)
- * - add/del 整行底色;词级强调段额外加粗 + emphasis 底色
+ * - 行首 +/- 符号着色(颜色 + 字形两个通道,不靠加粗)
+ * - add/del 整行底色;词级强调段只用 emphasis 底色
  * - context 行无底色
  * - 折叠占位行「… N 行未变更上下文已折叠」
  *
+ * **字重全区域统一,任何一段都不加粗**:理由见 DiffRenderer.renderWordDiff 的注释
+ * (CJK 词级切分 + 合成粗体 + 配对/非配对两套管线共同导致的粗细参差)。
  * 纯函数(不依赖 React),便于单测。颜色经引擎 colorize/applyTextStyles 生成 ANSI。
  */
 
@@ -79,9 +81,8 @@ function renderContentSegment(
     if (which === "add" && part.removed) continue;
     const changed = which === "del" ? part.removed : part.added;
     if (changed) {
-      // 加粗 + emphasis 底色 + 前景色
-      const colored = colorize(applyColor(part.value, fg), emphBg, "background");
-      ansi += applyTextStyles(colored, { bold: true });
+      // emphasis 底色 + 前景色。**不加粗**:字重全区域统一,理由见 DiffRenderer.renderWordDiff
+      ansi += colorize(applyColor(part.value, fg), emphBg, "background");
     } else {
       ansi += applyColor(part.value, fg);
     }
@@ -160,13 +161,11 @@ export function buildDiffAnsiLines(opts: BuildDiffAnsiLinesOptions): string[] {
     // 行号槽:右对齐数字 + 1 空格,次要色
     const gutter = applyColor(padStart(gutterNumStr, gutterWidth) + " ", colors.secondary);
 
-    // 前缀符号:add/del 加粗着色;context 普通
+    // 前缀符号:add/del 着色;context 普通(不加粗,字重全区域统一)
     const prefixAnsi =
       which === "context"
         ? prefix + " "
-        : applyTextStyles(applyColor(prefix, which === "add" ? colors.addFg : colors.delFg), {
-            bold: true,
-          }) + " ";
+        : applyColor(prefix, which === "add" ? colors.addFg : colors.delFg) + " ";
 
     // 计算内容区可见宽度,用空格补足使底色铺满到 terminalWidth
     const prefixPlainW = 2; // 符号 + 空格

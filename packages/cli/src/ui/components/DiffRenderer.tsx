@@ -29,8 +29,16 @@ export interface DiffLine {
  *
  * - which='del'：渲染删除行，强调「本行独有（被删掉）」的词段。
  * - which='add'：渲染新增行，强调「本行独有（新加入）」的词段。
- * 公共词段用常规前景色，变化词段加粗 + 反色底，色盲用户也能靠
- * 「加粗 + 行首 +/- 符号」区分，不只依赖颜色。
+ * 公共词段用常规前景色，变化词段只用强调底色区分。
+ *
+ * ⚠️ 变化词刻意**不加粗**（曾经加，2026-11-13 去掉）。两个原因叠加：
+ * 1. CJK 没有词边界，`diffWordsWithSpace` 会退化成按字切分，一行中文里散落
+ *    个别加粗单字；中文字体普遍没有真 bold，终端用合成粗体顶替 → 笔画加宽、
+ *    字形变糊，观感像「字号变了」。
+ * 2. 配对行与未配对行走不同管线（配对行走本函数、未配对行走 colorizeLine），
+ *    两行差异大时几乎整行被判成变化 → 同一块 diff 里「这一行整行加粗、紧邻的
+ *    行不加粗」，粗细参差。字重统一交给「强调底色 + 行首 +/- 符号 + 状态色」
+ *    三个通道，不再用 bold。
  */
 function renderWordDiff(
   oldContent: string,
@@ -49,7 +57,6 @@ function renderWordDiff(
       nodes.push(
         <Text
           key={`wd-${k++}`}
-          bold
           color={which === "del" ? semanticTheme.status.error : semanticTheme.status.success}
           backgroundColor={
             which === "del"
@@ -617,7 +624,6 @@ const renderDiffContent = (
           <Box flexGrow={1} backgroundColor={backgroundColor}>
             <Text backgroundColor={backgroundColor} wrap="wrap">
               <Text
-                bold
                 color={
                   srcLine.type === "add" ? semanticTheme.status.success : semanticTheme.status.error
                 }

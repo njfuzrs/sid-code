@@ -26,6 +26,7 @@ import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { ssrfGuardedFetch } from "./ssrf-guard.ts";
 import { toCcToolName } from "../tool/tool-name-aliases.ts";
+import { collectStreamUsage, type Usage } from "../llm/types.ts";
 
 /**
  * 发给外部 handler（command stdin / http body / prompt·agent 的 $ARGUMENTS）的载荷（Q1 裁决）。
@@ -1305,7 +1306,7 @@ export class HookRunner {
     availability?: import("../llm/availability.ts").ModelAvailabilityService,
   ): Promise<string> {
     let text = "";
-    let streamUsage: any = null;
+    let streamUsage: Usage | null = null;
     // B3（D9）：改走漏斗而非直连——此前 429/523 等可重试错误在这里 1ms 内直接失败。
     // 收紧参数：hook agent 验证是轻量分类任务，只值得轻量重试，deadlineAt 与调用方
     // 传入的 timeoutMs（hookConfig.timeout，缺省 60s）同源，退避睡不完就提前收手。
@@ -1334,9 +1335,8 @@ export class HookRunner {
       }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         text += event.delta.text;
-      } else if (event.type === "message_stop" && (event as any).usage) {
-        streamUsage = (event as any).usage;
       }
+      streamUsage = collectStreamUsage(streamUsage, event);
     }
     // 记录辅助调用用量
     if (streamUsage) {

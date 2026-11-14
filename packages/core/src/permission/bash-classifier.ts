@@ -10,7 +10,7 @@
  */
 
 import type { Provider } from "../llm/provider.ts";
-import type { Message } from "../llm/types.ts";
+import { collectStreamUsage, type Message, type Usage } from "../llm/types.ts";
 import { getCapabilities } from "../llm/provider.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
@@ -297,7 +297,7 @@ export class BashClassifier {
 
       // 流式累积兜底（ollama 等无非流式接口的 provider）
       let text = "";
-      let streamUsage: any = null;
+      let streamUsage: Usage | null = null;
       const caps = getCapabilities(provider);
       void caps; // 仅用于显式表明已考虑能力差异
       for await (const ev of provider.sendMessageStream(sendParams, signal)) {
@@ -308,11 +308,10 @@ export class BashClassifier {
         }
         if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
           text += ev.delta.text;
-        } else if (ev.type === "message_stop" && (ev as any).usage) {
-          streamUsage = (ev as any).usage;
         } else if (ev.type === "error") {
           throw new Error(ev.error.message);
         }
+        streamUsage = collectStreamUsage(streamUsage, ev);
       }
       // 记录辅助调用用量（流式兜底路径）
       if (streamUsage) {
