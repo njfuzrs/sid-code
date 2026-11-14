@@ -720,7 +720,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // v2：思考折叠状态。两种模式默认折叠成一行（对标 claude-code，思考不占满屏）。
   // ctrl+o 统一切换折叠/展开（与工具结果阶梯展开同键）。
   // - AB 模式：即时切换，重渲虚拟列表所有项。
-  // - Static 模式：切换影响后续打印的项（已打印进 scrollback 的项无法重渲）。
+  // - 主屏模式：已打印的项**也**跟着切换——端口的 `Static` 是 memo Box，项可原地重渲
+  //   （`packages/tui/src/components/History.tsx`，不是上游 ink 的 print-once `<Static>`）。
+  //   代价是切换会让全部历史项 reconcile、变化落在已滚出视口的行上 → 触发一次整帧重画
+  //   （`2J 3J` + 重写全部历史，见 `packages/tui/src/frame/main-screen.ts`），内容不丢。
+  //   ⚠️ 曾写成「已打印进 scrollback 的项无法重渲」，那是旧 Static 时代的结论，已不成立。
   const defaultCollapsed = true;
   const [thinkCollapsed, setThinkCollapsed] = useState(defaultCollapsed);
 
