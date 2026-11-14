@@ -837,7 +837,15 @@ export type MemoryGuardKind =
   | "empty_archived"
   | "shadowed"
   /** 横向剖析 T3：索引已截断时后台代理想新建 key 被拒（主模型路径不受此限） */
-  | "index_full";
+  | "index_full"
+  /**
+   * P0-2（MD2）：后台提取代理写 feedback 类记忆时，正文里没有「」包住的用户原话。
+   *
+   * 为什么单列一格：这条闸门的立意是「没有原话 = 这条经验是代理自己推断出来的」。
+   * 它和 `secret_rejected` / `index_full` 混在一个计数里，就看不出「到底有多少条
+   * agent 自造经验被拦下来」——而那正是这个缺陷的原始指标。
+   */
+  | "feedback_no_quote";
 
 /**
  * 后台记忆抽取的一次 end_turn 去向（记忆横向剖析 T2）。

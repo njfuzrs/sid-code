@@ -219,3 +219,102 @@ describe("缺陷 12：写入质量软提示（不拒绝）", () => {
     expect(ex).toContain("绝对日期");
   });
 });
+
+/**
+ * P0-2（MD2）：后台提取代理写 feedback 时必须带用户原话——**代码闸门，不只 prompt**。
+ *
+ * 闸门只打在 `querySource === "memory-extract"` 上，不能用 `_agentId` / `via`：
+ * 那个粒度写死为 "forked"，同时覆盖 auto-dream / session-memory-update，
+ * 按它拦会把那两个后台任务的写入一起打掉，且失败形态是「写入静默减少」。
+ * T-M8b / T-M8c 就是这层的守卫 —— 少了它们，闸门退化成「拦所有 fork」也不会红。
+ */
+describe("MemoryTool save_memory — P0-2 feedback 原话闸门（仅提取代理）", () => {
+  /** 本缺陷的原始形态：一条完整的 agent 自述操作步骤，没有一句来自用户 */
+  const AGENT_SELF_NARRATIVE =
+    "批量截图时先用 browser 打开页面，按顺序调用截全页、滚动、再截第二屏。" +
+    "Why: 一次性截完比来回切页面快。How to apply: 下次需要多屏截图时照这个顺序做。";
+
+  test("T-M8：提取代理写无原话的 feedback → 拒绝，且给出改正指引", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      type: "feedback",
+      key: "feedback_browser_batch_screenshot",
+      value: AGENT_SELF_NARRATIVE,
+      _agentId: "forked-agent",
+      _querySource: "memory-extract",
+    });
+    expect(r.isError).toBe(true);
+    expect(r.output).toContain("逐字引用用户原话");
+    // 错误文案要能指导模型在同一轮改对，否则模型只会重试一遍同样的内容。
+    expect(r.output).toContain("改正方式");
+    expect(r.output).toContain("不要保存");
+  });
+
+  test("T-M8：带用户原话（「」包住 ≥4 字）的 feedback → 放行", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      type: "feedback",
+      key: "lint_before_commit",
+      value:
+        "用户说「以后提交前都跑一遍 lint」。Why: 上次 CI 因 lint 红了。How to apply: 提交前跑 lint。",
+      _agentId: "forked-agent",
+      _querySource: "memory-extract",
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.output).toContain("记忆已保存");
+  });
+
+  // T-M8b：主会话 / 子代理路径拿不到 _querySource —— 必须放行。
+  // 这条是安全默认的守卫：若闸门写成「没有原话就拒」而不看来源，
+  // 主模型每次写 feedback 都要被拒一次（用户能直接感知到的回归）。
+  test("T-M8b：没有 _querySource（主会话路径）→ 放行", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      type: "feedback",
+      key: "lint_before_commit",
+      value: AGENT_SELF_NARRATIVE,
+    });
+    expect(r.isError).toBeFalsy();
+  });
+
+  // T-M8c：证明闸门不是按 "forked" 粒度拦的。若实现改用 via / _agentId 判断，
+  // 这条会红——那正是「auto-dream 的写入被静默打掉」的形态。
+  test("T-M8c：其它 fork 任务（auto-dream）无原话 → 放行", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      type: "feedback",
+      key: "dream_cleanup",
+      value: AGENT_SELF_NARRATIVE,
+      _agentId: "forked-agent",
+      _querySource: "auto-dream",
+    });
+    expect(r.isError).toBeFalsy();
+  });
+
+  // 只有 forked 标记、没有 querySource 的路径（老执行器 / 直接调用）同样放行。
+  test("T-M8c2：只有 _agentId 没有 _querySource → 放行", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      type: "feedback",
+      key: "dream_cleanup",
+      value: AGENT_SELF_NARRATIVE,
+      _agentId: "forked-agent",
+    });
+    expect(r.isError).toBeFalsy();
+  });
+
+  // 闸门的判据是「feedback 必须有原话」，不是「提取代理不许写任何东西」——
+  // project / user / reference 不受影响，否则提取代理基本没法工作了。
+  test("T-M8d：提取代理写 project 类无原话 → 放行（闸门只管 feedback）", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      type: "project",
+      key: "monorepo_layout",
+      value:
+        "仓库用 bun workspace，packages/* 各自独立。Why: 分包后各自有构建产物。How to apply: 新增包放 packages/。",
+      _agentId: "forked-agent",
+      _querySource: "memory-extract",
+    });
+    expect(r.isError).toBeFalsy();
+  });
+});
