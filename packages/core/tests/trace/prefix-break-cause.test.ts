@@ -48,6 +48,18 @@ function prefixBreaks(): Array<Record<string, unknown>> {
 const u = (t: string) => ({ role: "user", content: [{ type: "text", text: t }] });
 const a = (t: string) => ({ role: "assistant", content: [{ type: "text", text: t }] });
 
+/**
+ * 带 transient 块的消息 —— 复刻 `query/reminder-inject.ts` 的注入形态：
+ * 用户原文 + 一个 `transient: true` 的 reminder 块（只进发送副本，不写回历史）。
+ */
+const uTransient = (t: string, reminder = "<system-reminder>召回记忆</system-reminder>") => ({
+  role: "user",
+  content: [
+    { type: "text", text: t },
+    { type: "text", text: reminder, transient: true },
+  ],
+});
+
 beforeEach(async () => {
   testDir = join(tmpdir(), `pb-cause-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   hs = new HookSystem();
@@ -87,5 +99,49 @@ describe("发现 14 — prefix_break.cause", () => {
     const rows = prefixBreaks();
     expect(rows.every((r) => r.broken === false)).toBe(true);
     expect(rows[0]).not.toHaveProperty("cause");
+  });
+});
+
+/**
+ * CP-9（P2）：transient 块被丢弃时不再记 `none_local`。
+ *
+ * 修前：`reminderParts` 注入的块只进发送副本（`query/reminder-inject.ts` 打
+ * `transient: true`），下一轮自然消失 → 字节检测器报断裂，而主循环如实上报的
+ * `send_mutation_causes` 是空数组（ContextManager 确实没改写），于是落成
+ * `none_local`——把 harness 自己的已知行为记成「本地没有原因」。
+ *
+ * 修后：探针自己从相邻两轮的指纹里看到「这条消息上轮带 transient 块、这轮没了」，
+ * 归因 `transient_dropped`。它不依赖主循环上报，所以子代理路径同样生效。
+ */
+describe("CP-9 — transient 块被丢弃的归因", () => {
+  test("上轮第 0 条消息带 transient 块、本轮没有 ⇒ cause=[transient_dropped]", async () => {
+    await round([uTransient("q1"), a("r1"), u("q2")], []);
+    await round([u("q1"), a("r1"), u("q2")], []);
+    const broken = prefixBreaks().filter((r) => r.broken === true);
+    expect(broken).toHaveLength(1);
+    expect(broken[0].cause).toEqual(["transient_dropped"]);
+    // 断点确实落在那条消息上（否则这条归因就没有依据）
+    expect(broken[0].first_changed_message_index).toBe(0);
+  });
+
+  test("两侧都带 transient 块（只是内容变了）⇒ 不算丢弃，回到 none_local", async () => {
+    await round([uTransient("q1", "<system-reminder>A</system-reminder>"), a("r1"), u("q2")], []);
+    await round([uTransient("q1", "<system-reminder>B</system-reminder>"), a("r1"), u("q2")], []);
+    const broken = prefixBreaks().filter((r) => r.broken === true);
+    expect(broken[0].cause).toEqual(["none_local"]);
+  });
+
+  test("主循环上报了具体原因 ⇒ 以主循环为准（transient 丢弃只兜底 none_local）", async () => {
+    await round([uTransient("q1"), a("r1"), u("q2")], []);
+    await round([u("q1"), a("r1"), u("q2")], ["masking"]);
+    const broken = prefixBreaks().filter((r) => r.broken === true);
+    expect(broken[0].cause).toEqual(["masking"]);
+  });
+
+  test("未上报（子代理路径）但探针看到 transient 丢弃 ⇒ 仍落 transient_dropped", async () => {
+    await round([uTransient("q1"), a("r1"), u("q2")]);
+    await round([u("q1"), a("r1"), u("q2")]);
+    const broken = prefixBreaks().filter((r) => r.broken === true);
+    expect(broken[0].cause).toEqual(["transient_dropped"]);
   });
 });

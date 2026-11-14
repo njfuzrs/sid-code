@@ -3107,6 +3107,23 @@ export class TraceCollector {
       const d = this.prefixTracker.observe(fp);
       if (!d) return; // 首轮
 
+      // CP-9：这次断裂的本地归因。优先级 ——
+      // ① 主循环如实上报的具体原因（compact / hook / 注入 …），最可信；
+      // ② 字节探针自己看到的「transient 块被丢弃」：它**不依赖上报**，从相邻两轮的
+      //    指纹里直接就能看到。不判这一条，harness 自己的 transient 注入
+      //    （reminderParts，见 query/reminder-inject.ts）造成的断裂会被记成
+      //    `none_local`，在归因数据里等同「本地没有原因」——已知的本地行为被记成未知；
+      // ③ 上报了空数组 = 本地确实没改写 → none_local；
+      // ④ 根本没上报（子代理 / 老版本）= 未采集，字段缺失而非落 []。
+      let cause: string[] | undefined;
+      if (localCauses !== undefined && localCauses.length > 0) {
+        cause = localCauses;
+      } else if (d.transientDropped) {
+        cause = ["transient_dropped"];
+      } else if (localCauses !== undefined) {
+        cause = ["none_local"];
+      }
+
       this.appendHookEvent({
         event: "prefix_break" as any,
         session_id: this.metadata.session_id,
@@ -3123,11 +3140,9 @@ export class TraceCollector {
                   ? { first_changed_message_index: d.firstChangedMessageIndex }
                   : {}),
                 wasted_ratio: Number((d.wastedRatio ?? 0).toFixed(4)),
-                // 发现 14：断裂的本地来源。只在 broken 时落，且只落主循环如实上报的那几类；
+                // 发现 14：断裂的本地来源。只在 broken 时落，口径见上面 `cause` 的计算；
                 // 未上报（子代理 / 老版本）时字段缺失而非落 []——「没采集」与「采了但本地没改」是两回事。
-                ...(localCauses !== undefined
-                  ? { cause: localCauses.length > 0 ? localCauses : ["none_local"] }
-                  : {}),
+                ...(cause !== undefined ? { cause } : {}),
               }
             : {}),
           prev_segments: d.prevSegmentCount,
@@ -3167,9 +3182,7 @@ export class TraceCollector {
             ? { firstChangedMessageIndex: d.firstChangedMessageIndex }
             : {}),
           charWastedRatio: d.charWastedRatio,
-          ...(localCauses !== undefined
-            ? { cause: localCauses.length > 0 ? localCauses : ["none_local"] }
-            : {}),
+          ...(cause !== undefined ? { cause } : {}),
         });
       }
     } catch {

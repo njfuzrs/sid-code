@@ -40,8 +40,14 @@ interface HistoryItemDisplayProps {
   /** v2：思考块折叠状态 */
   thinkCollapsed?: boolean;
   /**
-   * 折叠态是否提示「ctrl+o 展开」。AB 虚拟列表模式可即时重渲 → true；
-   * 主屏 Static 模式已打印项无法重渲 → false（避免误导）。默认 true。
+   * 折叠态是否提示「ctrl+o 展开」。默认 true。
+   *
+   * ⚠️ 原注释写的「主屏 Static 模式已打印项无法重渲 → false（避免误导）」**前提已不成立**：
+   * 端口的 `Static` 是 memo Box、项可原地 reconcile（`src/ui/CLAUDE.md` L5.3），主屏历史区的
+   * 思考块确实随 ctrl+o 展开（`MainScreenLayout` 的 `thinkCollapsed` 由 App 按 `expandLevel` 同步）。
+   *
+   * 当前主屏仍传 false，是保留的**现状**而非上述理由：历史区一屏可能几十条思考，逐条挂提示
+   * 违反 L4-C 的衰减要求。要让提示可见，应接 `shouldShowHint(key, N)` 衰减，而不是直接传 true。
    */
   thinkExpandable?: boolean;
 }

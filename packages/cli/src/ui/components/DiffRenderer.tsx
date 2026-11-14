@@ -297,9 +297,9 @@ interface DiffRendererProps {
    * 超出则**同步**裁剪、只保留前 maxLines 行，末尾追加统一的
    * `… N 行已折叠 · ctrl+o 展开` footer。传 undefined = 全展开档（不折叠）。
    *
-   * 为何在此同步裁剪而非上层包 MaxSizedBox：工具结果一完成即被 <Static> 一次性打印进
-   * 终端 scrollback，此后无法重渲。异步测高的 MaxSizedBox 首帧会先把整份内容落进 scrollback
-   * 再折叠 → 大文件污染回滚区且擦不掉。同步裁剪一次成型，Static 安全。
+   * 为何在此同步裁剪而非上层包 MaxSizedBox：工具结果一完成即进 <Static>（项可原地重渲，
+   * 见 src/ui/CLAUDE.md L5.3，但重渲代价是整帧重画）。异步测高的 MaxSizedBox 首帧会先把
+   * 整份内容以完整高度落一遍、下一帧再变矮 → 白付一次整帧重画。同步裁剪一次成型，避免这次重画。
    */
   maxLines?: number;
 }
