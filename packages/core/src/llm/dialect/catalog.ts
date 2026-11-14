@@ -85,6 +85,10 @@ const WIRE_DIALECTS: Record<ProtocolFamily, WireDialect> = {
 
 export { classifyProtocolFamily, isChatCompletionsFamily } from "./classify.ts";
 export { isThinkingAlwaysOn } from "./always-thinking.ts";
+// 「关思考」在关不掉思考的模型上该发什么档 —— 单一判定入口。与 isThinkingAlwaysOn 成对：
+// 前者答「能不能关」，这个答「关不掉时发什么」，消费方（openai.ts / anthropic.ts / effort.ts /
+// 展示层）应同时用这两个，而不是各自按模型名推。
+export { thinkingOffEffortFloor } from "./thinking-off-floor.ts";
 export type { ClassifyInput } from "./classify.ts";
 export {
   getToolSchemaDialect,

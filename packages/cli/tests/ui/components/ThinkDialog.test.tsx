@@ -20,6 +20,8 @@ function frameOf(
   control: "toggle" | "locked-on",
   thinkingDefaultOn: boolean,
   runtime: ThinkingSetting,
+  /** ① 兜底档：`locked-on` 且注册表有档位表时，`/think off` 实发的那一档 */
+  thinkingOffFloor?: "low" | "medium" | "high" | "xhigh" | "max",
 ): string {
   let output = "";
   const stdout = new PassThrough() as unknown as NodeJS.WriteStream & {
@@ -42,6 +44,7 @@ function frameOf(
     supportsThinkingToggle: true,
     thinkingControl: control,
     thinkingDefaultOn,
+    thinkingOffFloor,
   } as never;
   const inst = renderSync(
     <TerminalProvider>
@@ -77,5 +80,17 @@ describe("ThinkDialog", () => {
     expect(f).toContain("当前: always");
     expect(line(f, "off")).toContain("→ always（本模型无效）");
     expect(line(f, "on")).not.toContain("本模型无效");
+  });
+
+  test("恒思考 + 有兜底档：off 说「按最低档 low 下发」，不再说本模型无效", () => {
+    // 2026-11-13 契约变更：`off` 在关不掉思考的模型上**是生效的** —— 线上发的是
+    // 档位表最低档（`cap.thinkingOffFloor`）。旧文案一律说「本模型无效」，
+    // 把「以最低强度思考」说成「没生效」，与实际请求相反。
+    const f = frameOf("locked-on", true, "off", "low");
+    expect(f).toContain("思考关不掉；off 时按最低档 low 下发");
+    expect(line(f, "off")).toContain("→ 最低档 low");
+    expect(f).not.toContain("本模型无效");
+    // 其它选项仍走 Footer 同源词，不能被这次改动带偏
+    expect(line(f, "on")).toContain("→ always");
   });
 });

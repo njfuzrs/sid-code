@@ -2762,9 +2762,17 @@ export class App {
     const eff = require("@sid-code/core/llm/effort.ts");
     const cap = this.resolveEffortCap();
     const envOverride = eff.getEffortEnvOverride();
+    // 把思考态一并喂给展示层：恒思考模型（`locked-on`）上「关思考」实际下发的是该模型
+    // 最低档（`thinkingOffFloor`），面板必须显示这个实发档，否则用户看到 max 会以为
+    // `/think off` 没生效 —— 实际是生效了，只是落到了 low。
+    const thinkingApplied = eff.resolveThinking(
+      cap,
+      this.runtimeThinking,
+      eff.getThinkingEnvOverride(),
+    );
     return {
       runtime: this.runtimeEffort,
-      applied: eff.getDisplayedEffort(cap, this.runtimeEffort, envOverride),
+      applied: eff.getDisplayedEffort(cap, this.runtimeEffort, envOverride, thinkingApplied),
       isAuto: eff.isEffortAuto(this.runtimeEffort, envOverride),
       capability: cap,
     };
@@ -3389,16 +3397,27 @@ export class App {
     const eff = require("@sid-code/core/llm/effort.ts");
     const cap = this.resolveEffortCap();
     const effortEnv = eff.getEffortEnvOverride();
-    // 门控：effort 挂在 thinking 分支内的族（Claude / DeepSeek / GLM），思考实际关闭时档位不下发。
-    // Footer 据此划掉档位，而不是照常显示一个根本没发出去的档（E4）。
+    const thinkingEnv = eff.getThinkingEnvOverride();
+    const thinkingState = eff.resolveThinkingState(cap, this.runtimeThinking, thinkingEnv);
+    // ① 恒思考模型上「关思考」并非「档位不生效」：实发档会被兜底成该模型最低档
+    // （`cap.thinkingOffFloor`），照样下发。若不排除这一种，Footer 会把正要发出去的
+    // low 划掉，用户看到「思考 关 · 强度 ~~low~~」，与实际请求相反。
     const effortInert =
       cap.supportsEffort &&
       eff.isEffortGatedByThinking(cap) &&
-      !eff.resolveThinkingState(cap, this.runtimeThinking, eff.getThinkingEnvOverride()).effective;
+      !thinkingState.effective &&
+      cap.thinkingOffFloor === undefined;
     this.tuiStateUpdater({
       effortDisplay: cap.supportsEffort
         ? {
-            level: eff.getDisplayedEffort(cap, this.runtimeEffort, effortEnv),
+            // 传「意图是否要求关思考」而非 `thinkingState.effective`：后者对恒思考模型
+            // 恒为 true，会让兜底档永远显示不出来。
+            level: eff.getDisplayedEffort(
+              cap,
+              this.runtimeEffort,
+              effortEnv,
+              eff.resolveThinking(cap, this.runtimeThinking, thinkingEnv),
+            ),
             isAuto: eff.isEffortAuto(this.runtimeEffort, effortEnv),
             inert: effortInert,
           }
