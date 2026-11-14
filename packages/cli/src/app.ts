@@ -147,6 +147,9 @@ import { isBridgeSession, setBridgeSessionFlag } from "@sid-code/core/trace/sess
 // 人工确认通道（bridge / sdk / tui / headless）：记进本地轨迹的 PermissionDecision.confirm_via。
 // 只进本地轨迹，不扩外发遥测的 PermissionSource 闭集。
 import { setConfirmVia } from "@sid-code/core/permission/decision-telemetry.ts";
+// B9：把一次「始终允许」归一成 allow 规则（复合命令按子命令拆成前缀规则，最多 5 条）。
+// 纯函数在 core，cli 只负责决定「写会话还是落盘」。
+import { buildBashAllowRules } from "@sid-code/core/permission/bash-allow-rules.ts";
 // B21：确认弹窗的生命周期观测（排队 / 显示 / 按键到达 / 去重吞）。只进本地轨迹，
 // 用来区分「弹窗没显示 / 按键没到 / 按键被去重吞 / resolve 被去重吞」四种故障——
 // 这四种在 PermissionDecision 的终态字段上长得一模一样（都是五分钟后 timeout）。
@@ -407,6 +410,15 @@ const AT_INLINE_MAX_BYTES = 100 * 1024;
 
 /** vision 支持的图片扩展名（与 tool/read.ts 严格一致）。图片走 Read 工具而非文本内联。 */
 const AT_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+
+/**
+ * 从工具入参里取 shell 命令文本（非 Bash 类工具没有 command 字段，返回空串）。
+ * B9：规则生成只对带 command 的工具生效，其余工具走原来的会话记忆。
+ */
+function extractCommandText(input: unknown): string {
+  const command = (input as { command?: unknown } | undefined)?.command;
+  return typeof command === "string" ? command : "";
+}
 
 /**
  * G6：从 agent hook 子代理输出中宽松解析 { ok, reason } 裁决。
@@ -7304,6 +7316,14 @@ export class App {
     toolInput?: unknown,
     signal?: AbortSignal,
     toolUseId?: string,
+    /**
+     * 本次 ask 是否属于安全类确认（等价 checker 内部的 isSafetyConfirmation：
+     * dangerousCommand / safetyCheck / destructiveTool）。
+     *
+     * B9：这类确认的「始终允许」只能记整条精确规则、且只写会话——它是「这次人工确认过」，
+     * 不是「以后这一类都放行」。派生前缀规则会让 hook 特意要求确认的命令被一次点击永久绕过。
+     */
+    safetyConfirmation?: boolean,
   ): Promise<boolean> {
     // B25：SDK 双向流——ask 转给宿主（can_use_tool）。
     // 宿主超时 / 断开 / 回 error / 本轮被 interrupt，sendRequest 都会 reject：一律按拒绝闭合，
@@ -7371,14 +7391,23 @@ export class App {
         signal,
       );
       if (answer === "always") {
-        if (req && this.permissionChecker?.rememberDecision) {
+        // B9：会话级「始终允许」不再只记整条命令——复合命令按子命令生成前缀规则
+        // （`cd ws && bun test a.ts | tail` → `Bash(bun test *)`），下次换个参数仍命中。
+        // 危险确认（safetyConfirmation）只记整条精确规则，且只在会话内。
+        const rules = await this.applyBashAllowRules({
+          req,
+          toolInput,
+          dangerous: safetyConfirmation === true,
+          persist: false,
+        });
+        if (rules.length === 0 && req && this.permissionChecker?.rememberDecision) {
           this.permissionChecker.rememberDecision(req, true);
         }
         return true;
       }
       // P2-3：持久化档——把命令归一为规则写入 local settings，跨会话生效，并热更新当前 checker。
       if (answer === "always-persist") {
-        await this.persistBashAllowRule(req, toolInput);
+        await this.persistBashAllowRule(req, toolInput, safetyConfirmation === true);
         return true;
       }
       return answer === "yes";
@@ -7392,58 +7421,91 @@ export class App {
   }
 
   /**
-   * P2-3：把 Bash 命令持久化为 **local settings** 的 allow 规则（跨会话生效）。
+   * P2-3 / B9：把一次「始终允许」持久化为 **local settings** 的 allow 规则（跨会话生效）。
    *
    * 写的是 git root 下的 `.sid-code/settings.local.json`（个人私有、不入 git），
    * **不是**团队共享的 `settings.json`——一个人点「持久化」不该让全团队免确认。
-   * 归一策略保守（对齐 CC「a 精确记住命令」）：默认用**精确匹配整条命令**生成
-   * `Bash(<command>)` 规则，不自动追加 `*`，避免一次 always 放行过宽。
-   * 写盘后热更新当前 checker（addSessionRule 立即生效 + persistRule 落盘下次会话生效）。
+   *
+   * 归一策略见 `buildBashAllowRules`（core 纯函数）：复合命令按子命令拆成前缀规则、
+   * 一次最多 5 条，表达不了时退回整条精确规则。
    */
   private async persistBashAllowRule(
     req: import("@sid-code/core/permission/types.ts").PermissionRequest | undefined,
     toolInput: unknown,
+    safetyConfirmation = false,
   ): Promise<void> {
-    const log = getLogger();
-    const command =
-      (toolInput as { command?: string })?.command ??
-      (req?.input as { command?: string } | undefined)?.command ??
-      "";
-    if (!command.trim()) {
-      // 无命令可归一：退化为会话内记忆，至少本会话不再重复确认
+    // 危险确认：只记会话内的整条精确规则，不落盘——「这次我确认了」不是「以后这类都放行」。
+    if (safetyConfirmation) {
       if (req && this.permissionChecker?.rememberDecision) {
         this.permissionChecker.rememberDecision(req, true);
       }
       return;
     }
+    const rules = await this.applyBashAllowRules({
+      req,
+      toolInput,
+      dangerous: false,
+      persist: true,
+    });
+    if (rules.length === 0 && req && this.permissionChecker?.rememberDecision) {
+      this.permissionChecker.rememberDecision(req, true);
+    }
+  }
 
-    // 保守归一：精确匹配整条命令。matchShellRulePattern 对无通配符走精确全串匹配，
-    // 故 Bash(<command>) 能且仅能命中原命令本身。
-    const rule = `Bash(${command.trim()})`;
+  /**
+   * B9：把一次「始终允许」归一成 allow 规则并立即生效（可选落盘）。
+   *
+   * 归一逻辑全在 `buildBashAllowRules`（core 纯函数），这里只决定「写到哪一层」：
+   * - `persist=false` → 只加会话规则（退出后失效）
+   * - `persist=true`  → 会话规则 + local settings（跨会话生效）
+   *
+   * 返回实际写入的规则；空数组 = 没写（调用方退回整条命令的会话记忆）。
+   * 为什么不再只用 `rememberDecision`：它的键是 `bash:<整条命令>`，复合命令换个参数就失效。
+   */
+  private async applyBashAllowRules(opts: {
+    req: import("@sid-code/core/permission/types.ts").PermissionRequest | undefined;
+    toolInput: unknown;
+    dangerous: boolean;
+    persist: boolean;
+  }): Promise<string[]> {
+    const log = getLogger();
+    const command = extractCommandText(opts.toolInput) || extractCommandText(opts.req?.input);
+    if (!command.trim()) return [];
+
+    const plan = buildBashAllowRules(command, { dangerous: opts.dangerous });
+    if (plan.rules.length === 0) return [];
+
+    const checker = this.permissionChecker as any;
+    const loader = typeof checker?.getRuleLoader === "function" ? checker.getRuleLoader() : null;
+    if (!loader || typeof checker?.refreshRulesFromLoader !== "function") return [];
 
     try {
-      // ① 热更新当前会话的 checker：立即生效，本轮之后同命令免确认
-      const checker = this.permissionChecker as any;
-      const loader = typeof checker?.getRuleLoader === "function" ? checker.getRuleLoader() : null;
-      if (loader && typeof checker?.refreshRulesFromLoader === "function") {
-        loader.addSessionRule("allow", rule);
-        checker.refreshRulesFromLoader();
-      } else if (req && this.permissionChecker?.rememberDecision) {
-        this.permissionChecker.rememberDecision(req, true);
-      }
+      // ① 热更新当前会话的 checker：立即生效，本轮之后匹配的命令免确认
+      for (const rule of plan.rules) loader.addSessionRule("allow", rule);
+      checker.refreshRulesFromLoader();
 
-      // ② 持久化到 local settings（git root 的 settings.local.json）：下次会话仍生效。
-      // P2：对齐 CC「Yes, and don't ask again」写 localSettings —— 此前写共享的
-      // settings.json，一个人的放行决定会随提交分发给全团队。
-      const { persistRule } = await import("@sid-code/core/permission/rule-persistence.ts");
-      await persistRule("local", "allow", rule, process.cwd());
-      this.statusNotifier?.("perm_persist", `已持久化允许规则: ${rule}`, 3000);
-      log.info("PERMISSION", `Bash always(持久) → 写入 local settings: ${rule}`);
-    } catch (err) {
-      log.warn("PERMISSION", `持久化允许规则失败(降级为会话内): ${err}`);
-      if (req && this.permissionChecker?.rememberDecision) {
-        this.permissionChecker.rememberDecision(req, true);
+      const summary = plan.rules.join("、");
+      const fallbackNote = plan.fallback ? `（${plan.fallback}：退回整条精确规则）` : "";
+      if (opts.persist) {
+        // ② 持久化到 local settings（git root 的 settings.local.json）：下次会话仍生效。
+        // P2：对齐 CC「Yes, and don't ask again」写 localSettings —— 此前写共享的
+        // settings.json，一个人的放行决定会随提交分发给全团队。
+        const { persistRule } = await import("@sid-code/core/permission/rule-persistence.ts");
+        for (const rule of plan.rules) {
+          await persistRule("local", "allow", rule, process.cwd());
+        }
+        this.statusNotifier?.("perm_persist", `已持久化允许规则: ${summary}`, 3000);
+        log.info(
+          "PERMISSION",
+          `Bash always(持久) → 写入 local settings: ${summary}${fallbackNote}`,
+        );
+      } else {
+        log.info("PERMISSION", `Bash always(会话) → ${summary}${fallbackNote}`);
       }
+      return plan.rules;
+    } catch (err) {
+      log.warn("PERMISSION", `写入允许规则失败(降级为会话记忆): ${err}`);
+      return [];
     }
   }
 
@@ -7497,8 +7559,8 @@ export class App {
       // 保证 PreToolUse 只 fire 一次且 permissionDecision 能注入权限层。
       preToolUseCache: new Map(),
       getAbortSignal: () => this.abortController?.signal,
-      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal, toolUseId) =>
-        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal, toolUseId),
+      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal, toolUseId, safety) =>
+        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal, toolUseId, safety),
       handlePlanModeTransitions: (toolBlocks, resultMap) =>
         this.handlePlanModeTransitions(toolBlocks, resultMap),
       getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
