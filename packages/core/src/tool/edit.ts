@@ -644,7 +644,7 @@ export class EditTool implements Tool {
       // 直接放行），私有记忆与 agent 记忆经 edit 写入时此前零闸门——而后台提取代理
       // 正走这条路。两道守卫在下面**两个写盘分支各调一次**：edit 有
       // 「old_string='' 创建/填充」与「常规替换」两条出口，只挡一条等于没挡。
-      const { checkPrivateMemSecrets, afterMemoryFileWrite } =
+      const { checkPrivateMemSecrets, afterMemoryFileWrite, checkMemoryConclusionReplace } =
         await import("../memory/write-guard.ts");
       // CG-2（台账 H3）：worktree 会话里写到主仓路径时，在结果末尾给出可直接执行的替换路径。
       // 是提示不是拦截 —— 用户确实可能想在 worktree 里顺手改主仓的一份共享配置。
@@ -790,6 +790,16 @@ export class EditTool implements Tool {
       const privErr = checkPrivateMemSecrets(filePath, finalContent);
       if (privErr) {
         return { output: `错误: ${privErr}`, isError: true };
+      }
+
+      // P1-1（MD3）：索引已满时，覆盖已有记忆文件的「结论级替换」必须留痕。
+      // 与上面那道 secret 闸门同一位置、同一理由 —— 判据只落在 save_memory 上时，
+      // 模型被拒后换 edit 就绕过去了（见 write-guard.ts 的说明）。
+      // 比 `finalContent` 而非 `newString`：判据问的是「落盘后这条记忆讲的是不是另一件事」，
+      // 而 `newString` 只是替换片段 —— 用它比会把所有编辑都判成「旧结论消失了」。
+      const replaceErr = checkMemoryConclusionReplace(filePath, finalContent);
+      if (replaceErr) {
+        return { output: `错误: ${replaceErr}`, isError: true };
       }
 
       // D1：写盘**之前**在 IDE 里协商最终内容。这是一次阻塞的内容协商而非展示——

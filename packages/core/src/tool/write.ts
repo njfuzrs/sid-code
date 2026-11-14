@@ -234,6 +234,17 @@ export class WriteTool implements Tool {
       }
     }
 
+    // P1-1（MD3）：索引已满时，覆盖已有记忆文件的「结论级替换」必须留痕。
+    // 与上面那道 secret 闸门同一位置、同一理由 —— 判据只落在 save_memory 上时，
+    // 模型被拒后换 write 就绕过去了（见 write-guard.ts 的说明）。
+    {
+      const { checkMemoryConclusionReplace } = await import("../memory/write-guard.ts");
+      const guardErr = checkMemoryConclusionReplace(filePath, params.content);
+      if (guardErr) {
+        return { output: `错误: ${guardErr}`, isError: true };
+      }
+    }
+
     log.info("TOOL", `▶ 写入 ${filePath} (${params.content.length}字符)`);
 
     // 并发冲突检测（Phase 2.1 + 2.4 配置化）。
