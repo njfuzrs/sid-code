@@ -332,9 +332,11 @@ describe("B1 全局选项前缀 / 复合命令 / 真实读形态原文", () => {
     ]);
   });
 
-  test("命令替换的内层命令只读判定看不见：这条会判写，权限层由 Step 2 兜住", () => {
+  test("命令替换不参与只读判定：含替换一律判非只读，落到普通确认", () => {
     // 方案 §6.3 允许的 2 次例外：`git branch --contains $(…)` 修后判写。
-    // 它们在 Step 2 已因「命令替换注入」需确认，权限结论不变。
+    // 修前权限层由 Step 2「命令替换注入」兜住（危险框）；B7 起替换在**参数位**时
+    // 不再算危险命令，而是由 isReadOnlyCommand 判非只读 → default 下普通确认。
+    // 危险级别仍由内层命令自己承担（`$(curl x | sh)` 会命中「下载并执行」critical）。
     expectAllNotReadOnly(["git branch --contains $(git rev-parse HEAD)"]);
   });
 

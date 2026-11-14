@@ -30,6 +30,14 @@ export interface HeredocBlock {
   body: string;
   /** 剥离后文本里代表这个块的 token（`__SID_HD_<id>__`） */
   placeholder: string;
+  /**
+   * 定界符是否带引号（`<<'EOF'` / `<<"EOF"` / `<<\EOF`）。
+   *
+   * 决定正文里**还有没有展开**：带引号是纯字面量（正文里的 `$(…)` / `=(` 都是数据，
+   * `python3 - <<'PY'` 的 `a=(1 2)` 只是 Python 元组）；不带引号则 shell 会先做
+   * 变量展开与命令替换，正文里的 `$(…)` 真的会执行。
+   */
+  quoted: boolean;
 }
 
 /** heredoc 剥离结果 */
@@ -45,6 +53,8 @@ interface HeredocMarker {
   /** delimiter 结束偏移（含 `<<-` 与引号） */
   end: number;
   delimiter: string;
+  /** 定界符带引号 / 反斜杠转义：正文是字面量，不做任何展开 */
+  quoted: boolean;
   stripTabs: boolean;
   /** 正文起始偏移（记号所在行的换行之后） */
   bodyStart: number;
@@ -60,20 +70,23 @@ interface HeredocMarker {
 function readHeredocDelimiter(
   cmd: string,
   from: number,
-): { delimiter: string; end: number } | null {
+): { delimiter: string; end: number; quoted: boolean } | null {
   let i = from;
   let delimiter = "";
+  let quoted = false;
   while (i < cmd.length) {
     const ch = cmd[i];
     if (ch === "'" || ch === '"') {
       const close = cmd.indexOf(ch, i + 1);
       if (close < 0) return null;
       delimiter += cmd.slice(i + 1, close);
+      quoted = true;
       i = close + 1;
       continue;
     }
     if (ch === "\\" && i + 1 < cmd.length) {
       delimiter += cmd[i + 1];
+      quoted = true;
       i += 2;
       continue;
     }
@@ -82,7 +95,7 @@ function readHeredocDelimiter(
     delimiter += ch;
     i++;
   }
-  return delimiter ? { delimiter, end: i } : null;
+  return delimiter ? { delimiter, end: i, quoted } : null;
 }
 
 /** 从 from 开始逐行读，直到 delimiter 行；返回正文行与正文结束偏移 */
@@ -168,6 +181,7 @@ function scanHeredocMarkers(cmd: string): HeredocMarker[] {
             start: i,
             end: d.end,
             delimiter: d.delimiter,
+            quoted: d.quoted,
             stripTabs,
             bodyStart: 0,
             bodyEnd: 0,
@@ -231,7 +245,13 @@ export function extractHeredocBlocks(cmd: string): HeredocExtraction {
   for (const m of markers) {
     const id = blocks.length;
     const placeholder = `__SID_HD_${id}__`;
-    blocks.push({ id, delimiter: m.delimiter, body: m.lines.join("\n"), placeholder });
+    blocks.push({
+      id,
+      delimiter: m.delimiter,
+      body: m.lines.join("\n"),
+      placeholder,
+      quoted: m.quoted,
+    });
     edits.push({ start: m.start, end: m.end, text: `<<${placeholder}` });
     // 正文连同它前面的换行一起删（否则 stripped 末尾留空行）。但**后面还有其它命令时**
     // 必须补回一个换行，否则 `cat <<EOF`⏎…⏎`EOF`⏎`ls` 会粘成 `…<<__SID_HD_0__ls`，
