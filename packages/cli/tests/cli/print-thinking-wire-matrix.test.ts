@@ -207,12 +207,13 @@ const MATRIX: {
     outputConfig: false,
     note: false,
   },
-  // OpenAI：GLM-5.3 恒思考 → off 不发 disabled（会 400），stderr 提示
+  // OpenAI：GLM-5.3 恒思考 → off 改写成 enabled + 最低档（2026-11-13 契约变更：
+  // 旧版是「不发 thinking」= 服务端默认 max，用户想省反而拉满）。stderr 仍提示「关不掉」。
   {
     model: "glm-5.3",
     provider: "openai",
     thinking: "off",
-    wire: null,
+    wire: "enabled",
     outputConfig: false,
     note: true,
   },

@@ -108,12 +108,17 @@ describe("P0 未知协议族 effort 必须真的下发（自愈闭环入口）",
     },
   );
 
-  test("未知族 + 显式关闭思考 → 不下发（与其它族语义一致）", async () => {
+  test("未知族 + 显式关闭思考 → 降到该模型最低档（2026-11-13 契约变更：不再等于「不发」）", async () => {
     const body = await captureWireBody("kimi-k3", {
       reasoningEffort: "high",
       thinking: { enabled: false },
     });
-    expect(body.reasoning_effort).toBeUndefined();
+    // 旧契约是「关思考 → 不下发 effort」，看起来安全，实际把档位决定权交给了服务端默认：
+    // Kimi K3 默认 max，用户敲 `/think off` 想省反而拉满。现在统一翻译成「该模型档位表里
+    // 最低的一档」（规则见 `dialect/thinking-off-floor.ts`），与 side-call 走同一条路。
+    expect(body.reasoning_effort).toBe("low");
+    // 但未知族仍不得下发 `thinking` 字段：结构各家不同，猜错无法自愈。
+    expect(body.thinking).toBeUndefined();
   });
 
   test("未知族不得被下发 thinking 字段（结构各家不同，猜错无法自愈）", async () => {

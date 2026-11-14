@@ -118,16 +118,20 @@ describe("reapplyThinkingForFallback", () => {
     expect(wire.dropEffort).toBe(true);
   });
 
-  test("off → GLM-5.3（OpenAI 族恒思考）：只留 enabled:false 交给 openai.ts 降级为不下发，不残留 effort", () => {
+  test("off → GLM-5.3（OpenAI 族恒思考）：改写成 enabled + 最低档（2026-11-13 契约变更）", () => {
     const p = base({
       thinking: { enabled: false, budgetTokens: 0 },
       outputConfig: { effort: "max", thinkingType: "adaptive" },
       thinkingIntent: { thinking: false, effort: "max" },
     });
     reapply(p, "glm-5.3", "openai");
-    expect(p.thinking?.enabled).toBe(false);
+    // 旧契约「留 enabled:false 交给 openai.ts 降级为不下发」已被替换：不下发 =
+    // 服务端默认档（GLM-5.3 是 max），用户敲 off 想省反而拉满。现在 applier 直接写
+    // enabled + 档位表最低档（规则见 `dialect/thinking-off-floor.ts`），
+    // 且 `off` 覆盖用户显式 max —— 想深度思考要 `/think on`。
+    expect(p.thinking?.enabled).toBe(true);
     expect(p.outputConfig).toBeUndefined();
-    expect(p.reasoningEffort).toBeUndefined();
+    expect(p.reasoningEffort).toBe("low");
   });
 
   test("off / on → 无开关族（gpt-5.6）：不下 thinking 字段，推理深度只走 reasoningEffort", () => {

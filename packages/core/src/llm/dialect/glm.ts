@@ -46,8 +46,9 @@ function toGlmWireEffort(effort: DialectEffortLevel, values?: readonly string[])
 export const glmOpenAIDialect: Dialect = {
   kind: "glm-openai",
   flags: {
-    // effort 仅 GLM-5.2 生效，其余 GLM 无 reasoning_effort 粒度——但下发对它们无害
-    // （非 5.2 会忽略该字段），故统一声明 supportsEffort=true。见 glm.md。
+    // effort 自 GLM-5.2 起生效（5.3 系登记了 low/high/max 三档，见注册表 reasoningEffortValues，
+    // 也是「关思考」的落点）；更早的 GLM 无 reasoning_effort 粒度，下发对被忽略的模型无害，
+    // 故统一声明 supportsEffort=true。见 glm.md。
     supportsEffort: true,
     supportsMaxEffort: true,
     supportsThinkingToggle: true,

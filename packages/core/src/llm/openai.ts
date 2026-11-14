@@ -56,6 +56,7 @@ import {
   isChatCompletionsFamily,
   isThinkingAlwaysOn,
   sanitizeToolSchema,
+  thinkingOffEffortFloor,
 } from "./dialect/catalog.ts";
 import {
   learnFromError,
@@ -590,12 +591,16 @@ export class OpenAIProvider implements Provider {
     // 有声明时发的是用户自己声明认的结构，不是猜的。
     const compatDeclaresTypeEnum =
       compat?.supportsThinkingToggle === true || compat?.thinkingAlwaysOn === true;
+    // ① 「关思考」在**关不掉**的模型上该发什么档 —— 单一判定入口（`dialect/thinking-off-floor.ts`）。
+    // 在开关段与强度段共用同一个结果：两处各算一次，将来改一处漏一处，正是本次要修的病根。
+    // `undefined` 的四种情形（能关 / 数据不知道 / 没档位表 / 渠道不吃 effort）都维持原下发。
+    const thinkingOffFloor = thinkingDisabled ? thinkingOffEffortFloor(model, compat) : undefined;
     if (
       (wire.thinkingToggle === "type-enum" || compatDeclaresTypeEnum) &&
       params.thinking &&
       !thinkingToggleBlocked
     ) {
-      // ── 恒思考模型：请求关思考时降级为「不下发」，而不是发一个必被拒的 disabled ──
+      // ── 恒思考模型：请求关思考时下发「开思考 + 最低档」，而不是什么都不发 ──
       //
       // 2026-08-17 实证（会话 `20260817-135824-fcf863e1`）：GLM-5.3 恒思考，
       // 收到 `thinking:{type:"disabled"}` 直接 400「该模型始终思考，不支持关闭思考」，
@@ -603,20 +608,28 @@ export class OpenAIProvider implements Provider {
       // 而全部 side-call（压缩/目标评估/工具分类/记忆召回，14 个调用点）都无条件套用
       // `SIDE_CALL_NO_THINK = { enabled: false }` → **每一次 side-call 都必然失败**。
       //
-      // 降级语义照搬同文件 `applyToolChoice` 对 GLM `auto-only` 的处置：
-      // **不下发 = 服务端默认**（这里即"思考开启"），而不是冒一个确定被拒的值。
-      // side-call 关思考的原始意图（省 token + 不撞 side-call 硬超时）在恒思考模型上
-      // 本就无法达成，正确处置是**接受它会思考**——而不是让整条调用链失败。
+      // 上一版只做到「不下发」（= 服务端默认思考开启），看似安全，实际是把**档位决定权**
+      // 交给了服务端默认：GLM-5.3 的默认档是 `max`，于是 `/think off` 反而拉满 ——
+      // 用户想省，结果更贵。官方迁移建议写的是 `off → low`（glm-api.md），
+      // 也就是**开思考 + 该模型的最低档**。最低档怎么取由注册表档位表决定，
+      // 本文件不出现任何模型名（见 `dialect/thinking-off-floor.ts`）。
       //
-      // ⚠ 只降级 `enabled === false` 这一支：`enabled === true` 照常下发
+      // ⚠ 仍只处理 `enabled === false` 这一支：`enabled === true` 照常下发
       // （主循环路径实测 `thinking:{type:"enabled"}` 返回 200）。
       const alwaysThinking = compat?.thinkingAlwaysOn ?? isThinkingAlwaysOn(model);
       if (params.thinking.enabled === false && alwaysThinking) {
-        getLogger().warn(
-          "LLM:OPENAI",
-          `模型「${params.model ?? this._model}」恒思考（不支持关闭思考），` +
-            `已将 thinking:{type:"disabled"} 降级为不下发（等价服务端默认=思考开启）`,
-        );
+        if (thinkingOffFloor) {
+          requestBody.thinking = { type: "enabled" };
+        } else {
+          // 关不掉但**没有档位表**（或渠道声明不吃 effort）：只剩「不下发」这一条路。
+          // 不知道最低档是哪个就别编 —— 发一个模型不认的 effort 是确定 400，
+          // 而不下发只是恢复「服务端默认档」的旧行为（本次修复不覆盖这种数据缺口）。
+          getLogger().warn(
+            "LLM:OPENAI",
+            `模型「${params.model ?? this._model}」恒思考（不支持关闭思考）且未登记档位表，` +
+              `已将 thinking:{type:"disabled"} 降级为不下发（等价服务端默认=思考开启）`,
+          );
+        }
       } else {
         requestBody.thinking = { type: params.thinking.enabled ? "enabled" : "disabled" };
       }
@@ -641,10 +654,20 @@ export class OpenAIProvider implements Provider {
     // 在这里把 xhigh 一起拦掉，那三个模型选 xhigh 就会一个 effort 都不发。
     // 不认 xhigh 的模型（Grok 4.5、o-series）由各自 applier 钳成 high，走不到这里的 xhigh；
     // 绕过 cap 解析的路径再由 filterParamsForModel 按档位表兜底取整。
-    const maxRejected = !wire.allowsMaxEffort && effectiveEffort === "max";
-    const thinkingGated = wire.effortGatedByThinking && thinkingDisabled;
-    if (wire.sendsReasoningEffort && effectiveEffort && !maxRejected && !thinkingGated) {
-      requestBody.reasoning_effort = effectiveEffort;
+    // ① 兜底档位：关思考 + 关不掉 + 有档位表时，实发强度取该表最低档（见 dialect/thinking-off-floor.ts）。
+    //
+    // 它**覆盖用户显式档位**（`/think off` + `/effort max` → 实发最低档）：`off` 是「要不要思考」
+    // 的上游决定，与 max 冲突时以 off 为准；想深度思考请 `/think on`。这不是笔误，别改回去。
+    // 反过来（有档位表时仍发用户的 max）才是本次要修的病：用户敲 off 想省，结果拉满。
+    const dispatchEffort = thinkingOffFloor ?? effectiveEffort;
+    const maxRejected = !wire.allowsMaxEffort && dispatchEffort === "max";
+    // gating 只在「真的关掉了」时生效。兜底档位存在的意义就是让请求带上最低强度，
+    // 若被「关思考就不发 effort」这道守卫（GLM / DeepSeek 的 effortGatedByThinking）拦掉，
+    // 本修复在两只主族上等于没做 —— 它们恰恰是这次出问题的族。
+    const thinkingGated =
+      wire.effortGatedByThinking && thinkingDisabled && thinkingOffFloor === undefined;
+    if (wire.sendsReasoningEffort && dispatchEffort && !maxRejected && !thinkingGated) {
+      requestBody.reasoning_effort = dispatchEffort;
     }
 
     // user_id：通用隔离字段，按需下发（DeepSeek 专有语义，其它端点忽略不报错）。

@@ -110,7 +110,7 @@ describe("R5：Responses API 两条路径带思考埋点", () => {
 });
 
 describe("R1：OpenAI 族恒思考的 off 落 control=locked-on（不再被 digest 当成泄漏）", () => {
-  test("GLM-5.3 Chat Completions 流式：线上 omitted + control locked-on", async () => {
+  test("GLM-5.3 Chat Completions 流式：线上 enabled + 最低档，control locked-on", async () => {
     process.env.SID_CODE_OPENAI_PROTOCOL = "chat";
     let body: any;
     globalThis.fetch = (async (_u: unknown, init: any) => {
@@ -124,8 +124,12 @@ describe("R1：OpenAI 族恒思考的 off 落 control=locked-on（不再被 dige
     await drain(
       p.sendMessageStream(base({ model: "glm-5.3", thinking: { ...SIDE_CALL_NO_THINK } })),
     );
-    expect(body.thinking).toBeUndefined();
-    expect(billed[0]!.thinkingWire).toBe("omitted");
+    // 2026-11-13 契约变更：旧版「线上 omitted」= 服务端默认档（GLM-5.3 是 max），
+    // 用户敲 off 想省反而拉满。现在统一落到档位表最低档（dialect/thinking-off-floor.ts），
+    // 观测字段如实记录线上真正发的值。
+    expect(body.thinking).toEqual({ type: "enabled" });
+    expect(body.reasoning_effort).toBe("low");
+    expect(billed[0]!.thinkingWire).toBe("enabled");
     expect(billed[0]!.thinkingControl).toBe("locked-on");
     expect(billed[0]!.thinkingInResponse).toBe(true);
   });
