@@ -94,6 +94,18 @@ export interface ToolResultDisplayProps {
   terminalWidth: number;
   renderOutputAsMarkdown?: boolean;
   maxLines?: number;
+  /**
+   * 正文完整展示、**不做任何行数截断**（`displayMode: "full"` 档的表达）。
+   *
+   * 为什么需要这个开关而不是「把 maxLines 调大」：本组件是**所有**工具结果共用的渲染出口，
+   * `DEFAULT_MAX_LINES = 3` 是无差别兜底。短回执工具（`enter_worktree` / `exit_worktree`）
+   * 的正文只有几行、但每行都是不可省的语义（路径提示），折掉任意几行就是信息损失——
+   * 调大全局数字会让所有工具结果一起变长，且永远有「再多一行又超了」的边界。
+   *
+   * 与 `maxLines` 的分工：`unlimited` 优先。true 时连 diff 的折叠也一并取消（full 档
+   * 语义是「完整可见」，不该因内容类型而打折）。
+   */
+  unlimited?: boolean;
   overflowDirection?: "top" | "bottom";
   /** 是否为 diff 内容 */
   isDiff?: boolean;
@@ -110,6 +122,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   terminalWidth,
   renderOutputAsMarkdown = false,
   maxLines = DEFAULT_MAX_LINES,
+  unlimited = false,
   overflowDirection = "top",
   isDiff = false,
   filename,
@@ -120,10 +133,16 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   // TO4：阶梯式展开。expandLevel → maxLines 映射收口到 useExpandedMaxLines hook
   // （与命令输出、错误正文共享同一套 ctrl+o 阶梯展开语义）。
   // base 取调用方传入的 maxLines（折叠档基线），全展开档返回 undefined（不截断）。
-  const effectiveMaxLines = useExpandedMaxLines(maxLines);
+  const collapsedMaxLines = useExpandedMaxLines(maxLines);
   // diff 专用折叠档：基线更宽松（DIFF_COLLAPSE_MAX_LINES），阶梯与普通文本共用同一 expandLevel。
   // 全展开档同样返回 undefined（不折叠）。
-  const effectiveDiffMaxLines = useExpandedMaxLines(Math.max(maxLines, DIFF_COLLAPSE_MAX_LINES));
+  const collapsedDiffMaxLines = useExpandedMaxLines(Math.max(maxLines, DIFF_COLLAPSE_MAX_LINES));
+
+  // full 档（`unlimited`）：正文完整展示，连上面两个兜底基线也不施加。
+  // 注意 hook 必须无条件调用——所以是「先算再覆盖」，不能写成 `unlimited ? undefined : useExpandedMaxLines(..)`。
+  // diff 一并覆盖：full 的语义是「完整可见」，不该因内容类型（文本 / diff / ANSI）而打折。
+  const effectiveMaxLines = unlimited ? undefined : collapsedMaxLines;
+  const effectiveDiffMaxLines = unlimited ? undefined : collapsedDiffMaxLines;
 
   // 宽度感知换行 / diff 折叠框宽度：终端宽度减去边距（树枝缩进 + 容器 padding），最小 20 列。
   // 提前到分支之前计算，diff 折叠框与文本截断框共用。

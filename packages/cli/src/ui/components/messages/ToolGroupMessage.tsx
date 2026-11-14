@@ -54,9 +54,10 @@ export interface ToolCallDisplay {
   /**
    * 呈现档位（源自工具自报的 `resultDisplayMode`，见 `tool/types.ts`）。
    * `"hidden"` 的完成态工具整条不渲染；`"summary"` 只渲染 header 行；
-   * `"compact"` 保留正文但默认折叠成零行，`ctrl+o` 可展开（见 `ToolMessage`）。
+   * `"compact"` 保留正文但默认折叠成零行，`ctrl+o` 可展开（见 `ToolMessage`）；
+   * `"full"` 保留正文且**不做任何行数截断**（短回执工具，见 `ToolMessage`）。
    */
-  displayMode?: "hidden" | "summary" | "compact";
+  displayMode?: "hidden" | "summary" | "compact" | "full";
 }
 
 interface ToolGroupMessageProps {

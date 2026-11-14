@@ -45,6 +45,15 @@ export class ExitWorktreeTool implements Tool {
   // packages/core/tests/tool/worktree-tools-not-deferred.test.ts。
   readonly searchHint = "git worktree exit cleanup 隔离 工作树 退出 清理";
 
+  /**
+   * 正文完整展示、不做行数截断（`"full"` 档）。
+   *
+   * 与 `enter_worktree` 同因：成功回执含 `exitWorktreePathsNotice` 的路径语义说明
+   * （「此后写文件请用主仓下的路径」「worktree 已删除」），折掉就是让模型和用户都以为
+   * 旧路径还有效。判据见 `tool/types.ts` 的 `resultDisplayMode`。
+   */
+  readonly resultDisplayMode = "full" as const;
+
   name(): string {
     return "exit_worktree";
   }

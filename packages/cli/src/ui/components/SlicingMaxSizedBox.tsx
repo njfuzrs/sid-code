@@ -53,6 +53,17 @@ function countNewlines(text: string): number {
  * 宽度感知换行：把每行按 maxColumnWidth 折叠为多个视觉行。
  * 对标 claude-code utils/terminal.ts 的 wrapText。
  * 仅在提供 maxColumnWidth 时调用。
+ *
+ * ⚠️ 切段必须按**视觉列宽**累加，不能拿 `maxColumnWidth` 直接当码点索引去 `slice`。
+ * 曾经的写法是 `trimmed.slice(pos, pos + maxColumnWidth)` 且 `pos += maxColumnWidth`，
+ * 而循环条件用的是 `stringWidth(trimmed)` —— 两个量纲不一致：含 CJK 的行视觉宽度约是
+ * 码点数的 2 倍，于是「88 列」切出来的一段实际宽 126 列（实测），仍大幅超宽。
+ * 超宽行再交给渲染器处理时，**中间那段文本会被吃掉**：`enter_worktree` 的
+ * 「此后写文件请用 <worktree 路径>」整句消失，屏幕上只剩 `…worktree；此` 然后直接接
+ * `/repo/...` —— 与「折叠掉提示」是同一后果（提示看不到），只是发生在更下一层。
+ *
+ * 用 `Array.from` 而非 `split("")`：让 emoji / 代理对不被拆成两半（`⚠️` 是 2 个码点），
+ * 单字符宽度超过上限时也要照样输出，否则窄终端下会死循环。
  */
 function wrapLinesToWidth(text: string, maxColumnWidth: number): string[] {
   const rawLines = text.split("\n");
@@ -60,18 +71,25 @@ function wrapLinesToWidth(text: string, maxColumnWidth: number): string[] {
 
   for (const raw of rawLines) {
     const trimmed = raw.trimEnd();
-    const w = stringWidth(trimmed);
-    if (w <= maxColumnWidth) {
+    if (stringWidth(trimmed) <= maxColumnWidth) {
       wrappedLines.push(trimmed);
-    } else {
-      // 长行按 maxColumnWidth 切段（简单码点切割，工具输出以 ASCII 为主）
-      let pos = 0;
-      while (pos < w) {
-        const chunk = trimmed.slice(pos, pos + maxColumnWidth);
-        wrappedLines.push(chunk.trimEnd());
-        pos += maxColumnWidth;
+      continue;
+    }
+    let current = "";
+    let currentWidth = 0;
+    for (const ch of Array.from(trimmed)) {
+      const chWidth = stringWidth(ch);
+      // `current !== ""` 保证「单字符本身比上限还宽」时也能输出，不会无限循环。
+      if (currentWidth + chWidth > maxColumnWidth && current !== "") {
+        wrappedLines.push(current);
+        current = ch;
+        currentWidth = chWidth;
+      } else {
+        current += ch;
+        currentWidth += chWidth;
       }
     }
+    if (current !== "") wrappedLines.push(current);
   }
 
   return wrappedLines;
