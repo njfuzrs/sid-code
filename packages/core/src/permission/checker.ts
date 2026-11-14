@@ -64,6 +64,11 @@ import { getShadowedRulesForTool } from "./shadowed-rules.ts";
 import type { SandboxManager } from "./sandbox.ts";
 import { BashClassifier } from "./bash-classifier.ts";
 import { GIT_DANGER_PATTERNS, normalizeGitGlobalOptions } from "./git-danger-patterns.ts";
+import {
+  judgeReadOnlyGitInOwnRepo,
+  type ReadOnlyGitBoundaryResult,
+} from "./readonly-git-boundary.ts";
+import { resolveOwnCommonDir } from "./git-repo-trust.ts";
 import * as path from "node:path";
 import { getAgentRoot, getAgentCwd, getIsolatedWorktree } from "../bootstrap/cwd-context.ts";
 import * as os from "node:os";
@@ -387,6 +392,11 @@ export class PermissionChecker implements Checker {
   private toolClassifier: import("./tool-classifier.ts").ToolClassifier | null = null;
   /** 工作区路径（供 auto 模式分类器使用） */
   private workspacePath: string;
+  /**
+   * 本仓的公共 git 目录（B4）：只读 git「执行边界」判定的基准。
+   * 会话内只算一次——工作区的仓库归属不会在会话中途变，判定本身只做 stat 与读一个小文件。
+   */
+  private ownCommonGitDir: string | null;
   /** Bridge 远程权限代理（可选，Bridge 模式下注入；签名对齐 PermissionProxy.requestPermission） */
   private bridgePermissionDelegate:
     | ((req: {
@@ -684,6 +694,9 @@ export class PermissionChecker implements Checker {
     this.config = config;
     this.rules = rules || null;
     this.workspacePath = workspacePath || process.cwd();
+    // B4：本仓的公共 git 目录只算一次。工作区不是仓库时是 null，此时所有只读 git
+    // 都会落到确认（安全方向上的退化，不会误放行）。
+    this.ownCommonGitDir = resolveOwnCommonDir(this.workspacePath);
     this.auditLogger = new AuditLogger();
     this.pathValidator = new PathValidator(
       this.workspacePath,
@@ -1394,29 +1407,27 @@ export class PermissionChecker implements Checker {
           reason: `工具要求确认: ${toolPermResult.message}`,
         };
       }
+      // B1/B2/B4：只读 git 的「执行边界」判定。两条路径共用同一次计算：
+      // ① 工具说 allow → 命令含 git 段时还要判「这个只读 git 作用在谁的仓库上」；
+      // ② 工具没意见（passthrough）→ 补回被 `-C` 严格口径挡掉的「本仓内只读 git」。
+      const gitBoundary = await this.evaluateReadOnlyGitBoundary(req);
       if (toolPermResult.behavior === "allow") {
         // 工具说「我是只读」只能跳过默认 ask，不能跳过模式硬约束。
         // 否则 python3 / node / make 这类假只读会在 Step 5.5 直接 return，
         // plan / deny-write 永远走不到（P0-3）。
-        if (this.config.permissionMode === "plan") {
-          return this.checkPlanMode(req, filePath, resource);
+        if (!gitBoundary.applicable || gitBoundary.allowed) {
+          return this.allowAtToolLevel(req, filePath, resource, "工具级checkPermissions");
         }
-        if (this.config.permissionMode === "deny-write") {
-          log.info(
-            "PERMISSION",
-            `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式，工具级allow不越过)`,
-          );
-          return {
-            allowed: false,
-            reason: "deny-write 模式下不允许写操作",
-            decisionReason: { type: "mode", mode: "deny-write" },
-          };
-        }
+        // 越界（异仓 / 裸仓库形态 / 工作区外）不在这里放行，落到后续步骤 → 普通确认。
         log.info(
           "PERMISSION",
-          `${req.toolName}(${resource.slice(0, 80)}) → 允许(工具级checkPermissions)`,
+          `${req.toolName}(${resource.slice(0, 80)}) → 落确认(只读 git 执行边界: ${gitBoundary.reason ?? "未知"})`,
         );
-        return { allowed: true };
+      } else if (gitBoundary.applicable && gitBoundary.allowed) {
+        // B2 补回：`git -C <本仓内目录> <只读子命令>` 在 isReadOnlyCommand 里因为不剥 `-C`
+        // 判非只读，但它等价于「只对这一条 git 命令生效的 cd <dir>」，目标字面量、
+        // 在工作区内、属本仓，按只读放行。模式硬约束与工具级 allow 完全相同。
+        return this.allowAtToolLevel(req, filePath, resource, "只读 git 本仓边界");
       }
       // passthrough: 工具没有意见，继续后续检查
     }
@@ -2166,6 +2177,78 @@ export class PermissionChecker implements Checker {
    * 相对路径按 bash 实际 cwd 解析：input.cwd > 全局 getCwd()（追踪 cd）> 工作区根，
    * 与 checkDangerousCommand 里 sed -i 的目标校验同一口径。
    */
+  /**
+   * 只读 git 的「执行边界」判定（B1/B2/B4）。
+   *
+   * `BashTool.checkPermissions` 只回答「这条命令是不是只读」，不回答「这个只读 git 作用在
+   * 谁的仓库上」。而裸仓库形态目录里的 `git status` 会执行目录 `config` 指定的
+   * `core.fsmonitor`，所以只读放行之前还要过这一道：
+   * - 命令起始目录在工作区内；
+   * - 每个 git 段的实际目录（含 `-C` 目标、段内字面量 `cd` 链）属于本仓（linked worktree 算本仓）；
+   * - 剥掉本仓 `-C` 之后整条命令仍逐段只读，前导变量赋值照 B1 白名单复核。
+   *
+   * 命令里没有 git 段时返回 `applicable: false`，调用方沿用工具自身的判定。
+   */
+  private async evaluateReadOnlyGitBoundary(
+    req: PermissionRequest,
+  ): Promise<ReadOnlyGitBoundaryResult> {
+    if (!isCommandSemanticsRequest(req)) return { applicable: false, allowed: false };
+    const cmd = (req.input as { command?: unknown })?.command;
+    if (typeof cmd !== "string" || !cmd.trim()) return { applicable: false, allowed: false };
+
+    // 起始 cwd 与 resolveBashWriteTargets 同一口径：input.cwd → 全局 cwd（cd 会被回写）→ 工作区根
+    let baseCwd: string = this.workspacePath;
+    const inputCwd = (req.input as { cwd?: unknown })?.cwd;
+    if (typeof inputCwd === "string" && inputCwd) {
+      baseCwd = inputCwd;
+    } else {
+      try {
+        const { getCwd } = await import("../bootstrap/state.ts");
+        baseCwd = getCwd();
+      } catch {
+        /* 无全局 cwd（测试 / 嵌入）：退回工作区根 */
+      }
+    }
+
+    return judgeReadOnlyGitInOwnRepo({
+      command: cmd,
+      startCwd: baseCwd,
+      ownCommonDir: this.ownCommonGitDir,
+    });
+  }
+
+  /**
+   * 工具级「只读放行」的统一出口：plan / deny-write 硬约束 + 日志 + allow。
+   *
+   * Step 5.5 的工具级 allow 与 B2 的只读 git 补回**都走这里**。两处各写一遍模式判据迟早
+   * 会漂移，而漂移的后果是 plan / deny-write 被打穿（P0-3 那条教训：工具说「我是只读」
+   * 只能跳过默认 ask，不能跳过模式硬约束）。
+   */
+  private allowAtToolLevel(
+    req: PermissionRequest,
+    filePath: string,
+    resource: string,
+    source: string,
+  ): Decision {
+    const log = getLogger();
+    if (this.config.permissionMode === "plan") {
+      return this.checkPlanMode(req, filePath, resource);
+    }
+    if (this.config.permissionMode === "deny-write") {
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式，工具级allow不越过)`,
+      );
+      return {
+        allowed: false,
+        reason: "deny-write 模式下不允许写操作",
+        decisionReason: { type: "mode", mode: "deny-write" },
+      };
+    }
+    log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(${source})`);
+    return { allowed: true };
+  }
+
   private async resolveBashWriteTargets(req: PermissionRequest): Promise<string[]> {
     const cmd = (req.input as { command?: string })?.command;
     if (typeof cmd !== "string" || !cmd.trim()) return [];

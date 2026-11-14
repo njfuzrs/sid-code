@@ -272,20 +272,24 @@ describe("B1 git reflog 读写形态", () => {
 });
 
 describe("B1 全局选项前缀 / 复合命令 / 真实读形态原文", () => {
-  test("-C <dir> 与 --no-pager 前缀不改变读写语义", () => {
+  test("--no-pager 前缀不改变读写语义；-C 换仓库不再被剥离（B2）", () => {
+    // `--no-pager` 不影响「用哪个仓库」，剥离后读/写语义不变
     expectAllReadOnly([
-      "git -C /tmp stash list",
-      "git -C /tmp branch --show-current",
       "git --no-pager branch -vv",
       "git --no-pager tag -l",
       "git --no-pager reflog -12",
     ]);
+    expectAllNotReadOnly(["git --no-pager stash", "git --no-pager branch -m old new"]);
+
+    // B2：`-C` 改变「用哪个仓库」，与 `cd <dir>` 同等对待，纯文本层一律判非只读。
+    // `git -C <本仓内目录>` 的放行由权限层补回（见 tests/permission/git-readonly-boundary.test.ts），
+    // 不在 isReadOnlyCommand 这一层。
     expectAllNotReadOnly([
+      "git -C /tmp stash list",
+      "git -C /tmp branch --show-current",
       "git -C /tmp stash",
       "git -C /tmp branch -m old new",
       "git -C /tmp tag v1.0.0",
-      "git --no-pager stash",
-      "git --no-pager branch -m old new",
     ]);
   });
 
@@ -390,7 +394,12 @@ async function checkCommand(mode: "default" | "acceptEdits", bash: BashTool, com
     undefined,
     workspace,
   );
-  return checker.check({ toolName: "bash", input: { command } }, bashToolForChecker(bash));
+  // `cwd` 必须显式给 workspace：B4 按命令的**实际起始目录**判仓库归属，不给就退回
+  // 进程真实 cwd（= sid-code 源码目录），与 workspace 的 `.git` 对不上 → 只读 git 全落确认。
+  return checker.check(
+    { toolName: "bash", input: { command, cwd: workspace } },
+    bashToolForChecker(bash),
+  );
 }
 
 describe("B1 权限端到端：写形态不再被工具级只读早退放行", () => {

@@ -3,7 +3,7 @@
  * 判断 Bash 命令是否为纯只读操作，可跳过用户确认
  */
 
-import { parseBashCommand, extractSimpleCommands, extractRedirectTargets } from "./parser.ts";
+import { parseBashCommand, extractShellStatements, extractRedirectTargets } from "./parser.ts";
 import { judgeDdCommand } from "../../permission/dangerous-command.ts";
 import { expandShellCommand } from "../../permission/shell-command-variants.ts";
 // R7：内置等待原语只读判定复用同一份语法解析，避免「功能认 sid-wait、权限不认」两套规则漂移
@@ -554,12 +554,17 @@ const REFLOG_VALUE_FLAGS = new Set([
  *
  * 明确**不含** `-c` / `--config-env` / `--exec-path`：它们能注入配置（`core.pager`、
  * `alias.*`、`core.sshCommand`）从而借只读子命令执行任意代码，必须保持「非只读」判定。
+ *
+ * ⚠️ 也**不含** `-C` / `--git-dir` / `--work-tree` / `--bare`（B2）：它们只改变「用哪个仓库」，
+ * 剥掉就等于把「在别人的仓库里跑 git」当成「在本仓里跑」。`cd <恶意目录> && git status`
+ * 会因为目录里的 git 配置/钩子被判非只读，`git -C <恶意目录> status` 是同一件事，
+ * 不能因为换了写法就放行。这三类写法在权限层另有补回：`git -C <本仓内目录>` 由
+ * `checker.ts` 的只读 git 执行边界判定放行，其余落到确认。
  */
 const SAFE_GIT_GLOBAL_BOOL_OPTS = new Set([
   "-P",
   "--no-pager",
   "--paginate",
-  "--bare",
   "--no-replace-objects",
   "--literal-pathspecs",
   "--glob-pathspecs",
@@ -570,7 +575,7 @@ const SAFE_GIT_GLOBAL_BOOL_OPTS = new Set([
   "--no-advice",
 ]);
 /** 安全的带值全局选项（值可能是同 token 的 `--opt=v` 或下一个 token）。 */
-const SAFE_GIT_GLOBAL_VALUE_OPTS = new Set(["-C", "--git-dir", "--work-tree", "--namespace"]);
+const SAFE_GIT_GLOBAL_VALUE_OPTS = new Set(["--namespace"]);
 
 /**
  * 剥离 git 命令**子命令之前**的安全全局选项，返回以子命令开头的参数数组。
@@ -783,6 +788,78 @@ export function isReadOnlyCommand(command: string): boolean {
 const DIRECTORY_BUILTINS = new Set(["cd", "pushd", "popd"]);
 
 /**
+ * 允许出现在只读命令前面的环境变量白名单（B1）。
+ *
+ * ## 为什么是白名单而不是黑名单
+ *
+ * 旧实现完全不看前导变量赋值，`GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff`、
+ * `GIT_CONFIG_COUNT=1 … git status` 都被判只读、零确认执行——一条看起来是 `git status`
+ * 的命令能跑任意程序。黑名单（`bash-security.ts` 的 `validateDangerousVariables…`）
+ * 只覆盖 `PATH` / `LD_*` 那九个，而 git 自己读的几十个变量
+ * （`GIT_EXTERNAL_DIFF`、`GIT_CONFIG_*`、`GIT_DIR`、`GIT_EXEC_PATH`、`GIT_SSH_COMMAND`、
+ * `GIT_PAGER`、`GIT_EDITOR`…）一个都不在。补黑名单是结构性补不全的。
+ *
+ * 取值 = 上游 CC 的 `SAFE_ENV_VARS` 与本仓实际用法取交集后再裁剪：
+ * **任何 `GIT_*`、`*PATH`、`*_OPTIONS`、`PAGER`、`EDITOR`、`HOME`、`TMPDIR`、`SHELL`、
+ * `BASH_ENV`、`ENV`、`IFS` 都不收**。加新变量前先问：它能改变哪个程序的行为？
+ * 能（哪怕只是 pager / 编辑器 / 配置注入）就不该进这张表。
+ */
+const SAFE_ENV_VARS = new Set([
+  // 本地化与终端外观：只影响输出文本，不影响执行什么
+  "LANG",
+  "LANGUAGE",
+  "TZ",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "TERM",
+  // 语言运行时：只影响错误输出格式与产物落盘策略，不能指定可执行代码
+  "NODE_ENV",
+  "PYTHONUNBUFFERED",
+  "PYTHONDONTWRITEBYTECODE",
+  "RUST_BACKTRACE",
+  "RUST_LOG",
+  "GOOS",
+  "GOARCH",
+  "CGO_ENABLED",
+  "GO111MODULE",
+]);
+
+/** `LC_*` 是成组的本地化变量，逐个列举会漏，按前缀收（大小写严格，避免 `LC_` 之外的花样）。 */
+const SAFE_ENV_PREFIX = /^LC_[A-Z]+$/;
+
+function isSafeEnvVarName(name: string): boolean {
+  return SAFE_ENV_VARS.has(name) || SAFE_ENV_PREFIX.test(name);
+}
+
+/**
+ * 独立变量赋值语句（`GIT_DIR=…` 单独一行）里也不许出现的变量名。
+ *
+ * 独立赋值只设 shell 变量、不进子进程环境，所以 `B=origin/x` 换行再 `git show $B:…`
+ * 这类型号常用写法**不受影响**。例外是同名变量可能早已被 `export` 过，这时重新赋值
+ * 会改变子进程看到的值；为了不依赖运行时会话状态（shell 快照只 source 用户 profile，
+ * 是否保留旧 export 不是判定能保证的事），这些类别一律判非只读。
+ *
+ * 导出给 `permission/readonly-git-boundary.ts` 用：权限层补回「本仓内 `git -C`」时
+ * 也要对独立赋值做同一套例外检查，规则只能有一处定义，否则两层迟早漂移。
+ */
+const FORBIDDEN_ASSIGNMENT_NAMES = new Set([
+  "PAGER",
+  "EDITOR",
+  "HOME",
+  "TMPDIR",
+  "SHELL",
+  "BASH_ENV",
+  "ENV",
+  "IFS",
+]);
+
+export function isForbiddenAssignmentName(name: string): boolean {
+  if (name.startsWith("GIT_")) return true;
+  if (name.endsWith("PATH") || name.endsWith("_OPTIONS")) return true;
+  return FORBIDDEN_ASSIGNMENT_NAMES.has(name);
+}
+
+/**
  * 「除了切目录之外是否只读」：把 `cd` / `pushd` / `popd` 视为无副作用，其余判据与
  * {@link isReadOnlyCommand} 完全相同。
  *
@@ -807,12 +884,32 @@ function isReadOnlyImpl(command: string, ignoreCd: boolean): boolean {
   const redirectTargets = extractRedirectTargets(ast);
   if (redirectTargets.length > 0) return false;
 
-  // 2. 检查所有子命令
-  const simpleCommands = extractSimpleCommands(ast);
+  // 2. 检查所有子命令。用 extractShellStatements 而非 extractSimpleCommands，
+  //    是为了把**独立变量赋值语句**（`GIT_DIR=…` 单独一行）也取出来——后者会丢掉
+  //    command 为空的条目，而 B1 需要对它做例外检查（见下）。
+  const simpleCommands = extractShellStatements(ast);
   if (simpleCommands.length === 0) return false;
+  // 整条命令只有赋值（`B=origin/x`）：没有任何可执行程序，修前判非只读
+  // （extractSimpleCommands 为空 → return false），保持这个口径不动——判成只读会连带
+  // 改变 cwd 回写、并发安全等消费者的行为，而它换不来任何放行收益。
+  if (simpleCommands.every((s) => !s.command)) return false;
 
-  for (const { command: cmd, args } of simpleCommands) {
-    if (!cmd) return false;
+  for (const { command: cmd, args, envPrefix } of simpleCommands) {
+    // B1：前导变量赋值只在白名单内才继续按只读判定。
+    // 旧实现完全不看它，`GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff` 与 `git diff` 同样判只读，
+    // 一条看起来是只读 git 的命令因此能零确认执行任意程序。
+    if (envPrefix) {
+      for (const name of Object.keys(envPrefix)) {
+        if (!cmd) {
+          // 独立赋值只设 shell 变量、不进子进程环境，`B=origin/x` 换行再 `git show $B:…`
+          // 这类常用写法保持放行；GIT_* / 注入类变量例外，见 isForbiddenAssignmentName。
+          if (isForbiddenAssignmentName(name)) return false;
+        } else if (!isSafeEnvVarName(name)) {
+          return false;
+        }
+      }
+    }
+    if (!cmd) continue; // 独立赋值语句：内容已在上面的例外里检查过
     if (ignoreCd && DIRECTORY_BUILTINS.has(cmd)) continue;
 
     // R7：内置等待原语（`sid-wait gh-pr <n>`）由 harness 解释执行，只发 gh REST GET、
