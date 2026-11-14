@@ -878,6 +878,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     supportsThinking: true,
+    // 只能靠 reasoning_effort 调深浅，没有 `thinking.type` 开关字段；
+    // 「关思考」落到档位表最低的 low（dialect/thinking-off-floor.ts）。
+    thinkingMode: "always-on",
     systemRole: "developer",
     maxTokensField: "max_completion_tokens",
     supportsTemperature: false,
@@ -891,6 +894,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     supportsThinking: true,
+    // 同 o3：无开关字段，关思考落到最低档
+    thinkingMode: "always-on",
     systemRole: "developer",
     maxTokensField: "max_completion_tokens",
     supportsTemperature: false,

@@ -2,7 +2,7 @@
  * 20261016 思考开关排查 PR-2：`thinkingControl` + `resolveThinkingState` —— 展示 == 实发。
  *
  * 锁的事实：
- *   ① 控制形态：恒思考 → locked-on；无开关族 → none；其余 → toggle
+ *   ① 控制形态：恒思考（含无开关字段但关不掉的族）→ locked-on；无开关且能关 → none；其余 → toggle
  *   ② `auto` 默认值按模型：Opus 5 / Sonnet 5 / Haiku 5.5「不传 = 思考」→ true（D7）
  *   ③ 不变量：遍历注册表全部 Anthropic 条目 × 三种意图，展示的 effective
  *      必须等于「真实 applier → 真实线格式层」之后线上是否思考
@@ -68,13 +68,23 @@ describe("① thinkingControl", () => {
     ).toBe("toggle");
   });
 
-  test("无开关族 → none", () => {
-    expect(resolveEffortCapability({ model: "o3", provider: "openai" }).thinkingControl).toBe(
-      "none",
-    );
+  test("无开关族且非恒思考 → none", () => {
+    // grok-4 支持 `none`（推理可关），没有 always-on 数据，维持 none。
     expect(resolveEffortCapability({ model: "grok-4", provider: "openai" }).thinkingControl).toBe(
       "none",
     );
+  });
+
+  test("无开关字段但恒思考 → locked-on（2026-11-13 契约变更：没有开关字段 ≠ 没有思考）", () => {
+    // o3 / o3-pro / o3-mini / o4-mini / Kimi K3 / Grok 4.5+ 都没有 `thinking.type` 开关字段，
+    // 但它们照样关不掉思考，只能靠 `reasoning_effort` 调深浅。旧判定按 `supportsThinkingToggle`
+    // 把它们一律归成 `none`，于是「关思考 → 最低档」这条规则对它们静默不生效 ——
+    // 用户敲 `/think off` 什么都不会变。这是本次修复覆盖的第三只族。
+    for (const m of ["o3", "o3-pro", "o3-mini", "kimi-k3", "grok-4.7"]) {
+      expect(resolveEffortCapability({ model: m, provider: "openai" }).thinkingControl, m).toBe(
+        "locked-on",
+      );
+    }
   });
 
   test("locked-on 不改 supportsThinkingToggle（它还驱动 ThinkingManager 的 ultrathink 提级）", () => {

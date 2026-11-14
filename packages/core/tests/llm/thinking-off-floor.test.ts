@@ -126,14 +126,17 @@ describe("① 判定入口：关思考 → 该模型最低档", () => {
 });
 
 describe("② 门禁：规则在代码、模型事实在数据", () => {
-  test("判定入口不含任何模型名字面量（新增恒思考模型只加数据，不改代码）", () => {
-    const src = readFileSync(
-      join(import.meta.dir, "../../src/llm/dialect/thinking-off-floor.ts"),
-      "utf8",
-    );
-    // 先去掉注释：文件头刻意写了 GLM / Anthropic 的事故背景，那是说明不是判据。
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-    expect(code).not.toMatch(/\b(glm|kimi|claude|grok|deepseek|gpt|qwen|o[0-9])/i);
+  test("判定入口与恒思考判定都不含模型名字面量（新增模型只加数据，不改代码）", () => {
+    // 两个文件同守一条规则：「关思考发什么档」与「能不能关」都不得按模型名判。
+    // 只扫其中一个，另一个明天就能长出一份正则名单来 —— 那正是本次修掉的形态。
+    for (const file of ["thinking-off-floor.ts", "always-thinking.ts"]) {
+      const src = readFileSync(join(import.meta.dir, "../../src/llm/dialect", file), "utf8");
+      // 先去掉注释：文件头刻意写了 GLM / Anthropic 的事故背景，那是说明不是判据。
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      expect(code, `${file} 出现了模型名字面量`).not.toMatch(
+        /\b(glm|kimi|claude|grok|deepseek|gpt|qwen|o[0-9])/i,
+      );
+    }
   });
 
   test("每个 always-on 条目都登记了档位表（只补一半会静默退回修复前的行为）", () => {
