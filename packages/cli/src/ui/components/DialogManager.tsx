@@ -44,11 +44,33 @@ import { HotkeyChoiceList, choiceListHint } from "./shared/HotkeyChoiceList.tsx"
 import {
   buildPermissionChoices,
   buildShellConfirmChoices,
+  isBashLikeTool,
   initialPermissionChoiceIndex,
   initialShellChoiceIndex,
   type HotkeyChoice,
   type PermissionAnswer,
 } from "./permission-choices.ts";
+import { buildBashAllowRules } from "@sid-code/core/permission/bash-allow-rules.ts";
+
+/**
+ * 权限框里「将要写入的规则」预览（B9）。非 Bash 类工具没有规则形态，返回 undefined。
+ *
+ * 展示失败绝不阻断确认流程：任何异常都退回 undefined，由选项文案落回泛化说明。
+ */
+function plannedRulesFor(
+  toolName: string,
+  toolInput: unknown,
+  isDangerous: boolean,
+): string[] | undefined {
+  if (!isBashLikeTool(toolName)) return undefined;
+  const command = (toolInput as { command?: unknown } | undefined)?.command;
+  if (typeof command !== "string" || !command.trim()) return undefined;
+  try {
+    return buildBashAllowRules(command, { dangerous: isDangerous }).rules;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * 识别选项 label 是否带「推荐」后缀（(推荐) / (Recommended)，大小写不敏感、容忍首尾空白）。
@@ -87,6 +109,10 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   const choices = buildPermissionChoices({
     toolName: request.toolName,
     isDangerous: danger.isDangerous,
+    // B9：把「将要写入的规则」带到选项文案里。用户按「本会话始终允许」时实际放行的范围
+    // 由生成的规则决定（`cd ws && bun test a.test.ts | tail` 只记 `Bash(bun test *)`），
+    // 不写出来等于让用户在不知道放行范围的情况下授权。
+    plannedRules: plannedRulesFor(request.toolName, request.toolInput, danger.isDangerous),
   });
   const initialIndex = initialPermissionChoiceIndex(choices, danger.isDangerous);
 

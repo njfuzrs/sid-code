@@ -66,8 +66,18 @@ export type PermissionChoice = HotkeyChoice<PermissionAnswer>;
 export function buildPermissionChoices(opts: {
   toolName: string;
   isDangerous: boolean;
+  /**
+   * 将要写入的规则（B9：复合命令会按子命令拆成多条）。
+   * 只有 Bash 类工具才有；不传时退回旧的泛化文案。
+   *
+   * 为什么要显示它：用户按「本会话始终允许」时，实际被放行的范围由**生成的规则**决定，
+   * 不是他看到的这条完整命令（`cd ws && bun test a.test.ts | tail` 只会记 `Bash(bun test *)`）。
+   * 不写出来就等于让用户在不知道放行范围的情况下授权。
+   */
+  plannedRules?: readonly string[];
 }): PermissionChoice[] {
-  const { toolName, isDangerous } = opts;
+  const { toolName, isDangerous, plannedRules } = opts;
+  const ruleSummary = plannedRules?.length ? formatPlannedRules(plannedRules) : "";
   const allow: PermissionChoice = {
     value: "yes",
     hotkey: "y",
@@ -87,7 +97,8 @@ export function buildPermissionChoices(opts: {
     hotkey: "a",
     label: "本会话始终允许",
     tone: "session",
-    description: "退出后失效",
+    // 危险确认只记整条精确规则（见 buildBashAllowRules 的 dangerous 分支），文案别暗示会放宽
+    description: ruleSummary ? `本会话记住 ${ruleSummary}` : "退出后失效",
   };
 
   if (isDangerous) {
@@ -106,11 +117,26 @@ export function buildPermissionChoices(opts: {
         hotkey: "A",
         label: "持久化到本地配置",
         tone: "persist",
-        description: "写入 settings.local.json（不入 git），跨会话生效（Shift+A）",
+        description: ruleSummary
+          ? `写入 settings.local.json: ${ruleSummary}（跨会话生效）`
+          : "写入 settings.local.json（不入 git），跨会话生效（Shift+A）",
       },
     ];
   }
   return [allow, deny, session];
+}
+
+/**
+ * 把将要写入的规则压成一行文案（`Bash(bun test *)` / `Bash(a *)、Bash(b *)`）。
+ *
+ * 只显示前两条 + 条数，不按字符宽度截断：规则串长度不可控（含中文路径时每列宽≠字节数），
+ * 按条数限反而可预测。description 只在聚焦行展示（HotkeyChoiceList 的既定行为）。
+ */
+export function formatPlannedRules(rules: readonly string[]): string {
+  if (rules.length === 0) return "";
+  if (rules.length === 1) return rules[0];
+  if (rules.length === 2) return `${rules[0]}、${rules[1]}`;
+  return `${rules.length} 条规则: ${rules[0]}、${rules[1]} 等`;
 }
 
 /**

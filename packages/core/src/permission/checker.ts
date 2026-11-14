@@ -50,6 +50,7 @@ import { detectStructuredCriticalDanger, type DangerousFinding } from "./dangero
 import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
 import { guardOf } from "./decision-telemetry.ts";
+import { isSafetyConfirmation } from "./safety-confirmation.ts";
 import { classifyBashShape, collectEnvPrefixVars, resolveCdTargetGitTrust } from "./bash-shape.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
@@ -272,11 +273,10 @@ function guardMetadata(phaseOne: Decision): { metadata?: Record<string, unknown>
 /**
  * 阶段一给出的确认是否属于「危险来源」：dangerousCommand / safetyCheck。
  * yesMode、auto、hook allow 三处必须共用——复制粘贴会漏抄（P0-1 就是 auto 漏了这道）。
+ *
+ * 唯一实现在 `safety-confirmation.ts`：query 层（tool-executor）也要用它，
+ * 从 checker.ts 导出会让 query 静态拉进整个权限判定模块。
  */
-function isSafetyConfirmation(reason: PermissionDecisionReason | undefined): boolean {
-  const t = reason?.type;
-  return t === "dangerousCommand" || t === "safetyCheck" || t === "destructiveTool";
-}
 
 /**
  * auto 分类器是否允许发言。safetyCheck 命中且 classifierApprovable === false
