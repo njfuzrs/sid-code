@@ -27,6 +27,7 @@ import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressCon
 import {
   getSelectableEfforts,
   isEffortGatedByThinking,
+  type EffortCapability,
   type EffortLevel,
   type EffortSetting,
 } from "@sid-code/core/llm/effort.ts";
@@ -56,14 +57,39 @@ interface EffortItem extends SelectionListItem<string> {
   desc: string;
 }
 
-/** 全量档位元数据（展示文案 + 字形）。实际列出哪几档由模型能力决定，见 buildOptions。 */
+/**
+ * 全量档位元数据（展示文案 + 字形）。实际列出哪几档由模型能力决定，见 buildOptions。
+ *
+ * ⚠ 这里只放**与模型无关**的语义描述。「哪个是默认档」由 `cap.defaultEffort` 决定
+ * （GLM-5.3 / Kimi K3 是 max、DeepSeek V4 与 Grok 4.5+ 是 high、Claude Opus 5.5 是 medium），
+ * 曾经把「（多数模型默认）」写死在 high 的文案里 —— 在默认 max 的模型上那句话就是错的，
+ * 用户会以为不选档时跑的是 high（2026-11-13 §8.4）。默认标记改成按数据生成。
+ */
 const LEVEL_META: Record<EffortLevel, { glyph: string; desc: string }> = {
   low: { glyph: EFFORT_LOW, desc: "快速响应，跳过深度推理" },
   medium: { glyph: EFFORT_MEDIUM, desc: "平衡模式" },
-  high: { glyph: EFFORT_HIGH, desc: "深度推理（多数模型默认）" },
+  high: { glyph: EFFORT_HIGH, desc: "深度推理" },
   xhigh: { glyph: EFFORT_XHIGH, desc: "更深推理（介于 high 与 max）" },
   max: { glyph: EFFORT_MAX, desc: "最大推理深度" },
 };
+
+/**
+ * 某档在**当前模型**上的展示文案。
+ *
+ * 两处随模型变化，都不能写死：
+ * - `locked-on` 模型的 low 是「关思考」的落点（`/think off` 实际发这档），说明要写
+ *   「最低强度（思考不可关）」而不是「快速响应」—— 后者不回答「我还能更省吗」；
+ * - 「（模型默认）」标在 `cap.defaultEffort` 那一档上，不再固定贴给 high。
+ */
+function levelDesc(level: EffortLevel, cap?: EffortCapability): string {
+  const base = LEVEL_META[level].desc;
+  if (level === "low" && cap?.thinkingControl === "locked-on") {
+    return cap.thinkingOffFloor
+      ? `最低强度（思考不可关，/think off 落到这档）`
+      : "最低强度（思考不可关）";
+  }
+  return level === cap?.defaultEffort ? `${base}（模型默认）` : base;
+}
 
 /**
  * 按当前模型**真实可选**的档位构建选项（+ 末尾固定的 auto）。
@@ -72,20 +98,23 @@ const LEVEL_META: Record<EffortLevel, { glyph: string; desc: string }> = {
  * 用户选了被静默钳制成 high（面板显示 max、实发 high）。改为读 getSelectableEfforts，
  * 档位列表与模型一一配对；auto 始终保留（它是"不下发、跟随模型默认"，任何模型都成立）。
  */
-export function buildOptions(levels: EffortLevel[]): EffortItem[] {
+export function buildOptions(levels: EffortLevel[], cap?: EffortCapability): EffortItem[] {
   const items: EffortItem[] = levels.map((lv) => ({
     value: lv,
     key: lv,
     glyph: LEVEL_META[lv].glyph,
     label: lv,
-    desc: LEVEL_META[lv].desc,
+    desc: levelDesc(lv, cap),
   }));
   items.push({
     value: "auto",
     key: "auto",
     glyph: EFFORT_AUTO,
     label: "auto",
-    desc: "不下发，按模型默认",
+    // 把默认档写进 auto 的说明里：用户选 auto 时最想知道的就是「那到底跑哪档」。
+    desc: cap?.defaultEffort
+      ? `不下发，按模型默认（= ${cap.defaultEffort}）`
+      : "不下发，按模型默认",
   });
   return items;
 }
@@ -135,7 +164,7 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
   const levels: EffortLevel[] = state
     ? getSelectableEfforts(state.capability)
     : ["low", "medium", "high", "xhigh", "max"];
-  const options = buildOptions(levels);
+  const options = buildOptions(levels, state?.capability);
 
   // 当前生效档位（auto 时用 "auto"）
   // 所选档对本模型被钳制（不在可选集内）时光标落在实发档上，而不是退到列表首项。
@@ -167,9 +196,12 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
 
   // 「思考已关 → 档位不下发」提示（与 /model 面板同源判定）：GLM/DeepSeek 把 effort 挂在
   // thinking 分支内，/think off 之后这个面板选任何档都不会真的发出去，必须诚实告知。
+  // ⚠ 恒思考模型上不成立：关思考时实发的是兜底档（`cap.thinkingOffFloor`），档位照样下发。
+  // 不排除这一种就会同时说两件相反的话 —— 上面写「实发 low」，下面写「不会下发」。
   const effortInert = !!(
     state &&
     isEffortGatedByThinking(state.capability) &&
+    state.capability.thinkingOffFloor === undefined &&
     getThinkingState &&
     getThinkingState().applied === false
   );
