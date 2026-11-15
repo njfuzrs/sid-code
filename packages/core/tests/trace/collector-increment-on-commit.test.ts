@@ -27,7 +27,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { TraceCollector } from "@sid-code/core/trace/collector.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -78,6 +78,36 @@ async function fireResponse(messages: unknown[]) {
 const u1 = { role: "user", content: "第一问" };
 const u2 = { role: "user", content: "第二问" };
 
+/**
+ * 读**落盘**的 raw.jsonl。
+ *
+ * 存在的理由：本文件第 3 个用例验的是「轨迹里到底有没有那一轮的 tool_result」，
+ * 只看 `getPrevMessageCount()` 是验不到的 —— 游标值对、但落盘内容被切成空的组合
+ * 完全可能（改坏 handleAfterModel 的 committedCount 就够）。所以断言必须回到文件。
+ *
+ * TraceWriter 落点：`<outputDir>/sessions/<sessionId>/raw.jsonl`；这里不猜 sessionId，
+ * 直接扫一层目录。
+ */
+function readRawPairs(): any[] {
+  const sessionsDir = join(testDir, "sessions");
+  if (!existsSync(sessionsDir)) return [];
+  const out: any[] = [];
+  for (const sid of readdirSync(sessionsDir)) {
+    const file = join(sessionsDir, sid, "raw.jsonl");
+    if (!existsSync(file)) continue;
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        out.push(JSON.parse(text));
+      } catch {
+        /* 崩溃安全写可能留半截行，跳过 */
+      }
+    }
+  }
+  return out;
+}
+
 describe("T6 增量游标在 pair 落盘后才推进", () => {
   it("重试：两次相同 messages 的请求都拿到完整增量，不会被切成空", async () => {
     await hookSystem.fireSessionStartEvent("startup", { model: "claude-test" });
@@ -103,13 +133,38 @@ describe("T6 增量游标在 pair 落盘后才推进", () => {
   it("落盘的那一轮用完整 messages，增量与轨迹里能对上的 tool_result 数一致", async () => {
     await hookSystem.fireSessionStartEvent("startup", { model: "claude-test" });
 
-    // 第一次请求带 2 条，失败；重试带 2 条并成功
-    await fireRequest([u1]);
-    await fireRequest([u1]);
-    await fireResponse([u1]);
+    // 一轮完整上下文：提问 → 工具调用 → 工具结果 → 追问（4 条）
+    const withTool = [
+      u1,
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tu-1", name: "Read", input: { file_path: "/tmp/a" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu-1", content: "文件内容" }],
+      },
+      u2,
+    ];
 
-    // 落盘轮的增量应为全量（2 条之前的基线是空），而不是空数组
-    const prev = collector.getPrevMessageCount();
-    expect(prev).toBe(1);
+    // 同一轮请求发两次（第二次是重试，第一次没有 AfterModel），落盘的是重试这一轮。
+    // 旧实现：第一次 fireBeforeModel 就把游标推到 4，重试那轮 `computeNewMessages` 切出
+    // `[]`，而落盘的恰恰是重试这一轮 —— 轨迹里整轮 tool_result 消失。
+    await fireRequest(withTool);
+    await fireRequest(withTool);
+    await fireResponse(withTool);
+
+    const pairs = readRawPairs().filter((r) => r.request && typeof r.request === "object");
+    expect(pairs.length).toBe(1); // 只落了一轮：失败那次没有 AfterModel
+
+    const newMessages = pairs[0].request.new_messages as any[];
+    // ★核心断言：落盘增量不是空数组（旧实现这里是 []）
+    expect(newMessages.length).toBe(withTool.length);
+    // 轨迹里能对上的 tool_result 就在增量里，且只有那一个
+    const carried = newMessages.filter((m) => JSON.stringify(m.content).includes('"tool_result"'));
+    expect(carried.length).toBe(1);
+    expect(JSON.stringify(carried[0])).toContain("tu-1");
+    // 游标在**落盘后**才推进到本轮长度
+    expect(collector.getPrevMessageCount()).toBe(withTool.length);
   });
 });

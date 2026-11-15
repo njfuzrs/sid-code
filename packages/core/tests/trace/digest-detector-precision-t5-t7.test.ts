@@ -159,11 +159,11 @@ describe("T5 孤儿按「工具是否真执行过」分流", () => {
 
 // ── T7 errors ───────────────────────────────────────────────────────────────
 
-const errEntry = (index: number, context: Record<string, unknown>, atMs = T0) => ({
+const errEntry = (index: number, context: Record<string, unknown>, atMs = T0, error = "boom") => ({
   event: "Error",
   timestamp: new Date(atMs).toISOString(),
   session_id: "s",
-  data: { phase: "stream", index, error: "boom", context },
+  data: { phase: "stream", index, error, context },
 });
 
 describe("T7 errors.jsonl 区分「已恢复」与「最终失败」", () => {
@@ -198,6 +198,81 @@ describe("T7 errors.jsonl 区分「已恢复」与「最终失败」", () => {
       steps: [],
       events: [],
       errors: [errEntry(5, {})],
+    });
+    const high = find(d, "errors_jsonl_has_entries");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+  });
+});
+
+// ── T7 宿主休眠引起的 abort race（2026-11-15）───────────────────────────────
+//
+// 形态：进程被冻结期间 socket 被杀，唤醒后 C1 立刻发 `host_sleep_reopen`，同一条错误也
+// 落进 errors.jsonl。真实样本（20261014-224229）里两者时间戳差 **0.0 秒**；同会话另一条
+// 不紧邻休眠的 abort race 差 **966 秒** —— 这是窗口取 60s 的依据。
+
+const sleepReopen = (atMs: number) =>
+  ev(
+    "RetryTelemetry",
+    {
+      type: "host_sleep_reopen",
+      model: "m",
+      reopenReason: "host_sleep",
+      sleptMs: 566_534,
+      attemptAgeMs: 571_534,
+    },
+    atMs,
+  );
+
+const ABORT_RACE = "Stream aborted (abort race)";
+
+describe("T7 宿主休眠引起的 abort race 合成一条 low", () => {
+  it("未恢复的 abort race 紧邻 host_sleep_reopen：降为一条 low，不报 high", () => {
+    const d = digestOf("t7sleep", {
+      steps: [],
+      // 没有同 index 的 AfterModelRaw → 未恢复
+      events: [sleepReopen(T0)],
+      errors: [errEntry(22, { kind: "timeout", willRetry: true }, T0, ABORT_RACE)],
+    });
+    const entries = find(d, "errors_jsonl_has_entries");
+    expect(entries).toHaveLength(1); // 合成一条，不逐条报
+    expect(entries[0].severity).toBe("low");
+    expect(entries[0].detail).toContain("宿主休眠");
+    expect(entries.filter((a) => a.severity === "high")).toHaveLength(0);
+  });
+
+  it("abort race 离休眠 966 秒：仍报 high（不能因为会话里有休眠就整片放过）", () => {
+    const d = digestOf("t7sleepfar", {
+      steps: [],
+      events: [sleepReopen(T0)],
+      errors: [errEntry(27, { kind: "timeout", willRetry: true }, T0 + 966_000, ABORT_RACE)],
+    });
+    const high = find(d, "errors_jsonl_has_entries");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+  });
+
+  it("真错误与休眠 abort race 同时存在：high 只算真错误，detail 写出排除条数", () => {
+    const d = digestOf("t7sleepmix", {
+      steps: [],
+      events: [sleepReopen(T0)],
+      errors: [
+        errEntry(22, { kind: "timeout", willRetry: true }, T0, ABORT_RACE),
+        errEntry(30, {}, T0 + 5_000, "prompt_too_long"),
+      ],
+    });
+    const high = find(d, "errors_jsonl_has_entries");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+    expect(high[0].detail).toContain("1 条未恢复");
+    expect(high[0].detail).toContain("宿主休眠");
+  });
+
+  it("非 abort race 文案即使紧邻休眠也不放过：仍是 high", () => {
+    const d = digestOf("t7sleeptrue", {
+      steps: [],
+      events: [sleepReopen(T0)],
+      errors: [errEntry(30, {}, T0, "prompt_too_long")],
     });
     const high = find(d, "errors_jsonl_has_entries");
     expect(high).toHaveLength(1);

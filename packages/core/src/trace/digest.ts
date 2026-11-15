@@ -2736,6 +2736,19 @@ export function detectGhostTimeouts(events: readonly EventLine[]): GhostTimeoutH
 const LEAKY_STREAM_SPAN_MS = 180_000;
 
 /**
+ * T7 补（2026-11-15）：宿主休眠引起的 abort race 归因窗口。
+ *
+ * 形态：进程被冻结期间 socket 被杀，唤醒后 C1 立刻发一条 `host_sleep_reopen`，同一条错误
+ * 也落进 errors.jsonl —— **两者时间戳几乎相同**。实测 20261014-224229 的 idx=22 差
+ * 0.0 秒；同会话 idx=27 那条不紧邻休眠，差 966 秒。60s 足以区分这两种形态，又不会把
+ * 「休眠后用户立刻 abort」之外的真错误吞掉。
+ *
+ * 为什么只认文案不认 `context.kind`：kind 是 `timeout`（socket 被杀时的表象），与是否
+ * 休眠无关；退避 / 等用户输入都不会产生 abort race 文案。
+ */
+const SLEEP_ABORT_RACE_WINDOW_MS = 60_000;
+
+/**
  * 一条「泄漏流」——流已经结束（或被放弃），它的 stall 定时器还在继续报。
  *
  * ## 为什么需要这个检测器
@@ -3703,6 +3716,23 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // AfterModelRaw 才叫恢复。只看 willRetry 会把「打算重试但最终失败」的算成恢复
   // （本地 18 条就是这种，它们必须继续报）。
   if (errors.length > 0) {
+    // T7 补（2026-11-15）：`host_sleep_reopen` 与 abort race 是同一次事故的两面。
+    //
+    // 进程被冻结时 socket 被杀，唤醒后 C1 立刻重开并落一条遥测，同一条错误也写进
+    // errors.jsonl。只看「有错误记录」会把宿主休眠报成会话级故障，把排查引向 provider。
+    // 判据用**时间邻近**而不是文案关联：同一次事故两侧时间戳差 0.0 秒（实测），
+    // 不紧邻休眠的真 abort race 差 966 秒，60s 窗口分得开（见 SLEEP_ABORT_RACE_WINDOW_MS）。
+    const sleepReopenTs = events
+      .filter((x) => x.event === "RetryTelemetry" && (x.data as any)?.type === "host_sleep_reopen")
+      .map((x) => Date.parse(x.timestamp ?? ""))
+      .filter((t) => !Number.isNaN(t));
+    const explainedBySleepAbort = (e: (typeof errors)[number]): boolean => {
+      if (sleepReopenTs.length === 0) return false;
+      if (!/abort race/i.test(String((e.data as any)?.error ?? ""))) return false;
+      const ts = e.timestamp ? Date.parse(e.timestamp) : NaN;
+      if (Number.isNaN(ts)) return false;
+      return sleepReopenTs.some((t) => Math.abs(t - ts) <= SLEEP_ABORT_RACE_WINDOW_MS);
+    };
     const recovered: typeof errors = [];
     const unresolved: typeof errors = [];
     for (const e of errors) {
@@ -3722,21 +3752,26 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         );
       (recoveredByRetry ? recovered : unresolved).push(e);
     }
-    if (unresolved.length > 0) {
+    const sleepAborts = unresolved.filter(explainedBySleepAbort);
+    const realUnresolved = unresolved.filter((e) => !explainedBySleepAbort(e));
+    if (realUnresolved.length > 0) {
       anomalies.push({
         layer: "L0",
         severity: "high",
         kind: "errors_jsonl_has_entries",
         detail:
-          `errors.jsonl 有 ${unresolved.length} 条未恢复的错误记录` +
+          `errors.jsonl 有 ${realUnresolved.length} 条未恢复的错误记录` +
+          (sleepAborts.length > 0
+            ? `（另有 ${sleepAborts.length} 条是宿主休眠引起的 abort race，已排除）`
+            : "") +
           (recovered.length > 0
             ? `（另有 ${recovered.length} 条瞬时错误已被重试恢复，见 errors_jsonl_recovered）`
             : ""),
         provenance: [
           {
             sourceFile: errorsPath,
-            lineRef: `${unresolved.length} unresolved / ${errors.length} entries`,
-            rawValue: unresolved
+            lineRef: `${realUnresolved.length} unresolved / ${errors.length} entries`,
+            rawValue: realUnresolved
               .slice(0, 3)
               .map((e) => truncate(String((e.data as any)?.error ?? ""), 80))
               .join(" | "),
@@ -3744,6 +3779,29 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
           },
         ],
         pointer: errorsPath,
+      });
+    } else if (sleepAborts.length > 0) {
+      // 全部未恢复错误都能归到宿主休眠 → 合成**一条** low，不逐条报。
+      anomalies.push({
+        layer: "L0",
+        severity: "low",
+        kind: "errors_jsonl_has_entries",
+        detail:
+          `${sleepAborts.length} 条 abort race 紧邻宿主休眠重开（±${SLEEP_ABORT_RACE_WINDOW_MS / 1000}s），` +
+          `是进程冻结期间 socket 被杀，不是会话级故障` +
+          (recovered.length > 0 ? `（另有 ${recovered.length} 条已由重试恢复）` : ""),
+        provenance: [
+          {
+            sourceFile: errorsPath,
+            lineRef: `${sleepAborts.length} sleep-explained / ${errors.length} entries`,
+            rawValue: sleepAborts
+              .slice(0, 3)
+              .map((e) => truncate(String((e.data as any)?.error ?? ""), 80))
+              .join(" | "),
+            mtime: fileMtimeIso(errorsPath),
+          },
+        ],
+        pointer: `${errorsPath} + events.jsonl（RetryTelemetry host_sleep_reopen）`,
       });
     }
     if (recovered.length > 0) {
