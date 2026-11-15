@@ -26,7 +26,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { calculateUSDCost, type PricingModelEntry } from "../api/cost-tracker.ts";
-import type { Usage } from "../llm/types.ts";
+import { normalizeCacheUsage, type Usage } from "../llm/types.ts";
+import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { getLogger } from "../debug/logger.ts";
 import { preservingDirMtime } from "./upload-attempts.ts";
 
@@ -55,10 +56,17 @@ export interface RecomputedCost {
   totalCostUSD: number;
   /** 配对成功的 AfterModelRaw 调用数 */
   apiCalls: number;
-  /** 末次请求的 input token（stock 口径） */
+  /** 末次请求的 input token（provider 原始口径，stock）。老调用方保留；写 traj 用 lastPromptTotal */
   lastInputTokens: number;
-  /** 累计 input token（flow 口径，与 cost 可比） */
+  /** 累计 input token（provider 原始口径，flow） */
   cumulativeInputTokens: number;
+  /**
+   * 末次请求的**归一化** prompt（stock，未命中+命中+写入）。
+   * 计量与成本方案 T1（第二步）：写入 traj 的 `tokens_sent` 用它，与 collector 落盘同口径。
+   */
+  lastPromptTotal: number;
+  /** 累计**归一化** prompt（flow）。写 traj 的 `prompt_total` / `total_cumulative_prompt_tokens` 用它 */
+  cumulativePromptTokens: number;
   /** 累计 output token */
   totalOutputTokens: number;
   /** 累计 cache_read token */
@@ -162,10 +170,12 @@ export function recomputeCostFromEvents(
   const modelCounts = new Map<string, number>();
   let totalCostUSD = 0;
   let cumulativeInputTokens = 0;
+  let cumulativePromptTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
   let totalCacheCreationTokens = 0;
   let lastInputTokens = 0;
+  let lastPromptTotal = 0;
 
   try {
     for (const line of lines) {
@@ -219,10 +229,18 @@ export function recomputeCostFromEvents(
       });
       totalCostUSD += costUSD;
       cumulativeInputTokens += inputTokens;
+      // 计量与成本方案 T1（第二步）：归一化 prompt（未命中 + 命中 + 写入），
+      // 与 collector 落盘同口径；provider 缺失时按模型名兜底推断（D6）。
+      const promptTotal = normalizeCacheUsage(
+        usage,
+        provider ?? inferProviderByModelName(model),
+      ).promptTotal;
+      cumulativePromptTokens += promptTotal;
+      lastPromptTotal = promptTotal;
       totalOutputTokens += outputTokens;
       totalCacheReadTokens += cacheReadTokens;
       totalCacheCreationTokens += cacheCreationTokens;
-      lastInputTokens = inputTokens; // 末次覆盖（stock）
+      lastInputTokens = inputTokens; // 末次覆盖（stock，provider 原始口径，仅老调用方用）
       if (model) modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);
     }
   } catch {
@@ -247,6 +265,8 @@ export function recomputeCostFromEvents(
     apiCalls: calls.length,
     lastInputTokens,
     cumulativeInputTokens,
+    lastPromptTotal,
+    cumulativePromptTokens,
     totalOutputTokens,
     totalCacheReadTokens,
     totalCacheCreationTokens,
@@ -562,7 +582,7 @@ function buildMinimalTrajFromRecompute(sessionDir: string, r: RecomputedCost): o
     history: [],
     info: {
       model_stats: {
-        tokens_sent: r.lastInputTokens,
+        tokens_sent: r.lastPromptTotal,
         tokens_received: r.totalOutputTokens,
         cache_read_tokens: r.totalCacheReadTokens,
         cache_creation_tokens: r.totalCacheCreationTokens,
@@ -576,12 +596,14 @@ function buildMinimalTrajFromRecompute(sessionDir: string, r: RecomputedCost): o
       session_id: sessionId,
       model: r.model,
       total_api_calls: r.apiCalls,
-      total_tokens_sent: r.lastInputTokens,
+      total_tokens_sent: r.lastPromptTotal,
       total_tokens_received: r.totalOutputTokens,
-      total_cumulative_prompt_tokens: r.cumulativeInputTokens,
+      total_cumulative_prompt_tokens: r.cumulativePromptTokens,
+      // 计量与成本方案 T1（第二步）：补落轨迹与正常轨迹同口径，读侧不必区分来源。
+      prompt_total: r.cumulativePromptTokens,
       total_cache_read_tokens: r.totalCacheReadTokens,
       total_cache_creation_tokens: r.totalCacheCreationTokens,
-      total_tokens: r.lastInputTokens + r.totalOutputTokens,
+      total_tokens: r.lastPromptTotal + r.totalOutputTokens,
       total_cost_usd: r.totalCostUSD,
       exit_status: "interrupted",
       tool_source: "sid-code",
