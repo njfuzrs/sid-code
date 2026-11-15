@@ -28,15 +28,26 @@ import { MemoryTool } from "@sid-code/core/tool/memory.ts";
 import { MEMORY_EXTRACT_QUERY_SOURCE } from "@sid-code/core/memory/types.ts";
 
 let root: string;
+let savedSidConfigDir: string | undefined;
 
 beforeEach(() => {
+  // 落盘隔离：本文件 import 了 `MemoryStore`（落盘类导出），
+  // `packages/core/tests/telemetry/no-real-path-writes.test.ts` 的哨兵要求显式声明。
+  // 只把 `root` 传给 MemoryStore 不够 —— 被测链路里任何走默认路径的分支
+  // （`getSidHome()` / read-stats / 遥测）都会落到用户真实的 `~/.sid-code/`。
+  savedSidConfigDir = process.env.SID_CONFIG_DIR;
   root = mkdtempSync(join(tmpdir(), "sid-extract-e2e-"));
+  process.env.SID_CONFIG_DIR = root;
 });
 
 afterEach(() => {
   try {
     rmSync(root, { recursive: true, force: true });
   } catch {}
+  // 存/恢复原值，不无条件 delete：`bun test` 同批多文件跑在同一进程里，
+  // 直接删会把 bunfig preload 的兜底一起抹掉（CONTRIBUTING.md 测试约定第 1 条）。
+  if (savedSidConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = savedSidConfigDir;
 });
 
 /** 假模型「写这一步」的脚本：一条 save_memory 调用 */
