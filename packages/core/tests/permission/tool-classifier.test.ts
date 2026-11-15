@@ -10,20 +10,74 @@ import { ToolClassifier } from "@sid-code/core/permission/tool-classifier.ts";
 describe("ToolClassifier fastPath", () => {
   const clf = new ToolClassifier({ enabled: true });
 
-  test("只读工具直接安全", () => {
-    const r = clf.fastPath({ toolName: "read", input: {}, cwd: "/w" });
+  // M1：Level 1 的路径判定改由 checker 传入。缺省（unknown）**不放行**——
+  // 漏传字段必须退化成「多调一次 LLM」，而不是「静默恢复成不判路径的旧行为」。
+  test("只读工具 + pathVerdict=inside 直接安全", () => {
+    const r = clf.fastPath({ toolName: "read", input: {}, cwd: "/w", pathVerdict: "inside" });
     expect(r?.safe).toBe(true);
     expect(r?.risk).toBe("none");
   });
 
-  test("write 工作区内自动放行", () => {
-    const r = clf.fastPath({ toolName: "write", input: { file_path: "/w/a.ts" }, cwd: "/w" });
+  test("M1：只读工具越界 / 未判定 → 落到 LLM（返回 null）", () => {
+    for (const verdict of ["outside", "unknown", undefined] as const) {
+      const r = clf.fastPath({
+        toolName: "read",
+        input: {},
+        cwd: "/w",
+        ...(verdict === undefined ? {} : { pathVerdict: verdict }),
+      });
+      expect(r, `pathVerdict=${String(verdict)}`).toBeNull();
+    }
+  });
+
+  test("M1：不带路径的清单类只读工具仍直接安全（pathVerdict 缺省也不影响）", () => {
+    for (const toolName of ["task_list", "task_get", "bg_task_list", "bg_task_get"]) {
+      const r = clf.fastPath({ toolName, input: {}, cwd: "/w" });
+      expect(r?.safe, toolName).toBe(true);
+    }
+  });
+
+  test("write 工作区内自动放行（pathVerdict=inside）", () => {
+    const r = clf.fastPath({
+      toolName: "write",
+      input: { file_path: "/w/a.ts" },
+      cwd: "/w",
+      pathVerdict: "inside",
+    });
     expect(r?.safe).toBe(true);
   });
 
   test("write 工作区外需 LLM 判断（fastPath 返回 null）", () => {
-    const r = clf.fastPath({ toolName: "write", input: { file_path: "/etc/passwd" }, cwd: "/w" });
+    const r = clf.fastPath({
+      toolName: "write",
+      input: { file_path: "/etc/passwd" },
+      cwd: "/w",
+      pathVerdict: "outside",
+    });
     expect(r).toBeNull();
+  });
+
+  test("M1b：同前缀兄弟目录不再靠 startsWith 判成工作区内", () => {
+    // 旧实现 `filePath.startsWith(cwd)` 会让 /w-evil 通过；现在只认 pathVerdict
+    const r = clf.fastPath({
+      toolName: "write",
+      input: { file_path: "/w-evil/x.ts" },
+      cwd: "/w",
+      pathVerdict: "outside",
+    });
+    expect(r).toBeNull();
+  });
+
+  test("M1b：skipFastPath 优先于所有 Level（含 Level 0 与 Level 1）", () => {
+    const cases = [
+      { toolName: "read", classifierInput: "", pathVerdict: "inside" as const },
+      { toolName: "read", pathVerdict: "inside" as const },
+      { toolName: "write", input: { file_path: "/w/a.ts" }, pathVerdict: "inside" as const },
+    ];
+    for (const over of cases) {
+      const r = clf.fastPath({ input: {}, cwd: "/w", skipFastPath: true, ...over });
+      expect(r, JSON.stringify(over)).toBeNull();
+    }
   });
 
   // G7：classifierInput 三态
@@ -55,6 +109,7 @@ describe("ToolClassifier fastPath", () => {
       input: {},
       cwd: "/w",
       classifierInput: undefined,
+      pathVerdict: "inside",
     });
     expect(r?.safe).toBe(true);
   });

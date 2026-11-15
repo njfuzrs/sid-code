@@ -21,6 +21,15 @@ import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 /** 风险等级 */
 export type RiskLevel = "none" | "low" | "medium" | "high" | "critical";
 
+/**
+ * M1：路径归属判定，由 checker 用 `PathValidator` 算好传进来。
+ * `unknown` = 请求里没有可判定的路径（无路径字段，或字段为空）。
+ *
+ * ⚠️ 这里只表达结论，不表达路径——分类器不持有 workspace / allowedDirectories，
+ * 也不该再写一套路径判断（M1 的根源就是「并行的第二套判定」）。
+ */
+export type PathVerdict = "inside" | "outside" | "unknown";
+
 /** 泛化分类请求（推理盲：不含 description / recentContext） */
 export interface ToolClassifyRequest {
   toolName: string;
@@ -34,6 +43,19 @@ export interface ToolClassifyRequest {
    * - undefined：无自定义视图，分类器回退原始 input
    */
   classifierInput?: string;
+  /**
+   * M1：目标路径是否落在工作目录集合内（工作区 ∪ `--add-dir` 白名单）。
+   * 缺省按 `"unknown"` 处理——**不放行**，落到 LLM。
+   * 为什么不给缺省 `"inside"`：调用方漏传时必须退化成「多花一次分类器」，
+   * 而不是「静默恢复成不判路径的旧行为」。
+   */
+  pathVerdict?: PathVerdict;
+  /**
+   * M1b：阶段一的终局原因是「请分类器看上下文」的确认
+   * （`pathValidation`，或 `classifierApprovable: true` 的 `safetyCheck`）时置 true。
+   * 置 true 后 fastPath 整段不生效——零成本拍板不能替阶段一做决定。
+   */
+  skipFastPath?: boolean;
 }
 
 /** 分类结果 */
@@ -95,6 +117,20 @@ const AUTO_ALLOW_TOOLS = new Set([
 /** 工具在工作区内执行 write/edit 时自动放行 */
 const ACCEPT_EDITS_TOOLS = new Set(["write", "edit"]);
 
+/**
+ * Level 1 里**不涉及路径**的只读工具：纯内存态清单 / 后台任务视图。
+ * 其余 `AUTO_ALLOW_TOOLS`（read / read_many / glob / grep / ls / ripgrep）都作用于文件系统路径，
+ * 必须拿到 checker 的 `pathVerdict === "inside"` 才放行（M1）。
+ */
+const PATH_FREE_ALLOW_TOOLS = new Set([
+  "bg_task_list",
+  "bg_task_get",
+  "task_list",
+  "task_get",
+  "task_create",
+  "task_update",
+]);
+
 const SYSTEM_PROMPT = `你是一个安全分析引擎。分析以下工具调用，判断它是否安全执行。
 
 判断标准：
@@ -126,24 +162,33 @@ export class ToolClassifier {
   /**
    * 三级快速路径漏斗（零 API 成本）
    * 返回 null 表示需要调 API
+   *
+   * M1/M1b：路径判定一律用 checker 给的 `pathVerdict`，本函数只做「结论匹配」。
+   * 以前这里自己写 `filePath.startsWith(req.cwd)`——那是并行的第二套路径判断，
+   * 既漏了 symlink / `..`（`/ws/../etc/x`），也漏了同前缀兄弟目录（`/ws-evil/x`）。
    */
   fastPath(req: ToolClassifyRequest): ToolClassifyResult | null {
+    // M1b：阶段一终局是「请分类器看上下文」的确认（工作区外读写、`.git/` / shell rc 等）
+    // 时快速路径整段不生效——`classifierApprovable: true` 的意思是「分类器看一眼」，
+    // 不是「快速路径拍板」。放在 Level 0 之前：工具自报「与安全无关」也不能越过它。
+    if (req.skipFastPath) return null;
+
     // Level 0（G7）：工具通过 toAutoClassifierInput 返回空串，声明与安全无关 → 跳过 LLM
     if (req.classifierInput === "") {
       return { safe: true, risk: "none", reason: "工具声明无安全关联，跳过分类" };
     }
 
-    // Level 1: 只读工具 → 直接安全
+    // Level 1: 只读工具 —— 带路径的必须判明在工作区内
     if (AUTO_ALLOW_TOOLS.has(req.toolName)) {
+      if (!PATH_FREE_ALLOW_TOOLS.has(req.toolName) && req.pathVerdict !== "inside") {
+        return null;
+      }
       return { safe: true, risk: "none", reason: "只读工具，无副作用" };
     }
 
     // Level 2: write/edit 在工作区内 → 自动放行
-    if (ACCEPT_EDITS_TOOLS.has(req.toolName)) {
-      const filePath = (req.input as any)?.file_path || "";
-      if (filePath && filePath.startsWith(req.cwd)) {
-        return { safe: true, risk: "low", reason: "工作区内文件编辑" };
-      }
+    if (ACCEPT_EDITS_TOOLS.has(req.toolName) && req.pathVerdict === "inside") {
+      return { safe: true, risk: "low", reason: "工作区内文件编辑" };
     }
 
     return null; // 需要 LLM 判断
