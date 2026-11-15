@@ -182,6 +182,29 @@ export interface ChildResultMessage {
   model?: string;
   /** 子代理实际使用的 provider 名（计费口径区分） */
   provider?: string;
+  /**
+   * 请求预算不足的结构化诊断值（F7）：仅当 `success=false` 且失败原因是
+   * 「窗口剩余连输出下限都放不下」时存在。
+   *
+   * 为什么必须结构化：以前这四个值只拼在 `output` 文案里，父进程想按窗口/输入
+   * 分流处理（重试更小的输入 / 直接报给用户 / 归因统计）只能正则解析人类可读文本。
+   * 字段名与 `llm/output-budget.ts` 的 `window_exhausted` 分支同名同义，两边可直传。
+   *
+   * 旧版本子进程 / 其它失败原因不带该字段 —— 消费方按可选处理。
+   */
+  diagnostics?: ChildRequestBudgetDiagnostics;
+}
+
+/** 请求预算不足的诊断值（F7）。语义与 `RequestOutputBudget` 的 `ok:false` 分支一致。 */
+export interface ChildRequestBudgetDiagnostics {
+  /** 上下文窗口（tokens） */
+  contextWindow: number;
+  /** 本次请求的输入估算（含 system / tools） */
+  estimatedInputTokens: number;
+  /** 窗口剩余 = 窗口 − 输入估算 − 安全缓冲 */
+  windowLimitTokens: number;
+  /** 窗口下界：窗口剩余低于它就不发请求 */
+  floorTokens: number;
 }
 
 /** 子进程崩溃消息 */

@@ -18,6 +18,7 @@ import {
   type ParentInitMessage,
   type ParentToolResultMessage,
   type ParentSignalMessage,
+  type ChildRequestBudgetDiagnostics,
   writeChildMsg,
   readLineFromStream,
 } from "@sid-code/core/agent/sub-agent-protocol.ts";
@@ -214,11 +215,17 @@ async function runAgentLoop(
 
   // 计费口径修复：result 显式回传子代理实际 model/provider（来自 init），
   // 父进程归集时按此计价，不再依赖兜底；spawn 与进程内模式口径一致。
-  const emitResult = (success: boolean, output: string): void => {
+  // F7：窗口放不下时把四个诊断值也结构化回传，父进程不必正则解析 output 文案。
+  const emitResult = (
+    success: boolean,
+    output: string,
+    diagnostics?: ChildRequestBudgetDiagnostics,
+  ): void => {
     writeChildMsg({
       type: "result",
       success,
       output,
+      ...(diagnostics ? { diagnostics } : {}),
       usage: totalUsage,
       turns,
       toolUseCount,
@@ -261,6 +268,12 @@ async function runAgentLoop(
           `上下文窗口不足以容纳本轮请求：窗口 ${sendBudget.contextWindow}，` +
             `输入估算 ${sendBudget.estimatedInputTokens}，剩余 ${sendBudget.windowLimitTokens}，` +
             `下限 ${sendBudget.floorTokens}`,
+          {
+            contextWindow: sendBudget.contextWindow,
+            estimatedInputTokens: sendBudget.estimatedInputTokens,
+            windowLimitTokens: sendBudget.windowLimitTokens,
+            floorTokens: sendBudget.floorTokens,
+          },
         );
         return;
       }
