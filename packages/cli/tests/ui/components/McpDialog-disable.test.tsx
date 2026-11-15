@@ -127,10 +127,16 @@ describe("M2 /mcp 面板禁用当场生效", () => {
         <McpDialog onClose={() => {}} mcpManager={mgr} />
       </KeypressProvider>,
     );
-    await r.press(""); // 等首帧
-    expect(r.frame()).toContain("playwright");
-    await r.press(KEY.enter); // 进入 server 菜单
-    expect(r.frame()).toContain("禁用");
+    // 首帧与「进入 server 菜单」这两步同样不能「press 完固定 sleep 再断言」：
+    // press 的默认等待是 ESC_TIMEOUT * 2 = 100ms，慢 runner 上一次 event loop 抢占
+    // 就能吃掉这个量级，于是帧还停在上一屏、断言先红（与 down/enter 之间同源）。
+    // 2026-11-15 复核发现这里只改了 down/enter 中间那一段，两头仍留着固定等待 ——
+    // 同文件同类风险要一次收干净，否则下一次 flake 只是换个行号。
+    const firstFrame = await waitFor(() => r.frame().includes("playwright"));
+    expect(firstFrame, `首帧应展示 server 列表；实际帧：\n${r.frame()}`).toBe(true);
+    await r.press(KEY.enter, 0); // 进入 server 菜单（不等固定时长，交给下面的轮询）
+    const menuShown = await waitFor(() => r.frame().includes("禁用"));
+    expect(menuShown, `进入 server 菜单后应展示「禁用」项；实际帧：\n${r.frame()}`).toBe(true);
     // 菜单：重新连接 / 禁用（toolCount 0 时无「查看工具」）
     //
     // ⚠️ 不要改回「down 之后固定 sleep 再 enter」：down 与 enter 之间存在竞态 ——

@@ -48,9 +48,10 @@ describe("慢测试拆分：服务端仍跑全量（这组是本文件的重点�
   test("ci.yml 用裸 bun test，不是 bun run test", () => {
     // 裸 `bun test` 不读 package.json 的 scripts，所以不受 --test-name-pattern 影响。
     // 一旦有人"统一风格"把它改成 `bun run test`，那 4 条 [slow] 立刻静默失去门禁。
-    expect(CI).toMatch(
-      /run:\s*bun test(?: --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\})?\s*$/m,
-    );
+    // 2026-11-15：test 步骤改成多行 block（macOS --retry=1 + tee 落盘给重试可见性），
+    // 所以从「精确匹配 run: 整行」放宽成「命令里出现分片 bun test」。
+    // 要守的语义不变：必须是裸 bun test，不是 `bun run test`。
+    expect(CI).toMatch(/bun test --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\}/);
     expect(CI).not.toMatch(/run:\s*bun run test\s*$/m);
   });
 
