@@ -199,4 +199,29 @@ describe("rulesPathsMatchFromOwner / ruleOwnerDir 单元", () => {
     expect(ruleOwnerDir("/r/pkg/.claude/rules/a/b.md")).toBe("/r/pkg");
     expect(ruleOwnerDir("/r/pkg/.sid-code/rules/x.md")).toBe("/r/pkg");
   });
+
+  test("ruleOwnerDir 不被 git worktree 路径里的 .sid-code 段截断", () => {
+    // worktree 默认建在 <repo>/.sid-code/worktrees/<name>/（见 worktree/ 模块），
+    // 段之后是 worktrees/<name>/... 而不是配置内容。判据若只看「最后一个
+    // .claude/.sid-code 段」，归属目录会被截到 worktree **之外**（主仓根），
+    // rulesPathsMatchFromOwner 于是判定 ownerDir 不在 root 内、退化成只按根一级匹配：
+    // packages/cli/src/ui/CLAUDE.md 的 src/ui/** 在 worktree 里永不命中，规则静默不注入
+    // （tests/build/rules-paths-scope-nonempty.test.ts 在 worktree 里稳定 2 fail）。
+    const wt = "/r/.sid-code/worktrees/fix-x";
+    expect(ruleOwnerDir(`${wt}/packages/cli/src/ui/CLAUDE.md`)).toBe(`${wt}/packages/cli/src/ui`);
+    expect(ruleOwnerDir(`${wt}/evals/CLAUDE.md`)).toBe(`${wt}/evals`);
+    // worktree 自己的配置目录仍要正常收拢（段之后是 rules/ 或段内单文件）
+    expect(ruleOwnerDir(`${wt}/.claude/CLAUDE.md`)).toBe(wt);
+    expect(ruleOwnerDir(`${wt}/.claude/rules/ui.md`)).toBe(wt);
+    expect(ruleOwnerDir(`${wt}/.sid-code/rules/ui.md`)).toBe(wt);
+    // 端到端：owner 落在 worktree 根之内，「相对本包」的写法才走得到逐级链
+    expect(
+      rulesPathsMatchFromOwner(
+        ["src/ui/**"],
+        ["packages/cli/src/ui/a.ts"],
+        ruleOwnerDir(`${wt}/packages/cli/src/ui/CLAUDE.md`),
+        wt,
+      ),
+    ).toBe(true);
+  });
 });
