@@ -116,57 +116,22 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   });
 });
 
-describe("MemoryTool save_memory — G13 agent scope", () => {
-  let tmpHome: string;
-  let prevEnv: string | undefined;
+describe("agent scope 已删除（06H1 T5b）", () => {
+  // 曾经这里有三条断言 agent scope 写入/拦截的用例。T5b 判定该功能为死功能并删除
+  // （写入端 save_memory 在子代理侧被 ALL_AGENT_DISALLOWED_TOOLS 硬禁，读端注入
+  // 永远拿不到内容）。保留反向断言，防止 scope 枚举被无意加回来。
+  const scopeShape = (tool: MemoryTool) => (tool.zodSchema as any).shape.scope;
 
-  beforeEach(() => {
-    prevEnv = process.env.SID_CONFIG_DIR;
-    tmpHome = mkdtempSync(join(tmpdir(), "sid-agentscope-"));
-    process.env.SID_CONFIG_DIR = tmpHome;
+  test("schema 不再接受 scope=agent", () => {
+    const tool = new MemoryTool(new MemoryStore(process.cwd()));
+    expect(scopeShape(tool).safeParse("agent").success).toBe(false);
   });
 
-  afterEach(() => {
-    if (prevEnv === undefined) delete process.env.SID_CONFIG_DIR;
-    else process.env.SID_CONFIG_DIR = prevEnv;
-    try {
-      rmSync(tmpHome, { recursive: true, force: true });
-    } catch {}
-  });
-
-  test("主会话（无 agentType）用 agent scope 被引导改用 project/global", async () => {
-    const tool = new MemoryTool(new MemoryStore(tmpHome));
-    const r = await tool.execute({ type: "project", key: "k", value: "v", scope: "agent" });
-    expect(r.isError).toBe(true);
-    expect(r.output).toContain("agent 范围仅在子代理内可用");
-  });
-
-  test("子代理（有 agentType）用 agent scope 成功写入并可读回", async () => {
-    const tool = new MemoryTool(new MemoryStore(tmpHome), "code-review");
-    const r = await tool.execute({
-      type: "project",
-      key: "review-habit",
-      value: "本仓 review 关注错误处理路径的覆盖",
-      scope: "agent",
-    });
-    expect(r.isError).toBeFalsy();
-    expect(r.output).toContain("agent 范围");
-
-    const { getAgentIndexContent } = await import("@sid-code/core/memory/agent-store.ts");
-    const idx = await getAgentIndexContent("code-review");
-    expect(idx).toContain("review-habit");
-  });
-
-  test("agent scope 仍走 secret 拦截（含 token 被拒）", async () => {
-    const tool = new MemoryTool(new MemoryStore(tmpHome), "security-audit");
-    const r = await tool.execute({
-      type: "project",
-      key: "leak",
-      value: "token 是 ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-      scope: "agent",
-    });
-    expect(r.isError).toBe(true);
-    expect(r.output).toContain("敏感信息");
+  test("schema 仍接受三个有效 scope", () => {
+    const tool = new MemoryTool(new MemoryStore(process.cwd()));
+    for (const s of ["global", "project", "team"]) {
+      expect(scopeShape(tool).safeParse(s).success).toBe(true);
+    }
   });
 });
 
