@@ -177,7 +177,8 @@ const EXPECTED_FULL = [
  *   `send_message`、`schedule_wakeup`、`task_stop`、`cron_*`、`team_*`、
  *   `hypothesis_*`（默认关闭的实验工具）。
  * - 已由专用渲染 / header 摘要承担：`task_output`（`extractTaskOutputDisplay`）、
- *   `bg_task_list`（`extractTaskListDisplay`）、`bg_task_get`、`task_get`、`task_list`。
+ *   `bg_task_list`（`extractTaskListDisplay`）、`task_get`、`task_list`。
+ *   （`bg_task_get` 已于 D5/T8 并入 `task_output`，不再是独立工具名。）
  * - **待评估**（输出确实可能很长，但当前有专属摘要或结果形态尚未核）：`sub_agent`、
  *   `workflow`、`ListMcpResources`、`ReadMcpResource`、`StructuredOutput`。
  */
@@ -186,7 +187,6 @@ const EXPECTED_UNDECLARED = [
   "ReadMcpResource",
   "StructuredOutput",
   "ask_user_question",
-  "bg_task_get",
   "bg_task_list",
   "cron_create",
   "cron_delete",
