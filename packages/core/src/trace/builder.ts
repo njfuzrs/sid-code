@@ -14,6 +14,9 @@
 
 import { createHash } from "node:crypto";
 
+import { normalizeCacheUsage } from "../llm/types.ts";
+import { inferProviderByModelName } from "../llm/provider-infer.ts";
+
 // ─── 数据结构定义 ───
 
 /** 单次 LLM 请求/响应对 */
@@ -236,9 +239,10 @@ export interface TraceMetadata {
   total_tokens_sent: number;
   total_tokens_received: number;
   /**
-   * DISP-1：累计输入 prompt token（flow 口径，逐次累加）。
-   * total_tokens_sent 是末次值（stock，含全历史），与逐次累加的 total_cost_usd 口径不可比；
+   * DISP-1：累计输入 prompt token（flow 口径，逐次累加，**跨 provider 归一化**）。
+   * total_tokens_sent 是末轮快照（stock，含全历史），与逐次累加的 total_cost_usd 口径不可比；
    * 此字段与 cost 同为 flow，用于"花了多少钱 ↔ 累计喂了多少 token"的可比对照。
+   * T1 第二步起两者同为归一化口径（未命中+命中+写入），但 stock ≠ flow 这条铁律不变。
    */
   total_cumulative_prompt_tokens: number;
   /**
@@ -549,10 +553,11 @@ export interface TrajectoryMetaOutput {
   total_cache_creation_tokens: number;
   total_tokens: number;
   /**
-   * DISP-1 / §6.3：累计输入 prompt token（flow 口径，逐次累加）。
-   * total_tokens_sent 是末次值（stock，含全历史），与逐次累加的 total_cost_usd 口径不可比；
+   * DISP-1 / §6.3：累计输入 prompt token（flow 口径，逐次累加，**跨 provider 归一化**）。
+   * total_tokens_sent 是末轮快照（stock，含全历史），与逐次累加的 total_cost_usd 口径不可比；
    * 此字段与 cost 同为 flow，外部系统应用它和 total_cost_usd 做"每 token 花费"的可比除法，
    * 切勿用 total_cost_usd / total_tokens_sent（stock÷flow 会得到错误单价）。
+   * T1 第二步起两者同为归一化口径（未命中+命中+写入），但 stock ≠ flow 这条铁律不变。
    */
   total_cumulative_prompt_tokens: number;
   /**
@@ -1087,7 +1092,19 @@ export function buildTrajectory(
       cacheReadTokens += pair.usage.cache_read_input_tokens;
       cacheCreationTokens += pair.usage.cache_creation_input_tokens;
     }
-    tokensSent = pairs[pairs.length - 1].usage.input_tokens;
+    // 计量与成本方案 T1（第二步）：fallback 也要归一化。
+    // 否则同一会话在「metadata 有统计」与「靠 pairs 重算」两条路径上会得到
+    // 不同口径的 tokens_sent（前者归一化、后者 provider 原始），差一个缓存量。
+    const lastUsage = pairs[pairs.length - 1].usage;
+    tokensSent = normalizeCacheUsage(
+      {
+        inputTokens: lastUsage.input_tokens,
+        outputTokens: lastUsage.output_tokens,
+        cacheReadInputTokens: lastUsage.cache_read_input_tokens,
+        cacheCreationInputTokens: lastUsage.cache_creation_input_tokens,
+      },
+      inferProviderByModelName(metadata.model ?? ""),
+    ).promptTotal;
   }
 
   // S12：会话是否已收尾。SessionEnd 同时写 end_time 与 end_source（collector handleSessionEnd），

@@ -125,6 +125,13 @@ export interface Checker {
    */
   getBashClassifier?(): import("./bash-classifier.ts").BashClassifier | null;
   /**
+   * 获取泛化工具分类器（auto 模式核心，可选）。
+   *
+   * M5：CLI 侧构造计划审批框时要用 `isAvailable()` 判断「auto 那一项该不该出现」——
+   * 列出选了会静默失效的档位比不列更糟。做成可选是为了让测试 stub 不必都实现它。
+   */
+  getToolClassifier?(): import("./tool-classifier.ts").ToolClassifier | null;
+  /**
    * 设置命令作用域 allow 规则（斜杠命令 / skill 的 `allowed-tools`），返回被剥离的危险规则（可选）。
    * 生命周期由调用方负责：inline 命令 = 触发它的那一轮，结束（含异常 / 中断）必须
    * {@link clearCommandScopedRules}。
