@@ -31,8 +31,13 @@ import { MEMORY_FORK_REQUIRED_TOOLS } from "../../agent/fork-prefix.ts";
 
 /**
  * 解析抽取节流间隔（横向剖析 T2）。优先级：env `SID_CODE_MEMORY_EXTRACT_INTERVAL` >
- * settings `memoryExtractInterval` > 1。非正整数一律回落 1（宁可行为不变，也不让一个
+ * settings `memoryExtractInterval` > 3。非正整数一律回落缺省值（宁可行为不变，也不让一个
  * 拼错的值把抽取整个关掉 —— 关掉有专门的 autoMemory 开关）。
+ *
+ * 缺省 3 的依据（2026-11-15 复查 T2 生产数据）：872 次真跑、849 条写入，平均每次
+ * 0.97 条；N=3 把 fork 调用压到约 1/3（少跑约 2/3），而每条记忆平均被 3 个 end_turn
+ * 后再写 —— 抽取 fork 每次都看完整对话，晚写不丢上下文。收尾 `drainPending` 对积压
+ * 补跑一次，长会话不会因为最后一个不足 N 的尾巴而漏抽。
  */
 export function resolveMemoryExtractInterval(settingValue?: number): number {
   const parse = (v: unknown): number | undefined => {
@@ -44,7 +49,7 @@ export function resolveMemoryExtractInterval(settingValue?: number): number {
     const n = parse(env);
     if (n !== undefined) return n;
   }
-  return parse(settingValue) ?? 1;
+  return parse(settingValue) ?? 3;
 }
 
 /**
