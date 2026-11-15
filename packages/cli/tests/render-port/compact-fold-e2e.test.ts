@@ -299,10 +299,14 @@ describe("compact 折叠端到端（方案 §4.3 的自动化替代）", () => {
     // 判据 1：每条 read 卡片占一行（标题行带结果规模「N 行」），正文不出现。
     // 行数不硬编码：`read` 的输出带一行文件头，实测 20 行文件报「21 行」；断言的是
     // 「每条卡片都有规模摘要且成一行」这个契约，不是具体数字。
+    //
+    // ⚠️ 行首字形**不进断言**：`figures.ts` 的 `BULLET` 在 macOS 是 `⏺`、其它平台回退 `●`
+    // （L1.1 的跨平台回退）。硬编码任一个都会在另一平台的 CI 上红——第一版写死 `⏺`，
+    // ubuntu 分片直接报 0 条卡片。判据是「成一行 + 有摘要」，字形不是契约。
     const readCardLines = folded
       .split("\n")
       .map((l) => l.trim())
-      .filter((l) => /^⏺ read FILE_\d+ — \d+ 行$/.test(l));
+      .filter((l) => /read FILE_\d+ — \d+ 行$/.test(l));
     console.log(`[compact-e2e] read 卡片行：\n${readCardLines.join("\n")}`);
     expect({ readCards: readCardLines.length }).toEqual({ readCards: FILE_COUNT });
     // 折叠态正文零行：12 个文件的首行 marker 一个都不该出现
