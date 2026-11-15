@@ -6847,14 +6847,20 @@ export function aggregateTodoStats(
 }
 
 /**
- * 「这次工具调用是一次等待启动」的回执特征（bash 后台 / schedule_wakeup 两个入口的文案）。
+ * 「这次工具调用是一次等待启动」的回执特征（bash 后台 / monitor / schedule_wakeup 三个入口的文案）。
  *
- * 与 `bash.ts` / `schedule-wakeup.ts` 的回执逐字对应。改了那边的文案必须同步这里——
+ * 与 `bash.ts` / `monitor.ts` / `schedule-wakeup.ts` 的回执逐字对应。改了那边的文案必须同步这里——
  * 不同步的失败形态是 `staleNotificationClaims` 静默变成 0（永远不命中），
- * 而不是报错。所以这里用**窄**匹配（只认这两句启动回执），不扩大成
+ * 而不是报错。所以这里用**窄**匹配（只认这三句启动回执），不扩大成
  * 「任何提到后台任务的文本」：启动回执本身也提到 `<task-notification>`。
+ *
+ * monitor 的 id 形如 `m` + 8 位小写字母数字（`monitor.ts` 的启动回执是
+ * `已启动监控 <id>（<描述>），最晚 …`）。漏掉它会让「monitor 起的等待」整条
+ * 路径的误读不计入，指标看起来更好而问题没变——这正是 20261112 方案 R9 修法 3
+ * 要求覆盖的第三个入口。
  */
-const WAIT_LAUNCH_RECEIPT_RE = /命令已作为后台任务启动|已安排 \d+s 后唤醒一次/;
+const WAIT_LAUNCH_RECEIPT_RE =
+  /命令已作为后台任务启动|已启动监控 m[a-z0-9]{8}|已安排 \d+s 后唤醒一次/;
 
 /**
  * R3 误读的措辞（「等待刚起就声称它又被杀 / 又超时」）。
@@ -6976,9 +6982,10 @@ function countStaleNotificationClaims(history: unknown): number | undefined {
  * 只把外部状态读回来。反复调它们不产生进展，是"等待"而非"工作"。
  *
  * 名字是从工具注册处核对过的实名（`bg_task_list` 见 tool/task-list.ts、
- * `bg_task_get` 见 tool/task-get.ts、`task_list`/`task_get` 是结构化任务清单侧的
+ * `task_list`/`task_get` 是结构化任务清单侧的
  * 两个同类）。**不要凭印象往里加名字**：多算一个就会让 pollRatio 虚高，
  * 而这个比值是"该不该看这次会话"的分诊主键。
+ * （`bg_task_get` 已于 D5/T8 并入 `task_output`，不再是独立工具名。）
  *
  * ⚠️ 缺陷 31：与 `agent/loop-detection.ts` 的 `CONDITIONALLY_EXEMPT_TOOLS` **刻意不同源**，
  * 两者回答的问题不同：
@@ -6989,12 +6996,7 @@ function countStaleNotificationClaims(history: unknown): number | undefined {
  * 改任何一侧都要过 `tests/trace/poll-tools-alignment.test.ts`：差集必须等于这里登记的例外，
  * 否则名单变一个元素，`pollRatio` 曲线就整体平移且没人知道。
  */
-export const POLL_TOOLS: ReadonlySet<string> = new Set([
-  "bg_task_list",
-  "bg_task_get",
-  "task_list",
-  "task_get",
-]);
+export const POLL_TOOLS: ReadonlySet<string> = new Set(["bg_task_list", "task_list", "task_get"]);
 
 /** POLL_TOOLS 与 CONDITIONALLY_EXEMPT_TOOLS 的**已登记**差异（缺陷 31 的对账门禁读它） */
 export const POLL_TOOLS_VS_CONDITIONAL_EXEMPT = {

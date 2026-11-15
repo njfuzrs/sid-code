@@ -178,6 +178,60 @@ describe("N3 循环展开（for / while / until）", () => {
       "gh:pr:1,2",
     );
   });
+
+  // R5（2026-11-15）：循环外还有**其它查询段**时，之前整条判 null。
+  // `matchLoopQuery` 要求 `loop.outside` 全部无害，但 `gh pr view 1` 不是无害段，
+  // 于是 `gh pr view 1; for n in …; do gh pr view $n; done`（真实轨迹 4 条）漏拦。
+  // 与主判据 2「查询段之前也可以是查询」（`gh pr status && gh pr checks 1`）自相矛盾。
+  test("循环外还有其它查询段 → 仍命中（不因位置不同而漏）", () => {
+    const m = matchStatusQuery(
+      "gh pr view 1 --json state; for n in 787 785; do gh pr view $n --json statusCheckRollup; done",
+    );
+    expect(m?.subject).toBe("gh:pr:785,787");
+    expect(m?.family).toBe("gh_pr_view");
+  });
+
+  test("循环外的查询在 `done` 之后同样允许（`for …; done; gh pr view 1`）", () => {
+    expect(
+      matchStatusQuery(
+        "for n in 787; do gh pr view $n --json state; done; gh pr view 1 --json state",
+      )?.subject,
+    ).toBe("gh:pr:787");
+  });
+
+  test("循环外是只读过滤段 → 仍命中", () => {
+    expect(
+      matchStatusQuery(
+        "gh pr view 1 --json state | head -5; for n in 787; do gh pr view $n --json state; done",
+      ),
+    ).not.toBeNull();
+  });
+
+  test("循环外含写操作 → 仍放行（安全边界不放松）", () => {
+    for (const cmd of [
+      "gh pr merge 1 --auto; for n in 787; do gh pr view $n --json state; done",
+      "git push origin main; for n in 787; do gh pr view $n --json state; done",
+      "for n in 787; do gh pr view $n --json state; done; gh pr merge 1 --auto",
+    ]) {
+      expect(matchStatusQuery(cmd)).toBeNull();
+    }
+  });
+
+  test("循环外查询段进签名：不同 family 不互相污染，同一命令签名稳定", () => {
+    const withRun = matchStatusQuery(
+      "gh run view 1 --json status; for n in 787; do gh pr view $n --json state; done",
+    );
+    const withPr = matchStatusQuery(
+      "gh pr view 1 --json state; for n in 787; do gh pr view $n --json state; done",
+    );
+    const withPrAgain = matchStatusQuery(
+      "gh pr view 1 --json state; for n in 787; do gh pr view $n --json state; done",
+    );
+    expect(withRun).not.toBeNull();
+    expect(withPr).not.toBeNull();
+    expect(withRun!.signature).not.toBe(withPr!.signature);
+    expect(withPr!.signature).toBe(withPrAgain!.signature);
+  });
 });
 
 // ─────────────────────────────── 2. 只读过滤管道 ───────────────────────────────
