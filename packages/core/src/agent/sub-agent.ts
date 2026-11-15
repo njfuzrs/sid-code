@@ -27,7 +27,7 @@ import type { HookSystem } from "../hook/system.ts";
 import type { Checker } from "../permission/types.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
-import { filterToolsForAgent } from "./tool-filter.ts";
+import { filterToolsForAgent, isAllAgentDisallowedTool } from "./tool-filter.ts";
 import { ruleToToolName } from "../tool/allowed-tools-spec.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
 import { JitContextManager, JIT_CONTEXT_DEFAULT } from "../config/jit-context.ts";
@@ -347,6 +347,14 @@ function getSystemPrompt(type: string): string {
  *
  * 注入语言铁律、环境信息到子代理的基础系统提示词中。
  * 从硬编码改为统一增强函数，语言规则从主代理配置继承。
+ *
+ * ⚠️ **子代理一律不带主代理的项目指令（CLAUDE.md）**，此处不注入、也不提供开关。
+ * 曾有一个 `AgentDefinition.omitClaudeMd` 字段（对标 cc 的同名选项）声称「只读探查类省 token」，
+ * 但全仓零读取——子代理从来没带过项目指令，那个字段是纯装饰。已删除（06H1 T5a）。
+ * 为什么不趁此做成开关：本地样本只有 task 3 次 / general-purpose 6 次，没有证据说明
+ * 「不带」造成了问题；而带上会让 task 类子代理的 system 从几百字符涨到几万，
+ * 属于用确定的 token 成本换一个未经证实的收益。需要项目约定的子代理由调用方
+ * 在任务描述里显式转述。
  */
 async function enhanceSubAgentPrompt(
   basePrompt: string,
@@ -462,23 +470,13 @@ async function enhanceSubAgentPrompt(
     }
   }
 
-  // G13：按 agent 类型注入历史积累记忆（跨会话领域经验）。
-  // 无该类型记忆时返回空串，行为与改动前一致（向后兼容）。
-  let agentMemorySection = "";
-  if (agentType) {
-    try {
-      const { buildAgentMemoryInjection } = await import("../memory/agent-store.ts");
-      agentMemorySection = await buildAgentMemoryInjection(agentType);
-    } catch {
-      // 记忆读取失败不阻断子代理启动
-    }
-  }
-
-  // 组装顺序：base prompt → 预加载技能（语言铁律后、env 前）→ notes（含语言/环境）→ agent memory。
+  // 组装顺序：base prompt → 预加载技能（语言铁律后、env 前）→ notes（含语言/环境）。
+  // 曾在此按 agentType 注入「该类型子代理的历史记忆」（G13），06H1 T5b 已删除：
+  // 写入端 save_memory 在子代理侧被硬禁，这份注入永远是空串，属于死功能。
   let enhanced = basePrompt;
   if (skillSection) enhanced += `\n\n---\n\n${skillSection}`;
   enhanced += `\n\n---\n\n${notes.join("\n")}`;
-  return agentMemorySection ? `${enhanced}\n\n${agentMemorySection}` : enhanced;
+  return enhanced;
 }
 
 /** 自定义子代理任务（Skills/Agents 用） */
@@ -1321,14 +1319,30 @@ export class SubAgent {
     }
     const out: LegacyTool[] = [];
     const missing: string[] = [];
+    const banned: string[] = [];
     const seen = new Set<string>();
     for (const raw of task.allowedTools) {
       const name = ruleToToolName(raw);
       if (seen.has(name)) continue;
       seen.add(name);
+      // Layer 1 硬禁：这条路径是「按名从 registry 直接取」，不过 filterToolsForAgent，
+      // 所以必须自己判一次。少了它，agent frontmatter 里写 `tools: [monitor]` 就能把
+      // 硬禁工具拿回去，而硬禁理由（如 monitor 生命周期 30 分钟 > 子代理，事件无人消费）
+      // 在这条路径上完全失效。判据与 filterToolsForAgent 共用，避免只堵一边。
+      if (isAllAgentDisallowedTool(name)) {
+        banned.push(raw);
+        continue;
+      }
       const tool = this.toolRegistry.get(name);
       if (tool) out.push(tool);
       else missing.push(raw);
+    }
+    if (banned.length > 0) {
+      // 与 missing 分开报：工具存在、只是被策略裁掉，排查时不该被误认成「名字写错了」。
+      getLogger().warn(
+        "SUBAGENT",
+        `[custom] 声明的工具属于所有子代理硬禁范围，已忽略: ${banned.join(", ")}（类型 ${task.type ?? "custom"}）`,
+      );
     }
     if (missing.length > 0) {
       getLogger().warn(
@@ -2811,16 +2825,6 @@ export class SubAgent {
       // 实现进程内 todo 追踪隔离（与 FileReadTracker 工具同构思路，无需跨执行器传 agentId）。
       if (!replacement && t.name() === "todo_write") {
         replacement = new TodoWriteTool();
-      }
-      // G13：save_memory 绑定当前子代理类型，让 agent scope 能定位到该类型记忆目录。
-      // 用鸭子类型探测 withAgentType，避免对 MemoryTool 的强类型 import 依赖。
-      if (
-        !replacement &&
-        agentType &&
-        t.name() === "save_memory" &&
-        typeof (t as any).withAgentType === "function"
-      ) {
-        replacement = (t as any).withAgentType(agentType) as LegacyTool;
       }
       tools.register(replacement ?? t);
     }

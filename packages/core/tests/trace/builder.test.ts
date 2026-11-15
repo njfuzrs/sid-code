@@ -834,8 +834,9 @@ describe("buildTrajectory", () => {
     });
 
     const result = buildTrajectory([pair1, pair2], metadata);
-    // input_tokens 含整段历史，取 last（200）；其它是每 turn 增量，累加
-    expect(result.info.model_stats.tokens_sent).toBe(200);
+    // input_tokens 含整段历史，取 last；其它是每 turn 增量，累加。
+    // T1 第二步起 tokens_sent 按归一化口径：200（未命中）+ 20（命中）+ 0（写入）= 220
+    expect(result.info.model_stats.tokens_sent).toBe(220);
     expect(result.info.model_stats.tokens_received).toBe(130);
     expect(result.info.model_stats.cache_read_tokens).toBe(30);
     expect(result.info.model_stats.cache_creation_tokens).toBe(5);
