@@ -178,6 +178,7 @@ import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
 import { mergeAnchoredItems } from "./ui/local-command-items.ts";
+import { appendPersistentHintTo } from "./ui/persistent-hint.ts";
 import { resolvePanel } from "./command/executor.ts";
 import { applyRuleToolDenylist } from "./utils/project-rules-tool-denylist.ts";
 import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-result-route.ts";
@@ -10752,14 +10753,19 @@ export class App {
      * 与命令结果同走 localCommandItems 侧表——不进 ctxMgr（不发给模型），但全量重建时不丢。
      */
     const appendPersistentHint = (text: string) => {
-      const item: import("./ui/types.ts").HistoryItemWithoutId = { type: "hint", text };
-      localCommandItems.push({ anchor: this.ctxMgr.getMessages().length, item });
-      historyIdCounter += 1;
       updateState({
-        historyItems: [
-          ...bridge.current.historyItems,
-          { ...item, id: historyIdCounter } as import("./ui/types.ts").HistoryItem,
-        ],
+        historyItems: appendPersistentHintTo(
+          {
+            historyItems: bridge.current.historyItems,
+            localItems: localCommandItems,
+            anchor: this.ctxMgr.getMessages().length,
+            allocateId: () => {
+              historyIdCounter += 1;
+              return historyIdCounter;
+            },
+          },
+          text,
+        ),
       });
     };
 
