@@ -32,10 +32,21 @@ export function readIndexCapacity(memoryDir: string): IndexCapacity {
   try {
     const text = readFileSync(p, "utf8");
     const entries = (text.match(/^\s*-\s*\[[^\]]*\]\([^)]*\)/gm) ?? []).length;
+    const bytes = utf8Bytes(text);
     return {
       entries,
-      bytes: utf8Bytes(text),
-      truncated: text.includes(INDEX_TRUNCATION_NOTICE.trim()),
+      bytes,
+      // 两个判据取「或」，缺一不可：
+      // ① 文案是写侧（`buildTruncatedIndex`）留下的直接信号，认得就认；
+      // ② 上限兜底 —— 文案里嵌着 `INDEX_MAX_ENTRIES` / `INDEX_MAX_BYTES` 的数字，
+      //    常量一改，旧 MEMORY.md 里存的还是旧数字，`includes` 会**静默匹配失败**。
+      //    只看文案的话，改常量后到下次 `writeIndex` 之前，T3 的 index_full 拦截会整体失效。
+      // ③ 边界不误报：`entries === 上限` 时写侧确实会截断（见 buildTruncatedIndex ①），
+      //    而 `bytes === 上限` 时写侧仍可能放下（逐行试放），所以字节用严格大于。
+      truncated:
+        text.includes(INDEX_TRUNCATION_NOTICE.trim()) ||
+        entries >= MEMORY_LIMITS.INDEX_MAX_ENTRIES ||
+        bytes > MEMORY_LIMITS.INDEX_MAX_BYTES,
     };
   } catch {
     return { entries: 0, bytes: 0, truncated: false };

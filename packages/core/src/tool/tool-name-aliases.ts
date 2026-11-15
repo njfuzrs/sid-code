@@ -48,14 +48,30 @@ const CC_LEGACY_NAMES: Readonly<Record<string, string>> = {
   Task: "sub_agent",
 };
 
+/**
+ * 已退役的内部名 → 现行内部名（D5/T8：2026-11-15）。
+ *
+ * 为什么单独一张表而不是塞进 `CC_TO_INTERNAL_TOOL_NAME`：那张表的语义是「CC 有、sid 有对应」，
+ * 长度与 CC 工具数对账（`tests/tool/tool-name-aliases.test.ts`）；退役内部名是 sid 自己的历史，
+ * 混进去会让对账断言失去意义。
+ *
+ * 登记后 `toInternalToolName` 对旧名返回现行名，权限规则 / hook matcher / 子代理黑名单
+ * 三处消费方自动归一；注册表另有 `Registry.aliases` 兜住「模型仍然直接调旧名」的查找。
+ */
+export const RETIRED_INTERNAL_TOOL_NAMES: Readonly<Record<string, string>> = {
+  // D5（T8）：两个功能重叠的后台任务查询工具合并，bg_task_get 的独有字段已并入 task_output。
+  bg_task_get: "task_output",
+};
+
 /** 小写 key → 内部名（大小写不敏感查找用；内部名自身也登记，`bash`/`BASH` 都归到 `bash`） */
 const LOOKUP: ReadonlyMap<string, string> = (() => {
   const m = new Map<string, string>();
-  for (const [cc, internal] of Object.entries({
+  for (const [from, internal] of Object.entries({
     ...CC_TO_INTERNAL_TOOL_NAME,
     ...CC_LEGACY_NAMES,
+    ...RETIRED_INTERNAL_TOOL_NAMES,
   })) {
-    m.set(cc.toLowerCase(), internal);
+    m.set(from.toLowerCase(), internal);
     m.set(internal.toLowerCase(), internal);
     // 去掉下划线的写法（`notebookedit` / `webfetch`）沿用 permission/rules.ts 旧别名的口径
     m.set(internal.replace(/_/g, ""), internal);

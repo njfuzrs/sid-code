@@ -1278,9 +1278,10 @@ describe("TraceCollector", () => {
     });
 
     const meta = collector.getMetadata()!;
-    // input_tokens 是"本次 API 调用的 prompt 总长度"，每次都含全部历史 → 取 last（200）
+    // input_tokens 是"本次 API 调用的 prompt 总长度"，每次都含全部历史 → 取 last
     // 累加会 N² 过计数（case_028 实测：29 次累加 3.65M / 实际 167k）
-    expect(meta.total_tokens_sent).toBe(200);
+    // T1 第二步起 stock 也按归一化口径：200（未命中）+ 20（命中）+ 0（写入）= 220
+    expect(meta.total_tokens_sent).toBe(220);
     expect(meta.total_tokens_received).toBe(130);
     expect(meta.total_cache_read_tokens).toBe(30);
     expect(meta.total_cache_creation_tokens).toBe(5);

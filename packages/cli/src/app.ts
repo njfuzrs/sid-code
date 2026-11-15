@@ -4333,6 +4333,8 @@ export class App {
           // 不共享主代理 tracker——避免 forked agent 读 .session_memory.md 污染主代理
           // 缓存新鲜度、绕过「先读后写」护栏。对标 cc cloneFileStateCache。
           statefulTools: createStatefulTools(new FileReadTracker()),
+          // X1H2 T3：forked 工具/模型 span 显式挂会话根，父不随启动时机漂移
+          rootSpanId: this.telemetryProbe?.rootSpanId(),
         }),
         canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
         // CG-1 / R1：与上面的 sessionMemoryFile 同源，都按工作区根，不随 cd / worktree 漂。
@@ -5415,6 +5417,8 @@ export class App {
           // FileReadTracker 隔离（缺口 A）：提取代理读文件用独立 tracker，
           // 不污染主代理「先读后写」护栏。
           statefulTools: createStatefulTools(new FileReadTracker()),
+          // X1H2 T3：与 session-memory 同口径，forked span 显式挂会话根
+          rootSpanId: this.telemetryProbe?.rootSpanId(),
         }),
         memoryDir,
         canUseTool: createExtractPermissions(memoryDir),
