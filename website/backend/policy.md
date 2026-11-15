@@ -111,7 +111,8 @@ description: 在管理台给组织、团队或单台设备下发企业策略：�
 | 禁用全部 Hook | `disableAllHooks` | 开关 | 任何来源的 hook 都不执行 |
 | 只允许托管 Hook | `allowManagedHooksOnly` | 开关 | 只执行企业托管的 hook，用户级、项目级、插件的 hook 被屏蔽 |
 | 只允许策略里的权限规则 | `allowManagedPermissionRulesOnly` | 开关 | 只认企业策略里的权限规则 |
-| 禁用 bypass 权限模式 | `disableBypassPermissionsMode: "disable"` | 开关 | `--dangerously-skip-permissions` 和 `always-allow` 直接报错退出 |
+| 禁用 bypass 权限模式 | `disableBypassPermissionsMode: "disable"`（顶层或 `permissions.` 下都认） | 开关 | `--dangerously-skip-permissions` 和 `always-allow` 直接报错退出 |
+| 禁用 auto 模式 | `permissions.disableAutoMode: "disable"` | 开关 | `auto` 模式不可用，等价于在 `disabledModes` 里加 `auto` |
 | 禁用的权限模式 | `disabledModes` | 多选，见下 | 对应模式不可用 |
 | 禁止 Bridge 远程控制 | `bridgeEnabled: false` | 开关 | 这些设备不再接受遥控，见[遥控](/backend/bridge)。不打开等于不限制 |
 | 限制插件来源（strictKnownMarketplaces） | `strictKnownMarketplaces` | 开关 + 市场 index URL 列表 | 只能从列出的市场安装 / 加载插件，见下 |
@@ -120,6 +121,8 @@ description: 在管理台给组织、团队或单台设备下发企业策略：�
 **`policyLimits` 只有这四项真的会拦**：`mcp`、`sub_agent`、`custom_commands`、`extensions`。其他名字写进去会 422，提示里会告诉你该用哪个字段（例如 hooks 用「禁用全部 Hook」，bypass 用「禁用 bypass 权限模式」）。
 
 **`disabledModes` 的 9 个有效值**：`default`、`manual`、`always-allow`、`deny-write`、`acceptEdits`、`plan`、`dontAsk`、`auto`、`dangerously-skip-permissions`。
+
+**`disableBypassPermissionsMode` / `disableAutoMode` 写在哪里都认**：写在顶层（现有写法）或 `permissions.` 下（对齐 Claude Code settings.json 的位置）都生效，两处都写时**按更严的那个算**——任一处为 `"disable"` 就是禁用，不会被另一处的 `"allow"` 抵掉。这样从 Claude Code 迁过来的管理员照原文档写 `permissions.disableBypassPermissionsMode` 不会静默失效。注意 `disableAutoMode` 只有 `permissions.` 下这个位置会走**远程下发**（远程键是与服务端对齐的闭集），顶层只对本地 `managed-settings.json` 生效。
 
 **`disableBypassPermissionsMode` 是最该配的一项**。不配它，`--dangerously-skip-permissions` 会跳过危险命令拦截、敏感文件保护、路径校验与 safetyCheck——上面靠这些静态防护层成立的约束就都有了总开关（deny 规则、`disallowedTools` 和会话内拒绝例外，它们在 skip 档下仍然生效，见[企业 policy 与安全边界](/team/policy#能力边界-如实说)第 1 条）。
 
