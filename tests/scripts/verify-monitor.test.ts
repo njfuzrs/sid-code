@@ -631,6 +631,52 @@ describe("analyzeWakeupTurn · N2 的判据取数", () => {
     expect(facts.toolsInWindow).toBe(3);
   });
 
+  // R5（2026-11-15）：只认 schedule_wakeup 会把「模型改用后台 bash / monitor」误判成 FAIL，
+  // 2026-11-10~13 的 6 次 G3 全被记成「文案没引到等待原语」，实际模型走的是合法路径。
+  test("没排唤醒但起了后台 bash → otherWaitPrimitive=true（判 INVALID，不是 FAIL）", () => {
+    const facts = analyzeWakeupTurn(
+      [pre("bash", { command: "gh pr checks 1 --watch", run_in_background: true }), poll(), end()],
+      target,
+    );
+    expect(facts.wakeupCalled).toBe(false);
+    expect(facts.otherWaitPrimitive).toBe(true);
+    expect(facts.otherWaitKinds).toContain("background-bash");
+  });
+
+  test("没排唤醒但挂了 monitor → otherWaitPrimitive=true", () => {
+    const facts = analyzeWakeupTurn([pre("monitor", { command: "gh pr checks 1" }), end()], target);
+    expect(facts.otherWaitPrimitive).toBe(true);
+    expect(facts.otherWaitKinds).toContain("monitor");
+  });
+
+  test("WaitRegistered 只认非 wakeup：排唤醒自己的登记不算「别的原语」", () => {
+    const wr = (kind: string): TraceEvent => ({
+      event: "WaitRegistered",
+      timestamp: "t",
+      data: { kind },
+    });
+    expect(analyzeWakeupTurn([wr("wakeup"), poll(), end()], target).otherWaitPrimitive).toBe(false);
+    expect(analyzeWakeupTurn([wr("shell"), end()], target).otherWaitKinds).toContain(
+      "WaitRegistered:shell",
+    );
+  });
+
+  test("排了唤醒 + 也用了后台 bash → 仍走原断言（otherWaitPrimitive 不干扰 wakeupCalled 分支）", () => {
+    const facts = analyzeWakeupTurn(
+      [wake(), pre("bash", { command: "x", run_in_background: true }), end()],
+      target,
+    );
+    expect(facts.wakeupCalled).toBe(true);
+    expect(facts.otherWaitPrimitive).toBe(true);
+    expect(facts.foregroundPolls).toBe(0);
+  });
+
+  test("两者都没有 → otherWaitPrimitive=false（调用方据此判 FAIL）", () => {
+    const facts = analyzeWakeupTurn([poll(), poll(), end()], target);
+    expect(facts.wakeupCalled).toBe(false);
+    expect(facts.otherWaitPrimitive).toBe(false);
+  });
+
   test("N2-wakeup-then-end 在 ALL_CASES 里，可被 --case 选中", () => {
     expect(ALL_CASES).toContain("N2-wakeup-then-end");
     expect(parseArgs(["--case", "N2-wakeup-then-end"]).cases).toEqual(["N2-wakeup-then-end"]);

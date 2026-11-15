@@ -1360,6 +1360,15 @@ async function runD6GuidanceWorkflow(): Promise<CaseBody> {
  * - 只算 `bash` / `read`（模型查状态的两种主要形态），且 `input_summary` 里出现目标路径；
  * - `run_in_background === true` 不算前台（后台命令正是正确出路）；
  * - `wakeup_called=false` 时返回全 0 —— 调用方据此判 FAIL（模型压根没走等待原语）。
+ *
+ * ## `otherWaitPrimitive`（R5，2026-11-15）
+ *
+ * 只认 `schedule_wakeup` 会把「模型改用后台 bash / monitor 等合法等待源」误判成 FAIL。
+ * 2026-11-10~13 的 6 次 G3 全部如此（`wakeup_called=false`，但模型起了后台进程）。
+ * 所以同时扫本轮内的其它等待原语，供调用方区分：
+ * - 排了唤醒 → 走原断言（本字段不影响）；
+ * - 没排唤醒但用了别的等待源 → **INVALID**（case 不适用，不是模型做错）；
+ * - 两者都没有 → FAIL（真的没被文案引到等待原语上）。
  */
 export interface WakeupTurnFacts {
   wakeupCalled: boolean;
@@ -1367,6 +1376,10 @@ export interface WakeupTurnFacts {
   foregroundPolls: number;
   /** 同区间内的工具调用总数（区分「收尾了」与「根本没动」） */
   toolsInWindow: number;
+  /** 本轮内是否用过别的等待源（后台 bash / monitor / 非 wakeup 的 WaitRegistered） */
+  otherWaitPrimitive: boolean;
+  /** 用过哪些，写进 detail 便于归因（如 `background-bash` / `monitor` / `WaitRegistered:shell`） */
+  otherWaitKinds: string[];
 }
 
 export function analyzeWakeupTurn(events: TraceEvent[], target: string): WakeupTurnFacts {
@@ -1378,7 +1391,43 @@ export function analyzeWakeupTurn(events: TraceEvent[], target: string): WakeupT
       break;
     }
   }
-  if (wakeIdx < 0) return { wakeupCalled: false, foregroundPolls: 0, toolsInWindow: 0 };
+
+  // 本轮结束点：第一个 EndTurnShape（不论有没有排唤醒）。
+  // 「是否用了别的等待源」要看整轮，而不只是唤醒之后的窗口——没排唤醒时窗口为空。
+  let firstTurnEnd = events.length;
+  for (let i = 0; i < events.length; i++) {
+    if (events[i]!.event === "EndTurnShape") {
+      firstTurnEnd = i;
+      break;
+    }
+  }
+  const otherWaitKinds = new Set<string>();
+  for (let i = 0; i < firstTurnEnd; i++) {
+    const e = events[i]!;
+    if (e.event === "WaitRegistered") {
+      const kind = typeof e.data?.kind === "string" ? e.data.kind : "unknown";
+      // wakeup 自己的登记不算「别的原语」（否则排了唤醒也会被记上）
+      if (kind !== "wakeup") otherWaitKinds.add(`WaitRegistered:${kind}`);
+      continue;
+    }
+    if (e.event !== "PreToolUse") continue;
+    const name = e.data?.tool_name;
+    const summary = (e.data?.input_summary ?? {}) as Record<string, unknown>;
+    if (name === "monitor") otherWaitKinds.add("monitor");
+    else if (name === "bash" && summary.run_in_background === true)
+      otherWaitKinds.add("background-bash");
+  }
+  const otherWaitPrimitive = otherWaitKinds.size > 0;
+
+  if (wakeIdx < 0) {
+    return {
+      wakeupCalled: false,
+      foregroundPolls: 0,
+      toolsInWindow: 0,
+      otherWaitPrimitive,
+      otherWaitKinds: [...otherWaitKinds],
+    };
+  }
 
   let endIdx = events.length;
   for (let i = wakeIdx + 1; i < events.length; i++) {
@@ -1401,7 +1450,13 @@ export function analyzeWakeupTurn(events: TraceEvent[], target: string): WakeupT
     if (!JSON.stringify(summary).includes(target)) continue;
     foregroundPolls++;
   }
-  return { wakeupCalled: true, foregroundPolls, toolsInWindow };
+  return {
+    wakeupCalled: true,
+    foregroundPolls,
+    toolsInWindow,
+    otherWaitPrimitive,
+    otherWaitKinds: [...otherWaitKinds],
+  };
 }
 
 /**
@@ -1443,6 +1498,17 @@ function writeMonitorDisabledSettings(dir: string): boolean {
  *
  * 1. 真的排了唤醒 —— 没排说明文案没把模型引到等待原语上；
  * 2. 排完之后到本轮结束之间，前台读状态文件 ≤ 2 次。
+ *
+ * ## 三态（R5，2026-11-15）
+ *
+ * 之前只认 `schedule_wakeup`：模型改用后台 bash / monitor 等**合法**等待源时，
+ * 判据 1 必然 fail → 报 FAIL。2026-11-10~13 的 6 次 G3 全部如此（`wakeup_called=false`），
+ * 这个 case 于是失去了区分度：判不出「模型做对了」还是「文案没引到」。
+ * 现在按事实分三态：
+ * - 排了唤醒 → 走上面两条断言；
+ * - 没排唤醒、但本轮用了其它等待源（后台 bash / monitor / 非 wakeup 的 WaitRegistered）
+ *   → **INVALID**（case 不适用：它测的是 N2 的收尾文案，模型走了别的合法路径）；
+ * - 两者都没有 → **FAIL**（真的没被引到等待原语上）。
  *
  * ⚠️ 样本量：3 次只能证伪不能证实（#722 的教训）。每次跑的结果都要如实记录。
  */
@@ -1509,12 +1575,21 @@ async function runN2WakeupThenEnd(): Promise<CaseBody> {
         detail: `foreground_polls=${facts.foregroundPolls} tools_in_window=${facts.toolsInWindow}`,
       },
     ];
+    // 三态：模型改用后台 bash / monitor 等其它等待源时，本 case 不适用 → INVALID。
+    // 之前这里只判 FAIL，于是 2026-11-10~13 的 6 次 G3 全被记成「文案没引到等待原语」，
+    // 实际模型走的是合法路径（后台 bash），case 失去了区分度。
+    const invalidReason =
+      !facts.wakeupCalled && facts.otherWaitPrimitive
+        ? `模型用了其它等待原语（${facts.otherWaitKinds.join(", ")}），本 case 只测 schedule_wakeup 的收尾文案 → 不可判定`
+        : null;
     return {
       case: "N2-wakeup-then-end",
-      verdict: verdictOf(assertions),
-      detail: facts.wakeupCalled
-        ? `排了唤醒；之后到本轮结束前台读状态 ${facts.foregroundPolls} 次（窗口内工具 ${facts.toolsInWindow} 次）`
-        : "模型没排唤醒：文案没把它引到等待原语（修复前基线是前台 bash 循环）",
+      verdict: verdictOf(assertions, invalidReason),
+      detail: invalidReason
+        ? `${invalidReason}；前台读状态 ${facts.foregroundPolls} 次（窗口内工具 ${facts.toolsInWindow} 次）`
+        : facts.wakeupCalled
+          ? `排了唤醒；之后到本轮结束前台读状态 ${facts.foregroundPolls} 次（窗口内工具 ${facts.toolsInWindow} 次）`
+          : "模型没排唤醒、也没用其它等待源：文案没把它引到等待原语（修复前基线是前台 bash 循环）",
       assertions,
       session: basename(sessionDir),
     };
