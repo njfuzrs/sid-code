@@ -6831,14 +6831,20 @@ export function aggregateTodoStats(
 }
 
 /**
- * 「这次工具调用是一次等待启动」的回执特征（bash 后台 / schedule_wakeup 两个入口的文案）。
+ * 「这次工具调用是一次等待启动」的回执特征（bash 后台 / monitor / schedule_wakeup 三个入口的文案）。
  *
- * 与 `bash.ts` / `schedule-wakeup.ts` 的回执逐字对应。改了那边的文案必须同步这里——
+ * 与 `bash.ts` / `monitor.ts` / `schedule-wakeup.ts` 的回执逐字对应。改了那边的文案必须同步这里——
  * 不同步的失败形态是 `staleNotificationClaims` 静默变成 0（永远不命中），
- * 而不是报错。所以这里用**窄**匹配（只认这两句启动回执），不扩大成
+ * 而不是报错。所以这里用**窄**匹配（只认这三句启动回执），不扩大成
  * 「任何提到后台任务的文本」：启动回执本身也提到 `<task-notification>`。
+ *
+ * monitor 的 id 形如 `m` + 8 位小写字母数字（`monitor.ts` 的启动回执是
+ * `已启动监控 <id>（<描述>），最晚 …`）。漏掉它会让「monitor 起的等待」整条
+ * 路径的误读不计入，指标看起来更好而问题没变——这正是 20261112 方案 R9 修法 3
+ * 要求覆盖的第三个入口。
  */
-const WAIT_LAUNCH_RECEIPT_RE = /命令已作为后台任务启动|已安排 \d+s 后唤醒一次/;
+const WAIT_LAUNCH_RECEIPT_RE =
+  /命令已作为后台任务启动|已启动监控 m[a-z0-9]{8}|已安排 \d+s 后唤醒一次/;
 
 /**
  * R3 误读的措辞（「等待刚起就声称它又被杀 / 又超时」）。
