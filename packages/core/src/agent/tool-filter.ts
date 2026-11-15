@@ -37,6 +37,24 @@ const ALL_AGENT_DISALLOWED_TOOLS = new Set([
 ]);
 
 /**
+ * Layer 1 硬禁判定：该工具是否对所有子代理一律不可用。
+ *
+ * 为什么单独导出而不是只留在 `filterToolsForAgent` 里：后者是「从 allTools 里过滤」，
+ * 而自定义子代理的 `allowedTools` 分支（`sub-agent.ts` 的 `resolveCustomTools`）是
+ * 「按名从 registry 直接取」，**不经过 filterToolsForAgent**。此前那条路径没有任何
+ * 硬禁判定，于是在 agent frontmatter 里写 `tools: [monitor]` 就能把硬禁工具拿回去 ——
+ * 而 monitor 的硬禁理由（生命周期 30 分钟 > 子代理，事件无人消费）在那条路径上完全失效。
+ * 两条路径共用这一个判据，新增硬禁项时才不会只堵一边。
+ *
+ * MCP 工具豁免的口径与 `filterToolsForAgent` 保持一致：这份名单按内置工具名写，
+ * 对 `mcp__*` 对不上，判它没有意义。
+ */
+export function isAllAgentDisallowedTool(name: string): boolean {
+  if (name.startsWith("mcp__")) return false;
+  return ALL_AGENT_DISALLOWED_TOOLS.has(name);
+}
+
+/**
  * P3-1：受嵌套开关约束的工具。
  *
  * 嵌套未开启（默认）：从子代理工具池裁掉，行为等价于此前的硬性禁止。

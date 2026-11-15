@@ -99,6 +99,24 @@ describe("recomputeCostFromEvents", () => {
     expect(r!.source).toBe("events-recompute");
   });
 
+  test("T1 第二步：归一化 prompt 单独汇总，与 provider 原始口径并存", () => {
+    // Anthropic 的 input_tokens 只是未命中余量：真实 prompt = 1000 + 命中 500 + 写入 200
+    const events = [
+      afterModelRaw(1, "claude-test", 1000, 10, 500, 200),
+      afterModelRaw(2, "claude-test", 1000, 10, 500, 200),
+    ].join("\n");
+    writeFileSync(join(sessionDir, "events.jsonl"), events + "\n");
+
+    const r = recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS);
+    expect(r).not.toBeNull();
+    // 原始口径保留：老调用方读 lastInputTokens / cumulativeInputTokens 的行为不变
+    expect(r!.lastInputTokens).toBe(1000);
+    expect(r!.cumulativeInputTokens).toBe(2000);
+    // 归一化口径：1700 / 轮（未命中 + 命中 + 写入），两轮 3400
+    expect(r!.lastPromptTotal).toBe(1700);
+    expect(r!.cumulativePromptTokens).toBe(3400);
+  });
+
   test("events.jsonl 不存在返回 null", () => {
     expect(recomputeCostFromEvents(sessionDir, AVAILABLE_MODELS)).toBeNull();
   });

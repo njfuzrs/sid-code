@@ -149,10 +149,10 @@ const memorySchema = lazySchema(() =>
         "记忆类型（必填）：user（用户画像）/ feedback（用户的纠正或确认，须带 Why: 与 How to apply:）/ project（无法从代码推导的项目决策与约束，须带 Why: 与 How to apply:）/ reference（外部系统指针，正文应含 URL）。类型填这里，不要填进 scope",
       ),
     scope: z
-      .enum(["global", "project", "team", "agent"])
+      .enum(["global", "project", "team"])
       .optional()
       .describe(
-        "记忆范围：global（全局，所有项目）/ project（当前项目，默认）/ team（团队共享，同步给所有协作者）/ agent（当前子代理类型的跨会话领域经验，仅在子代理内可用）",
+        "记忆范围：global（全局，所有项目）/ project（当前项目，默认）/ team（团队共享，同步给所有协作者）",
       ),
     // P0-3：来源由**模型可选标注**，但后台提取路径会被强制覆写成 `agent_action`——
     // 那条路径的模型没有判据（它没有用户输入可依据），让它自报等于让它给证据定级。
@@ -177,8 +177,6 @@ const memorySchema = lazySchema(() =>
 
 export class MemoryTool implements Tool {
   private store: MemoryStore;
-  /** 当前子代理类型（仅子代理隔离工具集里注入；主会话为 undefined，此时 agent scope 不可用） */
-  private agentType?: string;
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = memorySchema();
@@ -202,17 +200,8 @@ export class MemoryTool implements Tool {
    */
   readonly consumesQuerySource = true as const;
 
-  constructor(store: MemoryStore, agentType?: string) {
+  constructor(store: MemoryStore) {
     this.store = store;
-    this.agentType = agentType;
-  }
-
-  /**
-   * 派生一个绑定了 agentType 的副本（共享同一 MemoryStore）。
-   * 供子代理隔离工具集使用——让 save_memory 的 agent scope 能定位到当前子代理类型目录。
-   */
-  withAgentType(agentType: string): MemoryTool {
-    return new MemoryTool(this.store, agentType);
   }
 
   /** 低风险工具：无权限意见，交给权限系统决定 */
@@ -252,7 +241,7 @@ export class MemoryTool implements Tool {
       key: string;
       value: string;
       type?: string;
-      scope?: "global" | "project" | "team" | "agent";
+      scope?: "global" | "project" | "team";
       /** P0-3：模型可选的来源标注（内存提取路径会被覆写，见 `resolveWriteSource`） */
       source?: string;
       /** P0-4：本条目否定（推翻）哪个 key 的做法；只在建立 tombstone 时传 */
@@ -383,7 +372,7 @@ export class MemoryTool implements Tool {
           isError: true,
         };
       }
-      if (scope === "team" || scope === "agent") {
+      if (scope === "team") {
         return {
           output: `错误: negates 仅在 project / global 范围可用（收到 scope=${scope}）。`,
           isError: true,
@@ -454,31 +443,6 @@ export class MemoryTool implements Tool {
         };
       } catch (err: any) {
         return { output: `保存团队记忆失败: ${err.message}`, isError: true };
-      }
-    }
-
-    // agent scope（G13）：写入当前子代理类型的跨会话领域记忆。
-    // 只在子代理隔离工具集里注入了 agentType 时可用；主会话无 agentType → 引导改用 project。
-    if (scope === "agent") {
-      if (!this.agentType) {
-        return {
-          output:
-            "错误: agent 范围仅在子代理内可用（用于沉淀该类型子代理的跨会话领域经验）。\n" +
-            "主会话请改用 project / global 范围。",
-          isError: true,
-        };
-      }
-      try {
-        const { saveAgentMemory } = await import("../memory/agent-store.ts");
-        await saveAgentMemory(this.agentType, key, value, { type });
-        log.info("TOOL", `✓ agent 记忆已保存 [${this.agentType}] ${key}`);
-        return {
-          output:
-            `记忆已保存到 agent 范围（${this.agentType} 类型跨会话领域经验）:\n键: ${key}\n值: ${preview(value)}` +
-            reportWrite(key, value, type, scope, via),
-        };
-      } catch (err: any) {
-        return { output: `保存 agent 记忆失败: ${err.message}`, isError: true };
       }
     }
 
