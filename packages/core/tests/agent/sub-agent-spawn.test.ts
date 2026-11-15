@@ -462,4 +462,13 @@ describe("spawn init 契约字段", () => {
       src.match(/max_output_tokens: this\.resolveSubAgentMaxOutputTokens\(model\)/g),
     ).toHaveLength(2);
   });
+
+  test("源码哨兵：窗口不足的诊断值必须从 result 消息透传到 SubAgentResult（F7）", () => {
+    const src = readFileSync(join(import.meta.dir, "../../src/agent/sub-agent.ts"), "utf8");
+    // 少了这一句，子进程结构化传上来的四个值会在父进程被丢掉，
+    // 调用方又退回「读 output 文案」。字段名与协议侧一致。
+    expect(src).toContain("...(msg.diagnostics ? { budgetDiagnostics: msg.diagnostics } : {})");
+    // 透传之外还要落一条日志：失败原因不该只藏在 output 字符串里
+    expect(src).toMatch(/子代理因窗口不足失败：窗口/);
+  });
 });

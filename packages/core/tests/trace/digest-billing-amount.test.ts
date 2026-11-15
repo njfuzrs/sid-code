@@ -214,3 +214,79 @@ describe("checkBillingAmountConsistency：按端点取价", () => {
     expect(r!.baseURL).toBeUndefined();
   });
 });
+
+/**
+ * 计量与成本方案 T2：按 token 是否逐项对得上，把「金额不一致」拆成两类。
+ *
+ * 背景：`billing_amount_mismatch` 此前一律 high，把两类完全不同的成因混在一条告警里：
+ * - token 对得上、只有金额不同 = 两边单价不同（价表问题）→ 账本自己是对的，应 low；
+ * - token 也对不上 = 调用链真漏记 / 双记 → 才该 high。
+ * 不拆的话，网关价表问题会持续占用 high 通道（2026-11-02 实测 116 个命中里 109 个是价差，
+ * 见 checkBillingAmountConsistency 函数注释）。
+ *
+ * 这同时是 T4 要求的「已知价差」样本 —— 双记/漏记两个样本在
+ * `digest-harness-actions-not-faults.test.ts` 与上面的双记用例里。
+ */
+describe("checkBillingAmountConsistency：T2 token 分流判据", () => {
+  const events = [billed(T0, 10_000, 1_000), billed(T0 + 1_000, 20_000, 2_000)];
+  const truth = priceOf(10_000, 1_000, T0) + priceOf(20_000, 2_000, T0 + 1_000);
+  const ledgerTs = Math.floor((T0 + 60_000) / 1000);
+
+  test("token 逐项对得上、只有金额不同 → 判价差（tokenMatched=true）", () => {
+    // 账本金额是真实值的 2 倍（模拟网关价表写错），token 与事件侧逐项相同
+    const r = checkBillingAmountConsistency(events, {
+      costUSD: truth * 2,
+      ts: ledgerTs,
+      promptTotal: 30_000, // 10000 + 20000
+      output: 3_000, // 1000 + 2000
+    });
+    expect(r).toBeDefined();
+    // 前提自证：事件侧汇总与账本侧相等，且不是两边都 0 的退化值
+    expect(r!.billedPromptTotal).toBe(30_000);
+    expect(r!.billedOutput).toBe(3_000);
+    expect(r!.ledgerPromptTotal).toBe(30_000);
+    expect(r!.ledgerOutput).toBe(3_000);
+    expect(r!.tokenMatched).toBe(true);
+  });
+
+  test("token 也对不上（账本只覆盖第一笔调用）→ 不是价差，仍是漏记", () => {
+    const r = checkBillingAmountConsistency(events, {
+      costUSD: truth * 2,
+      ts: ledgerTs,
+      promptTotal: 10_000, // 只覆盖第一笔
+      output: 1_000,
+    });
+    expect(r!.tokenMatched).toBe(false);
+    // 方向可读：事件侧比账本多 20000 / 2000
+    expect(r!.billedPromptTotal).toBe(30_000);
+    expect(r!.ledgerPromptTotal).toBe(10_000);
+  });
+
+  test("双记形态 + token 也多一倍 → 不分流（双记会让 token 一起变大）", () => {
+    // S13 双记：账本把第二次调用多记一遍，token 也随之多一份
+    const r = checkBillingAmountConsistency(events, {
+      costUSD: truth + priceOf(20_000, 2_000, T0 + 1_000),
+      ts: ledgerTs,
+      promptTotal: 50_000, // 10000 + 20000 + 20000
+      output: 5_000,
+    });
+    expect(r!.tokenMatched).toBe(false);
+  });
+
+  test("老账本没有 token 字段 → 不分流（恒 false），保持原 high 判据", () => {
+    const r = checkBillingAmountConsistency(events, { costUSD: truth * 2, ts: ledgerTs });
+    expect(r!.tokenMatched).toBe(false);
+    expect(r!.ledgerPromptTotal).toBeUndefined();
+    expect(r!.ledgerOutput).toBeUndefined();
+  });
+
+  test("token 一致但 output 对不上 → 不分流（只要有一项对不上就不是纯价差）", () => {
+    const r = checkBillingAmountConsistency(events, {
+      costUSD: truth * 2,
+      ts: ledgerTs,
+      promptTotal: 30_000,
+      output: 2_500, // 与事件侧的 3000 不等
+    });
+    expect(r!.tokenMatched).toBe(false);
+  });
+});

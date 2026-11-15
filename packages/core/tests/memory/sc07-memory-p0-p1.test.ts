@@ -67,7 +67,20 @@ function mem(dir: string, file: string, name: string, body: string) {
 
 // ─── 缺陷 1（P0）───────────────────────────────────────────────
 describe("缺陷 1：后台记忆代理 bash 只读判定逐命令校验", () => {
-  const allow = ["ls -la", "cat a | grep b | wc -l", "find . -name '*.md'", "head f && tail g"];
+  const allow = [
+    "ls -la",
+    "cat a | grep b | wc -l",
+    "find . -name '*.md'",
+    "head f && tail g",
+    // P1-2 核实轮的提示词承诺「可以跑 git 命令」，权限层必须兑现。
+    // 判定复用主会话的 `isReadOnlyCommand`，只读 git 由它决定。
+    "git log --oneline -5",
+    "git status",
+    "git diff --stat",
+    "git show HEAD:README.md",
+    "git rev-parse HEAD",
+    "git log --oneline -5 | head -3",
+  ];
   const deny = [
     "cat /etc/passwd | sh",
     "grep x file | bash",
@@ -80,6 +93,19 @@ describe("缺陷 1：后台记忆代理 bash 只读判定逐命令校验", () =>
     "echo hi > file",
     "rm -rf /",
     "",
+    // 写入类 git 子命令必须仍然拒：把 "git" 加进前缀白名单会连它们一起放行。
+    "git commit -m x",
+    "git push",
+    "git checkout main",
+    // 越仓形态：`-C` / `--git-dir` 都是「用哪个仓库」，主会话的 B2 之后不再被剥离。
+    "git -C /tmp/other log -1",
+    "git --git-dir=/tmp/other/.git log",
+    "git --work-tree=/tmp/other status",
+    // 写文件形态。
+    "git log --output=/tmp/x",
+    // 守住「只委托 git 一个程序」：`isReadOnlyCommand` 也认 gh（联网），
+    // 整体委托会把后台代理的能力面撑大。
+    "gh pr view 1",
   ];
   for (const c of allow) {
     test(`放行: ${c}`, () => expect(isReadonlyBash({ command: c })).toBe(true));

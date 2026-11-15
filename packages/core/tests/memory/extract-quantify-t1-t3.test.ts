@@ -245,6 +245,16 @@ function fakeFork(calls: { n: number }, written: string[] = []) {
                 input: { key: k, value: "v", type: "feedback" },
               })),
             },
+            // 写入判定要求「有配对 tool_result 且非 error」才算落盘
+            // （`extractor.ts` 的 `settledToolUseIds`）——真实 fork 也是这个形状。
+            {
+              role: "user" as const,
+              content: written.map((_, i) => ({
+                type: "tool_result" as const,
+                tool_use_id: `t${i}`,
+                content: "ok",
+              })),
+            },
           ]
         : [],
       usage: usage(100, 5),
