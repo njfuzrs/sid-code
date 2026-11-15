@@ -35,8 +35,24 @@
  *
  *   bun scripts/tool-selection-audit.ts <session-dir|session-id>
  *   bun scripts/tool-selection-audit.ts --all --json
- *   bun scripts/tool-selection-audit.ts --all --since 2026-11-10T06:59:00Z   # 按会话开始时间过滤
+ *   bun scripts/tool-selection-audit.ts --all --since 2026-11-10T06:59:00Z   # 按会话开始时间切前后段
+ *   bun scripts/tool-selection-audit.ts --all --since <ISO> --include-mixed   # 跨天会话也纳入（乐观界）
  *   bun scripts/tool-selection-audit.ts --all --samples 5                     # 输出抽样上下文供人工核对
+ *
+ * ## `--since` 的跨天会话口径（2026-11-15 修）
+ *
+ * 旧实现 `startedAt < since` 直接 `return null`：一个 11-09 开始、11-12 才结束的会话
+ * 会被静默排除在「后段」之外 —— 它在修复后仍有活动，样本却永远不进分母。实测本机
+ * 1145 个会话里有 2 个跨 `2026-11-10T06:59Z` 的会话被这样漏掉（脚本报 193，按活动
+ * 时间算是 195）。
+ *
+ * 消息级切分做不到：`messages.json` 的 user 消息没有 `ts`，traj 也不保留用户消息行
+ * （只有 action/observation），无法判断「场景是切分点前还是后提出的」。所以改为
+ * **显式暴露 + 双口径**，而不是猜一个更细的时间：
+ *   - 默认：开始于切分点之前、最后一条 action 在切分点之后 → 记为跨天会话，
+ *     **排除但计数**（与历史基线可比）；
+ *   - `--include-mixed`：把跨天会话整会话纳入后段，得到**乐观界**。
+ * 引用数字时必须说明是哪一档：默认口径可能少算，乐观界可能把前段需求算进后段。
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -265,6 +281,44 @@ function readStartTime(dir: string): string | null {
 /** 前台长 sleep 的阈值：低于它的 sleep 多是命令内部节流，不是「干等一个时刻」 */
 const FG_SLEEP_MS = 30_000;
 
+/**
+ * traj 里最后一条带时间戳的行（跨天会话判定用）。
+ *
+ * 为什么不用 `messages.json` 的 mtime：mtime 是落盘时刻，会被导出 / 复制 / 清理改写；
+ * traj 的 timestamp 是会话内真实发生时刻（与 wait-audit 的窗口同源），跨天判定才可信。
+ */
+export function lastTimestamp(traj: TrajRow[]): string | null {
+  let last: string | null = null;
+  for (const r of traj) {
+    const ts = r.timestamp;
+    if (typeof ts !== "string") continue;
+    if (last === null || ts > last) last = ts;
+  }
+  return last;
+}
+
+/**
+ * `--since` 的会话归属判定（纯函数，单测直接覆盖）。
+ *
+ * 三种结果：
+ *   in-range —— 会话开始于切分点之后（或开始时间缺失 / 未给 since），纳入；
+ *   before   —— 会话在切分点之前就结束了，排除；
+ *   mixed    —— 开始于切分点之前、但之后仍有活动（跨天会话）：
+ *               默认排除并计数，`--include-mixed` 时纳入（乐观界）。
+ *
+ * `startedAt` 缺失时保持旧的「穿透」语义（纳入）：进行中 / 异常终止的会话没有
+ * metadata.json，它们恰恰是最新的，排除会把最新样本整个丢掉。
+ */
+export function classifySince(
+  startedAt: string | null,
+  lastActivity: string | null,
+  since: string | undefined,
+): "in-range" | "before" | "mixed" {
+  if (!since || !startedAt || startedAt >= since) return "in-range";
+  if (lastActivity !== null && lastActivity >= since) return "mixed";
+  return "before";
+}
+
 /** 从 traj 归纳「实际选择」（Choice 的语义见接口注释） */
 function inferChoice(traj: TrajRow[]): Choice {
   const c: Choice = {
@@ -458,6 +512,7 @@ function main(): void {
   const samples = samplesIdx >= 0 ? Number(args[samplesIdx + 1] ?? 0) : 0;
   const sinceIdx = args.indexOf("--since");
   const since = sinceIdx >= 0 ? args[sinceIdx + 1] : undefined;
+  const includeMixed = args.includes("--include-mixed");
   const flagValues = new Set(
     [samplesIdx >= 0 ? args[samplesIdx + 1] : undefined, since].filter(Boolean) as string[],
   );
@@ -465,15 +520,23 @@ function main(): void {
 
   const root = sessionsRoot();
   let results: SelectionAudit[] = [];
+  /** 跨天会话：默认排除并计数，`--include-mixed` 时纳入（乐观界） */
+  const mixedSessions: string[] = [];
 
   const auditOne = (dir: string): SelectionAudit | null => {
     if (!existsSync(join(dir, "session.traj"))) return null;
     const startedAt = readStartTime(dir);
-    if (since && startedAt && startedAt < since) return null;
+    const traj = readTraj(dir);
+    const bucket = classifySince(startedAt, lastTimestamp(traj), since);
+    if (bucket === "before") return null;
+    if (bucket === "mixed") {
+      mixedSessions.push(dir.split("/").pop() ?? dir);
+      if (!includeMixed) return null;
+    }
     const { text } = readUserPrompt(dir);
     return auditSession({
       session: dir.split("/").pop() ?? dir,
-      traj: readTraj(dir),
+      traj,
       prompt: text,
       startedAt,
     });
@@ -492,21 +555,35 @@ function main(): void {
     const dir = target.includes("/") ? target : join(root, target);
     const r = auditOne(dir);
     if (!r) {
-      process.stderr.write(`会话 ${target} 无轨迹（或被 --since 过滤）\n`);
+      process.stderr.write(
+        `会话 ${target} 无轨迹（或被 --since 过滤；跨天会话需加 --include-mixed）\n`,
+      );
       process.exit(1);
     }
     results = [r];
   } else {
     process.stderr.write(
       "用法: bun scripts/tool-selection-audit.ts <session-dir|session-id> [--json]\n" +
-        "      bun scripts/tool-selection-audit.ts --all [--json] [--since <ISO>] [--samples N]\n",
+        "      bun scripts/tool-selection-audit.ts --all [--json] [--since <ISO>] [--include-mixed] [--samples N]\n",
     );
     process.exit(1);
   }
 
   if (json) {
     const totals = summarize(results);
-    console.log(JSON.stringify({ totals, sessions: results }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          totals,
+          since: since ?? null,
+          include_mixed: includeMixed,
+          mixed_sessions: mixedSessions,
+          sessions: results,
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
 
@@ -520,6 +597,12 @@ function main(): void {
     );
   }
   const t = summarize(results);
+  if (since) {
+    console.log(
+      `切分（--since ${since}）：跨天会话 ${mixedSessions.length} 个` +
+        `（${includeMixed ? "已纳入，口径为乐观界" : "默认排除；--include-mixed 纳入为乐观界"}）`,
+    );
+  }
   console.log(
     `合计 ${t.sessions} 个会话: 场景=${t.scenarioCount} matched=${t.matched} ` +
       `misused=${t.misused} missed=${t.missed} ` +
