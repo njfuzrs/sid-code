@@ -123,6 +123,27 @@ T-M8 仍绿、T-M8b/M8c/M8c2 全红 —— 正是这一向变异该有的形状�
 - `make build` → 自检通过
 - `bun run smoke` → `30 例：30 通过，0 失败`
 
+**CI 首轮红了，而且红得有价值（本地全绿也发现不了的那类）**
+
+首轮 `test (ubuntu-latest, 1/3)` 挂在
+`防复发哨兵：每个 import 了落盘类导出的测试文件都声明了隔离` —— 挂的正是本次新增的
+`agent-action-e2e.test.ts`：它用了 `MemoryStore`（`WRITING_EXPORTS` 之一），
+文件里却没有 `process.env.SID_CONFIG_DIR`。
+
+本地全绿是因为这条哨兵做的是**静态扫描**，而文件里确实缺那行声明；更值得记的是
+它**不是误报**：`mkdtempSync` 只隔离了我显式传给 `MemoryStore` 的那条路径，被测链路里
+任何走默认路径的分支（`getSidHome()` / read-stats / 遥测）仍会落到用户真实的
+`~/.sid-code/` —— 恰好是 CONTRIBUTING 写的「违反它的测试会全绿，同时往真实目录灌假数据」。
+
+修法按测试约定四条：`beforeEach` 存下原值并把 `SID_CONFIG_DIR` 指向 tmpdir，
+`afterEach` 存/恢复（**不无条件 `delete`**，否则会把 `bunfig.toml` preload 的兜底一起抹掉）。
+修后 `no-real-path-writes` + 新用例共 `11 pass / 0 fail`。
+
+**这条失败该记的教训**：`affected-tests` 选测跑的是被改动目录的测试，
+而这条哨兵住在 `packages/core/tests/telemetry/` —— 我没改 telemetry 目录，选测自然选不到它。
+「选测会漏掉的一类」除了 CLAUDE.md 写的「跨域源码字面量断言」，还有这一类
+**跨目录静态扫描哨兵**：它扫全仓，但按目录映射永远选不中。
+
 那 1 个 fail 是 `isolated-subagent-cwd.test.ts` 的「未绑定 cwd 时不出现隔离提示」，
 三条证据齐全：① 它不 import 本次改动的任何模块（测隔离子代理的系统提示词）；
 ② 父仓 main 上单跑 `12 pass / 0 fail`；③ 环境成因明确 —— 该用例以「默认 cwd 是否在
