@@ -55,6 +55,27 @@ export function isBypassDisabledByPolicy(): boolean {
   return state.bypassDisabled;
 }
 
+/**
+ * 策略禁用 bypass 时，抹掉从配置（而非 CLI）渗入的 skip/bypass 态。
+ *
+ * 为什么抽成函数而不是留在 cli.ts 内联：这是「企业策略最终赢过任何配置来源」的唯一落点，
+ * 散在启动流程里就只能靠跑整个 CLI 才验证得到。cli 与测试共用同一份实现，断言才有意义。
+ *
+ * 与 CLI 显式请求的区别由调用方负责：CLI 传了 bypass flag 时是 fail-fast 报错退出
+ *（见 cli.ts 的 cliWantsBypass 分支），这里是「配置层面静默降级」——
+ * 用户没主动要求，不该因为仓库里一份配置文件就起不来。
+ */
+export function downgradeBypassIfDisabledByPolicy(config: {
+  permissionMode: string;
+  skipPermissions?: boolean;
+}): void {
+  if (!state.bypassDisabled) return;
+  if (config.skipPermissions) config.skipPermissions = false;
+  if (BYPASS_MODES.has(config.permissionMode)) {
+    config.permissionMode = "default";
+  }
+}
+
 /** 测试用：重置状态。 */
 export function __resetModePolicy(): void {
   state = { disabledModes: new Set(), bypassDisabled: false };
