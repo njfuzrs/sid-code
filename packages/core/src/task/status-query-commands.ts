@@ -753,10 +753,21 @@ function loopSubject(
  * 查询，但它表达的是「等这条命令成功」而不是轮询，拦它没有意义（也不该拦）。
  */
 function matchLoopQuery(loop: LoopStructure, heredocBody?: string): StatusQueryMatch | null {
-  // 循环外：`cd …` / `sleep …` 这类，必须无害
+  // 循环外：`cd …` / `sleep …` 这类必须无害；**查询段与只读过滤段也允许**（R5，2026-11-15）。
+  // 之前只允许无害段，于是 `gh pr view 1; for n in …; do gh pr view $n; done`
+  // （真实轨迹 4 条）整条判 null —— 与主判据 2「查询段之前也可以是查询」
+  // （`gh pr status && gh pr checks 1`）自相矛盾，且失败方向是漏拦。
+  // 其余段（写操作 / 表外命令）照旧一律放行，安全边界不放松。
+  const outsideQueries: string[] = [];
   for (const seg of loop.outside) {
     if (!seg.command) return null;
     if (isHarmlessSegment(seg)) continue;
+    if (isReadonlyFilter(seg, heredocBody)) continue;
+    if (hitSegment(seg)) {
+      // 进签名：循环外查的对象/字段不同，输出形态就不同，共享 memo 会互相污染。
+      outsideQueries.push(`${seg.command} ${seg.args.join(" ")}`.trim());
+      continue;
+    }
     return null;
   }
   if (!loop.body || loop.body.length === 0) return null;
@@ -790,7 +801,8 @@ function matchLoopQuery(loop: LoopStructure, heredocBody?: string): StatusQueryM
     kind: first.kind,
     family: first.family,
     subject,
-    signature: `${subject}\x1f${bodies.join("; ")}`.trim(),
+    // 循环外的查询段排在前面（它们先于循环执行）；为空时行为与之前完全一致。
+    signature: `${subject}\x1f${[...outsideQueries, ...bodies].join("; ")}`.trim(),
   };
 }
 

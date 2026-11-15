@@ -272,7 +272,17 @@ export class TelemetryBus {
     }
   }
 
-  /** 开始一个新的 Trace（每次用户请求调用一次） */
+  /**
+   * 开始一个新的 Trace（**每个会话一次**，不是每次用户请求）。
+   *
+   * 调用点只有 `TelemetryHookProbe.handleSessionStart`：会话生命周期与 trace 一一对应，
+   * 一轮对话内的所有 span（chat / execute_tool / 子代理）都挂同一个 traceId。
+   * `/clear` 会换新会话 → 换新 trace（旧根的 sessionId 记入 retiredSessionIds，
+   * 迟到的旧 SessionEnd 不会结束新根）。
+   *
+   * 旧注释写「每次用户请求调用一次」，与实现不符：照它理解会把每一轮当成独立
+   * trace，从而在 T4 的 trace-integrity 判据（每个 trace 恰好一个根）下误读成「多根」。
+   */
   startTrace(): TraceContext {
     this.traceContext = new TraceContext();
     return this.traceContext;

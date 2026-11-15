@@ -152,18 +152,11 @@ describe("D · 相对日期覆盖星期", () => {
   });
 });
 
-describe("E · 四个 scope 同一套写入提示", () => {
-  test("agent scope 缺 Why 也会回提示", async () => {
-    const tool = new MemoryTool(new MemoryStore(tmpHome), "code-review");
-    const r = await tool.execute({
-      key: "review_gotcha",
-      value: "评审时先看测试",
-      type: "feedback",
-      scope: "agent",
-    });
-    expect(r.isError).toBeFalsy();
-    expect(r.output).toContain("写入质量提示");
-  });
+describe("E · 写入提示的适用范围", () => {
+  // 原用例是「agent scope 缺 Why 也会回提示」。agent scope 已在 06H1 T5b 删除，
+  // 而 team scope 走 saveTeamMemory、需要启用团队记忆，不属本文件（纯 project/global
+  // 写入提示）的判据范围。故此处不再保留 scope 维度的用例；
+  // 覆盖 project 的软提示由上面「缺陷 12」一组用例守着。
 
   test("reference 无 URL → 提示改类型", () => {
     const h = memoryWriteHints("登录方案在 docs-research/xxx.md", "reference");

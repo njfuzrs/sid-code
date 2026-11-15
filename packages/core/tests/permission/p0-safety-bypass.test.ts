@@ -251,11 +251,14 @@ describe("P0-3 bash 只读早退不得打穿 plan / deny-write", () => {
     expect(r.reason).toContain("计划模式");
   });
 
-  test("plan + ls 传了 bash 工具仍 deny（ls 是真只读，但 plan 对 bash 一律拦）", async () => {
+  test("plan + ls 传了 bash 工具 → allow（M4：只读命令在 plan 下放行）", async () => {
+    // 2026-11-15（M4）契约变更：plan 从「bash 一律拦」改成「只读命令放行、其余照旧拦」。
+    // 旧的断言是 `expect(r.allowed).toBe(false)`——它锁的正是这次要改掉的行为。
+    // 关键仍然是不打穿安全层：`ls` 是真只读，放行；`cat ~/.ssh/id_rsa` / `env` /
+    // 写类命令见下面的用例与 pipeline-order-matrix 的 plan 段。
     const c = checker({ permissionMode: "plan" });
     const r = await c.check({ toolName: "bash", input: { command: "ls" } }, bashToolStub());
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain("计划模式");
+    expect(r.allowed).toBe(true);
   });
 
   test("plan + python3 foo.py 不传工具 → deny（旧测试路径不能绿得虚假）", async () => {
