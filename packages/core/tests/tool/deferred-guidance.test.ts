@@ -24,7 +24,6 @@ import { buildSystemPrompt, clearPromptCache } from "../../src/config/system-pro
 import { resetSettingsCache } from "../../src/config/settings/cache.ts";
 import { managedSettingsSystemDir } from "../../src/config/paths.ts";
 import { MonitorTool } from "../../src/tool/monitor.ts";
-import { TaskGetTool } from "../../src/tool/task-get.ts";
 import { TaskListTool } from "../../src/tool/task-list.ts";
 import { TaskOutputTool } from "../../src/tool/task-output.ts";
 import { TaskStopTool } from "../../src/tool/task-stop.ts";
@@ -67,7 +66,6 @@ const EXPECTED_DEFERRED_FILES = [
   "structured-task-get.ts",
   "structured-task-list.ts",
   "structured-task-update.ts",
-  "task-get.ts",
   "task-list.ts",
   "task-output.ts",
   "task-stop.ts",
@@ -96,9 +94,8 @@ function scanShouldDeferFiles(): string[] {
   return out.sort();
 }
 
-/** 注册全部 18 个内置 shouldDefer 工具（真实实例，不是手搓形状） */
+/** 注册全部 17 个内置 shouldDefer 工具（真实实例，不是手搓形状） */
 function registerAllBuiltinDeferred(registry: Registry): void {
-  registry.register(new TaskGetTool());
   registry.register(new TaskListTool());
   registry.register(new TaskOutputTool());
   registry.register(new TaskStopTool());
@@ -187,10 +184,9 @@ describe.skipIf(systemPolicyExists)("D6 — 延迟工具 guidance 覆盖率门�
     const registry = new Registry();
     registerAllBuiltinDeferred(registry);
     const names = registry.getEnabledDeferredTools().map((t) => t.name());
-    // 18 个内置延迟工具全在
+    // 17 个内置延迟工具全在（bg_task_get 已于 D5/T8 并入 task_output）
     expect(names).toContain("monitor");
     expect(names).toContain("workflow");
-    expect(names).toContain("bg_task_get");
     // alwaysLoad 豁免：不返回
     registry.register({
       name: () => "always_tool",

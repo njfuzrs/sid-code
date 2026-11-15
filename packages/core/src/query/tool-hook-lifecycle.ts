@@ -156,8 +156,8 @@ export async function runPostToolHooks(
     sessionId?: string;
     maxResultSizeChars?: number;
   },
-): Promise<string> {
-  if (!hookSystem) return args.output;
+): Promise<PostToolHooksResult> {
+  if (!hookSystem) return { output: args.output, notices: [] };
   const log = getLogger();
   try {
     const agent = hookAgentOptions();
@@ -205,17 +205,36 @@ export async function runPostToolHooks(
       );
     }
     const ctx = post?.finalOutput?.getAdditionalContext?.();
-    if (ctx) out = out + "\n\n[Hook 附加上下文]\n" + ctx;
+    // D11：附言不再拼进 `out`（它是工具产出，会被调用方包进 untrusted 标签），
+    // 而是单独收集，由调用方拼在包裹外面。
+    const notices: string[] = [];
+    if (ctx) notices.push(`[Hook 附加上下文]\n${ctx}`);
     const feedback = hookFeedbackText(post);
     if (feedback) {
       log.info("HOOK", `PostToolUse hook 反馈回灌到 ${args.toolName} 结果`);
-      out = out + "\n\n[Hook 反馈]\n" + feedback;
+      notices.push(`[Hook 反馈]\n${feedback}`);
     }
-    return out;
+    return { output: out, notices };
   } catch (e: any) {
     log.error("HOOK", `post_tool_use hook 失败: ${e?.message ?? e}`);
-    return args.output;
+    return { output: args.output, notices: [] };
   }
+}
+
+/**
+ * D11 收尾：PostToolUse 的收尾结果分成「工具产出」与「harness 附言」两部分。
+ *
+ * 为什么必须分开返回：调用方要在产出外面套 `<external-content untrusted="true">`
+ * （MCP / web_search 这类外部来源的结果），而 `[Hook 附加上下文]` / `[Hook 反馈]`
+ * 是 harness 自己写的话，不是外部内容。原先附言拼进产出字符串，包裹一执行，
+ * 附言就被标成不可信、被模型当噪音忽略 —— 主循环侧已按这个结构拆开，
+ * 子代理路径（`run-tool-use.ts`）是最后一处漏网的。
+ */
+export interface PostToolHooksResult {
+  /** 工具产出（含 hook 整段替换后的输出）。调用方按来源决定是否包进 untrusted 标签。 */
+  output: string;
+  /** harness 附言（含标签），调用方拼在包裹**外面**：前置类放最前，后置类放最后。 */
+  notices: string[];
 }
 
 /**

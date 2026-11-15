@@ -51,6 +51,9 @@ import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
 import { guardOf } from "./decision-telemetry.ts";
 import { isSafetyConfirmation } from "./safety-confirmation.ts";
+// 只取类型：`import type` 编译期擦除，不会把 ToolClassifier 的运行时代码拉进权限判定模块
+// （classifier 实例仍然只通过 setToolClassifier 注入，见下方字段声明）。
+import type { PathVerdict } from "./tool-classifier.ts";
 import { classifyBashShape, collectEnvPrefixVars, resolveCdTargetGitTrust } from "./bash-shape.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
@@ -261,6 +264,23 @@ function extractMemoryResource(req: PermissionRequest): string {
 }
 
 /**
+ * M1：auto 分类器 fastPath 用的「目标路径」抽取。
+ *
+ * 与 `extractFilePath` 的差别：多认 `dir_path`（ls）。`ls` 是 Level 1 快路径会放行的
+ * 只读工具，漏了 `dir_path` 就只能判 unknown、每次列目录都白花一次分类器调用。
+ * 顺序与 `extractFilePath` 保持一致（file_path → notebook_path → path），
+ * 只是多一个兜底字段，避免两处口径分叉。
+ */
+function extractAutoClassifyPath(req: PermissionRequest): string {
+  const input = (req.input ?? {}) as Record<string, unknown>;
+  for (const key of ["file_path", "notebook_path", "path", "dir_path"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return "";
+}
+
+/**
  * B20：把阶段一危险确认的闸门标签（`guardOf`：A2 注入校验器 / A6 展开超限）搬进 metadata。
  * headless / dontAsk 会用新的 decisionReason 覆盖阶段一成因，不搬就在轨迹上丢掉了。
  * 只进 metadata，不影响任何判定。
@@ -282,12 +302,35 @@ function guardMetadata(phaseOne: Decision): { metadata?: Record<string, unknown>
  * auto 分类器是否允许发言。safetyCheck 命中且 classifierApprovable === false
  * （hooks / commands / settings）时分类器结果直接丢弃——这是字段存在的唯一理由。
  * classifierApprovable: true 的项（.git/、.bashrc）才允许分类器放行。
+ *
+ * M1b：用户**显式写的 ask 规则**同样不许分类器发言。写了 ask 就是要求人看一眼，
+ * 分类器同意等于把用户规则静默降级成 allow——规则匹配赢不了「模型判断」就不再是规则。
+ * 这是分类器「能不能发言」的唯一判定点，auto 分支不要另加 if。
  */
 function classifierMayApprove(reason: PermissionDecisionReason | undefined): boolean {
   if (!reason) return true;
   if (reason.type === "dangerousCommand" || reason.type === "destructiveTool") return false;
   if (reason.type === "safetyCheck") return reason.classifierApprovable === true;
+  if (reason.type === "rule" && reason.behavior === "ask") return false;
   return true;
+}
+
+/**
+ * M1b：阶段一的终局原因属于「请分类器看上下文」时，auto 的零成本快速路径必须退场。
+ *
+ * - `pathValidation`：工作区外读写。界外不等于危险（`/tmp` 下跑测试很常见），
+ *   所以仍交给分类器判上下文，但不能让 fastPath 凭工具名直接放行。
+ * - `safetyCheck` 且 `classifierApprovable: true`：`.git/hooks`、shell rc 这类
+ *   「可执行代码路径」。字段名的意思就是「分类器看一眼」，同理。
+ *
+ * 与 `classifierMayApprove` 的分工：那个管「分类器能不能说话」，这个管
+ * 「说了之后能不能走零成本通道」。两条都成立才需要 LLM。
+ */
+function shouldSkipFastPath(reason: PermissionDecisionReason | undefined): boolean {
+  if (!reason) return false;
+  if (reason.type === "pathValidation") return true;
+  if (reason.type === "safetyCheck") return reason.classifierApprovable === true;
+  return false;
 }
 
 /**
@@ -845,6 +888,25 @@ export class PermissionChecker implements Checker {
    */
   getPathValidator(): PathValidator {
     return this.pathValidator;
+  }
+
+  /**
+   * M1：给 auto 分类器的 fastPath 算「目标路径是否在工作目录集合内」。
+   *
+   * 判定只用 `PathValidator`（`resolveRealPath` 解 symlink + `..`，
+   * `isWithinWorkingDirectories` 含 `--add-dir` / `allowedDirectories` 白名单），
+   * 不再让分类器自己写一套——并行的第二套路径判断正是 M1 的根源。
+   *
+   * 用 `isWithinWorkingDirectories` 而不是 `isWithinWorkspace`：用户显式授权的目录
+   * 在 default 档读写都不问，auto 不该比 default 更严。
+   *
+   * 取不到路径 → `"unknown"`（不放行，落到 LLM）。不猜「大概在工作区内」。
+   */
+  private classifyPathVerdict(req: PermissionRequest): PathVerdict {
+    const rawPath = extractAutoClassifyPath(req);
+    if (!rawPath) return "unknown";
+    const realPath = this.pathValidator.resolveRealPath(rawPath);
+    return this.pathValidator.isWithinWorkingDirectories(realPath) ? "inside" : "outside";
   }
 
   /**
@@ -2160,7 +2222,15 @@ export class PermissionChecker implements Checker {
       // A9 标记：auto 档没有放行、回退人工确认时，记下回退成因（固定枚举）。
       // 此前「分类器判不安全」「分类器挂了」「护栏禁止分类器」三种回退在审计与轨迹里长得一样，
       // 分类器质量问题与配置问题无从区分。只进 metadata，不改决策。
-      let autoFallback: "absent" | "safety-guard" | "unsafe" | "unavailable" | "error" = "absent";
+      // M1b：新增 "ask-rule"——「用户写了 ask 规则、分类器根本没说话」必须与
+      // 「分类器判不安全」分开，否则调分类器 prompt 时会把用户规则的效果算成模型误判。
+      let autoFallback:
+        | "absent"
+        | "safety-guard"
+        | "ask-rule"
+        | "unsafe"
+        | "unavailable"
+        | "error" = "absent";
       const toolClassifier = this.getToolClassifier();
       if (toolClassifier?.isAvailable()) {
         try {
@@ -2173,24 +2243,32 @@ export class PermissionChecker implements Checker {
               classifierInput = undefined;
             }
           }
-          // P0-1：auto 与 yesMode 共用同一道危险确认护栏。
-          // classifierApprovable:false 的 safetyCheck（hooks / commands / settings）
-          // 以及 dangerousCommand，分类器结果直接丢弃——字段存在的理由就是这条路径。
-          if (
-            isSafetyConfirmation(result.decisionReason) &&
-            !classifierMayApprove(result.decisionReason)
-          ) {
+          // P0-1 + M1b：auto 与 yesMode 共用同一道护栏，判据统一收在 classifierMayApprove。
+          // 它返回 false 的三类确认都不交给分类器：
+          //   - dangerousCommand / destructiveTool（硬编码危险命令 / MCP 自报破坏性）
+          //   - classifierApprovable:false 的 safetyCheck（hooks / commands / settings）
+          //   - **用户显式写的 ask 规则**（M1b）：写了 ask 就是要人看，
+          //     分类器同意等于把用户规则静默降级成 allow
+          if (!classifierMayApprove(result.decisionReason)) {
+            const reasonTag =
+              result.decisionReason?.type === "rule"
+                ? `rule:${result.decisionReason.behavior}`
+                : String(result.decisionReason?.type);
+            autoFallback = result.decisionReason?.type === "rule" ? "ask-rule" : "safety-guard";
             log.info(
               "PERMISSION",
-              `${req.toolName}(${resource.slice(0, 80)}) → auto 不放行危险确认(${result.decisionReason?.type})`,
+              `${req.toolName}(${resource.slice(0, 80)}) → auto 不放行该确认(${reasonTag})`,
             );
-            autoFallback = "safety-guard";
           } else {
             const classifyResult = await toolClassifier.classify({
               toolName: req.toolName,
               input: (req.input || {}) as Record<string, unknown>,
               cwd: this.workspacePath,
               classifierInput,
+              // M1：路径归属由 PathValidator 算好传下去，fastPath 只认结论（不自己判断）
+              pathVerdict: this.classifyPathVerdict(req),
+              // M1b：工作区外读写 / 可执行代码路径必须由分类器看上下文，零成本快路径退场
+              skipFastPath: shouldSkipFastPath(result.decisionReason),
             });
             if (!classifyResult.classifierUnavailable && classifyResult.safe) {
               log.info(
@@ -3249,6 +3327,44 @@ export class PermissionChecker implements Checker {
       return { allowed: true };
     }
 
+    // M4：bash 的**只读命令**放行。
+    //
+    // plan 的承诺是「不改任何东西」，而 `git log` / `git diff` / `git status` /
+    // `ls -la` / `rg foo` 不写任何东西。此前这里只认 READ_ONLY_TOOLS 名单，bash 不在
+    // 名单里，于是规划阶段最常用的几条命令全被拒，模型只能改用 read/grep/glob 绕路，
+    // 或者干脆少看——这与 plan「先摸清楚再动手」的目的相反。
+    //
+    // 四条约束（改动时不要破）：
+    // 1. **只放 bash，不放 monitor**：monitor 的子进程是裸 spawn，不经沙箱
+    //    （与上面沙箱自动放行那段同一个理由，见 `shouldAutoAllowBash` 的注释）。
+    // 2. **只认 `isReadOnlyCommand`**：不用 `isReadOnlyIgnoringCd`（它的注释明确写着
+    //    「不许拿去做权限放行」），也不用 allow-composition 的组合规则（那是给 allow
+    //    规则匹配复合命令用的，口径不同）。
+    // 3. **不挪位置**：这里是 Step 5.5（工具级 allow）与 Step 9（出口总闸
+    //    `enforceModeHardConstraint`）共同的落点，两者都排在 Step 1（deny 规则）/
+    //    Step 2（危险命令）/ Step 4（路径）/ Step 5（ask 规则）之后。所以
+    //    `cat ~/.ssh/id_rsa`、`env`、`cat ../x` 仍在 Step 2 被拦，放行面不比 default 宽。
+    // 4. **不在 `enforceModeHardConstraint` 里另写一份判断**：那里调的就是本函数，
+    //    改一处两处生效；写两份必然漂移。
+    if (req.toolName === "bash" && tool) {
+      const command = (req.input as { command?: unknown } | undefined)?.command;
+      if (typeof command === "string" && isReadOnlyCommand(command)) {
+        // 这一支**只在 Step 5.5 的路径上才安全**，判据就是 `tool` 参数在不在：
+        //
+        // - Step 5.5（工具级 allow）→ 本函数由 `allowAtToolLevel` 调，前面刚跑过
+        //   `evaluateReadOnlyReadPaths`，`cat /etc/passwd` 那类「读工作区外文件」已被拦成确认。
+        // - Step 9（出口总闸）→ 本函数由 `enforceModeHardConstraint` 调，**前面没有那道检查**。
+        //   2026-11-15 实测：不加这个 `&& tool`，`plan + cat /etc/passwd` 会在这里被放行，
+        //   而 `default` 下它需要确认——那就比 default 宽了，违反 M4 的硬约束。
+        //
+        // 所以「只读命令放行」的资格来自**工具自己确认过**（Step 5.5 已判只读并校验过读路径），
+        // 权限层不替它猜。不传 tool 的调用（测试 / 嵌入 / SDK）退回原拒绝，方向是多拒一条，
+        // 不是多放一条。
+        log.info("PERMISSION", `bash(${resource.slice(0, 80)}) → 允许(plan模式+只读bash命令)`);
+        return { allowed: true };
+      }
+    }
+
     // Plan Mode 专用工具放行
     if (PLAN_MODE_EXTRA_TOOLS.has(req.toolName)) {
       if (req.toolName === "sub_agent") {
@@ -3298,7 +3414,10 @@ export class PermissionChecker implements Checker {
     log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(plan模式)`);
     return {
       allowed: false,
-      reason: "计划模式下只允许只读操作",
+      // 文案要点出「墙在哪里」：只写「只允许只读操作」时模型会反复试 bash（2026-08-29
+      // headless Note 的教训：拒绝不解释边界，模型只会盲试）。括号里给出合法样例，
+      // 且样例必须是 `isReadOnlyCommand` 真会放行的那几条，写错等于重新制造盲试。
+      reason: "计划模式下只允许只读操作（bash 只允许只读命令，如 git log / ls / rg）",
       decisionReason: { type: "mode", mode: "plan" },
     };
   }

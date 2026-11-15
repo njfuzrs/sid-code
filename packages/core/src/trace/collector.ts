@@ -1583,26 +1583,28 @@ export class TraceCollector {
     // 直接累加会 N² 过计数（case_028 实测：29 次调用累加 = 3.65M，实际只有 167k）。
     // 正确口径：input 取最后一次（已含全部历史），output/cache 累加。
     // 校准记录见 evals/eval-judge.ts gradeCost 注释 + 2026-05-25 横向对比实验。
-    this.metadata.total_tokens_sent = inputTokens;
+    //
+    // 计量与成本方案 T1（第二步，2026-11-15）：stock 与 flow 两个字段都改**归一化**口径。
+    // 此前写的是 provider 原始 `input_tokens`：Anthropic = 未命中余量（不含缓存命中/写入），
+    // OpenAI 族 = `prompt_tokens` 全量 —— 同一个真实用量在两种 provider 下必然不等，
+    // 跨 provider / 跨会话聚合系统性偏小。归一化口径 = 未命中 + 命中 + 写入。
+    // provider 缺失时与 computeContextUsage 同款兜底（D6）。
+    const promptTotalThisTurn = normalizeCacheUsage(
+      {
+        inputTokens,
+        outputTokens,
+        cacheReadInputTokens: cacheRead,
+        cacheCreationInputTokens: cacheCreate,
+      },
+      resp.provider || inferProviderByModelName(input.llm_request.model),
+    ).promptTotal;
+    this.metadata.total_tokens_sent = promptTotalThisTurn; // stock：末轮快照（已含全历史）
     this.metadata.total_tokens_received += outputTokens;
     // DISP-1：累计 prompt（flow），与累计 cost 口径可比
-    this.metadata.total_cumulative_prompt_tokens += inputTokens;
-    // 计量与成本方案 T1（第一步）：新增 `prompt_total`，每轮按归一化口径累加。
-    // 为什么不直接改上面那行：`total_cumulative_prompt_tokens` 已流进存量看板与 digest 判据，
-    // 且历史数据是 provider 原始口径（Anthropic = 未命中余量），改值会让新旧数据不可比。
-    // 新字段从本版本起才是「跨 provider 一致」的：Anthropic = 未命中+命中+写入，
-    // OpenAI 族 = prompt_tokens 全量。provider 缺失时与 computeContextUsage 同款兜底（D6）。
-    this.metadata.prompt_total =
-      (this.metadata.prompt_total ?? 0) +
-      normalizeCacheUsage(
-        {
-          inputTokens,
-          outputTokens,
-          cacheReadInputTokens: cacheRead,
-          cacheCreationInputTokens: cacheCreate,
-        },
-        resp.provider || inferProviderByModelName(input.llm_request.model),
-      ).promptTotal;
+    this.metadata.total_cumulative_prompt_tokens += promptTotalThisTurn;
+    // `prompt_total` 与上面那行第二步起同口径，保留独立字段的理由：
+    // ① 存量看板 / 外部查询已在读它；② 老轨迹没有该字段，读侧要靠它区分「归一化前的数据」。
+    this.metadata.prompt_total = (this.metadata.prompt_total ?? 0) + promptTotalThisTurn;
     this.metadata.total_cache_read_tokens += cacheRead;
     this.metadata.total_cache_creation_tokens += cacheCreate;
     this.metadata.total_api_calls += 1;

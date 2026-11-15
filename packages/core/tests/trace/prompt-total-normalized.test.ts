@@ -1,13 +1,16 @@
 /**
- * 计量与成本方案 T1（第一步）：`prompt_total` 必须是**跨 provider 归一化**的 flow。
+ * 计量与成本方案 T1：prompt 三个字段必须是**跨 provider 归一化**的口径。
  *
- * 背景：`total_cumulative_prompt_tokens` 的每轮增量是 provider 原始 `input_tokens`：
+ * 背景：`total_cumulative_prompt_tokens` 的每轮增量曾是 provider 原始 `input_tokens`：
  * Anthropic = 未命中余量（不含缓存命中/写入），OpenAI 族 = prompt_tokens 全量。
  * 同一个真实用量在两种 provider 下旧字段必然不等，跨 provider / 跨会话聚合会系统性偏小。
- * 新字段 `prompt_total` 每轮按 normalizeCacheUsage().promptTotal 累加，必须相等。
  *
- * 本 PR 是纯增量：旧字段的值与语义都不动，所以这里同时断言旧字段**保持不等**，
- * 防止后续有人把「顺手归一化旧字段」当成无害修改。
+ * 分两步落地：
+ * - 第一步（PR #660）：新增 `prompt_total`，按 normalizeCacheUsage().promptTotal 累加；
+ *   旧字段一个都不动（历史数据是 provider 原始口径，改值会让新旧不可比）。
+ * - 第二步（本 PR）：stock / flow 两个旧字段也改归一化 —— 它们已流进看板与 digest 判据，
+ *   口径不归一化则「花多少钱 ↔ 喂多少 token」的比值本身失真。历史轨迹靠「有没有
+ *   `prompt_total`」区分是否归一化之后写的。
  *
  * 落盘隔离：TraceCollector 的 outputDir 指向 tmpdir，不碰 ~/.sid-code。
  */
@@ -92,7 +95,7 @@ describe("prompt_total 跨 provider 归一化", () => {
     expect(openai.promptTotal).toBe(REAL.total);
   });
 
-  test("collector 落盘：prompt_total 归一化，旧 flow 字段保持 provider 原始口径", async () => {
+  test("collector 落盘：三个 prompt 字段同一归一化口径，stock 与 flow 不混用", async () => {
     const { testDir, hookSystem } = newSession();
     await hookSystem.fireSessionStartEvent("startup", { model: "test-model" });
     // 两轮同一个真实用量，但按各自 provider 的原始字段表达
@@ -104,9 +107,10 @@ describe("prompt_total 跨 provider 归一化", () => {
       readFileSync(join(testDir, "sessions", "sess-prompt-total", "session.traj"), "utf-8"),
     ) as { metadata: Record<string, unknown> };
 
-    // 新字段：两轮都是 1700 → 3400
+    // flow：两轮都是 1700 → 3400（第二步之前是 1000+1700=2700，改回原始口径这里会红）
     expect(traj.metadata.prompt_total).toBe(REAL.total * 2);
-    // 旧字段：1000 + 1700 = 2700，证明本 PR 没有改存量语义（改了这里就会红）
-    expect(traj.metadata.total_cumulative_prompt_tokens).toBe(REAL.uncached + REAL.total);
+    expect(traj.metadata.total_cumulative_prompt_tokens).toBe(REAL.total * 2);
+    // stock：末轮快照 1700 —— 与 flow 相等就说明有人把 stock 也累加了
+    expect(traj.metadata.total_tokens_sent).toBe(REAL.total);
   });
 });
