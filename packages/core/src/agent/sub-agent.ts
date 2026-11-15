@@ -57,6 +57,7 @@ import type { AgentTaskResult, LocalAgentTaskState } from "../task/types.ts";
 import {
   type ParentInitMessage,
   type ChildMessage,
+  type ChildRequestBudgetDiagnostics,
   type ToolDef,
   writeParentMsg,
 } from "./sub-agent-protocol.ts";
@@ -312,6 +313,14 @@ export interface SubAgentResult {
    * 填；catch 等拿不到该变量的出口由 execute() 按 signal.aborted 兜底推导。
    */
   endStatus?: "completed" | "failed" | "aborted";
+  /**
+   * F7：请求预算不足的结构化诊断值（窗口 / 输入估算 / 窗口剩余 / 下限）。
+   * 仅 spawn 路径、且子进程因窗口放不下而失败时存在；进程内路径没有跨进程协议这一层。
+   *
+   * 与 `ChildResultMessage.diagnostics` 同名同义。有了它，调用方与遥测都能直接读四个数，
+   * 不必再正则解析 `output` 里的人类可读文案。
+   */
+  budgetDiagnostics?: ChildRequestBudgetDiagnostics;
 }
 
 /** SubagentStart 的工作目录 / 隔离字段（无绑定目录时为空对象，事件形状不变）。 */
@@ -1796,7 +1805,17 @@ export class SubAgent {
                   // 父进程用 initMsg 已知值兜底（子进程必用 initMsg.model + provider_name）
                   model: msg.model ?? initMsg.model,
                   provider: msg.provider ?? initMsg.provider_name,
+                  // F7：窗口不足的诊断值原样透传（可选字段，旧子进程不带）
+                  ...(msg.diagnostics ? { budgetDiagnostics: msg.diagnostics } : {}),
                 };
+                if (!msg.success && msg.diagnostics) {
+                  const d = msg.diagnostics;
+                  log.warn(
+                    "SUBAGENT",
+                    `子代理因窗口不足失败：窗口 ${d.contextWindow}，输入 ${d.estimatedInputTokens}，` +
+                      `剩余 ${d.windowLimitTokens}，下限 ${d.floorTokens}`,
+                  );
+                }
                 break;
 
               case "crash":
