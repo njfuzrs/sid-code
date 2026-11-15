@@ -323,6 +323,13 @@ export interface ShellConfirmRequestInfo {
 export interface PlanApprovalRequestInfo {
   planFilePath: string;
   planContent: string;
+  /**
+   * auto 档此刻是否真的可用（分类器已接线且未被企业策略禁用）。
+   *
+   * 由 app.ts 在构造请求时算好传进来，**不在对话框里自己判断**：CLI 组件拿不到
+   * checker/config 的那套状态，让它去猜只会猜出一个「可选但选了静默失效」的假选项。
+   */
+  autoAvailable?: boolean;
   resolve: (decision: string) => void;
 }
 
