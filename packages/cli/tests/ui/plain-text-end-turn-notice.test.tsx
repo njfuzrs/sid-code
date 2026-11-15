@@ -120,7 +120,14 @@ describe("app.ts 路由：persistent 提示不走 system:transient", () => {
     expect(branch).toContain("appendPersistentHint(event.text)");
     const helperAt = src.indexOf("const appendPersistentHint = ");
     const helper = src.slice(helperAt, helperAt + 600);
-    expect(helper).toContain("localCommandItems.push(");
+    // 契约变更（2026-11-15，D9 可测化）：追加语义移到 persistent-hint.ts 的
+    // appendPersistentHintTo，app.ts 只提供依赖；「登记本地侧表」的动作在那里。
+    // 行为断言见 wait-notice-persistent-routing.test.ts 的「D9 行为侧」。
+    expect(helper).toContain("appendPersistentHintTo(");
+    expect(helper).toContain("localItems: localCommandItems");
+    const hintSrc = readFileSync(join(import.meta.dir, "../../src/ui/persistent-hint.ts"), "utf8");
+    expect(hintSrc).toContain("localItems.push(");
+    expect(hintSrc).toContain('type: "hint"');
   });
 });
 

@@ -8,7 +8,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  statSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -40,7 +48,8 @@ import {
   listExistingMemoryKeys,
 } from "@sid-code/core/memory/index-capacity.ts";
 import { INDEX_TRUNCATION_NOTICE } from "@sid-code/core/memory/index-budget.ts";
-import type { MemoryHeader } from "@sid-code/core/memory/types.ts";
+import { scanMemoryFiles } from "@sid-code/core/memory/scan.ts";
+import { MEMORY_LIMITS, type MemoryHeader } from "@sid-code/core/memory/types.ts";
 
 let tmpHome: string;
 let prevHome: string | undefined;
@@ -236,6 +245,16 @@ function fakeFork(calls: { n: number }, written: string[] = []) {
                 input: { key: k, value: "v", type: "feedback" },
               })),
             },
+            // 写入判定要求「有配对 tool_result 且非 error」才算落盘
+            // （`extractor.ts` 的 `settledToolUseIds`）——真实 fork 也是这个形状。
+            {
+              role: "user" as const,
+              content: written.map((_, i) => ({
+                type: "tool_result" as const,
+                tool_use_id: `t${i}`,
+                content: "ok",
+              })),
+            },
           ]
         : [],
       usage: usage(100, 5),
@@ -304,9 +323,9 @@ async function turns(
 }
 
 describe("T2 抽取节流", () => {
-  test("interval 缺省 = 每个 end_turn 都跑，收尾不补跑（行为不变）", async () => {
+  test("interval=1 = 每个 end_turn 都跑，收尾不补跑（行为不变）", async () => {
     const calls = { n: 0 };
-    const h = handle(undefined, calls);
+    const h = handle(1, calls);
     await turns(h, 4, calls);
     expect(calls.n).toBe(4);
     await h.drainPending(1000);
@@ -351,11 +370,11 @@ describe("T2 抽取节流", () => {
     expect(calls.n).toBe(1);
   });
 
-  test("resolveMemoryExtractInterval：env > settings > 1，非法值回落", () => {
-    expect(resolveMemoryExtractInterval()).toBe(1);
+  test("resolveMemoryExtractInterval：env > settings > 3，非法值回落缺省 3", () => {
+    expect(resolveMemoryExtractInterval()).toBe(3);
     expect(resolveMemoryExtractInterval(4)).toBe(4);
-    expect(resolveMemoryExtractInterval(0)).toBe(1);
-    expect(resolveMemoryExtractInterval(2.5)).toBe(1);
+    expect(resolveMemoryExtractInterval(0)).toBe(3);
+    expect(resolveMemoryExtractInterval(2.5)).toBe(3);
     process.env.SID_CODE_MEMORY_EXTRACT_INTERVAL = "3";
     expect(resolveMemoryExtractInterval(4)).toBe(3);
     process.env.SID_CODE_MEMORY_EXTRACT_INTERVAL = "abc";
@@ -434,6 +453,34 @@ describe("T3 写入对齐容量", () => {
     expect(isExistingMemoryKey("y", ex)).toBe(false);
   });
 
+  test("readIndexCapacity：常量变更后旧文案失效，靠上限兜底仍判截断", () => {
+    const dir = join(tmpHome, "mem");
+    mkdirSync(dir, { recursive: true });
+    // 旧版本写的索引：文案里的数字与当前常量不同（模拟调大 INDEX_MAX_ENTRIES 后再读旧文件），
+    // 且条数已到当前上限 —— 只看文案会漏判，T3 的 index_full 拦截会整体失效。
+    const staleNotice = INDEX_TRUNCATION_NOTICE.replace("200 条", "300 条");
+    const lines = Array.from({ length: 200 }, (_, i) => `- [k${i}](k${i}.md) — d`);
+    writeFileSync(
+      join(dir, "MEMORY.md"),
+      ["# Memory Index", "", ...lines].join("\n") + staleNotice,
+    );
+    const c = readIndexCapacity(dir);
+    expect(c.entries).toBe(200);
+    expect(c.truncated).toBe(true); // 文案不匹配，但 entries 到上限
+  });
+
+  test("readIndexCapacity：未到上限且无文案不误报，字节超限也判截断", () => {
+    const dir = join(tmpHome, "mem");
+    writeIndex(dir, 199, false);
+    expect(readIndexCapacity(dir).truncated).toBe(false);
+    // 构造一个字节超限但条数未到上限的索引（长描述）；写侧会截断，读侧也要认得
+    const big = "- [k0](k0.md) — " + "长".repeat(10_000);
+    writeFileSync(join(dir, "MEMORY.md"), ["# Memory Index", "", big].join("\n") + "\n");
+    const c = readIndexCapacity(dir);
+    expect(c.bytes).toBeGreaterThan(MEMORY_LIMITS.INDEX_MAX_BYTES);
+    expect(c.truncated).toBe(true);
+  });
+
   test("清单按索引优先级排序，组内 mtime 倒序", () => {
     const h = (name: string, type: any, mtimeMs: number): MemoryHeader => ({
       filename: `${name}.md`,
@@ -456,6 +503,25 @@ describe("T3 写入对齐容量", () => {
       h("f2", "feedback", 5),
     ]);
     expect(sorted.map((x) => x.name)).toEqual(["u", "f2", "f1", "p", "r"]);
+  });
+
+  test("T3.3 边界：目录超过 SCAN_MAX_FILES 时清单只覆盖最新 N 条", async () => {
+    const dir = join(tmpHome, "scan");
+    const n = MEMORY_LIMITS.SCAN_MAX_FILES + 1;
+    const base = Date.now() - n * 1000;
+    for (let i = 0; i < n; i++) {
+      const file = `m_${String(i).padStart(3, "0")}.md`;
+      mem(dir, file, `m${i}`, "project");
+      const t = new Date(base + i * 1000);
+      utimesSync(join(dir, file), t, t);
+    }
+    const headers = await scanMemoryFiles(dir);
+    expect(headers).toHaveLength(MEMORY_LIMITS.SCAN_MAX_FILES);
+    // 最旧的 m0 被截掉：scan 是「先按 mtime 取最新 N 条、再交给调用方按类型重排」，
+    // 不是「全量按类型排序后截断」——这是 I/O 保护上限的固有边界（见 scan.ts 注释），
+    // 与索引的候选集在目录 > N 条时不同。锁住当前行为，避免以后误以为排序覆盖全量。
+    expect(headers.some((h) => h.name === "m0")).toBe(false);
+    expect(headers.some((h) => h.name === `m${n - 1}`)).toBe(true);
   });
 
   test("提示词：给出容量行；截断时说明不能新建", () => {

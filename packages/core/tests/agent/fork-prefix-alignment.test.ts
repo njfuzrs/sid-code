@@ -304,6 +304,51 @@ describe("D16 · messages：fork 发主循环的发送视图（清理后），�
     return msgs;
   }
 
+  /**
+   * F4 的过期清理：30 轮常规大小的 read（每轮 6,000 字符）。
+   * 单条远小于大输出清理的 30,000 门槛，也远不到遮罩要的用量水位，
+   * 所以这份历史里**只可能**由 staleClearState 改写前缀 —— 正是漏贴时会被测出来的形态。
+   */
+  function staleHistory(): Message[] {
+    const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "开始" }] }];
+    for (let i = 0; i < 30; i++) {
+      msgs.push({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `t${i}`, name: "read", input: { file_path: `src/f${i}.ts` } },
+        ],
+      });
+      msgs.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: `t${i}`,
+            content: Array.from({ length: 6_000 }, (_, j) =>
+              String.fromCharCode(97 + ((i * 7 + j * 13) % 26)),
+            ).join(""),
+          },
+        ],
+      });
+    }
+    return msgs;
+  }
+
+  test("触发过期清理后，fork 前缀里是过期清理占位，与主循环发出的逐字节相同", () => {
+    const ctxMgr = new ContextManager({ maxTokens: 10_000_000 });
+    ctxMgr.setMessages(staleHistory());
+    const sent = ctxMgr.getCleanedMessages();
+    const sentT0 = (sent[2].content[0] as any).content as string;
+    // 前提：这条历史确实只被 stale 通道改写过（占位带 read 精准重读指引）
+    expect(sentT0).toContain('read("src/f0.ts"');
+    expect(sentT0).toContain("offset=");
+
+    const view = ctxMgr.getForkPrefixMessages();
+    expect(JSON.stringify(view)).toBe(JSON.stringify(sent));
+    // 主历史不被改写
+    expect((ctxMgr.getMessages()[2].content[0] as any).content.length).toBe(6_000);
+  });
+
   test("触发大输出清理后，fork 前缀里是 [已清理: …] 占位，与主循环发出的逐字节相同", () => {
     const ctxMgr = new ContextManager({ maxTokens: 10_000_000 });
     ctxMgr.setMessages(bigHistory());

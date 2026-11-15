@@ -220,3 +220,42 @@ describe("构造点穷举：只有主会话注册点传 invalidatesWakeups: true
     expect(sub!.text).toBe("replacement = new TodoWriteTool();");
   });
 });
+
+/**
+ * T-W3-7（方案 §10.5 承认的误撤销风险）：一轮内清单 `>0 → 0 → >0`。
+ *
+ * 判据是「**写入前 >0 且这次写完全 completed**」，所以撤销发生在中间那次归零，
+ * 而不是等整轮结束再看。风险是模型在 0 之后又开了一批新任务、仍需要原来那个唤醒。
+ *
+ * 方案选择的行为是「不恢复」：新任务需要等待就重新安排。这条用例锁的就是这个选择——
+ * 它既是当前行为，也是「知道有风险但接受」的**回归哨兵**：谁把判据改成
+ * 「清零且本轮结束仍为 0」，这里会红，并迫使改动方显式处理这个取舍。
+ */
+describe("T-W3-7：一轮内 >0 → 0 → >0，中间归零即撤销且不恢复", () => {
+  test("第二次写入把清单清零时撤销；第三次写入新任务不恢复", async () => {
+    scheduleWakeup("wk-gap");
+    const main = new TodoWriteTool({ invalidatesWakeups: true });
+
+    // >0：还在等外部状态（这一步不该撤销）
+    await main.execute({ todos: [item("等 CI", "in_progress")] });
+    expect(wakeupAlive("wk-gap")).toBe(true);
+
+    // → 0：撤销发生在这里，不是等整轮结束
+    const cleared = await main.execute({ todos: [item("等 CI", "completed")] });
+    expect(wakeupAlive("wk-gap")).toBe(false);
+    expect(isWaitInvalidated("wk-gap")).toBe(true);
+    // 撤销要有可解释的回执（否则模型不知道为什么唤醒没了）
+    expect(JSON.stringify(cleared)).toContain("已随清单清零撤销");
+
+    // → 又 >0：新任务不恢复旧唤醒（需要等待就重新 schedule_wakeup）
+    await main.execute({ todos: [item("改代码", "in_progress")] });
+    expect(wakeupAlive("wk-gap")).toBe(false);
+    expect(isWaitInvalidated("wk-gap")).toBe(true);
+    // 撤销通知只发一次：先排空那一条，后续写入不再产生新的
+    const notices = drainWaitNotices();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.kind).toBe("wakeup_invalidated");
+    expect(notices[0]?.reason).toContain("清单");
+    expect(drainWaitNotices()).toEqual([]);
+  });
+});
