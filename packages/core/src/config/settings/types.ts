@@ -568,7 +568,7 @@ export const SettingsSchema = lazySchema(
         outputStyle: z.string().optional(),
         autoDream: z.boolean().optional(),
         autoMemory: z.boolean().optional(),
-        // 横向剖析 T2：后台记忆提取每 N 个 end_turn 跑一次（缺省 1）
+        // 横向剖析 T2：后台记忆提取每 N 个 end_turn 跑一次（缺省 3，见 resolveMemoryExtractInterval）
         memoryExtractInterval: z.number().int().positive().optional(),
         conflictDetection: z.boolean().optional(),
         // cli.ts 对非法值回退 warn；这里判不合法同样等价于"未设 → 默认 warn"，只多一条提示

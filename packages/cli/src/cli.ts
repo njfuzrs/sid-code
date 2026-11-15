@@ -1543,8 +1543,11 @@ export async function main(): Promise<void> {
         }
       }
       if (policy) {
-        const { isBypassDisabledByPolicy, isModeDisabledByPolicy } =
-          await import("@sid-code/core/permission/mode-policy.ts");
+        const {
+          isBypassDisabledByPolicy,
+          isModeDisabledByPolicy,
+          downgradeBypassIfDisabledByPolicy,
+        } = await import("@sid-code/core/permission/mode-policy.ts");
 
         // P2-2 fail-fast：策略禁用 bypass 时，若 CLI 显式传了 bypass 相关 flag/mode，明确报错退出
         const cliWantsBypass =
@@ -1565,16 +1568,10 @@ export async function main(): Promise<void> {
           );
           process.exit(1);
         }
-        // 降级：策略禁用 bypass 时，抹掉从其它来源（settings 文件等）渗入的 skip/bypass 态
-        if (isBypassDisabledByPolicy()) {
-          if (config.skipPermissions) config.skipPermissions = false;
-          if (
-            config.permissionMode === "dangerously-skip-permissions" ||
-            config.permissionMode === "always-allow"
-          ) {
-            config.permissionMode = "default";
-          }
-        }
+        // 降级：策略禁用 bypass 时，抹掉从其它来源（settings 文件等）渗入的 skip/bypass 态。
+        // 实现放在 core（`downgradeBypassIfDisabledByPolicy`）而不是内联在这里：
+        // 这是「企业策略最终赢过任何配置来源」的唯一落点，内联就只能靠跑整个 CLI 才验证到。
+        downgradeBypassIfDisabledByPolicy(config);
       }
     } catch (err) {
       // P2-8：initLogger 之前（此处在 :980 之前）的 warn 命中 stderr 兜底分支，
