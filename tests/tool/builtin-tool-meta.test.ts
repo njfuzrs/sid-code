@@ -5,7 +5,7 @@
  * 改用真实注册表）都从这同一个出口取数。出口本身错了，那三条门禁会一起失明，
  * 而且是恒绿式失明——所以在这里把「注册表全集 + 延迟分组」先钉住。
  *
- * 数字（42 / 18 / `[]`）是 2026-11-12 的基线，硬编码是刻意的：
+ * 数字（41 / 17 / `[]`）是 2026-11-15 的基线，硬编码是刻意的：
  * 增删内置工具、改变延迟分层或补完 zodSchema 时，应当有人停下来确认下游门禁要不要跟进。
  * 它们变红不代表出口坏了，而是提醒「真实注册表变了」。
  */
@@ -31,13 +31,13 @@ describe("--dump-tool-meta：门禁取真实注册表的出口", () => {
     expect(names).toEqual([...names].sort());
   });
 
-  test("内置工具全集 42 个（与 --dump-tools 同口径）", () => {
-    expect(meta.length).toBe(42);
+  test("内置工具全集 41 个（与 --dump-tools 同口径）", () => {
+    expect(meta.length).toBe(41);
   });
 
-  test("延迟 18 个、常驻 24 个", () => {
+  test("延迟 17 个、常驻 24 个", () => {
     const deferred = meta.filter((t) => t.deferred).map((t) => t.name);
-    expect(deferred.length).toBe(18);
+    expect(deferred.length).toBe(17);
     expect(meta.length - deferred.length).toBe(24);
   });
 

@@ -52,7 +52,10 @@ export class TaskOutputTool implements Tool {
   readonly shouldDefer = true;
   readonly guidance =
     "回看后台任务当前进度或已完成任务的输出时用；完成会自动通知，不要用它轮询等待。";
-  readonly searchHint = "background task output result 后台 任务 输出 结果";
+  // D5（T8）：`bg_task_get` 已并入本工具，旧名保留在 searchHint 里，
+  // 模型（或历史会话）说「bg_task_get / 任务详情」时仍能被 tool_search 找到。
+  readonly searchHint =
+    "background task output result detail get 后台 任务 输出 结果 详情 查询 bg_task_get";
   /**
    * P2-3：任务管理类工具，连续查询**不同** task 的输出是正当推进而非循环，豁免循环检测。
    *
@@ -176,31 +179,67 @@ export class TaskOutputTool implements Tool {
 
     const terminal = isTerminalStatus(currentTask.status);
 
+    // D5（T8）：`bg_task_get` 并入本工具后保留它的检索状态三档 ——
+    // 模型要能分辨「取到了最终结果 / 等到超时还在跑 / 没等只是看一眼」。
+    // 三档与旧 bg_task_get 同语义：success 只表示「取到了终态」，任务本身成败看 <status>。
+    const retrievalStatus: "success" | "timeout" | "not_ready" = terminal
+      ? "success"
+      : shouldBlock
+        ? "timeout"
+        : "not_ready";
+    const duration = currentTask.endTime
+      ? `${((currentTask.endTime - currentTask.startTime) / 1000).toFixed(1)}s`
+      : `${((Date.now() - currentTask.startTime) / 1000).toFixed(1)}s (运行中)`;
+
     // F2：返回体用与 <task-notification> 同源的标签块，不再 JSON.stringify + 拼输出流。
     // 终态 agent 任务只给 result（结论），不拼 `.output` 流：流是逐轮过程，最后一轮正是 result，
     // 旧实现把结论放了两遍且 result 反被截在 4000（R4）。shell / 运行中任务的流就是内容本身。
     const parts = [
       "<task-output>",
+      // D5（T8）：`retrieval_status` / `duration` 原是 bg_task_get 的独有字段，合并后保留。
+      `  <retrieval_status>${retrievalStatus}</retrieval_status>`,
       `  <task-id>${currentTask.id}</task-id>`,
       `  <task-type>${currentTask.type}</task-type>`,
       `  <status>${currentTask.status}</status>`,
       `  <description>${currentTask.description}</description>`,
+      `  <duration>${duration}</duration>`,
     ];
     if (isShellTask(currentTask)) {
       parts.push(`  <command>${currentTask.command}</command>`);
       if (currentTask.exitCode !== undefined) {
         parts.push(`  <exit-code>${currentTask.exitCode}</exit-code>`);
       }
+      if (currentTask.interrupted) {
+        parts.push(`  <interrupted>true</interrupted>`);
+      }
     }
     // monitor（D17）：`eventCount` 与 `bg_task_list` 的进展签名是同一个字段，
     // 模型看到「又多了 2 条」时不必先读 `.output` 才知道发生了什么。
+    // D5（T8）：`command` 原是 bg_task_get 的 monitor 分支字段，合并后一并保留
+    // （截断长度与 shell 同 500 —— 它和 shell 一样是用户可见的原始命令）。
     if (isMonitorTask(currentTask)) {
+      parts.push(`  <command>${currentTask.command.slice(0, 500)}</command>`);
       parts.push(`  <deadline>${formatClockWithSeconds(currentTask.deadlineAt)}</deadline>`);
       parts.push(`  <event-count>${currentTask.eventCount}</event-count>`);
     }
     const agentResult = isAgentTask(currentTask) ? currentTask.result : undefined;
     if (isAgentTask(currentTask)) {
       parts.push(`  <agent-type>${currentTask.agentType}</agent-type>`);
+      // D5（T8）：`progress` / `last_activity` / `progress_summary` 原是 bg_task_get 的
+      // 独有字段。合并后保留 —— 模型查运行中子代理时最常问的就是「已经做了多少」。
+      const p = currentTask.progress;
+      if (p) {
+        parts.push(`  <progress tools="${p.toolUseCount}" tokens="${p.tokenCount}">`);
+        if (p.lastActivity) {
+          parts.push(
+            `    <last_activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last_activity>`,
+          );
+        }
+        parts.push(`  </progress>`);
+      }
+      if (currentTask.progressSummary) {
+        parts.push(`  <progress_summary>${currentTask.progressSummary}</progress_summary>`);
+      }
     }
     if (agentResult && terminal) {
       parts.push(
@@ -220,6 +259,19 @@ export class TaskOutputTool implements Tool {
       // delta 已按 MAX_OUTPUT_BYTES 字节封顶，此处无需再 slice（旧代码的 .slice(0,30000)
       // 是从头读的产物，会与增量语义冲突）。字符兜底仅防多字节膨胀的极端情况。
       parts.push(`  <output>${output.slice(0, MAX_OUTPUT_CHARS)}</output>`);
+    }
+    // D5（T8）：bg_task_get 的「下一步出路」提示原样保留 —— 不给具体出路就等于把模型
+    // 推回同参轮询，而 49 次同参 bg_task_list 的病灶正是这么来的。
+    if (retrievalStatus === "timeout") {
+      parts.push(
+        `<hint>等待 ${Math.round(timeout / 1000)}s 后任务仍在运行（这不是错误）。` +
+          `任务完成时你会自动收到 task-notification，不要再次阻塞等待；` +
+          `先做不依赖该任务的部分，或简短告诉用户进展并结束本轮。</hint>`,
+      );
+    } else if (retrievalStatus === "not_ready") {
+      parts.push(
+        `<hint>任务尚未完成。完成时会自动以 task-notification 通知你，不要以相同入参反复查询状态。</hint>`,
+      );
     }
     parts.push("</task-output>");
 
