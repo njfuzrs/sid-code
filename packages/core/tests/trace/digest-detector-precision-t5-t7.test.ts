@@ -203,6 +203,79 @@ describe("T7 errors.jsonl 区分「已恢复」与「最终失败」", () => {
     expect(high).toHaveLength(1);
     expect(high[0].severity).toBe("high");
   });
+
+  // 2026-11-15 四档抽检（样本 20261016-115439-8a3b2af5 的 idx=104）：
+  // willRetry=false 不等于「没恢复」—— 之后同 index 出现了 AfterModelRaw 才是硬证据。
+  it("willRetry=false 但之后同 index 有 AfterModelRaw：也算恢复（判据不看 willRetry）", () => {
+    const d = digestOf("t7recoveredNoFlag", {
+      steps: [],
+      events: [ev("AfterModelRaw", { index: 104 }, T0 + 1000)],
+      errors: [errEntry(104, { kind: "prompt_too_long", willRetry: false })],
+    });
+    expect(find(d, "errors_jsonl_has_entries")).toHaveLength(0);
+    const recovered = find(d, "errors_jsonl_recovered");
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].severity).toBe("low");
+  });
+});
+
+// ── T3 补：会话中断收尾时，采集侧已写入的 ModelCallUnpaired（2026-11-15）──
+//
+// T3 的 inflight 判据只覆盖了「从轨迹推断的 unpaired_before_model」，没覆盖采集侧
+// 已经写进 events.jsonl 的 ModelCallUnpaired。样本 20261027-154357-468fef3a：
+// idx=15 是主链最后一个 BeforeModel，300s 后看门狗 fire，7 分钟后 user_interrupt 收尾
+// —— 报 high 是把用户中断当成了 hang。
+
+const modelCallUnpaired = (index: number, atMs: number) =>
+  ev("ModelCallUnpaired", { index, model: "m", elapsed_ms: 300_000 }, atMs);
+
+describe("T3 中断收尾时看门狗那条归 inflight_at_exit", () => {
+  it("看门狗 index 是主链最后一个 BeforeModel + 中断退出：low 的 inflight，不报 hang high", () => {
+    const d = digestOf("t3watchdogInterrupt", {
+      steps: [],
+      exit: "user_interrupt",
+      events: [
+        ev("BeforeModel", { index: 14 }, T0),
+        ev("BeforeModel", { index: 15 }, T0 + 1_000),
+        modelCallUnpaired(15, T0 + 301_000),
+        ev("SessionEnd", { reason: "exit", exit_status: "user_interrupt" }, T0 + 400_000),
+      ],
+    });
+    const inflight = find(d, "model_call_inflight_at_exit");
+    expect(inflight).toHaveLength(1);
+    expect(inflight[0].severity).toBe("low");
+    expect(find(d, "model_call_unpaired_watchdog")).toHaveLength(0);
+  });
+
+  it("负向对照：看门狗之后还有新的 BeforeModel → 仍是 high（不是收尾在途）", () => {
+    const d = digestOf("t3watchdogMid", {
+      steps: [],
+      exit: "user_interrupt",
+      events: [
+        ev("BeforeModel", { index: 15 }, T0),
+        modelCallUnpaired(15, T0 + 301_000),
+        ev("BeforeModel", { index: 16 }, T0 + 302_000),
+        ev("SessionEnd", { reason: "exit", exit_status: "user_interrupt" }, T0 + 400_000),
+      ],
+    });
+    const high = find(d, "model_call_unpaired_watchdog");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+  });
+
+  it("负向对照：正常退出（end_turn）的在途请求仍是 high（真 hang 不能放过）", () => {
+    const d = digestOf("t3watchdogEndTurn", {
+      steps: [],
+      exit: "end_turn",
+      events: [
+        ev("BeforeModel", { index: 15 }, T0),
+        modelCallUnpaired(15, T0 + 301_000),
+        ev("SessionEnd", { reason: "exit", exit_status: "end_turn" }, T0 + 400_000),
+      ],
+    });
+    expect(find(d, "model_call_unpaired_watchdog")).toHaveLength(1);
+    expect(find(d, "model_call_unpaired_watchdog")[0].severity).toBe("high");
+  });
 });
 
 // ── T7 宿主休眠引起的 abort race（2026-11-15）───────────────────────────────

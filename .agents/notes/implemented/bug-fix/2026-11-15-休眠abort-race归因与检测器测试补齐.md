@@ -34,6 +34,25 @@ collector 写进 events.jsonl」这条链路全仓无测试。新增
 `collector-pairing-prompt-exclusion.test.ts`：把看门狗压到 150ms（env 注入），弹窗开 60ms
 后关闭，断言 `excluded_prompt_ms > 0` 且不超过挂钟；另加「没有弹窗时恒为 0」的负向对照。
 
+### 4. 四档抽检带出的两处判据误报（同日补）
+
+按剖析 5.3 的四档抽了 6 个 high 会话，其中 4 条是「事实对、诊断错」，两条立刻修了：
+
+- **`errors_jsonl_has_entries` 的恢复判据去掉 `willRetry === true`**：样本
+  `20261016-115439-8a3b2af5` 的 idx=104 是 `willRetry=false` 的 `prompt_too_long`，
+  但之后**确实**出现了同 index 的 `AfterModelRaw` —— 那是明确恢复的证据，比「当时的意图」
+  强。去掉它不会放过「打算重试但最终失败」：那类本来就没有 AfterModelRaw。
+- **`model_call_unpaired_watchdog` 增加中断收尾归因**：样本
+  `20261027-154357-468fef3a` 的 idx=15 是主链最后一个 BeforeModel，300s 后看门狗 fire，
+  7 分钟后 `user_interrupt` 收尾 —— 报 high 是把用户中断当成了 hang。T3 的 inflight 判据
+  只覆盖了「从轨迹推断的 `unpaired_before_model`」，没覆盖采集侧已写入的
+  `ModelCallUnpaired`。现在这种形态归 `model_call_inflight_at_exit`（low）。
+
+未改的两条（记录在方案文档的「后续」）：`billing_amount_mismatch` 的 8.8% 差额经核实是
+真差额（`charged` 与 `accounted` 互补，不是漏过滤）；`tool_result_is_error` 的
+「write 内容截断保护」属事实对但不可操作，改判据需先定义「哪些 is_error 不算故障」，
+超出本次范围。
+
 ## 放弃了什么（以及为什么不选）
 
 - **按文案直接跳过 abort race**：休眠之外的真 abort race（同会话 966s 那条）会被一起吞掉，

@@ -3737,11 +3737,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     const unresolved: typeof errors = [];
     for (const e of errors) {
       const data = e.data as any;
-      const ctx = data?.context ?? {};
       const idx = data?.index;
       const ts = e.timestamp ? Date.parse(e.timestamp) : NaN;
+      // 2026-11-15 复核（四档抽检）：判据从「willRetry=true 且之后有 AfterModelRaw」
+      // 收紧为「之后有 AfterModelRaw」。实测样本 `20261016-115439-8a3b2af5` 的 idx=104
+      // 是 `willRetry=false` 的 prompt_too_long，但之后**确实**出现了同 index 的
+      // AfterModelRaw —— 那是明确恢复的证据，比 `willRetry`（当时的意图）强得多。
+      // 去掉它不会放过「打算重试但最终失败」：那类本来就没有 AfterModelRaw，仍进 unresolved。
       const recoveredByRetry =
-        ctx.willRetry === true &&
         typeof idx === "number" &&
         !Number.isNaN(ts) &&
         events.some(
@@ -3929,6 +3932,37 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
             },
           ],
           pointer: `warn.log（FALLBACK / 重试相关 WARN）+ events.jsonl 该时段的 StreamRestart`,
+        });
+        continue;
+      }
+      // 2026-11-15 复核（四档抽检）：会话以中断收尾时，这条 index 是主链最后一个
+      // BeforeModel、之后有 SessionEnd、退出方式是 abort/user_interrupt/terminal_closed
+      // —— 与 T3 的 inflight 判据是同一件事，只是那条只覆盖了「从轨迹推断的
+      // unpaired_before_model」，没覆盖采集侧已经写进 events.jsonl 的 ModelCallUnpaired。
+      // 实测样本 20261027-154357-468fef3a：idx=15 是最后一个 BeforeModel，300s 后看门狗
+      // fire，7 分钟后 user_interrupt 收尾 —— 报 high 是把用户中断当成了 hang。
+      const isTrailingInFlight =
+        INTERRUPT_EXIT_STATUSES.has(exitStatus) &&
+        events.some((e) => e.event === "SessionEnd") &&
+        ((beforeModels[beforeModels.length - 1]?.data as any)?.index ?? undefined) === d.index;
+      if (isTrailingInFlight) {
+        anomalies.push({
+          layer: "L0",
+          severity: "low",
+          kind: "model_call_inflight_at_exit",
+          detail:
+            `退出时在途的请求（非 hang）：index=${d.index} model=${d.model}，` +
+            `看门狗 ${d.elapsed_ms}ms 后仍未配对，会话以 ${exitStatus} 收尾。` +
+            `该请求是主链最后一个 BeforeModel，中断时代码本来就不会回灌结果${snapDetail}`,
+          provenance: [
+            {
+              sourceFile: eventsPath,
+              lineRef: `event=ModelCallUnpaired index=${d.index} → SessionEnd(${exitStatus})`,
+              rawValue: `elapsed_ms=${d.elapsed_ms}`,
+              mtime: fileMtimeIso(eventsPath),
+            },
+          ],
+          pointer: `events.jsonl（BeforeModel → ModelCallUnpaired → SessionEnd 时间线）`,
         });
         continue;
       }
