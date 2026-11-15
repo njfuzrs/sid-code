@@ -6982,9 +6982,10 @@ function countStaleNotificationClaims(history: unknown): number | undefined {
  * 只把外部状态读回来。反复调它们不产生进展，是"等待"而非"工作"。
  *
  * 名字是从工具注册处核对过的实名（`bg_task_list` 见 tool/task-list.ts、
- * `bg_task_get` 见 tool/task-get.ts、`task_list`/`task_get` 是结构化任务清单侧的
+ * `task_list`/`task_get` 是结构化任务清单侧的
  * 两个同类）。**不要凭印象往里加名字**：多算一个就会让 pollRatio 虚高，
  * 而这个比值是"该不该看这次会话"的分诊主键。
+ * （`bg_task_get` 已于 D5/T8 并入 `task_output`，不再是独立工具名。）
  *
  * ⚠️ 缺陷 31：与 `agent/loop-detection.ts` 的 `CONDITIONALLY_EXEMPT_TOOLS` **刻意不同源**，
  * 两者回答的问题不同：
@@ -6995,12 +6996,7 @@ function countStaleNotificationClaims(history: unknown): number | undefined {
  * 改任何一侧都要过 `tests/trace/poll-tools-alignment.test.ts`：差集必须等于这里登记的例外，
  * 否则名单变一个元素，`pollRatio` 曲线就整体平移且没人知道。
  */
-export const POLL_TOOLS: ReadonlySet<string> = new Set([
-  "bg_task_list",
-  "bg_task_get",
-  "task_list",
-  "task_get",
-]);
+export const POLL_TOOLS: ReadonlySet<string> = new Set(["bg_task_list", "task_list", "task_get"]);
 
 /** POLL_TOOLS 与 CONDITIONALLY_EXEMPT_TOOLS 的**已登记**差异（缺陷 31 的对账门禁读它） */
 export const POLL_TOOLS_VS_CONDITIONAL_EXEMPT = {
