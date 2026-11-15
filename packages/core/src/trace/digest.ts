@@ -40,6 +40,10 @@ import {
 import { splitIsolatedWorktreePath } from "../bootstrap/cwd-context.ts";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
+// 计量与成本方案 T2：token 分流判据要按**归一化**口径比对两边（账本也是归一化写的）。
+// 从生产模块 import，不在这里重抄一份三段拆分 —— 抄一份就是下一个「口径漂移」源。
+import { normalizeCacheUsage } from "../llm/types.ts";
+import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { PlanModeManager, PLAN_STEP_PARSER_VERSION } from "../plan/state.ts";
 // P2-20：observationEntropy 判空转阈值与运行时检测（`query/unchanged-observation.ts`）
 // **同源**，全仓只此一份。两侧各写一个 3 的话，任何一侧调阈值都会出现
@@ -142,7 +146,12 @@ export interface TrajMeta {
   total_api_calls?: number;
   total_tokens_sent?: number;
   total_tokens_received?: number;
-  /** 累计 prompt（flow）。`total_tokens_sent` 是末轮快照（stock），两者不可混用 */
+  /**
+   * 累计 prompt（flow）。`total_tokens_sent` 是末轮快照（stock），两者不可混用。
+   * T1 第二步起为**跨 provider 归一化**口径（未命中+命中+写入）；老轨迹是 provider 原始口径
+   * （Anthropic 少一个缓存量），跨版本对比前先确认轨迹的 `prompt_total` 是否存在 —— 有它
+   * 说明该轨迹是归一化之后写的。
+   */
   total_cumulative_prompt_tokens?: number;
   /**
    * 累计 prompt（flow，**跨 provider 归一化**）。
@@ -4387,17 +4396,24 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     anomalies.push(item);
   const billingAmount = checkBillingAmountConsistency(events, ledger);
   if (billingAmount) {
+    // T2：token 逐项对得上、只有金额不同 = 两边单价不同（价表问题），不是漏记。
+    // 定 low 而不是 high：账本自己是对的，把网关价表问题刷成 high 会重演
+    // 「116 个命中里 109 个是价表不同」那类噪声（见 checkBillingAmountConsistency 注释）。
     anomalies.push({
       layer: "L0",
-      severity: "high",
-      kind: "billing_amount_mismatch",
+      severity: billingAmount.tokenMatched ? "low" : "high",
+      kind: billingAmount.tokenMatched ? "billing_price_mismatch" : "billing_amount_mismatch",
       detail:
         `账本成本与计费事件金额不一致：账本 $${billingAmount.ledgerUSD.toFixed(4)}，` +
         `Σ BilledRequest（按事件时刻、${billingAmount.baseURL ? `端点 ${billingAmount.baseURL} 的价表` : "注册表价（轨迹无端点信息）"}）$${billingAmount.billedUSD.toFixed(4)}，` +
         `偏差 ${(billingAmount.ratio * 100).toFixed(1)}%（阈值 ${BILLING_AMOUNT_TOLERANCE * 100}%）。` +
-        `账本偏高 = 有调用链被记了两次（S13 子代理双记即此形态）；偏低 = 有链漏记。` +
-        `下结论前先排除价表不同：各类 token 逐项对得上、只有金额对不上，是两边用的单价不同，` +
-        `核对 gateway-pricing.json 里该端点该模型的四个单价`,
+        (billingAmount.tokenMatched
+          ? `各类 token 逐项对得上（归一化 prompt ${billingAmount.billedPromptTotal} vs 账本 ${billingAmount.ledgerPromptTotal}，` +
+            `output ${billingAmount.billedOutput} vs ${billingAmount.ledgerOutput}）= 两边用的单价不同，不是漏记；` +
+            `核对 gateway-pricing.json 里该端点该模型的四个单价`
+          : `token 也对不上（归一化 prompt ${billingAmount.billedPromptTotal} vs 账本 ${billingAmount.ledgerPromptTotal ?? "字段缺失"}，` +
+            `output ${billingAmount.billedOutput} vs ${billingAmount.ledgerOutput ?? "字段缺失"}）：` +
+            `账本偏高 = 有调用链被记了两次（S13 子代理双记即此形态）；偏低 = 有链漏记`),
       pointer: `${paths.ledgerPath}（sessionId=${ref.id}）+ events.jsonl 的 BilledRequest 与 AfterModelRaw.base_url`,
       provenance: [
         {
@@ -7751,7 +7767,16 @@ export const BILLING_AMOUNT_TOLERANCE = 0.01;
  */
 export function checkBillingAmountConsistency(
   events: Array<{ event?: string; timestamp?: unknown; data?: Record<string, unknown> }>,
-  ledger: { costUSD: number; ts: number } | undefined,
+  ledger:
+    | {
+        costUSD: number;
+        ts: number;
+        /** T2：账本侧归一化 prompt（未命中+命中+写入）。老账本缺该字段 → 不做 token 分流 */
+        promptTotal?: number;
+        /** T2：账本侧 output token */
+        output?: number;
+      }
+    | undefined,
 ):
   | {
       ledgerUSD: number;
@@ -7760,6 +7785,21 @@ export function checkBillingAmountConsistency(
       count: number;
       /** 重算所用端点；undefined = 轨迹里没有端点信息，按注册表价重算（老轨迹） */
       baseURL?: string;
+      /**
+       * T2：事件侧与账本侧的 token 是否逐项对得上。
+       * `true` = token 一致、只有金额不同 → 两边单价不同（`billing_price_mismatch`，low）；
+       * `false` = token 也对不上 → 可能是真漏记（`billing_amount_mismatch`，high）。
+       * 老账本没有 token 字段时恒 false，保持原判据（宁可报 high 也不静默降级）。
+       */
+      tokenMatched: boolean;
+      /** 事件侧归一化 prompt 汇总（诊断用） */
+      billedPromptTotal: number;
+      /** 事件侧 output 汇总（诊断用） */
+      billedOutput: number;
+      /** 账本侧归一化 prompt。undefined = 老账本没有该字段 */
+      ledgerPromptTotal?: number;
+      /** 账本侧 output。undefined = 老账本没有该字段 */
+      ledgerOutput?: number;
     }
   | undefined {
   if (!ledger || !(ledger.costUSD > 0)) return undefined;
@@ -7778,6 +7818,8 @@ export function checkBillingAmountConsistency(
   const soleBase = bases.size === 1 ? [...bases][0] : undefined;
 
   let billedUSD = 0;
+  let billedPromptTotal = 0;
+  let billedOutput = 0;
   let count = 0;
   for (const e of events) {
     if (e.event !== "BilledRequest") continue;
@@ -7791,24 +7833,47 @@ export function checkBillingAmountConsistency(
     // 多端点会话里配不上端点：不判（见函数注释）
     if (baseURL === undefined && bases.size > 1) return undefined;
     if (!model || !resolvePricing(model, undefined, baseURL)) return undefined;
-    billedUSD += calculateUSDCost(
-      model,
-      {
-        inputTokens: Number(d.input_tokens ?? 0) || 0,
-        outputTokens: Number(d.output_tokens ?? 0) || 0,
-        cacheReadInputTokens: Number(d.cache_read_tokens ?? 0) || 0,
-        cacheCreationInputTokens: Number(d.cache_creation_tokens ?? 0) || 0,
-      },
-      undefined,
-      typeof d.provider === "string" ? d.provider : undefined,
-      baseURL,
-      new Date(at),
-    );
+    const provider = typeof d.provider === "string" ? d.provider : undefined;
+    const usage = {
+      inputTokens: Number(d.input_tokens ?? 0) || 0,
+      outputTokens: Number(d.output_tokens ?? 0) || 0,
+      cacheReadInputTokens: Number(d.cache_read_tokens ?? 0) || 0,
+      cacheCreationInputTokens: Number(d.cache_creation_tokens ?? 0) || 0,
+    };
+    billedUSD += calculateUSDCost(model, usage, undefined, provider, baseURL, new Date(at));
+    // T2：token 侧按**同一归一化口径**汇总 —— 与账本写入侧共用 normalizeCacheUsage，
+    // 不在这里另抄一份三段拆分（抄一份就是下一个口径漂移源）。
+    billedPromptTotal += normalizeCacheUsage(
+      usage,
+      provider ?? inferProviderByModelName(model),
+    ).promptTotal;
+    billedOutput += usage.outputTokens;
     count += 1;
   }
   if (count === 0) return undefined;
   const denom = Math.max(ledger.costUSD, billedUSD);
   const ratio = Math.abs(ledger.costUSD - billedUSD) / denom;
   if (ratio <= BILLING_AMOUNT_TOLERANCE) return undefined;
-  return { ledgerUSD: ledger.costUSD, billedUSD, ratio, count, baseURL: soleBase };
+  // T2：token 逐项对得上 → 只有金额不同 = 两边单价不同（价表问题），不是漏记。
+  // 老账本没有 token 字段时 tokenMatched 恒 false，保持原 high 判据 —— 宁可报 high
+  // 也不因为「拿不到证据」就静默降级。
+  const ledgerPromptTotal = typeof ledger.promptTotal === "number" ? ledger.promptTotal : undefined;
+  const ledgerOutput = typeof ledger.output === "number" ? ledger.output : undefined;
+  const tokenMatched =
+    ledgerPromptTotal !== undefined &&
+    ledgerOutput !== undefined &&
+    billedPromptTotal === ledgerPromptTotal &&
+    billedOutput === ledgerOutput;
+  return {
+    ledgerUSD: ledger.costUSD,
+    billedUSD,
+    ratio,
+    count,
+    baseURL: soleBase,
+    tokenMatched,
+    billedPromptTotal,
+    billedOutput,
+    ledgerPromptTotal,
+    ledgerOutput,
+  };
 }
