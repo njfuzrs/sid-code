@@ -18,7 +18,8 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types
 import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
 // R3：describeBackgroundWaitFact 用于排定回执的确定性状态事实；
-// R2 把对象签名抽取换成了 wait-subjects（extractWaitSubjects 已删）。
+// R2 把对象签名抽取换成了 wait-subjects（extractWaitSubjects 仍在，但已收窄成
+// 委托 extractNaturalLanguageSubjects 的兼容入口，不再跑命令表）。
 import { registerWait, releaseWait, describeBackgroundWaitFact } from "../task/wait-registry.ts";
 import { collectWaitSubjects, normalizeWaitCommand } from "../task/wait-subjects.ts";
 import {

@@ -10,7 +10,7 @@
  *    DeepSeek 把这两个参数都算进缓存键，只改其一命中就是 0（对照实验见 Agent Note）。
  * 2. **tools**：主循环开 tool search 只发 `activeDefinitions()`（24 个），fork 发 `definitions()`（52 个）。
  *    字典序第 6 位就分叉，system 之后的全部历史不命中。
- * 3. **messages**：主循环发清理后的视图（遮罩 / 冷清理 / 大输出占位），fork 发原始消息。
+ * 3. **messages**：主循环发清理后的视图（遮罩 / 冷清理 / 过期清理 / 大输出占位），fork 发原始消息。
  *
  * ## 做法
  *

@@ -273,8 +273,9 @@ const WakeupRow = React.memo(function WakeupRow({
  * 1. 统计列是「`N 事件 · 剩 Xm`」——用户关心「什么时候结束 / 收到几条」，
  *    不是「跑了多久」（耗时对监控没有意义，它本来就是长跑）；
  * 2. 剩余 < 2 分钟统计列改 warning 色（克制点睛，只点统计列）；
- * 3. **没有 `⎿` 活动行**：默认不显示最新事件（§5.7.2 去重原则——事件只在消息流里出现，
- *    面板再显示一遍就是同一句话在正上方重复）。
+ * 3. **默认没有 `⎿` 活动行**：不显示最新事件（§5.7.2 去重原则——事件只在消息流里出现，
+ *    面板再显示一遍就是同一句话在正上方重复）。`Ctrl+O`（expandLevel≥1）展开的是
+ *    **脚本首行**（`task.command`），不是事件：前者回答「它在盯什么」，后者才是重复。
  *
  * 运行中订阅 250ms 动画（与 shell 一致地旋转），a11y 下用静态 `◐` 但仍每分钟刷新「剩 Xm」
  * ——那不是动画，是数字本身在变（T-T1-9）。
@@ -290,6 +291,8 @@ const MonitorRow = React.memo(function MonitorRow({
   const isFailed = task.status === "failed";
   const isKilled = task.status === "killed";
   const a11y = useIsAccessibilityEnabled();
+  // Ctrl+O 与其他行同口径：verbose 才显示 `⎿` 行（§5.7 的「默认无；Ctrl+O 展开脚本首行」）。
+  const verbose = useExpandLevel() >= 1;
   const animate = isRunning && !a11y;
   // 运行中 250ms 取帧（旋转）；静态时也订阅 60s 刷新剩余时间。
   const [tickRef, tickTime] = useAnimationFrame(animate ? 250 : isRunning ? 60_000 : null);
@@ -320,23 +323,34 @@ const MonitorRow = React.memo(function MonitorRow({
     : `${task.eventCount ?? 0} 事件`;
 
   return (
-    <Box flexDirection="row">
-      <Box width={2} flexShrink={0} ref={tickRef}>
-        <Text color={statusColor} bold={isRunning}>
-          {statusIcon}
-        </Text>
-      </Box>
-      <Box flexGrow={1} flexShrink={1}>
-        <Text wrap="truncate">
-          <Text color={theme.ui.active}>[MO] </Text>
-          <Text color={isRunning ? theme.text.primary : theme.text.secondary}>
-            {truncate(task.description, Math.max(10, maxContentLen - 30))}
+    <Box flexDirection="column">
+      <Box flexDirection="row">
+        <Box width={2} flexShrink={0} ref={tickRef}>
+          <Text color={statusColor} bold={isRunning}>
+            {statusIcon}
           </Text>
-        </Text>
+        </Box>
+        <Box flexGrow={1} flexShrink={1}>
+          <Text wrap="truncate">
+            <Text color={theme.ui.active}>[MO] </Text>
+            <Text color={isRunning ? theme.text.primary : theme.text.secondary}>
+              {truncate(task.description, Math.max(10, maxContentLen - 30))}
+            </Text>
+          </Text>
+        </Box>
+        <Box flexShrink={0}>
+          <Text color={urgent ? theme.status.warning : theme.text.secondary}>{statsText}</Text>
+        </Box>
       </Box>
-      <Box flexShrink={0}>
-        <Text color={urgent ? theme.status.warning : theme.text.secondary}>{statsText}</Text>
-      </Box>
+      {/* Ctrl+O 展开的是脚本首行，不是最新事件——后者会与消息流重复（§5.7.2）。 */}
+      {verbose && task.command ? (
+        <Box flexDirection="row" paddingLeft={2}>
+          <Text color={theme.text.secondary}>{`${TREE_BRANCH} `}</Text>
+          <Text color={theme.text.secondary}>
+            {truncate(task.command, Math.max(10, maxContentLen - 6))}
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   );
 });

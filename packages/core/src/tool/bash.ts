@@ -1297,6 +1297,23 @@ export class BashTool implements Tool {
       `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`,
     );
 
+    // D5（T8，2026-11-15）：子代理里禁止后台执行。
+    //
+    // 为什么在源头禁：子代理没有查询/终止后台任务的权限（`task_output` / `task_stop`
+    // 在 `agent/tool-filter.ts` 的 ALL_AGENT_DISALLOWED_TOOLS 里硬禁），它起的后台任务
+    // 完成后通知投给一个早已收尾的回合 —— 那次任务的输出没有任何消费者，只是白跑。
+    // 方案 §T8 给了两条路：按任务归属建查询机制，或子代理里禁后台。30 天轨迹实测
+    // （`bg_task_get` 仅 20 次调用、侧链口径不可得）不支持为一个几乎不发生的场景
+    // 新增一套归属查询机制，所以走后者。
+    if (params.run_in_background && getAgentRoot() !== undefined) {
+      return {
+        output:
+          "子代理里不支持后台执行：请去掉 run_in_background 前台执行。" +
+          "（子代理没有查询后台任务的权限，后台结果没人消费；需要长时间运行的命令请拆小或交给主代理。）",
+        isError: true,
+      };
+    }
+
     // Task 系统后台模式（统一通道）。
     // 旧后台参数已由别名层（input-alias.ts）在执行之前改名成 run_in_background，
     // 所以执行层只认协议字段。P2-10 的教训保留在这里：旧后台通道（不进 Task 系统、
