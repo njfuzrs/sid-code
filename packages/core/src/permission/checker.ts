@@ -1856,6 +1856,13 @@ export class PermissionChecker implements Checker {
     req: PermissionRequest,
     final: Decision,
   ): { metadata?: Record<string, unknown> } {
+    // monitor 的 `command` 走 bash 同一条权限管线（§5.4.6）：规则名按 `bash` 匹配，
+    // 审计要能区分「这条决策是 monitor 继承 bash 规则来的」与「bash 自己的」。
+    // 只标这一个字段，**不继承** bashShape / envPrefixVars——那是 bash 工具自己的
+    // 统计口径（命令形状桶专门用于分析 bash 的确认分布），把 monitor 混进去会污染分母。
+    if (req.toolName === "monitor") {
+      return { metadata: { ...final.metadata, effectiveTool: "bash" } };
+    }
     if (req.toolName !== "bash") return {};
     const command = (req.input as { command?: unknown } | null)?.command;
     if (typeof command !== "string") return {};

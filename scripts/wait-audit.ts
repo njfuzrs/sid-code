@@ -51,7 +51,7 @@
  * | `probe_spin_requests` | 会话内**工具调用全是只读探查**的请求数（只读探查口径复用生产函数，随 N5 一起变）。`null` = 没读 raw | raw.jsonl 的 `response.content` |
  * | `window_requests` | 窗口内 `BilledRequest` 条数（含辅助调用） | events.jsonl |
  * | `window_input_tokens` | 窗口内 `BilledRequest.input_tokens` 之和 | events.jsonl |
- * | `zombie_wakeups` | `ScheduledInject{outcome:injected}` 晚于其前最后一次 `EndTurnShape` 的次数 | events.jsonl |
+ * | `zombie_wakeups` | `ScheduledInject{outcome:injected}` 晚于其前最后一次 `EndTurnShape` 的次数。⚠️ **口径限制**：正常唤醒注入本来就发生在模型结束回合之后，因此该口径会把**每次正常空闲注入**都计入；判真实僵尸需人工核对注入前是否已有清单清零 / subject 终态（方案 §9.8 的「同 prompt 周期」限定未实现，见下方计算处注释） | events.jsonl |
  * | `gate_retry_while_waiting` | 窗口内 `LoopTransition{type:todo_gate_retry}` 次数 | events.jsonl |
  * | `exit8_errors` | 窗口内 `gh pr checks` 退出码 8 且 `is_error=true` 的次数 | traj 的 observation |
  * | `monitor_events` | 窗口内 monitor 投递的事件数。**D5 起主口径读 events.jsonl**（`MonitorEvent` 条数，按 task_id 归属窗口内注册的 monitor，只卡起点不卡终点，与 raw 口径同规则） | events.jsonl；`--with-raw` 时另跑 raw 解析做交叉校验（`monitor_events_raw`），两者不一致打印 ⚠ 警告 |
