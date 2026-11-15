@@ -1,0 +1,4 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_h1_1","name":"read","input":{"file_path":"${CASE_ROOT}/doc.md"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_h1_2","name":"edit","input":{"file_path":"${CASE_ROOT}/doc.md","old_string":"\"inherit\" 默认 true","new_string":"\"inherit\" 默认 false"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_h1_3","name":"read","input":{"file_path":"${CASE_ROOT}/doc.md","offset":"1","limit":null}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":4,"response":{"content":[{"type":"text","text":"已把 doc.md 的 inherit 改成 false。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
