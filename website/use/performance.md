@@ -95,7 +95,7 @@ description: 用 /perf 看本机的首字延迟、生成速度、端到端耗时
 
 | 指标 | 口径 | 取数源 |
 | --- | --- | --- |
-| 首字延迟 TTFT | 发出请求到收到**第一个任意内容**（含思考、工具调用），每次请求单独计，不跨重试累加。**只算主循环**，后台辅助调用（记忆整理、压缩等）和子代理不算在内 | `StreamPhase(first_content).ttft_ms` |
+| 首字 TTFT | 发出请求到收到**第一个任意内容**（含思考、工具调用），每次请求单独计，不跨重试累加。**只算主循环**，后台辅助调用（记忆整理、压缩等）和子代理不算在内 | `StreamPhase(first_content).ttft_ms` |
 | TTFB | 发出请求到收到响应头 | `StreamPhase(headers_received).ttfb_ms` |
 | 生成耗时 | 单次请求从收到响应头到流结束，不含重试。只算主循环；被打断或超时结束的流不算 | `RetryTelemetry(stream_completed).elapsedMs` |
 | 生成速度 | 输出 token ÷ 生成耗时累计（与上一行同一组请求）。会话进行中也能算出来。行尾的「thinking 占输出」是推理 token ÷ 输出 token | 轨迹 `output_tokens_per_sec`、`total_reasoning_tokens` |
