@@ -211,7 +211,10 @@ describe("缺陷 3：dream 写空后当场归档并重建索引", () => {
   test("dream.ts 的 finally 调用了 reconcileMemoryDir（接线门禁）", async () => {
     const src = await Bun.file(join(import.meta.dir, "../../src/memory/dream/dream.ts")).text();
     const fin = src.slice(src.indexOf("} finally {"));
-    expect(fin.slice(0, 600)).toContain("await reconcileMemoryDir(ctx.memoryDir)");
+    // T4-3（2026-11-15）：finally 里在 reconcile 之前多了损失闸门（判 prune + 回滚），
+    // 调用位置后移 —— 窗口从 600 放宽到 2000 字符。判据仍是「finally 块内确实调用了」，
+    // 把这段整体删掉照样会红。
+    expect(fin.slice(0, 2000)).toContain("await reconcileMemoryDir(ctx.memoryDir)");
   });
 });
 

@@ -741,6 +741,20 @@ export function logMemoryIndexHealth(opts: {
   shadowedCount?: number;
   /** 本次索引是否发生截断（P1-7） */
   truncated?: boolean;
+  /**
+   * 正文里至少引用了一个仓内相对路径的记忆条数（T3 的分母）。
+   *
+   * 只对 project scope 且能确定仓库根时给值：global 记忆不属于任何仓库，
+   * 拿当前 cwd 判会把「讲别的项目」的记忆全判成失效（iam-studio-fe 实测 97% 误报）。
+   */
+  anchorReferencedCount?: number;
+  /**
+   * 引用了路径、且路径**全部不存在**的记忆条数（T3 的分子）。
+   *
+   * 为什么只统计、不进索引行：误报面 71%–97%，把 ⚠ 常驻进 system prompt
+   * 的代价远大于收益。判定口径与影子统计同源（`memory/anchor-health.ts`）。
+   */
+  anchorDeadCount?: number;
 }): void {
   emit(EVENT_NAMES.MEMORY_INDEX_HEALTH, {
     memory_scope: v(opts.scope),
@@ -750,6 +764,10 @@ export function logMemoryIndexHealth(opts: {
     orphan_count: opts.fileCount - opts.indexEntryCount,
     ...(opts.shadowedCount !== undefined ? { shadowed_count: opts.shadowedCount } : {}),
     ...(opts.truncated !== undefined ? { truncated: opts.truncated } : {}),
+    ...(opts.anchorReferencedCount !== undefined
+      ? { anchor_referenced_count: opts.anchorReferencedCount }
+      : {}),
+    ...(opts.anchorDeadCount !== undefined ? { anchor_dead_count: opts.anchorDeadCount } : {}),
   });
 }
 
@@ -954,11 +972,20 @@ export function logMemoryGuard(opts: {
   via: string;
   /** 记忆 scope（可得时） */
   scope?: string;
+  /**
+   * 被淘汰条目的类型（`user` / `feedback` / `project` / `reference` / `agent_action`）。
+   *
+   * 只对 `evicted_to_archive` 有意义：没有这个维度就无法回答「被挤走的是不是 user」
+   * —— 而 T1 的整个改造就是为「user 不再被优先淘汰」服务的，缺了它只能观测到
+   * 「淘汰了几条」，观测不到「淘汰了谁」。可空：其它 guard_kind 不带类型。
+   */
+  memoryType?: string;
 }): void {
   emit(EVENT_NAMES.MEMORY_GUARD, {
     guard_kind: v(opts.kind),
     guard_via: v(opts.via),
     ...(opts.scope !== undefined ? { memory_scope: v(opts.scope) } : {}),
+    ...(opts.memoryType !== undefined ? { memory_type: v(opts.memoryType) } : {}),
   });
   // HB-4（B18）：analytics 是外发漏斗、默认可被隐私级别关掉；本地轨迹另留一份，
   // 「记忆拒写发生在哪个会话的哪一步」才能和其它事件对齐。值都是闭集标签。
