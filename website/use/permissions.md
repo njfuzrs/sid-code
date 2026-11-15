@@ -107,9 +107,16 @@ default → acceptEdits → auto → always-allow → default # 启动时开了 
 它也会被跳过，`auto` 直接回到 `default`。
 
 ::: tip plan 模式的读写边界
-plan 模式下 `read` / `grep` 放行，`edit` / `write` / `bash` 一律拒绝，
-提示是「计划模式下只允许只读操作」。唯一例外是它往 `~/.sid-code/plans/` 写计划文件——
-这条在代码里比只读检查更早放行，否则它连计划都存不下来。
+plan 模式下 `read` / `grep` / `glob` 放行，`bash` 只放行**只读命令**——
+`git log` / `git diff` / `git status` / `ls` / `rg` / `cat` 这类不写任何东西的命令可以直接跑，
+判据与 `default` 模式下的「只读命令」同一套。其余 bash 命令（`npm install`、`make`、
+`sed -i`、输出重定向等）与 `edit` / `write` 写非计划文件一律拒绝，提示是
+「计划模式下只允许只读操作（bash 只允许只读命令，如 git log / ls / rg）」。
+
+这一条**不放松安全层**：读凭证（`cat ~/.ssh/id_rsa`）、转储环境变量（`env`）、
+`..` 路径遍历仍在更早的危险命令检查里被拦下，与 `default` 模式同一口径，不会比它更宽。
+唯一例外是它往 `~/.sid-code/plans/` 写计划文件——这条在代码里比只读检查更早放行，
+否则它连计划都存不下来。
 :::
 
 ## 规则语法
@@ -582,8 +589,15 @@ write(...)    → 允许(acceptEdits模式)
 
 plan / deny-write 有一道**出口总闸**：任何放行在离开权限管线之前，都要再过一次模式硬约束。
 所以 `allow` 规则不会让 plan 模式破例——配了 `allow: ["Bash(*)"]` 之后进 plan 模式，
-`bash` 照样被拒（提示「计划模式下只允许只读操作」），`write` / `edit` 写非计划文件时同样如此。
-唯一例外是计划文件本身（`~/.sid-code/plans/` 下那一份），否则它连计划都存不下来。
+**写类** bash 命令（`npm install` / `make` / `sed -i` / 输出重定向等）照样被拒
+（提示「计划模式下只允许只读操作（bash 只允许只读命令…）」），`write` / `edit` 写非计划文件时同样如此。
+
+`bash` 的**只读命令**是唯一的例外：`git log` / `git diff` / `ls` / `rg` 这类不写任何东西的命令
+在 plan 下直接放行，**不需要** `allow` 规则（判据是代码里的只读命令集）。这样规划阶段能真的
+看提交历史和改动，而不是改用 `read` 去拼 `.git` 目录里的文件。
+`deny-write` 不跟着放开——它连只读 bash 也照旧拒绝。
+
+唯一需要写盘的例外是计划文件本身（`~/.sid-code/plans/` 下那一份），否则它连计划都存不下来。
 
 ### 搜索词和抓取的网址会发往哪里
 
