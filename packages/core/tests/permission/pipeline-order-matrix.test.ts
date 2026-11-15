@@ -21,6 +21,7 @@ import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import { DENIAL_LIMITS } from "@sid-code/core/permission/denial-tracking.ts";
 import { isToolNameListed } from "@sid-code/core/tool/tool-name-aliases.ts";
+import { isReadOnlyCommand } from "@sid-code/core/tool/bash/read-only-validation.ts";
 import {
   expandShellCommand,
   extractBashWriteTargets,
@@ -218,6 +219,113 @@ describe("C. plan / deny-write × 每一个放行口（模式硬约束总闸）"
       input: { pattern: "x", path: ws },
     });
     expect(r.allowed).toBe(true);
+  });
+});
+
+/**
+ * C2：M4 放行只读 bash（2026-11-15，PR-3）。
+ *
+ * 这一组锁的是**放行面的边界**，不是「git log 能跑了」这一件事——后者随便谁都能跑通。
+ * 真正的回归风险全在边界上，四条各对应一次「改错了会静默变宽」：
+ * ① 写类命令必须仍被拒（否则 plan 名存实亡）；
+ * ② 读工作区外仍要确认（Step 5.5 的读路径校验不能被新分支绕过）；
+ * ③ 不传 tool 时保守拒绝（新分支的资格来自「工具自己确认过只读」）；
+ * ④ deny-write / monitor 不跟着放宽（前者是另一种模式，后者不走同一个 spawn 沙箱）。
+ */
+describe("C2. plan 放行只读 bash（M4）× 放行面边界", () => {
+  /**
+   * 生产路径的 bash 工具：Tool 接口的最小实现 + 真实 `isReadOnlyCommand` 判据。
+   * 不构造真 BashTool——它构造期要建 shell 快照，权限单测不该付这份成本。
+   */
+  const bashTool = () =>
+    ({
+      name: () => "bash",
+      description: () => "stub",
+      inputSchema: () => ({}),
+      execute: async () => ({ output: "", isError: false }),
+      async checkPermissions(input: unknown) {
+        const command = (input as { command?: string })?.command;
+        if (!command || typeof command !== "string") return { behavior: "passthrough" };
+        if (isReadOnlyCommand(command)) return { behavior: "allow" };
+        return { behavior: "passthrough" };
+      },
+    }) as never;
+
+  for (const cmd of ["git log --oneline -5", "git diff HEAD", "ls -la", "rg foo src"]) {
+    test(`plan + 只读 ${JSON.stringify(cmd)} → 允许`, async () => {
+      const r = await checker({ permissionMode: "plan" }).check(
+        // cwd 显式指向 ws：不传时 checker 用进程 cwd 解析相对路径，
+        // `rg foo src` 会被读路径校验判成「工作区外」——那是校验在正常工作，不是本例要测的东西。
+        { toolName: "bash", input: { command: cmd, cwd: ws } },
+        bashTool(),
+      );
+      expect(r.allowed).toBe(true);
+    });
+  }
+
+  for (const cmd of ["npm install left-pad", "make build", "echo hi > f.txt"]) {
+    test(`plan + 写类 ${JSON.stringify(cmd)} → 拒绝，且文案点明 bash 只允许只读命令`, async () => {
+      const r = await checker({ permissionMode: "plan" }).check(
+        { toolName: "bash", input: { command: cmd, cwd: ws } },
+        bashTool(),
+      );
+      expect(r.allowed).toBe(false);
+      expect(r.decisionReason?.type).toBe("mode");
+      // 文案要告诉模型墙在哪，否则它只会反复试别的写法（2026-08-29 headless 盲试的教训）
+      expect(r.reason).toContain("bash 只允许只读命令");
+    });
+  }
+
+  test("plan + `sed -i` 写工作区内目标 → 由 plan 总闸拒绝（写类命令一律不放）", async () => {
+    const r = await checker({ permissionMode: "plan" }).check(
+      { toolName: "bash", input: { command: "sed -i s/a/b/ f.txt", cwd: ws } },
+      bashTool(),
+    );
+    // 写目标在工作区内，Step 2 的路径检查不触发 → 落到 Step 9 的 plan 总闸。
+    // 这一条锁的是「写类命令不因为 M4 引入了只读放行分支就漏过去」。
+    expect(r.allowed).toBe(false);
+    expect(r.decisionReason?.type).toBe("mode");
+    expect(r.reason).toContain("bash 只允许只读命令");
+  });
+
+  test("plan + 只读但读工作区外（cat /etc/passwd）→ 仍需确认，不被新分支绕过", async () => {
+    const r = await checker({ permissionMode: "plan" }).check(
+      { toolName: "bash", input: { command: "cat /etc/passwd" } },
+      bashTool(),
+    );
+    // Step 5.5 的读路径校验先于模式总闸：这是 M4 不能变宽的那条边界。
+    expect(r.allowed).toBe(false);
+    expect(r.needsConfirmation).toBe(true);
+    expect(r.reason).toContain("工作区外");
+  });
+
+  test("plan + 只读但不传 tool → 拒绝（新分支的资格来自工具自己确认过只读）", async () => {
+    const r = await checker({ permissionMode: "plan" }).check({
+      toolName: "bash",
+      input: { command: "git log --oneline -5" },
+    });
+    // 不传 tool 时 Step 5.5 不执行，也就没有读路径校验；此时放行会让
+    // `cat /etc/passwd` 一路走到 Step 9 被 M4 分支放过（实测过，比 default 宽）。
+    expect(r.allowed).toBe(false);
+    expect(r.decisionReason?.type).toBe("mode");
+  });
+
+  test("deny-write + 只读 ls → 仍拒绝（M4 只放宽 plan，不放宽 deny-write）", async () => {
+    const r = await checker({ permissionMode: "deny-write" }).check(
+      { toolName: "bash", input: { command: "ls" } },
+      bashTool(),
+    );
+    expect(r.allowed).toBe(false);
+    expect(r.decisionReason?.type).toBe("mode");
+  });
+
+  test("plan + monitor 只读命令 → 仍拒绝（只放 bash：monitor 子进程不经沙箱）", async () => {
+    const r = await checker({ permissionMode: "plan" }).check({
+      toolName: "monitor",
+      input: { command: "git log --oneline -5" },
+    });
+    expect(r.allowed).toBe(false);
+    expect(r.decisionReason?.type).toBe("mode");
   });
 });
 

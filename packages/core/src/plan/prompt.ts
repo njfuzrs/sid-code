@@ -154,7 +154,7 @@ export function buildPlanModeReminder(full: boolean = true, planFilePath?: strin
   const pathLine = planFilePath ? `\n计划文件（唯一允许编辑的文件）：${planFilePath}` : "";
   if (!full) {
     return `<system-reminder>
-[计划模式] 只允许只读操作。如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
+[计划模式] 只允许只读操作（bash 只允许只读命令，如 git log / ls / rg）。如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
 不要反复探索或过度分析——目标是尽快拿出可执行的方案，不是写出完美的设计文档。${pathLine}
 </system-reminder>`;
   }
@@ -167,13 +167,15 @@ export function buildPlanModeReminder(full: boolean = true, planFilePath?: strin
 
 允许的操作：
 - 使用 read、grep、glob 探索代码库
+- 使用 bash 运行**只读命令**（git log / git diff / git status / ls / rg / cat 等）——
+  看提交历史、看改动、列目录直接用它，不要为了"守规矩"改用 read 去拼 .git 目录里的文件
 - 使用 sub_agent (explore 类型) 并行搜索
 - 使用 write/edit 编辑计划文件（仅限计划文件）
 - 调用 exit_plan_mode 提交计划
 
 禁止的操作：
 - 编辑任何非计划文件
-- 运行 bash 命令
+- 运行会写入或改变系统的 bash 命令（npm install / make / sed -i / 输出重定向 / git commit 等）
 - 执行任何写入操作
 
 如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
@@ -192,7 +194,11 @@ export function buildPlanModeReminder(full: boolean = true, planFilePath?: strin
  * P1-1（全集锚点）：若解析出了计划步骤数 planStepCount（≥ 3），则强制要求第一步
  * todo_write **逐条枚举计划全部步骤**，把"全集覆盖"从依赖模型记忆变成外部约束（根因 2）。
  */
-export function buildPlanApprovedMessage(planFilePath: string, planStepCount = 0): string {
+export function buildPlanApprovedMessage(
+  planFilePath: string,
+  planStepCount = 0,
+  execMode?: string | null,
+): string {
   // P1-1：全集锚点指令。有可解析步骤数时给出强制要求 + 数量锚点；否则退化为通用强约束。
   const todoMandate =
     planStepCount >= 3
@@ -201,7 +207,26 @@ export function buildPlanApprovedMessage(planFilePath: string, planStepCount = 0
         `随后逐条把当前项标记 in_progress、做完标记 completed，依次推进直到全部 completed。`
       : `如果计划包含多个步骤（≥ 3 步），**必须首先**使用 todo_write 工具把计划的**每一个步骤**都列为一个 todo 项（不要遗漏、不要只挑几件），然后逐条执行。`;
 
+  // M5：把「现在处于哪个权限模式」写进批准消息。
+  // 它在批准框里是用户当场选的，模型看不到那个界面——不告诉它，它只能靠试错：
+  // 在 acceptEdits 下多问一轮、在 default 下以为能直接写、被拒后才改口。
+  const modeLine = (() => {
+    switch (execMode) {
+      case "acceptEdits":
+        return "\n当前权限模式：**自动接受编辑（acceptEdits）**——文件编辑不再逐个确认，命令与网络等操作仍按规则确认。";
+      case "auto":
+        return "\n当前权限模式：**自动模式（auto）**——分类器判断安全的操作自动放行，其余仍需用户确认。";
+      case "always-allow":
+        return "\n当前权限模式：**全部允许（always-allow）**——自动批准，但危险命令与 deny 规则仍然生效。";
+      case "dangerously-skip-permissions":
+        return "\n当前权限模式：**跳过权限（危险）**——自动批准一切，用户/项目 deny 规则仍生效。";
+      default:
+        return "\n当前权限模式：沿用进入计划模式之前的档位（多为 default，写操作仍需确认）。";
+    }
+  })();
+
   return `用户已批准你的计划（位于 ${planFilePath}）。
+${modeLine}
 
 ${todoMandate}
 
