@@ -287,7 +287,7 @@ export async function runToolUse(
     // 带 result：bash 的档位要读 `meta.exitCode`（成功才折叠），只看入参分不出来。
     const displayMode = resolveResultDisplayMode(tool, effectiveInput, result);
 
-    const withHookFeedback = await runPostToolHooks(hookSystem, {
+    const postHooks = await runPostToolHooks(hookSystem, {
       toolName: block.name,
       toolInput: effectiveInput,
       toolUseId: block.id,
@@ -302,6 +302,10 @@ export async function runToolUse(
       sessionId: mode.sessionId,
       maxResultSizeChars: tool.maxResultSizeChars,
     });
+    // D11（与主循环同口径）：`runPostToolHooks` 把「工具产出」与「harness 附言」分开返回。
+    // 产出进 untrusted 包裹；附言（[Hook 附加上下文] / [Hook 反馈]）拼在包裹外，
+    // 否则会被标成不可信内容、被模型当噪音忽略 —— 这是主循环已修、子代理漏掉的最后一处。
+    const withHookFeedback = postHooks.output;
 
     if (result.isError) {
       logToolFailure(block.name, {
@@ -340,12 +344,14 @@ export async function runToolUse(
     const rendered = provenance
       ? wrapExternalContent(withHookFeedback, provenance)
       : withHookFeedback;
+    // D11：hook 附言是后置类（附加信息 / 反馈），与主循环同序拼在结果之后、包裹之外。
+    const suffix = postHooks.notices.join("\n\n");
 
     return {
       type: "tool_result",
       tool_use_id: block.id,
-      // 附言前置（与主循环同序：先看到「参数被改过 / 被忽略」，再读结果与 hook 反馈）
-      content: notices.length > 0 ? notices + "\n\n" + rendered : rendered,
+      // 三段拼接与主循环同序：前置附言（参数被改/被忽略）→ 结果 → 后置附言（hook 附加/反馈）
+      content: [notices, rendered, suffix].filter((s) => s.length > 0).join("\n\n"),
       is_error: result.isError,
       ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
       // TUI 呈现档位：错误结果不带（错误照常显示，见 tool/types.ts 的硬约束 ②）。

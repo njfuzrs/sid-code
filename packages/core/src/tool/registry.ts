@@ -174,7 +174,10 @@ export class Registry {
    * 目前 sid-code 工具名相对稳定，表为空——机制先行，重命名时在此登记映射即可。
    */
   private aliases = new Map<string, string>([
-    // ["旧名", "新名"]
+    // D5（T8，2026-11-15）：`bg_task_get` 并入 `task_output` 后，历史会话与模型记忆里的
+    // 旧名仍要能解析到真实工具。`get()` 精确未命中时回退查此表，返回 task_output 实例；
+    // 权限 / hook / 子代理名单的归一口径在 `tool/tool-name-aliases.ts` 的同名映射里。
+    ["bg_task_get", "task_output"],
   ]);
   /**
    * `disallowedTools` 名单（小写）。由 {@link removeByNames} 写入，{@link register} 据此拒收。
