@@ -914,7 +914,10 @@ export type MemoryGuardKind =
  *
  * 口径：
  * - `seq`：本会话第几个触发抽取的 end_turn（从 1 起），跳过的也占号
- * - `outcome=ran`：真的跑了 fork；`written` = 本次去重后写入的记忆条数，token 取 fork 的 usage
+ * - `outcome=ran`：真的跑了 fork；`written` = 本次**真正落盘**的记忆条数（去重后），token 取 fork 的 usage。
+ *   ⚠️ 口径是「落盘成功」不是「发起了写入」：被闸门拒绝的调用（`tool_result.is_error`）不计。
+ *   这个区别是 §8.5 回滚判据的前提——若把被拒的写入也计进去，P0-2 生效后 `written`
+ *   不会下降，「连续 3 天 p50 = 0」就测不出闸门到底掐死了没有。
  * - `outcome=skipped`：`reason` ∈ interval（节流）/ in_flight（上一次还没跑完）/ main_wrote（主模型本轮已写）
  * - `catch_up=true`：会话收尾时补跑的那次（节流后有积压）
  *
