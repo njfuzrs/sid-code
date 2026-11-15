@@ -13,12 +13,21 @@ import { MemoryTool } from "@sid-code/core/tool/memory.ts";
 import { MemoryStore } from "@sid-code/core/memory/store.ts";
 
 let tmpRoot: string;
+/** 存原值再恢复，不要无条件 delete：bun test 同批多文件跑在同一进程里，
+ *  直接删会把 bunfig preload 的兜底一起抹掉（CONTRIBUTING「测试约定」第 1 条）。 */
+let prevConfigDir: string | undefined;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "sid-mem-test-"));
+  // MemoryStore 除入参外还会按 getSidHome() 派生路径（projects/<hash>/memory/）。
+  // 不重定向就会往用户真实的 ~/.sid-code/ 写假数据，把线上遥测污染成查不到真记录。
+  prevConfigDir = process.env.SID_CONFIG_DIR;
+  process.env.SID_CONFIG_DIR = tmpRoot;
 });
 
 afterEach(() => {
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
   try {
     rmSync(tmpRoot, { recursive: true, force: true });
   } catch {}
@@ -122,13 +131,15 @@ describe("agent scope 已删除（06H1 T5b）", () => {
   // 永远拿不到内容）。保留反向断言，防止 scope 枚举被无意加回来。
   const scopeShape = (tool: MemoryTool) => (tool.zodSchema as any).shape.scope;
 
+  // 用 makeTool()（内部 new MemoryStore(tmpRoot)）而不是 process.cwd()：
+  // 后者会被 no-real-path-writes 哨兵判成「会往真实 ~/.sid-code/ 写数据」。
   test("schema 不再接受 scope=agent", () => {
-    const tool = new MemoryTool(new MemoryStore(process.cwd()));
+    const tool = makeTool();
     expect(scopeShape(tool).safeParse("agent").success).toBe(false);
   });
 
   test("schema 仍接受三个有效 scope", () => {
-    const tool = new MemoryTool(new MemoryStore(process.cwd()));
+    const tool = makeTool();
     for (const s of ["global", "project", "team"]) {
       expect(scopeShape(tool).safeParse(s).success).toBe(true);
     }
