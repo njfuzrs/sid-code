@@ -69,8 +69,6 @@ export interface AgentDefinition {
   maxTokens?: number;
   /** 是否默认后台异步执行（对标 cc background 字段，coordinator/审计类常驻后台） */
   background?: boolean;
-  /** 是否省略主代理 CLAUDE.md 上下文（对标 cc omitClaudeMd，只读探查类省 token） */
-  omitClaudeMd?: boolean;
   /** 来源文件路径（自定义/插件 agent 用于溯源；built-in 为空） */
   filePath?: string;
 }
