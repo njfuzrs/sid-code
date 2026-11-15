@@ -373,6 +373,11 @@ export function logPermissionAllow(
     bashShape?: string;
     envPrefixVars?: string[];
     gitTrust?: string;
+    /**
+     * 这次决策按哪个工具的规则口径判定（monitor 的 command 按 bash 匹配，§5.4.6）。
+     * **只进本地轨迹**，不进遥测 payload。
+     */
+    effectiveTool?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -417,6 +422,7 @@ export function logPermissionAllow(
     ...(opts.bashShape ? { bashShape: opts.bashShape } : {}),
     ...(opts.envPrefixVars?.length ? { envPrefixVars: opts.envPrefixVars } : {}),
     ...(opts.gitTrust ? { gitTrust: opts.gitTrust } : {}),
+    ...(opts.effectiveTool ? { effectiveTool: opts.effectiveTool } : {}),
   });
 }
 
@@ -475,6 +481,11 @@ export function logPermissionDeny(
     bashShape?: string;
     envPrefixVars?: string[];
     gitTrust?: string;
+    /**
+     * 这次决策按哪个工具的规则口径判定（monitor 的 command 按 bash 匹配，§5.4.6）。
+     * **只进本地轨迹**，不进遥测 payload。
+     */
+    effectiveTool?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -516,6 +527,7 @@ export function logPermissionDeny(
     ...(opts.bashShape ? { bashShape: opts.bashShape } : {}),
     ...(opts.envPrefixVars?.length ? { envPrefixVars: opts.envPrefixVars } : {}),
     ...(opts.gitTrust ? { gitTrust: opts.gitTrust } : {}),
+    ...(opts.effectiveTool ? { effectiveTool: opts.effectiveTool } : {}),
   });
 }
 

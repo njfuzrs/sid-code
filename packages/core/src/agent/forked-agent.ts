@@ -67,6 +67,8 @@ function recordForkedToolSpan(
   toolUseId: string,
   querySource: string,
   outcome: { durationMs: number; isError: boolean; error?: string },
+  /** X1H2 T3：会话根 spanId。传了就显式挂根，父稳定可预期。 */
+  parentSpanId?: string,
 ): void {
   try {
     const name = sanitizedToolName(toolName);
@@ -81,8 +83,19 @@ function recordForkedToolSpan(
         "sidcode.tool.duration_ms": outcome.durationMs,
         "sidcode.execution_context": "forked",
         "sidcode.forked.query_source": querySource,
+        // 事后补建（fork 路径没有 Pre/Post 配对可复用），与 hook-probe 同口径标注，
+        // 消费方据此知道跨度是倒推的。
+        "sidcode.tool.span_backfilled": true,
       },
-      { startTime: Date.now() - Math.max(0, outcome.durationMs), detached: true },
+      {
+        startTime: Date.now() - Math.max(0, outcome.durationMs),
+        // detached 只是不进栈（forked 与主循环并发，进栈会互相串父）；
+        // 父仍由 parentSpanId 显式指定 —— 这是 T3 的修复点：改造前只 detached、
+        // 父由 ctx.currentSpanId 决定，fork 恰好在哪个 chat span 期间启动就挂到谁，
+        // 主循环 chat span 已 end 时更会挂到已出队的 spanId 上成为悬空父。
+        ...(parentSpanId ? { parentSpanId } : {}),
+        detached: true,
+      },
     );
     if (outcome.isError) span.recordError(new Error(maskedErrorSummary(outcome.error ?? "")));
     span.end();
@@ -133,6 +146,13 @@ export interface ForkedAgentContext {
    * 缺省值曾是「共享主注册表实例」，即缺省就踩上面那条护栏绕过。
    */
   statefulTools?: LegacyTool[];
+  /**
+   * X1H2 T3：会话根 spanId（`TelemetryHookProbe.rootSpanId()`）。
+   *
+   * forked 工具 span 显式挂它。不传时退回改造前行为（父由 `ctx.currentSpanId` 决定），
+   * 那种情况下 fork 的树形状取决于启动时机，不是稳定结构。
+   */
+  rootSpanId?: string;
 }
 
 /** Forked Agent 选项 */
@@ -519,65 +539,112 @@ export async function runForkedAgent(
       // 429 静默失败**没有任何人会注意到**，只会表现为"记忆偶尔不更新"这类查不出根因的
       // 玄学问题。恰恰是这种无人盯着的路径最需要自动重试。
       // switchMode 固定 auto：fork 无 TUI，ask 会挂死在等不到答案的 Promise 上。
-      const stream = streamWithResilience(
-        mainContext.provider,
-        {
-          model: mainContext.model,
-          system: mainContext.systemPrompt,
-          messages: conversation,
-          maxTokens: forkMaxTokens,
-          tools: toolDefs,
-          forkPrefixSource: requestShape.prefixSource,
-          // H8：fork agent 执行窄范围任务（querySource 标注），无独立 effort 旋钮，默认关思考，
-          // 与子代理收口口径一致（thinking 是受控旋钮，不放任沿用思考模型服务端默认 enabled）。
-          //
-          // D16：例外是缓存键含思考参数的族（方言 `cacheKeyIncludesThinking`，目前只有 DeepSeek
-          // OpenAI 兼容端点）—— 关思考 = 整条前缀不命中（实测 44,160 → 0），fork「共享前缀」的卖点
-          // 就没了。这些族照搬主循环最后一次实发的 thinking / effort。H8 当时没算缓存这笔账。
-          // 牺牲的是「更快」：fork 要先想再答；按 D16 调研的账，省下的输入费约是多付思考费的 7 倍。
-          ...(thinkingMirror
-            ? {
-                thinking: thinkingMirror.thinking ?? SIDE_CALL_NO_THINK,
-                ...(thinkingMirror.reasoningEffort && {
-                  reasoningEffort: thinkingMirror.reasoningEffort,
-                }),
-                ...(thinkingMirror.outputConfig && { outputConfig: thinkingMirror.outputConfig }),
-                ...(thinkingMirror.thinkingIntent && {
-                  thinkingIntent: thinkingMirror.thinkingIntent,
-                }),
-                ...(thinkingMirror.maxThinkingTokens !== undefined && {
-                  maxThinkingTokens: thinkingMirror.maxThinkingTokens,
-                }),
-              }
-            : { thinking: SIDE_CALL_NO_THINK }),
-        },
-        signal,
-        {
-          querySource: "agent:fork",
-          switchMode: "auto",
-          availability: mainContext.availability,
-          // PR2/PR3：给 fork 的流一个**自己的身份**。
-          //
-          // 不传的后果（实测，本次事故第 3 层）：fork 的流继承主循环最后登记的
-          // turnIndex，与主循环共用同一个 attempt 计数器 —— 两个 fork 交替发请求时
-          // attempt 单调涨到 8，在轨迹里长得完全就是"一个请求重试了 8 次"。
-          // 于是 digest 把它算成 `retryWastedTokens`（重试白烧），**归因指向了错的地方**，
-          // 照那个标签排查会走到 fallback 的重试逻辑上，而那里没有问题。
-          //
-          // 有了 agentId，漏斗会用它建立请求级上下文（见 resilient-stream.ts），
-          // provider 侧的计费事件与 StreamPhase 都能归到具体是哪个 fork。
-          // querySource 已经带了任务标签（`agent:fork`），这里用它区分两个 fork 实例。
-          agentId: forkAgentId,
-          // fork 自带 timeoutMs（默认 60s）作为 wall-clock 硬顶，退避会吃掉它的大半，
-          // 故重试上界压到 2 次——给瞬时限流一个自愈机会，又不至于把整个预算烧在退避上。
-          maxRetries: 2,
-          // S3：次数上界（上面那行）是**静态猜测**，这个是**动态实测**——退避真到了
-          // 塞不进剩余预算时提前收手。两者并存不冗余：前者防退避风暴，后者防白等。
-          deadlineAt,
-        },
-      );
+      // X1H2 T3：forked 路径不 fire BeforeModel/AfterModel（它不走 hook 链路），
+      // 模型调用在 trace 树上**完全不存在** —— 表现为「fork 花了 token，但树上看不到那次调用」。
+      // 这里直接建 chat span，父显式取会话根（`mainContext.rootSpanId`）；
+      // detached 只表示不进栈（forked 与主循环并发），父仍由显式 id 决定。
+      // 全程 try/catch：可观测性旁路绝不能成为 fork 的新失败源。
+      let forkedChatSpan: ReturnType<ReturnType<typeof getTelemetryBus>["startSpan"]> | undefined;
+      try {
+        const bus = getTelemetryBus();
+        if (bus.isEnabled()) {
+          forkedChatSpan = bus.startSpan(
+            "chat",
+            `chat ${mainContext.model}`,
+            {
+              [ATTR.OPERATION_NAME]: "chat",
+              [ATTR.REQUEST_MODEL]: mainContext.model,
+              "sidcode.execution_context": "forked",
+              "sidcode.forked.query_source": options.querySource,
+            },
+            {
+              ...(mainContext.rootSpanId ? { parentSpanId: mainContext.rootSpanId } : {}),
+              detached: true,
+            },
+          );
+        }
+      } catch {
+        forkedChatSpan = undefined;
+      }
+      let turn: Awaited<ReturnType<typeof accumulate>>;
+      try {
+        const stream = streamWithResilience(
+          mainContext.provider,
+          {
+            model: mainContext.model,
+            system: mainContext.systemPrompt,
+            messages: conversation,
+            maxTokens: forkMaxTokens,
+            tools: toolDefs,
+            forkPrefixSource: requestShape.prefixSource,
+            // H8：fork agent 执行窄范围任务（querySource 标注），无独立 effort 旋钮，默认关思考，
+            // 与子代理收口口径一致（thinking 是受控旋钮，不放任沿用思考模型服务端默认 enabled）。
+            //
+            // D16：例外是缓存键含思考参数的族（方言 `cacheKeyIncludesThinking`，目前只有 DeepSeek
+            // OpenAI 兼容端点）—— 关思考 = 整条前缀不命中（实测 44,160 → 0），fork「共享前缀」的卖点
+            // 就没了。这些族照搬主循环最后一次实发的 thinking / effort。H8 当时没算缓存这笔账。
+            // 牺牲的是「更快」：fork 要先想再答；按 D16 调研的账，省下的输入费约是多付思考费的 7 倍。
+            ...(thinkingMirror
+              ? {
+                  thinking: thinkingMirror.thinking ?? SIDE_CALL_NO_THINK,
+                  ...(thinkingMirror.reasoningEffort && {
+                    reasoningEffort: thinkingMirror.reasoningEffort,
+                  }),
+                  ...(thinkingMirror.outputConfig && { outputConfig: thinkingMirror.outputConfig }),
+                  ...(thinkingMirror.thinkingIntent && {
+                    thinkingIntent: thinkingMirror.thinkingIntent,
+                  }),
+                  ...(thinkingMirror.maxThinkingTokens !== undefined && {
+                    maxThinkingTokens: thinkingMirror.maxThinkingTokens,
+                  }),
+                }
+              : { thinking: SIDE_CALL_NO_THINK }),
+          },
+          signal,
+          {
+            querySource: "agent:fork",
+            switchMode: "auto",
+            availability: mainContext.availability,
+            // PR2/PR3：给 fork 的流一个**自己的身份**。
+            //
+            // 不传的后果（实测，本次事故第 3 层）：fork 的流继承主循环最后登记的
+            // turnIndex，与主循环共用同一个 attempt 计数器 —— 两个 fork 交替发请求时
+            // attempt 单调涨到 8，在轨迹里长得完全就是"一个请求重试了 8 次"。
+            // 于是 digest 把它算成 `retryWastedTokens`（重试白烧），**归因指向了错的地方**，
+            // 照那个标签排查会走到 fallback 的重试逻辑上，而那里没有问题。
+            //
+            // 有了 agentId，漏斗会用它建立请求级上下文（见 resilient-stream.ts），
+            // provider 侧的计费事件与 StreamPhase 都能归到具体是哪个 fork。
+            // querySource 已经带了任务标签（`agent:fork`），这里用它区分两个 fork 实例。
+            agentId: forkAgentId,
+            // fork 自带 timeoutMs（默认 60s）作为 wall-clock 硬顶，退避会吃掉它的大半，
+            // 故重试上界压到 2 次——给瞬时限流一个自愈机会，又不至于把整个预算烧在退避上。
+            maxRetries: 2,
+            // S3：次数上界（上面那行）是**静态猜测**，这个是**动态实测**——退避真到了
+            // 塞不进剩余预算时提前收手。两者并存不冗余：前者防退避风暴，后者防白等。
+            deadlineAt,
+          },
+        );
 
-      const { content, stopReason, usage, malformed, reasoning } = await accumulate(stream, signal);
+        turn = await accumulate(stream, signal);
+      } catch (e) {
+        if (forkedChatSpan) {
+          forkedChatSpan.recordError(
+            new Error(maskedErrorSummary(String((e as Error)?.message ?? e))),
+          );
+          forkedChatSpan.end();
+        }
+        throw e;
+      }
+      const { content, stopReason, usage, malformed, reasoning } = turn;
+      if (forkedChatSpan) {
+        forkedChatSpan.setAttributes({
+          [ATTR.INPUT_TOKENS]: usage.inputTokens ?? 0,
+          [ATTR.OUTPUT_TOKENS]: usage.outputTokens ?? 0,
+          [ATTR.FINISH_REASONS]: stopReason ?? "unknown",
+        });
+        forkedChatSpan.end();
+      }
       totalUsage.inputTokens += usage.inputTokens;
       totalUsage.outputTokens += usage.outputTokens;
 
@@ -718,11 +785,17 @@ export async function runForkedAgent(
             durationMs: 0,
             filePath: forkedFilePath,
           });
-          recordForkedToolSpan(tu.name, tu.id, options.querySource, {
-            durationMs: 0,
-            isError: true,
-            error: `工具不存在: ${tu.name}`,
-          });
+          recordForkedToolSpan(
+            tu.name,
+            tu.id,
+            options.querySource,
+            {
+              durationMs: 0,
+              isError: true,
+              error: `工具不存在: ${tu.name}`,
+            },
+            mainContext.rootSpanId,
+          );
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,
@@ -741,11 +814,17 @@ export async function runForkedAgent(
               durationMs: Date.now() - toolStartedAt,
               filePath: forkedFilePath,
             });
-            recordForkedToolSpan(tu.name, tu.id, options.querySource, {
-              durationMs: Date.now() - toolStartedAt,
-              isError: true,
-              error: validation.message,
-            });
+            recordForkedToolSpan(
+              tu.name,
+              tu.id,
+              options.querySource,
+              {
+                durationMs: Date.now() - toolStartedAt,
+                isError: true,
+                error: validation.message,
+              },
+              mainContext.rootSpanId,
+            );
             results.push({
               type: "tool_result",
               tool_use_id: tu.id,
@@ -798,11 +877,17 @@ export async function runForkedAgent(
               filePath: forkedFilePath,
             });
           }
-          recordForkedToolSpan(tu.name, tu.id, options.querySource, {
-            durationMs: elapsed,
-            isError: !!res.isError,
-            error: res.isError ? String(res.output ?? "") : undefined,
-          });
+          recordForkedToolSpan(
+            tu.name,
+            tu.id,
+            options.querySource,
+            {
+              durationMs: elapsed,
+              isError: !!res.isError,
+              error: res.isError ? String(res.output ?? "") : undefined,
+            },
+            mainContext.rootSpanId,
+          );
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,
@@ -818,11 +903,17 @@ export async function runForkedAgent(
             durationMs: elapsed,
             filePath: forkedFilePath,
           });
-          recordForkedToolSpan(tu.name, tu.id, options.querySource, {
-            durationMs: elapsed,
-            isError: true,
-            error: String(err?.message ?? err),
-          });
+          recordForkedToolSpan(
+            tu.name,
+            tu.id,
+            options.querySource,
+            {
+              durationMs: elapsed,
+              isError: true,
+              error: String(err?.message ?? err),
+            },
+            mainContext.rootSpanId,
+          );
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,

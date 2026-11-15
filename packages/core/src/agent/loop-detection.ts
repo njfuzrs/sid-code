@@ -476,7 +476,6 @@ export const EXEMPT_TOOLS = new Set([
   "enter_plan_mode",
   "exit_plan_mode",
   "bg_task_list",
-  "bg_task_get",
   // 结构化任务清单：连续 create/update/list 是正当的清单维护而非循环
   "task_create",
   "task_update",
@@ -519,7 +518,7 @@ export const EXEMPT_TOOLS = new Set([
  * `trace/digest.ts` 的 `POLL_TOOLS`（离线统计「算不算轮询」）与本集合刻意不同源，
  * 差异登记在 `POLL_TOOLS_VS_CONDITIONAL_EXEMPT`，由 `tests/trace/poll-tools-alignment.test.ts` 对账（缺陷 31）。
  */
-export const CONDITIONALLY_EXEMPT_TOOLS = new Set(["bg_task_list", "bg_task_get", "task_output"]);
+export const CONDITIONALLY_EXEMPT_TOOLS = new Set(["bg_task_list", "task_output"]);
 
 /** 循环检测器（组合工具调用和内容检测） */
 export class LoopDetector {
