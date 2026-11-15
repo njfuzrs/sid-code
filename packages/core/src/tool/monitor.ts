@@ -49,7 +49,8 @@ import {
 import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
 import { getRunningTasks } from "../task/registry.ts";
 // R3：describeBackgroundWaitFact 用于启动回执的确定性状态事实；
-// R2 把对象签名抽取换成了 wait-subjects（findWaitBySubject / extractWaitSubjects 已删）。
+// R2 把对象签名抽取换成了 wait-subjects（本文件私有的 extractMonitorSubjects 已删。
+// 表侧的 findWaitBySubject / extractWaitSubjects 仍在：前者查表，后者是委托窄口径的兼容入口）。
 import {
   registerWait,
   isWakeupRegistrationEnabled,

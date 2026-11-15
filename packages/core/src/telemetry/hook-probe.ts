@@ -26,6 +26,7 @@ import type {
   HookInput,
   BeforeModelInput,
   AfterModelInput,
+  PreToolUseInput,
   PostToolUseInput,
   PermissionDeniedInput,
   SessionStartInput,
@@ -62,6 +63,21 @@ export class TelemetryHookProbe {
 
   /** blocked_on_user span 暂存：key = tool_use_id || tool_name */
   private permissionSpans = new Map<string, SpanHandle>();
+
+  /**
+   * 进行中的工具 span：key = `tool_use_id`（X1H2 T2：改为执行前开）。
+   *
+   * 此前 `execute_tool` span 是在 PostToolUse\* 里**事后**创建的，已跑完才知道起点，
+   * 只能靠 duration_ms 倒推。两个后果：
+   *   - 子代理的 `invoke_agent` 与工具并行时找不到父（父 span 还不存在）；
+   *   - 权限等待（可达数十秒）与执行耗时混成一个 duration_ms，区分不开「等用户」与「工具慢」。
+   * PreToolUse 建 span 后：起点 = 调度开始，父 = 当前作用域（并发工具互不串父），
+   * 权限拒绝能带 `permission_wait_ms`，SessionEnd 能把没跑完的工具收成 abandoned。
+   *
+   * 值里的 `startedAt` 是墙钟锚点，供 permission_wait_ms 计算（span 的 startTime 已由
+   * bus 记录，但取回来要额外 API，这里直接留一份）。
+   */
+  private toolSpans = new Map<string, { span: SpanHandle; startedAt: number }>();
   /** hook_execution span 暂存：key = hook_name */
   private hookSpans = new Map<string, SpanHandle>();
 
@@ -97,6 +113,19 @@ export class TelemetryHookProbe {
     this.spanEnrichers.push(fn);
   }
 
+  /**
+   * 当前会话根 span 的 id（未建根时 undefined）。
+   *
+   * X1H2 T3 用：forked 后台任务（记忆抽取 / session memory / auto-dream）跑在主循环
+   * 之外，它们的工具 span 需要**显式**挂到会话根上。改造前 `recordForkedToolSpan`
+   * 只传 `detached: true` 不传 parent，父由 `ctx.currentSpanId` 决定 —— 那个值取决于
+   * fork 恰好在哪个 chat span 期间启动，同一批 fork 会挂出不同父，甚至挂到已 end 的
+   * span 上变成悬空父。显式传根 id 让 forked 树的父稳定且可预期。
+   */
+  rootSpanId(): string | undefined {
+    return this.agentSpan?.spanId;
+  }
+
   /** 收集所有 enricher 产出的属性，enricher 出错不影响主流程 */
   private collectEnrichedAttributes(
     spanKind: "invoke_agent" | "chat" | "execute_tool",
@@ -119,6 +148,12 @@ export class TelemetryHookProbe {
       HookEventName.SessionStart,
       HookEventName.BeforeModel,
       HookEventName.AfterModel,
+      // X1H2 T2：execute_tool span 改为**执行前**开（此前只有 PostToolUse* 事后创建）。
+      // Pre 建 span 才能在工具真正开始跑时就确定父（子代理并发时父 span 已存在）、
+      // 把权限等待从执行耗时里拆出来（permission_wait_ms）、并让 SessionEnd 收得掉
+      // 没跑完的工具（abandoned）。没有 tool_use_id 的事件（极老的 hook 载荷）退回
+      // Post 侧事后补建，标 sidcode.tool.span_backfilled=true，不静默丢树。
+      HookEventName.PreToolUse,
       HookEventName.PostToolUse,
       // 失败工具同样要产 execute_tool span：此前只订阅 PostToolUse，导致
       // ① tool.execute 抛异常、② hook 阻止、③ 权限拒绝、④ 参数校验失败
@@ -168,6 +203,9 @@ export class TelemetryHookProbe {
         break;
       case HookEventName.AfterModel:
         this.handleAfterModel(input as AfterModelInput);
+        break;
+      case HookEventName.PreToolUse:
+        this.handlePreToolUse(input as PreToolUseInput);
         break;
       case HookEventName.PostToolUse:
       // PostToolUseFailure 复用同一 handler：它的 input 也是 PostToolUseInput
@@ -229,6 +267,16 @@ export class TelemetryHookProbe {
       if (this.agentSpan) {
         this.agentSpan.end();
         this.agentSpan = undefined;
+      }
+      // 兜底收掉旧会话遗留的工具 span：正常路径由 SessionEnd 收（标 abandoned），
+      // 但 /clear 的 SessionEnd 可能没跑到（超时/异常）。不清会让旧 span 永久躺在
+      // map 里，并在下一次 SessionEnd 被当成新会话的工具收掉（父已换）。
+      for (const key of [...this.toolSpans.keys()]) {
+        const pending = this.toolSpans.get(key);
+        if (!pending) continue;
+        this.toolSpans.delete(key);
+        pending.span.setAttributes({ "sidcode.tool.abandoned": true });
+        pending.span.end();
       }
       if (input.parent_session_id) this.retiredSessionIds.add(input.parent_session_id);
       if (input.session_id) this.config.sessionId = input.session_id;
@@ -410,6 +458,56 @@ export class TelemetryHookProbe {
     });
   }
 
+  /**
+   * X1H2 T2：工具**执行前**建 `execute_tool` span。
+   *
+   * 父取 `scopedParent()`（当前异步链所在作用域）—— 并发工具各自在自己的 scope 里
+   * Pre，互不串父；不在 scope 里（旧路径/测试）则回落到会话根。
+   *
+   * 没有 `tool_use_id` 时不建：Pre 与 Post 靠它配对，建了也无法在 Post 侧取回，
+   * 反而会在 SessionEnd 里被误判成 abandoned。这类载荷由 Post 侧事后补建
+   * （`span_backfilled`），与改造前行为一致。
+   */
+  private handlePreToolUse(input: PreToolUseInput): void {
+    const key = input.tool_use_id;
+    if (!key) return;
+    const toolName = sanitizedToolName(input.tool_name);
+    const span = this.bus.startSpan(
+      "execute_tool",
+      `execute_tool ${toolName}`,
+      {
+        [ATTR.OPERATION_NAME]: "execute_tool",
+        [ATTR.TOOL_NAME]: toolName,
+        [ATTR.TOOL_CALL_ID]: key,
+        ...(this.collectEnrichedAttributes("execute_tool", input) as Attributes),
+      },
+      this.scopedParent() ?? { parentSpanId: this.agentSpan?.spanId, detached: true },
+    );
+    this.toolSpans.set(key, { span, startedAt: Date.now() });
+  }
+
+  /**
+   * 取出并结束 Pre 建好的工具 span。取到 → true（调用方不再补建）。
+   *
+   * 结束前补的属性由调用方通过 `attrs` 传入（success / status / 拒绝来源等）：
+   * 这些值在 Pre 时刻还不知道，只能等结果事件。
+   */
+  private finishToolSpan(
+    key: string | undefined,
+    attrs: Record<string, unknown>,
+    after?: (span: SpanHandle) => void,
+  ): boolean {
+    if (!key) return false;
+    const pending = this.toolSpans.get(key);
+    if (!pending) return false;
+    this.toolSpans.delete(key);
+    const { span } = pending;
+    span.setAttributes(attrs as Attributes);
+    after?.(span);
+    span.end();
+    return true;
+  }
+
   private handlePostToolUse(input: PostToolUseInput): void {
     // 此 span 在 PostToolUse（工具已跑完）时才创建，所以起点按 duration_ms **回填**：
     // 曾经是「创建即结束」，durationMs ≈ 0，Jaeger 瀑布图上所有工具都是一根 0µs 的竖线，
@@ -421,6 +519,36 @@ export class TelemetryHookProbe {
     // 缺陷 22：span name 与 TOOL_NAME 一律走 sanitizeToolName（MCP → "mcp_tool"），
     // 与 analytics 通道同一条规则。span 随 OTLP 外发，原名会带出用户私有 MCP 服务名。
     const toolName = sanitizedToolName(input.tool_name);
+    const content = {
+      toolInput: input.tool_input,
+      toolResponse: input.tool_response,
+    };
+
+    // X1H2 T2：Pre 已建 span 时复用它（真实起点 = 调度开始），只补结果属性。
+    // 取不到（无 tool_use_id / 子代理 spawn 路径 / 事件乱序）才回退到事后补建，
+    // 并打 sidcode.tool.span_backfilled 让消费方能区分「有起点的真实时长」与「倒推」。
+    const reused = this.finishToolSpan(
+      input.tool_use_id,
+      {
+        [ATTR.SUCCESS]: !input.is_error,
+        ...(input.duration_ms !== undefined
+          ? { "sidcode.tool.duration_ms": input.duration_ms }
+          : {}),
+        ...(enriched as Attributes),
+      },
+      (span) => {
+        addToolContent(span, content);
+        if (input.is_error) {
+          // 缺陷 23：错误摘要过脱敏 + 按字节截断。recordError 不受内容级 tracing 开关约束，
+          // 原样写入等于给第 4 道闸门开了一条只在失败路径上生效的旁路。
+          span.recordError(
+            new Error(maskedErrorSummary(JSON.stringify(input.tool_response) ?? "")),
+          );
+        }
+      },
+    );
+    if (reused) return;
+
     const toolSpan = this.bus.startSpan(
       "execute_tool",
       `execute_tool ${toolName}`,
@@ -429,6 +557,8 @@ export class TelemetryHookProbe {
         [ATTR.TOOL_NAME]: toolName,
         [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
         [ATTR.SUCCESS]: !input.is_error,
+        // 事后补建：跨度按 duration_ms 倒推，不是真实起点。
+        "sidcode.tool.span_backfilled": true,
         ...(enriched as Attributes),
       },
       { startTime: Date.now() - toolDuration, ...this.scopedParent() },
@@ -439,10 +569,7 @@ export class TelemetryHookProbe {
     }
     // 内容级 tracing（P1-5）：工具入参 + 返回值。默认关闭。
     // 这两样是「模型这一步为什么做错」最直接的证据：模型给了什么参数、工具回了什么。
-    addToolContent(toolSpan, {
-      toolInput: input.tool_input,
-      toolResponse: input.tool_response,
-    });
+    addToolContent(toolSpan, content);
     if (input.is_error) {
       // 缺陷 23：错误摘要过脱敏 + 按字节截断。recordError 不受内容级 tracing 开关约束，
       // 原样写入等于给第 4 道闸门开了一条只在失败路径上生效的旁路。
@@ -463,6 +590,23 @@ export class TelemetryHookProbe {
    */
   private handlePermissionDenied(input: PermissionDeniedInput): void {
     const toolName = sanitizedToolName(input.tool_name);
+    const key = input.tool_use_id;
+    const pending = key ? this.toolSpans.get(key) : undefined;
+
+    // X1H2 T2：Pre 已建 span 时复用它 —— span 起点 = 进入调度，此时结束就能把
+    // **权限等待**（等用户确认可达数十秒）从工具执行耗时里单独量出来。
+    // 这段等待此前混在 duration_ms 里，秒拒与「等了 30s 才拒」在 trace 上长得一样。
+    if (pending) {
+      this.toolSpans.delete(key!);
+      pending.span.setAttributes({
+        "sidcode.tool.status": "denied",
+        "sidcode.permission.denial_source": input.denial_source,
+        "sidcode.tool.permission_wait_ms": Date.now() - pending.startedAt,
+      });
+      pending.span.end();
+      return;
+    }
+
     const span = this.bus.startSpan(
       "execute_tool",
       `execute_tool ${toolName}`,
@@ -472,6 +616,9 @@ export class TelemetryHookProbe {
         [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
         "sidcode.tool.status": "denied",
         "sidcode.permission.denial_source": input.denial_source,
+        // 没有 Pre span 时无法知道等待开始时刻：不写 permission_wait_ms，
+        // 写 0 会被读成「秒拒」，而实际可能等了很久。
+        "sidcode.tool.span_backfilled": true,
       },
       this.scopedParent(),
     );
@@ -527,6 +674,17 @@ export class TelemetryHookProbe {
 
   private handleSubagentStart(input: SubagentStartInput): void {
     const model = input.model ?? this.config.model;
+    // X1H2 T2：子代理的父显式取「发起它的那次工具调用」。
+    // `parent_tool_use_id` 指向父会话的 `execute_tool sub_agent`，而那个 span 由
+    // PreToolUse 建好、存在 toolSpans 里 —— 这是 span 开在执行前的直接收益：
+    // 改造前 span 在 Post 才建，SubagentStart fire 时父 span 还不存在，只能挂到
+    // 会话根上，子代理与那次工具调用在树里是兄弟而非父子。
+    // 取不到（父不在本进程 / 旧载荷）才回落到作用域父/根。
+    const parentToolUseId = input.parent_tool_use_id;
+    const pendingParent = parentToolUseId ? this.toolSpans.get(parentToolUseId) : undefined;
+    const parent = pendingParent
+      ? { parentSpanId: pendingParent.span.spanId }
+      : (this.scopedParent() ?? { parentSpanId: this.agentSpan?.spanId, detached: true });
     const span = this.bus.startSpan(
       "invoke_agent",
       `invoke_agent ${input.agent_type}`,
@@ -538,15 +696,14 @@ export class TelemetryHookProbe {
         ...(input.provider ? { [ATTR.PROVIDER_NAME]: input.provider } : {}),
         "sidcode.subagent.id": input.agent_id,
         "sidcode.subagent.type": input.agent_type,
+        ...(parentToolUseId ? { "sidcode.subagent.parent_tool_use_id": parentToolUseId } : {}),
         ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
       },
-      {
-        // 缺陷 2：子代理可并发（swarm team 的 Promise.all），不能走共享栈取 parent ——
-        // 否则并发成员互为父子、先结束的弹掉别人的 id。parent 取「发起方所在作用域」：
-        // 主循环发起 → 会话根；子代理里再派 → 那个子代理（SubagentStart 在子代理作用域
-        // **之外**、发起方作用域之内 fire，见 sub-agent.ts）。不进共享栈。
-        ...(this.scopedParent() ?? { parentSpanId: this.agentSpan?.spanId, detached: true }),
-      },
+      // 缺陷 2：子代理可并发（swarm team 的 Promise.all），不能走共享栈取 parent ——
+      // 否则并发成员互为父子、先结束的弹掉别人的 id。parent 取「发起方所在作用域」：
+      // 主循环发起 → 会话根；子代理里再派 → 那个子代理（SubagentStart 在子代理作用域
+      // **之外**、发起方作用域之内 fire，见 sub-agent.ts）。不进共享栈。
+      { ...parent },
     );
     this.subagentSpans.set(input.agent_id, span);
   }
@@ -596,6 +753,17 @@ export class TelemetryHookProbe {
     if (input.session_id && this.retiredSessionIds.has(input.session_id)) return;
     // 缺陷 3：最后一轮 AfterModel 没 fire 的话，chat span 在这里收掉，必须早于根 span end
     for (const key of [...this.llmSpans.keys()]) this.abandonLlmSpan(key, "session_end");
+    // X1H2 T2：没跑完的工具 span 同样要收 —— 会话在工具执行中结束（Ctrl+C / 关终端 /
+    // 模型被中断）时，Pre 建好的 span 永远等不到 Post，不收就会让整个 trace 缺父
+    // （子代理/嵌套 span 挂在它下面，父不在 = 全树悬空）。标 abandoned 与正常完成区分。
+    // 顺序同样必须在根 end 之前：子 span 晚于父落盘会让 T4 的「找不到的父」判据变红。
+    for (const key of [...this.toolSpans.keys()]) {
+      const pending = this.toolSpans.get(key);
+      if (!pending) continue;
+      this.toolSpans.delete(key);
+      pending.span.setAttributes({ "sidcode.tool.abandoned": true });
+      pending.span.end();
+    }
     const stats = input.stats;
     if (this.agentSpan && stats) {
       this.agentSpan.setAttributes({

@@ -10,12 +10,14 @@
  * 修法是两半：`loop.ts` yield 时带 `persistent: true`，`app.ts` 的 `event.persistent`
  * 分支走 `appendPersistentHint`（写历史区、不进 ctxMgr、`done` 不清）。
  *
- * ## 为什么是源码文本断言
+ * ## 两层守卫
  *
- * `appendPersistentHint` 是 `runTUI` 内的闭包，`bridge` 也是局部变量——现有结构里
- * 没有能从 App 实例驱动「喂一个 system 事件」的入口。起一个真实 `runTUI` 需要 TTY 与
- * ink 渲染，成本远高于它守住的东西；而回归形态是「有人把 persistent 删了 / 把分支
- * 挪回 transient」，在源码里一眼可见。
+ * - **行为侧**：`appendPersistentHintTo`（`src/ui/persistent-hint.ts`）的语义——
+ *   追加 hint 项、分配 id、按消息数登记侧表、不原地修改入参——由本文件的行为断言守。
+ *   这段逻辑原本是 `runTUI` 的闭包，只能读源码文本；2026-11-15 抽成模块后补上了行为断言，
+ *   「分支还在、中间插了个条件」这类回归不再只靠文本可见性。
+ * - **路由侧**：`case "system"` 里 `event.persistent` 走常驻、非 persistent 走瞬态，
+ *   仍是源码文本断言——起一个真实 `runTUI` 需要 TTY 与 ink 渲染，成本远高于它守住的东西。
  *
  * 行为侧（循环到底 yield 出什么）由 `packages/core/tests/query/wait-notice-persistent.test.ts`
  * 从真实 `queryLoop` 入口验证；TUI 渲染实证（截图核对历史区那一行）按方案 §L5 归 E2E-7。
@@ -26,6 +28,9 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { appendPersistentHintTo } from "../../src/ui/persistent-hint.ts";
+import type { AnchoredItem } from "../../src/ui/local-command-items.ts";
+import type { HistoryItem } from "../../src/ui/types.ts";
 
 const CLI_APP = join(import.meta.dir, "..", "..", "src", "app.ts");
 const CORE_LOOP = join(import.meta.dir, "..", "..", "..", "core", "src", "query", "loop.ts");
@@ -66,5 +71,57 @@ describe("D9 守卫：撤销提示常驻", () => {
     // 反向：瞬态状态条那支必须还在，且是「没有 persistent 时」的兜底——
     // 没这条断言，把整个 info 分支改成常驻也能绿，那就不是 D9 的修法了。
     expect(code).toContain('addStatusMessage("system:transient", event.text)');
+  });
+});
+
+describe("D9 行为侧：appendPersistentHintTo 的语义", () => {
+  test("追加 hint 项到历史区末尾、分配 id、按消息数登记侧表，且不原地修改入参", () => {
+    const local: AnchoredItem[] = [];
+    let counter = 0;
+    const before: HistoryItem[] = [{ type: "hint", text: "既有提示", id: 7 }];
+    const after = appendPersistentHintTo(
+      {
+        historyItems: before,
+        localItems: local,
+        anchor: 3,
+        allocateId: () => {
+          counter += 1;
+          return counter;
+        },
+      },
+      "唤醒 9f3a 已撤销（清单已无未完成项）",
+    );
+    // 历史区：原项保留、新项追加在末尾；类型必须是 hint（瞬态状态条不走这里）
+    expect(after).toEqual([
+      { type: "hint", text: "既有提示", id: 7 },
+      { type: "hint", text: "唤醒 9f3a 已撤销（清单已无未完成项）", id: 1 },
+    ]);
+    // 侧表：anchor = 当时的消息数，全量重建时 mergeAnchoredItems 靠它插回原位
+    expect(local).toEqual([
+      { anchor: 3, item: { type: "hint", text: "唤醒 9f3a 已撤销（清单已无未完成项）" } },
+    ]);
+    // 不原地修改入参（调用方传的是 bridge.current.historyItems）
+    expect(before).toHaveLength(1);
+  });
+
+  test("同一轮多条提示按追加顺序排列，id 单调递增、锚点不变", () => {
+    const local: AnchoredItem[] = [];
+    let counter = 0;
+    const target = {
+      historyItems: [] as HistoryItem[],
+      localItems: local,
+      anchor: 5,
+      allocateId: () => {
+        counter += 1;
+        return counter;
+      },
+    };
+    const first = appendPersistentHintTo(target, "第一条");
+    const second = appendPersistentHintTo({ ...target, historyItems: first }, "第二条");
+    expect(second).toEqual([
+      { type: "hint", text: "第一条", id: 1 },
+      { type: "hint", text: "第二条", id: 2 },
+    ]);
+    expect(local.map((entry) => entry.anchor)).toEqual([5, 5]);
   });
 });
