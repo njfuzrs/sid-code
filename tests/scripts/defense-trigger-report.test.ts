@@ -38,6 +38,14 @@ const sessionA: TraceEvent[] = [
   ev("UserPromptSubmit", "2026-10-20T00:00:01Z"),
   ev("BeforeModel", "2026-10-20T00:00:02Z", { model: "ds" }),
   ev("AfterModel", "2026-10-20T00:00:03Z", { stop_reason: "max_tokens" }),
+  // 覆盖期探测的来源：tool_use_facts 平铺在 AfterModelRaw 上（不在 AfterModel 上）
+  ev("AfterModelRaw", "2026-10-20T00:00:03Z", {
+    stop_reason: "max_tokens",
+    tool_use_total: 2,
+    tool_use_truncated: 1,
+  }),
+  // 编辑失败提醒：此前「触发了没记」，补埋点后应能算出按失败形态拆的触发率
+  ev("EditFailureReminder", "2026-10-20T00:00:03Z", { kind: "not_found", count: 3 }),
   ev("BilledRequest", "2026-10-20T00:00:03Z", { model: "ds", provider: "openai" }),
   ev("LoopTransition", "2026-10-20T00:00:04Z", { type: "todo_gate_retry" }),
   ev("LoopTransition", "2026-10-20T00:00:04Z", { type: "tool_use" }),
@@ -85,6 +93,9 @@ describe("defense-trigger-report", () => {
     // 跨两个分组命中的同一会话，总计里只算 1 个会话
     expect(r.total.continue.todo_gate_retry).toEqual({ count: 2, sessions: 1 });
     expect(ds.stop_max_tokens.count).toBe(1);
+    expect(ds.truncated.with_tool_use.count).toBe(1);
+    expect(ds.truncated.params_truncated.count).toBe(1);
+    expect(ds.edit_failure_reminder.not_found).toEqual({ count: 1, sessions: 1 });
     expect(claude.incomplete_reason.stalled!.count).toBe(1);
     expect(claude.stall.L2_shadow!.count).toBe(1);
     expect(claude.gates_exhausted.todo!.count).toBe(1);
@@ -102,10 +113,58 @@ describe("defense-trigger-report", () => {
     const all = aggregateDefenseReport([sessionA], { tmpRoots: [] });
     expect(all.coverage["TurnComplete.continue_counts"]).toBe("2026-10-25");
     expect(all.coverage["LoopTransition"]).toBe("2026-10-20");
-    expect(all.coverage["AfterModel.tool_use_facts"]).toBeNull();
+    // 键名必须是 AfterModelRaw —— 初版探测写成 `AfterModel.tool_use_facts`（该事件上根本没有
+    // 这个字段），于是恒报「窗口内从未出现」。断言「探得到」而不是「探不到」，
+    // 否则测试会把 bug 状态锁成预期。
+    expect(all.coverage["AfterModelRaw.tool_use_total"]).toBe("2026-10-20");
+    expect(all.coverage["EditFailureReminder"]).toBe("2026-10-20");
     const r = aggregateDefenseReport([sessionA], { tmpRoots: [], since: "2026-10-24" });
     expect(r.total.continue.todo_gate_retry.count).toBe(1);
     expect(r.total.stop_max_tokens.count).toBe(0);
+  });
+
+  test("截断分项：纯文本 / 带工具调用 / 参数被截断各自独立，非截断不计", () => {
+    const s: TraceEvent[] = [
+      ev("SessionStart", "2026-11-01T00:00:00Z", { model: "m" }),
+      ev("AfterModelRaw", "2026-11-01T00:00:01Z", {
+        stop_reason: "max_tokens",
+        tool_use_total: 0,
+        tool_use_truncated: 0,
+      }),
+      ev("AfterModelRaw", "2026-11-01T00:00:02Z", {
+        stop_reason: "length",
+        tool_use_total: 3,
+        tool_use_truncated: 0,
+      }),
+      ev("AfterModelRaw", "2026-11-01T00:00:03Z", {
+        stop_reason: "max_tokens",
+        tool_use_total: 1,
+        tool_use_truncated: 2,
+      }),
+      ev("AfterModelRaw", "2026-11-01T00:00:04Z", { stop_reason: "end_turn", tool_use_total: 5 }),
+      ev("AfterModel", "2026-11-01T00:00:05Z", { stop_reason: "max_tokens" }),
+    ];
+    const r = aggregateDefenseReport([s], { tmpRoots: [] });
+    expect(r.total.truncated.text_only.count).toBe(1); // max_tokens 且 tool_use_total=0
+    expect(r.total.truncated.with_tool_use.count).toBe(2); // max_tokens + length 各一次
+    expect(r.total.truncated.params_truncated.count).toBe(1); // 只有第三条参数被截断
+    // 旧口径（AfterModel.stop_reason）不受影响，两个来源分别计数
+    expect(r.total.stop_max_tokens.count).toBe(1);
+  });
+
+  test("编辑失败提醒按 kind 归组：同 kind 累计、跨会话去重", () => {
+    const mk = (ts: string, kind: string, cwd: string): TraceEvent[] => [
+      ev("SessionStart", ts, { model: "m" }, cwd),
+      ev("EditFailureReminder", ts, { kind }),
+      ev("EditFailureReminder", ts, { kind }),
+    ];
+    const r = aggregateDefenseReport(
+      [mk("2026-11-01T00:00:00Z", "noop", "/w/1"), mk("2026-11-02T00:00:00Z", "noop", "/w/2")],
+      { tmpRoots: [] },
+    );
+    // 4 次命中、2 个会话
+    expect(r.total.edit_failure_reminder.noop).toEqual({ count: 4, sessions: 2 });
+    expect(r.total.edit_failure_reminder.not_found).toBeUndefined();
   });
 
   test("isTmpCwd 只认目录前缀，不误伤同名前缀", () => {
@@ -142,9 +201,13 @@ describe("defense-trigger-report", () => {
       const r = JSON.parse(ok.stdout);
       expect(r.denominators.sessions).toBe(1);
       expect(r.total.continue.todo_gate_retry.count).toBe(2);
+      expect(r.total.truncated.params_truncated.count).toBe(1);
+      expect(r.total.edit_failure_reminder.not_found.count).toBe(1);
       const text = spawnSync("bun", [script], { env, encoding: "utf8" });
       expect(text.stdout).toContain("promise_nudge");
       expect(text.stdout).toContain("零触发");
+      expect(text.stdout).toContain("参数被截断");
+      expect(text.stdout).toContain("编辑失败提醒");
       const bad = spawnSync("bun", [script, "--nope"], { env, encoding: "utf8" });
       expect(bad.status).toBe(2);
     } finally {

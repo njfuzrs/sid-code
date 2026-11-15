@@ -724,11 +724,11 @@ export class EditTool implements Tool {
 
       const result = calculateReplacement(rawContent, oldString, newString, replaceAll);
 
-      // 未读文件的延后判定：只认精确命中（含 1:1 引号规范化，它也报 exact）。
+      // 未读文件的延后判定：只认精确命中与归一化命中（normalized 是同一段原文的字符级
+      // 1:1 归一，长度不变，不是近似匹配；事件层把它和 exact 分开统计，见 EditLenientMatch）。
       // 必须排在下面「歧义 / 未命中 / 多处」报错之前——否则未读文件会拿到近似匹配的
       // 诊断信息，暗示它"差一点就能改"，而真正该做的是先 read。
-      // normalized 与 exact 同权：它是同一段原文的字符级归一（长度不变），不是近似匹配，
-      // 所以不改变「未读文件只能精确改」的边界；事件层再把它和 exact 分开统计。
+      // 两者同权：都不改变「未读文件只能精确改」的边界。
       if (deferUnreadCheck && this.tracker) {
         if (result.strategy !== "exact" && result.strategy !== "normalized") {
           return {
