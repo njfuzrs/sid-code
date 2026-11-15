@@ -112,8 +112,12 @@ export interface PermissionDecisionEvent {
    */
   guard?: string;
   /**
-   * A9：auto 档分类器没有放行、回退人工时的成因（absent / safety-guard / unsafe /
-   * unavailable / error）。取自 `Decision.metadata.autoClassifier`，只有 auto 档的 ask 才有。
+   * A9：auto 档分类器没有放行、回退人工时的成因
+   * （absent / safety-guard / ask-rule / unsafe / unavailable / error）。
+   * 取自 `Decision.metadata.autoClassifier`，只有 auto 档的 ask 才有。
+   *
+   * M1b 单独分出 `ask-rule`：用户显式写的 ask 规则命中时分类器**根本没发言**，
+   * 与「分类器判不安全（unsafe）」混成一个数，会把用户规则的效果算成模型误判。
    */
   autoClassifier?: string;
   /**
