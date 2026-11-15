@@ -263,6 +263,12 @@ export async function scanMemoryFiles(
   }
 
   headers.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  // ⚠️ 这里是**先按 mtime 取最新 N 条、再交给调用方排序**（抽取清单在 extractor 里才按
+  // `indexTypeRank` 重排）。所以 SCAN_MAX_FILES 与索引的候选集在目录 > N 条时不同：
+  // 索引是「全量按类型排序后截断」，清单是「最新 N 条按类型排序」——一条很旧的 `user`
+  // 记忆可能「在索引里但不在清单里」，模型无法用现有 key 更新它。
+  // 这是 I/O 保护上限的固有边界（见 types.ts 该常量注释），不是排序逻辑的缺陷；
+  // 目录稳态由 STORE_MAX_ENTRIES=200 归档压回，错位最多 1 条、且每次写入后即收敛。
   return headers.slice(0, MEMORY_LIMITS.SCAN_MAX_FILES);
 }
 
