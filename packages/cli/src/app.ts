@@ -2080,10 +2080,6 @@ export class App {
     // 否则子代理烧的 token/费用完全不计入总费用、costLimit 守卫对子代理失效。
     this.wireSubAgentUsageSink();
 
-    // Fork 模式接线：给 SubAgentTool 注入主对话上下文提供者，
-    // 让 fork=true 的子代理能继承主对话最近消息（prompt cache 友好）。
-    this.wireSubAgentMainContext();
-
     // 根因修复：把 HookSystem 回填到 spawn-agent 类工具。这些工具在 cli.ts 注册时
     // HookSystem 尚未创建（构造时 hookSystem=undefined），导致子代理/workflow 的
     // 工具级 hook 与 Subagent span 在生产中从未触发。HookSystem 创建后经 setter 接通。
@@ -2167,27 +2163,6 @@ export class App {
       }
       if (typeof maybe.setSessionOutputTokensReader === "function") {
         maybe.setSessionOutputTokensReader(sessionOutputTokens);
-      }
-    }
-  }
-
-  /**
-   * 注入主对话上下文提供者到 SubAgentTool（fork 模式）。
-   * 提供者返回主对话当前消息历史，buildForkMessages 截取尾部构建 fork 子代理初始上下文。
-   */
-  private wireSubAgentMainContext(): void {
-    const provider = (): {
-      role: string;
-      content: import("@sid-code/core/llm/types.ts").ContentBlock[];
-    }[] =>
-      this.ctxMgr.getMessages() as {
-        role: string;
-        content: import("@sid-code/core/llm/types.ts").ContentBlock[];
-      }[];
-    for (const tool of this.toolRegistry.all()) {
-      const maybe = tool as { setMainContextProvider?: (p: typeof provider) => void };
-      if (typeof maybe.setMainContextProvider === "function") {
-        maybe.setMainContextProvider(provider);
       }
     }
   }

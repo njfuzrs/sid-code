@@ -1,16 +1,12 @@
 /**
- * fork 拿不到继承时的静默降级（06H1 T1 / T2）
+ * forkMessages 必须在进程内执行 + sub_agent 不再暴露 fork 参数（06H1 T1 / T7）
  *
- * 背景：fork 有两条路会"看起来成功、实际没继承"：
- * 1. `fork + run_in_background` —— runAsync 参数里没有 fork，executeInBackground 也不传
- *    forkMessages；spawn 的 ParentInitMessage 也只有 user_prompt。此前组合被静默丢掉。
- * 2. `mainContextProvider` 未注入 —— 此前静默退化成「空白上下文起步」，调用方看不出。
- *
- * 修复口径：两条都改成**明确报错**，并让 forkMessages 存在时强制进程内执行
- * （与 task.cwd 存在时同一写法）。这里锁住：
- * - 显式 run_in_background 与定义 background: true 两种后台组合都报错
- * - 未注入 provider 时同步 fork 报错；注入后照常继承
- * - shouldUseSpawn() 为真时，forkMessages 非空仍走进程内，首条上下文来自 fork
+ * T7（2026-11-16）删掉了 `sub_agent` 的 `fork` 参数，T1/T2 两条「fork 用法报错」随之没有对象。
+ * 但 `SubAgentTask.forkMessages` 保留：send_message 的 sidechain 真恢复（P2-3）用它把重建的
+ * 完整历史灌给新子代理。spawn 的父子协议传不了这个字段，所以「forkMessages 非空 → 强制进程内」
+ * 仍然要守，否则续接在 spawn 模式下会静默丢历史。这里锁住：
+ * - sub_agent 的 schema 里不再有 fork（防止被当成「从来没有」而重新加回却没补论证）
+ * - shouldUseSpawn() 为真时，forkMessages 非空仍走进程内，首条上下文来自 forkMessages
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -23,10 +19,6 @@ import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import { Registry } from "@sid-code/core/tool/registry.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
-import {
-  clearDynamicAgents,
-  registerDynamicAgents,
-} from "@sid-code/core/agent/agent-definition.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
@@ -76,7 +68,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  clearDynamicAgents();
   if (savedConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = savedConfigDir;
   rmSync(base, { recursive: true, force: true });
@@ -87,102 +78,16 @@ function makeTool(providerRegistry?: ProviderRegistry): SubAgentTool {
   return new SubAgentTool(providerRegistry ?? new ProviderRegistry(config, {}), new Registry());
 }
 
-/**
- * 把 registry 的 provider 解析全部指向桩。
- * 只覆盖 getProvider 不够：构造走 `fromRegistry → getProvider()`，执行期还会走
- * `getProviderForModelName()` 按实际 model 重新解析（sub-agent.ts 的 executeInner）。
- * defaultConfig() 的 provider 为空，漏掉任一条都会在测试里报「未知的 Provider: 」。
- */
-function stubProviders(registry: ProviderRegistry, provider: Provider): void {
-  const stub = registry as unknown as Record<string, () => Provider>;
-  stub.getProvider = () => provider;
-  stub.getProviderFor = () => provider;
-  stub.getProviderForSubAgent = () => provider;
-  stub.getProviderForModelName = () => provider;
-}
-
-describe("T1：fork 与后台组合直接报错（不再静默丢掉 fork）", () => {
-  test("显式 run_in_background + fork → isError", async () => {
-    const tool = makeTool();
-    // provider 已注入，确保报错来自「fork 只能同步」而不是 T2 那条
-    tool.setMainContextProvider(() => [
-      { role: "user", content: [{ type: "text", text: PARENT_TEXT }] },
-    ]);
-    const r = await tool.execute({
-      type: "explore",
-      description: "后台跑",
-      prompt: "继续",
-      fork: true,
-      run_in_background: true,
-    });
-    expect(r.isError).toBe(true);
-    expect(r.output).toContain("fork 只支持同步");
-  });
-
-  test("定义声明 background: true 时（不显式传参）同样报错", async () => {
-    // 判据必须放在 def.background 合并之后：否则这条会漏
-    registerDynamicAgents(
-      [
-        {
-          agentType: "bg-agent",
-          description: "默认后台的 agent",
-          whenToUse: "后台任务",
-          systemPrompt: "你是后台代理",
-          background: true,
-        } as never,
-      ],
-      true,
-    );
-    const tool = makeTool();
-    tool.setMainContextProvider(() => [
-      { role: "user", content: [{ type: "text", text: PARENT_TEXT }] },
-    ]);
-    const r = await tool.execute({
-      type: "bg-agent",
-      description: "后台跑",
-      prompt: "继续",
-      fork: true,
-    });
-    expect(r.isError).toBe(true);
-    expect(r.output).toContain("fork 只支持同步");
+describe("T7：sub_agent 不再暴露 fork 参数", () => {
+  test("schema 里没有 fork 字段", () => {
+    const shape = (makeTool().zodSchema as unknown as { shape: Record<string, unknown> }).shape;
+    expect(Object.keys(shape)).not.toContain("fork");
+    // 对照：同一个 shape 确实读得到其他参数，避免 shape 取错而恒绿
+    expect(Object.keys(shape)).toContain("isolation");
   });
 });
 
-describe("T2：未注入主对话上下文时报错（不再退化成空白起步）", () => {
-  test("未注入 provider + 同步 fork → isError", async () => {
-    const tool = makeTool(); // 故意不调 setMainContextProvider
-    const r = await tool.execute({
-      type: "explore",
-      description: "核验",
-      prompt: "继续",
-      fork: true,
-    });
-    expect(r.isError).toBe(true);
-    expect(r.output).toContain("setMainContextProvider");
-  });
-
-  test("注入 provider 后 fork 照常，父对话内容真的进了子代理上下文", async () => {
-    const provider = new RecordingProvider();
-    const registry = new ProviderRegistry(defaultConfig() as Config, {});
-    // 只替换 provider 解析，避免真发网络请求；model 解析仍走真实实现
-    stubProviders(registry, provider);
-    const tool = makeTool(registry);
-    tool.setMainContextProvider(() => [
-      { role: "user", content: [{ type: "text", text: PARENT_TEXT }] },
-    ]);
-    const r = await tool.execute({
-      type: "explore",
-      description: "核验",
-      prompt: "接着刚才的结论继续",
-      fork: true,
-    });
-    expect(r.isError).toBeFalsy();
-    expect(provider.requests.length).toBeGreaterThan(0);
-    expect(JSON.stringify(provider.requests)).toContain(PARENT_TEXT);
-  });
-});
-
-describe("T1：forkMessages 存在时强制进程内（spawn 协议传不了它）", () => {
+describe("T1：forkMessages 存在时强制进程内（spawn 协议传不了它，send_message 续接依赖）", () => {
   test("shouldUseSpawn() 为真时 fork 仍走进程内，且首条上下文来自 fork", async () => {
     const provider = new RecordingProvider();
     const sub = new SubAgent(provider, "m", new Registry());
