@@ -18,6 +18,10 @@ import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
 import { GrepTool } from "@sid-code/core/tool/grep.ts";
 import { BashTool } from "@sid-code/core/tool/bash.ts";
 import { ReadTool } from "@sid-code/core/tool/read.ts";
+import { StructuredTaskGetTool } from "@sid-code/core/tool/structured-task-get.ts";
+import { LSPTool } from "@sid-code/core/tool/lsp.ts";
+import { AskUserQuestionTool } from "@sid-code/core/tool/ask-user-question.ts";
+import { GlobTool } from "@sid-code/core/tool/glob.ts";
 import {
   __clearStructuredTasks,
   getStructuredTask,
@@ -289,5 +293,118 @@ describe("D3：废弃参数旧名 → 协议字段（schema 已删，兼容靠�
     if (!v.ok) return;
     expect("head_limit" in (v.data as object)).toBe(false);
     expect("total_max_matches" in (v.data as object)).toBe(false);
+  });
+});
+
+/**
+ * T4（20261116 字段名盘点）：CC 的 task 系列 / LSP / AskUserQuestion 用 camelCase，
+ * sid 同功能工具是 snake_case。登记口径与 activeForm、grep 短参数一致——CC 的字段名
+ * 就是这个，属于跨产品协议先验，不是猜测的命名风格漂移。
+ *
+ * 必须记住的事实：**CC 自己也两种拼法都有**。它的 `TaskGetTool` / `TaskUpdateTool` 用
+ * `taskId`，而 `TaskStopTool` / `TaskOutputTool` 用 `task_id`。所以这些用例锁的是
+ * 「模型照 CC 写，两种都能过」——谁哪天想「对齐 CC」只对齐一半，这里会红。
+ */
+describe("T4：CC camelCase 字段 → sid snake_case（task / lsp / ask_user_question）", () => {
+  test("task_get：taskId → task_id，校验通过且落到协议字段", () => {
+    const tool = new StructuredTaskGetTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, { taskId: "1" });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect((v.data as { task_id?: string }).task_id).toBe("1");
+    expect("taskId" in (v.data as object)).toBe(false);
+    expect(events.find((e) => e.event === "ToolInputAliasApplied")?.data).toMatchObject({
+      tool: "task_get",
+      from: "taskId",
+      to: "task_id",
+      count: 1,
+      dropped: 0,
+    });
+  });
+
+  test("task_update：taskId + addBlocks + addBlockedBy 一次全改（3 条别名事件）", () => {
+    const tool = new TaskUpdateTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, {
+      taskId: "7",
+      addBlocks: ["8"],
+      addBlockedBy: ["9"],
+    });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    const data = v.data as { task_id?: string; add_blocks?: string[]; add_blocked_by?: string[] };
+    expect(data.task_id).toBe("7");
+    expect(data.add_blocks).toEqual(["8"]);
+    expect(data.add_blocked_by).toEqual(["9"]);
+    expect("taskId" in (v.data as object)).toBe(false);
+    expect("addBlocks" in (v.data as object)).toBe(false);
+    expect("addBlockedBy" in (v.data as object)).toBe(false);
+    const applied = events
+      .filter((e) => e.event === "ToolInputAliasApplied")
+      .map((e) => `${String(e.data.from)}->${String(e.data.to)}`)
+      .sort();
+    expect(applied).toEqual([
+      "addBlockedBy->add_blocked_by",
+      "addBlocks->add_blocks",
+      "taskId->task_id",
+    ]);
+  });
+
+  test("lsp：filePath → file_path", () => {
+    const tool = new LSPTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, {
+      operation: "goToDefinition",
+      filePath: "/tmp/a.ts",
+      line: 1,
+      character: 1,
+    });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect((v.data as { file_path?: string }).file_path).toBe("/tmp/a.ts");
+    expect("filePath" in (v.data as object)).toBe(false);
+    expect(events.find((e) => e.event === "ToolInputAliasApplied")?.data).toMatchObject({
+      tool: "lsp",
+      from: "filePath",
+      to: "file_path",
+    });
+  });
+
+  test("ask_user_question：questions[].multiSelect → multi_select（嵌套下钻）", () => {
+    const tool = new AskUserQuestionTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, {
+      questions: [
+        {
+          question: "选哪个？",
+          header: "方案",
+          options: [{ label: "A" }, { label: "B" }],
+          multiSelect: true,
+        },
+      ],
+    });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    const q = (v.data as { questions: Array<Record<string, unknown>> }).questions[0]!;
+    expect(q.multi_select).toBe(true);
+    expect("multiSelect" in q).toBe(false);
+  });
+
+  test("两键并存：保留协议字段、丢弃 camelCase，记 dropped", () => {
+    const tool = new StructuredTaskGetTool() as unknown as LegacyTool;
+    const v = validateToolInput(tool, { task_id: "协议值", taskId: "别名值" });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect((v.data as { task_id?: string }).task_id).toBe("协议值");
+    expect("taskId" in (v.data as object)).toBe(false);
+    expect(events.find((e) => e.event === "ToolInputAliasApplied")?.data).toMatchObject({
+      count: 0,
+      dropped: 1,
+    });
+  });
+
+  test("不误伤：glob 的 shape 没有 file_path，filePath 原样保留（交给未知键处理）", () => {
+    const tool = new GlobTool() as unknown as LegacyTool;
+    const r = normalizeInputAliases(tool.zodSchema, { pattern: "*.ts", filePath: "/tmp/a.ts" });
+    expect(r.hits).toHaveLength(0);
+    expect((r.value as Record<string, unknown>).filePath).toBe("/tmp/a.ts");
+    expect("file_path" in (r.value as object)).toBe(false);
   });
 });
