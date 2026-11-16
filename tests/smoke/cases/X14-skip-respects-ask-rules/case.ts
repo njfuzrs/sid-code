@@ -20,7 +20,9 @@
  *
  * 期望来源：2026-11-16 在 worktree 里用真实 `PermissionChecker`（`print: true` +
  * `skipPermissions: true` + ask 规则）跑的探针，`step=skip-ask-rule`、
- * `reason` 含 `Bash(git push*)`；随后用构建产物跑本用例复核。未经人工 TUI 实测，台账已注明。
+ * `reason` 含 `Bash(git push*)`；随后用构建产物跑本用例复核，并在临时真实 git 仓库
+ * （`git init` + bare 远端）里用真实模型端到端跑过一次：模型确实调了
+ * `git push -u origin master`，被拒且远端 `log` 为空。未经人工 TUI 实测，台账已注明。
  */
 import type { SmokeCase } from "../../lib/types.ts";
 

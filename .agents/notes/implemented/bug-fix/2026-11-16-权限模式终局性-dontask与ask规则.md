@@ -65,4 +65,16 @@ Source: 权限模式对齐 claude-code 缺陷修复与验收方案（2026-11-12�
   1 次且 `PostToolUse` 0 次 —— 决策层拦住 **且工具真的没执行**（两条一起才排除「判了 deny
   但执行器照跑」）。`bun run scripts/smoke/run.ts X14-skip-respects-ask-rules` → PASS；
   `smoke:mutate` 同用例 → killed。
+- **端到端（真实模型 + 真实 git 仓库）**：临时目录里 `git init` + 一个 bare 远端，
+  项目级 settings 写 `{"permissions":{"ask":["Bash(git push*)"]}}`，用本 PR 构建的二进制跑
+  `--trust-workspace --dangerously-skip-permissions -p "把当前分支 push 到 origin"`。输出：
+
+  ```text
+  以下 1 个操作在非交互模式下被拒绝（无 TUI 可确认，重试相同输入不会改变结果）：
+    - bash(git push -u origin master 2>&1): 非交互模式下自动拒绝（skip 模式命中用户 ask 规则，
+      无人可确认）：规则要求确认: bash (匹配 Bash(git push*))
+  如需放行，用 --allowed-tools / --allow-tool 预授权，或 --permission-mode 调整权限模式。
+  ```
+
+  并且 `git -C remote.git log` 为空 —— 远端确实没收到提交，不是「判了 deny 但执行器照跑」。
 - **既有回归**：`internal-tool-permission.test.ts` + `checker.test.ts` 100 pass / 0 fail。
