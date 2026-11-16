@@ -4,7 +4,7 @@
  */
 
 import { spawn } from "child_process";
-import { openSync, closeSync } from "fs";
+import { openSync, closeSync, fstatSync, readSync } from "fs";
 import { platform } from "os";
 import { generateTaskId, type LocalShellTaskState, isTerminalStatus } from "./types.ts";
 import { registerTask, updateTask, getTask } from "./registry.ts";
@@ -53,6 +53,47 @@ const activeProcesses = new Map<string, AdoptableProcess>();
  * 通知覆盖成 "failed"，造成状态倒退 + 矛盾的重复通知。此前 shell 任务未补齐这层
  * 守卫（agent-task 那边修过同类缺口，shell 这边是漏网的），随 P1-4 一并修正。
  */
+/**
+ * 终态通知带输出尾部时的最大读取量（字节）。
+ *
+ * 只够 `takeTrailingLines` 裁出 5 行（`NOTIFICATION_OUTPUT_TAIL_LINES`）；
+ * 文件可能很大（后台长任务），同步读全文会阻塞事件循环，所以只读尾部。
+ */
+const FINALIZE_TAIL_BYTES = 8 * 1024;
+
+/**
+ * 同步读输出文件尾部。读不到（文件不存在 / 空）返回 undefined，调用侧就不带这一段。
+ *
+ * 为什么终态通知也要带尾部（原本只有「期限到」那条带）：
+ * 普通后台任务成功时通知只有「执行成功」，而「命令其实没跑」恰恰是退出码 0 的形态
+ * （`sid-wait …; echo $?` 以末尾 echo 的 0 收尾）。尾部里那行 `command not found`
+ * 是模型唯一能看出假成功的证据——不带，它就再花一轮 `task_output` 才看得到。
+ * 排查文档第七节第 6 项把这条列为「比入口拦截更通用的修法」。
+ */
+function readOutputTailSync(filePath: string, maxBytes = FINALIZE_TAIL_BYTES): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, "r");
+    const size = fstatSync(fd).size;
+    if (size === 0) return undefined;
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString("utf-8");
+    return text.trim() === "" ? undefined : text;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 function finalizeShellTaskExit(opts: {
   taskId: string;
   toolUseId?: string;
@@ -93,6 +134,13 @@ function finalizeShellTaskExit(opts: {
     summary:
       opts.summary ??
       `命令 "${display.slice(0, 60)}" ${code === 0 ? "执行成功" : `失败 (exit code: ${code})`}`,
+    // 终态通知一律带输出尾部（不只「期限到」那条）：退出码 0 也可能是假成功
+    // （拼接形态以末尾 echo 的 0 收尾），尾部里那行 `command not found` 是唯一证据。
+    // 读不到/空输出就不带这一段，通知形状与改动前一致。
+    ...((): { outputTail?: string } => {
+      const tail = readOutputTailSync(outputFile);
+      return tail !== undefined ? { outputTail: tail } : {};
+    })(),
   });
 }
 
