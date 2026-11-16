@@ -90,6 +90,12 @@ export function pickNext(prs: PrSnapshot[], opts: { ignoreUnknown?: boolean } = 
 
   // 只看检查没失败过的 BEHIND。检查红了的 PR 再 update 一次也只是再红一次，
   // 而它会占住串行队列的唯一槽位约 10 分钟——要修的是代码，不是 base。
+  //
+  // ⚠️ 这条取舍的代价**已定案为接受**（2026-11-16 max-duration flake 复盘）：一次时序
+  // flake 会把 BEHIND 放大成自锁（红 → 不更新 → 旧 base 拿不到 retry 修复 → 继续红），
+  // 但不开例外。理由：开例外等于允许 update 一个真失败的 PR，白跑一轮全量 CI，而
+  // 「base 落后于某个 flake 修复」与「这次失败是真 bug」在数据上无法区分。
+  // 出口是人工作业：`gh pr update-branch <n>` 或 `gh run rerun --failed`。
   const next = queue.find((p) => p.mergeStateStatus === "BEHIND" && p.checks !== "failure");
   if (next) return { action: "update", pr: next.number };
 
