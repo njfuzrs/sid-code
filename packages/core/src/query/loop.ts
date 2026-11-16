@@ -342,11 +342,19 @@ import {
   getDeliverableText,
   resetDeliverableText,
 } from "./deliverable-text.ts";
-import { buildGoalReminder } from "../goal/reminder.ts";
+import {
+  buildGoalReminder,
+  buildNearTurnLimitReminder,
+  shouldWarnNearTurnLimit,
+} from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
-import { DEFAULT_GOAL_CONFIG, resolveGoalEvaluatorModel } from "../goal/config.ts";
+import {
+  DEFAULT_GOAL_CONFIG,
+  GOAL_TURNS_NEAR_LIMIT_RATIO,
+  resolveGoalEvaluatorModel,
+} from "../goal/config.ts";
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -2750,6 +2758,38 @@ async function* queryLoopBody(
               goal_turns_used: goal.turnsUsed,
               turn: state.turnCount,
             });
+          }
+
+          // 轮次接近上限（≥80%）的一次性软提醒。
+          //
+          // 为什么放在这里：`turnsUsed` 刚在上一行自增，这是**每轮必经**的位置 ——
+          // 与「只在模型想停时判定」的 end_turn 路径不同，连续 tool_use 空转时它照样
+          // 会触发。`maxTurns` 放宽到 300 若不配套这条提醒，翻倍的上限只是把「毫无
+          // 自知地跑到被掐断」的成本也翻倍。
+          //
+          // 只发一次由 `goal.softLimitWarned` 保证（否则只要还在 80% 以上，每轮都会
+          // 塞一条一模一样的话）；阈值与 cli 状态栏变黄共用 GOAL_TURNS_NEAR_LIMIT_RATIO。
+          if (shouldWarnNearTurnLimit(goal)) {
+            goal.softLimitWarned = true;
+            deps.updateGoalState?.((g) => {
+              g.softLimitWarned = true;
+            });
+            reminderParts.push(buildNearTurnLimitReminder(goal));
+            emitReminderInjectedEvent(deps, sessionState.sessionId, "GoalReminderInjected", {
+              reason: "near_turn_limit",
+              goal_turns_used: goal.turnsUsed,
+              max_turns: goal.maxTurns,
+              turn: state.turnCount,
+            });
+            log.info(
+              "QUERY_LOOP",
+              `Goal 轮次软提醒（${goal.turnsUsed}/${goal.maxTurns}，阈值 ${GOAL_TURNS_NEAR_LIMIT_RATIO}）`,
+            );
+            yield {
+              kind: "system",
+              level: "warning",
+              text: `Goal 轮次已用 ${goal.turnsUsed}/${goal.maxTurns}（≥${Math.round(GOAL_TURNS_NEAR_LIMIT_RATIO * 100)}%），已提醒模型收尾`,
+            };
           }
         }
       }
