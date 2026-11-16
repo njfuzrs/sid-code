@@ -163,7 +163,7 @@ settings.json 的全部可配字段、类型与默认值。
 |---|---|---|
 | `evaluatorModel` | string | 评估者模型。取值顺序见 resolveGoalEvaluatorModel： goal.evaluatorModel → subAgentModels.default → 主模型。 刻意不读 subAgentModels.verify，也**没有**任何内置 haiku 回退——两项都没配时就是主模型自评。 |
 | `defaultTokenBudget` | number | 默认 Token 预算（0 = 无限制） |
-| `defaultMaxTurns` | number | 默认最大轮次（同时也是 Goal Gate 续命上限） |
+| `defaultMaxTurns` | number | 默认最大轮次（同时也是 Goal Gate 续命上限），默认 300；用掉 80%（240 轮）时 会向模型注入一次软提醒。 |
 | `reminderInterval` | number | reminder 回注间隔（轮次） |
 | `enableBlockedDetection` | boolean | 是否启用 blocked 检测（连续 N 轮评估 blockerKey 相同则判定 blocked） |
 | `blockedThreshold` | number | blocked 检测阈值（连续相同 blockerKey 的轮次数） |

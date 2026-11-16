@@ -22,6 +22,11 @@ import { evaluateGoal, extractEvalContext } from "../goal/evaluator.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
 import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
 import type { GoalConfig } from "../goal/config.ts";
+import {
+  decideWaitSuspend,
+  MAX_CONSECUTIVE_WAIT_PASSES,
+  type GoalWaitingFacts,
+} from "./goal-waiting.ts";
 import { getLogger } from "../debug/logger.ts";
 
 const log = getLogger();
@@ -39,6 +44,16 @@ export interface GoalGateResult {
   feedback?: string;
   /** 评估结果 */
   evalResult?: GoalEvalResult;
+  /**
+   * G2（2026-11-16）：本轮因「等待挂起」放行。
+   *
+   * `shouldContinue=false` 但 goal **仍是 active** —— 语义是「本轮结束，等等待事件
+   * 唤醒下一轮」，调用方**不得**按 completed / impossible / 「终止」处理（那会写终态、
+   * 把 goal 关掉）。与 `blocked` 的区别是：这里模型没卡住，它只是唯一能做的事就是等。
+   */
+  waiting?: boolean;
+  /** 等待挂起时命中的等待源 id（进回执与 trace 的 `wait_ids`） */
+  waitIds?: string[];
 }
 
 export interface GoalGateContext {
@@ -64,6 +79,15 @@ export interface GoalGateContext {
   absoluteTurn?: number;
   /** 缺口7：第几条用户消息，让 turn 回绕可还原。可选，同 absoluteTurn。 */
   promptSeq?: number;
+  /**
+   * G2（2026-11-16）：等待挂起判据的外部事实，由调用方现算后传入。
+   *
+   * 之所以不让本模块自己去读 registry：`GoalGateContext` 的既有契约就是「事实由调用方
+   * 现算、判定逻辑保持纯」（`blockedDetector`、`traceAppendEvent` 都是这个形状），
+   * 单测因此可以直接构造「有显式等待 / 只有派生任务 / 有待投递通知」三种组合。
+   * 不传 = 无等待态，行为与改动前逐字节一致（极简路径与既有测试不受影响）。
+   */
+  waiting?: GoalWaitingFacts;
 }
 
 /** GoalGateDecision 事件的最小上下文 —— 评估器路径与每轮硬约束路径共用同一份字段口径。 */
@@ -132,7 +156,15 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   /** 需要显示给用户的系统消息 */
   systemMessages: Array<{ level: "info" | "warning"; text: string }>;
 }> {
-  const { goal, messages, evalConfig, goalConfig = DEFAULT_GOAL_CONFIG, blockedDetector } = ctx;
+  const {
+    goal,
+    messages,
+    evalConfig,
+    goalConfig = DEFAULT_GOAL_CONFIG,
+    blockedDetector,
+    // G2（2026-11-16）：等待挂起判据的外部事实（不传 = 无等待态，旧行为）
+    waiting,
+  } = ctx;
   const injectMessages: Array<{ role: "user"; content: Array<{ type: "text"; text: string }> }> =
     [];
   const systemMessages: Array<{ level: "info" | "warning"; text: string }> = [];
@@ -153,6 +185,44 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     emitTraceEvent("eval_skipped", true);
     return {
       result: { shouldContinue: true, completed: false, impossible: false },
+      injectMessages,
+      systemMessages,
+    };
+  }
+
+  // 3.5 等待挂起（G2，2026-11-16）
+  //
+  // 模型挂上显式等待源（monitor / wait_until / schedule_wakeup）后 end_turn 是在**等**，
+  // 不是「以为做完了」。此时调评估器只会得到「未达成，继续推进」，把模型打回下一轮
+  // 去重复查询状态（P1 守卫要拦的同一件事），还额外烧一次评估调用。
+  //
+  // 位置在前 N 轮跳过评估之后：那是「模型刚开始、本来就不评估」的分支，优先级更高；
+  // 也在预算 / 轮次两个硬上限之后：那两条是终止语义，等待不该豁免它们。
+  const waitSuspend = decideWaitSuspend(goal, waiting);
+  goal.waitPass = waitSuspend.nextWaitPass;
+  if (waitSuspend.release) {
+    log.info(
+      "GOAL_GATE",
+      `等待挂起: wait_ids=${waitSuspend.waitIds.join(",") || "(通知)"}, 连续第 ${waitSuspend.count}/${MAX_CONSECUTIVE_WAIT_PASSES} 次放行`,
+    );
+    systemMessages.push({
+      level: "info",
+      text: `⏸ 目标等待中（${waitSuspend.count}/${MAX_CONSECUTIVE_WAIT_PASSES}）：本轮结束，等待事件到达后自动续跑`,
+    });
+    // trace 字段名按修复方案 §4.2 用 `wait_ids`：离线分析要能按等待源对账
+    // 「这次 end_turn 是为了等谁」，与 `WaitReleased` 的 id 口径一致。
+    emitTraceEvent("waiting", false, {
+      wait_ids: waitSuspend.waitIds,
+      wait_pass_count: waitSuspend.count,
+    });
+    return {
+      result: {
+        shouldContinue: false,
+        completed: false,
+        impossible: false,
+        waiting: true,
+        waitIds: waitSuspend.waitIds,
+      },
       injectMessages,
       systemMessages,
     };
@@ -387,6 +457,9 @@ ${evalResult.progress != null ? `当前进度: ${evalResult.progress}%` : ""}
 - 确保执行的命令输出可见（评估者只能看到对话中的内容）
 - 如果遇到阻塞，尝试不同的方法而不是重复失败的操作
 - 若确认目标无法达成，请明确说明原因
+- 如果下一步取决于外部状态（CI 跑完 / PR 合并 / 部署 / 别人 review），**等待也是推进**：
+  用 monitor、\`bash --wait_until_seconds\` 或 schedule_wakeup 把等待挂上，然后结束本轮即可——
+  等待源回报时会把主循环叫醒。不要为了「显得在推进」在前台反复查询同一个状态。
 </system-reminder>`;
 }
 
@@ -422,7 +495,10 @@ function buildImpossibleReminder(goal: GoalState, evalResult: GoalEvalResult): s
 这只是评估者的判断，可能不准。请你自己决定下一步：
 - 如果确实无法达成，明确向用户说明原因和已尝试过的路径，然后收尾；
 - 如果你判断仍有别的思路没试过，换一种方法继续推进；
-- 不要因为这条提示就机械放弃一个其实还能推进的目标。
+- 不要因为这条提示就机械放弃一个其实还能推进的目标；
+- 如果只是卡在等外部状态（CI / 部署 / 别人 review），那不是「无法达成」——**等待也是推进**：
+  用 monitor、\`bash --wait_until_seconds\` 或 schedule_wakeup 挂上显式等待后结束本轮，
+  等待源回报时会把主循环叫醒，不要继续前台轮询。
 （已达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
 </system-reminder>`;
 }
@@ -442,6 +518,8 @@ function buildBlockedReminder(
 请换一种思路：
 - 回顾前几轮到底卡在哪，不要重复已经失败的同一操作；
 - 尝试从不同角度切入，或用不同工具去验证假设；
+- 如果连续受阻的原因是你一直在等同一个外部状态（CI / 部署 / 别人 review），那不算卡住——**等待也是推进**：
+  挂上显式等待（monitor / \`bash --wait_until_seconds\` / schedule_wakeup）后结束本轮，不要继续轮询；
 - 如果确实无法突破，明确说明卡点和已尝试的路径，再决定是否收尾。
 （这只是提示，不会强制终止；达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
 </system-reminder>`;
