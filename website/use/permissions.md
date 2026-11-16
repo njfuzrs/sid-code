@@ -79,28 +79,34 @@ sid-code --dangerously-skip-permissions
 <kbd>Shift+Tab</kbd> 在会话里循环切换，实测顺序：
 
 ```text
-default → acceptEdits → auto → default → …           # 常规
-default → acceptEdits → auto → always-allow → default # 启动时开了 --dangerously-skip-permissions
+default → acceptEdits → plan → auto → default → …           # 常规
+default → acceptEdits → plan → auto → always-allow → default # 启动时开了 --dangerously-skip-permissions
 ```
 
 <!--
-  ⚠ **plan 不在这个循环里**，别再把它写回去（原先写的是
-  `default → acceptEdits → plan → auto → always-allow`）。
-  packages/core/src/permission/mode.ts 的纯函数 getNextPermissionMode 顺序里确实有 plan，
-  但键盘入口 getNextKeyboardPermissionMode（同文件）在外面套了一层跳过循环，只跳 plan（和被企业策略禁用的模式）；
-  且 packages/cli/src/app.ts 的 cyclePermissionMode 在 plan 态直接拒绝按键、提示走 exit_plan_mode。
-  原因：plan 是独立状态机，键盘只改这个字符串会造出一个假的 plan 态。
-  照错顺序按键的人会以为自己按漏了一档。
-  另注：跳过逻辑已提成 getNextKeyboardPermissionMode，测试与生产调同一个函数，
-  早先测试手抄一份、连 auto 一起跳的漂移已消除。
+  ⚠ **plan 在这个循环里**（M6，2026-11-16 对齐 claude-code）。历史：它曾被摘出去，
+  因为键盘只改 config.permissionMode 会造出一个假的 plan 态。正确的修法不是摘掉一整档，
+  而是让键盘入口也走状态机——packages/cli/src/app.ts 的 cyclePermissionMode 现在调
+  planManager.enter(当前模式, undefined, "keyboard") + activatePlanMode()，
+  与 enter_plan_mode 工具同一条路径，只是 entrySource / PlanTransition.meta.source 记成 "keyboard"。
+  验收由 packages/cli/tests/app/shift-tab-plan.test.ts（G1）与
+  tests/smoke/cases/A14-shift-tab-plan（G4）锁住。别再按「plan 不在循环里」改回去。
+  ⚠ 跳过逻辑仍是 getNextKeyboardPermissionMode（packages/core/src/permission/mode.ts），
+  测试与生产调同一个函数，早先测试手抄一份、连 auto 一起跳的漂移已消除。
   ⚠ always-allow 进循环的判据是 skipPermissions（--dangerously-skip-permissions），
   不是 yesMode（-y/--yes），见 packages/cli/src/app.ts 的 bypassAvailableAtLaunch。
   两个字段在 cli.ts 里是独立的，别再写成 -y。
 -->
 
-**plan 不在这个循环里**——它是独立状态机，进出要用 `/plan` 或让它自己
-`exit_plan_mode`；已经在 plan 态时按 <kbd>Shift+Tab</kbd> 会提示你走那条路。
-`deny-write` / `dontAsk` 也不在循环里，只能用参数或配置指定。
+`plan` 在循环里，按到它就等同于 `/plan`：切进计划模式、开始规划并写计划文件。
+区别只有一处——**它不会自动给模型发任务**：`/plan <任务>` 会替你把「先规划」这句话
+发出去，<kbd>Shift+Tab</kbd> 只切模式，等你打完自己的话再发送。
+已经在计划模式里再按 <kbd>Shift+Tab</kbd>：
+
+- **还在规划、没提交计划** → 放弃规划，并切到循环里的下一档（`auto`）；
+- **计划已提交、审批框正等着** → 不响应，请在审批框里选择（这时改模式等于替你改主意）。
+
+`deny-write` / `dontAsk` 不在循环里，只能用参数或配置指定。
 
 `always-allow` 只在**启动时就开了** `--dangerously-skip-permissions` 时才进循环（`-y` / `--yes` 不算；这是启动瞬间的快照，
 不随会话中途切换漂移）。企业策略禁用 bypass 时（`disableBypassPermissionsMode`）

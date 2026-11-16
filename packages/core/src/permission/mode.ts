@@ -103,7 +103,7 @@ export function getNextPermissionMode(ctx: PermissionModeContext): PermissionMod
 }
 
 /**
- * 键盘（Shift+Tab）循环要落到的下一个模式：在 getNextPermissionMode 之上跳过不可键盘进入的档。
+ * 键盘（Shift+Tab）循环要落到的下一个模式：在 getNextPermissionMode 之上跳过**企业策略禁用**的档。
  *
  * 为什么独立成函数：这段跳过逻辑此前内联在 app.ts 的 cyclePermissionMode 里，
  * 测试则**手抄了一份**——然后两边漂移了：测试那份同时跳 plan 和 auto（注释写
@@ -112,6 +112,12 @@ export function getNextPermissionMode(ctx: PermissionModeContext): PermissionMod
  * 一份绿灯的测试在为一个不存在的行为背书，文档也照着测试写错了顺序。
  * 复刻生产逻辑的测试注定漂移，所以把它提出来，两边调同一个函数。
  *
+ * M6（对齐 claude-code）：**plan 重新进循环**，这里不再无条件跳过它。
+ * 从前跳过的理由是「plan 是独立状态机，键盘只改字符串会造出假 plan 态」——
+ * 那是**生产侧的实现缺陷**，正确修法是让键盘入口也走 `planManager.enter()`
+ * （见 app.ts 的 cyclePermissionMode），而不是把一整档从循环里摘掉。
+ * 摘掉它用户就少了一档，且与 claude-code 的 Shift+Tab 语义不一致。
+ *
  * @param isModeDisabled 企业策略门控（disabledModes / bypass killswitch）。
  *   由调用方注入而不是在这里 import，保持本模块是纯函数、可直接单测。
  */
@@ -119,11 +125,9 @@ export function getNextKeyboardPermissionMode(
   ctx: PermissionModeContext,
   isModeDisabled: (mode: PermissionMode) => boolean = () => false,
 ): PermissionMode {
-  // plan 是独立状态机：键盘只改这个字符串会造出一个假的 plan 态
-  // （真正的进出要走 /plan 与 exit_plan_mode）。所以只跳过它，不跳 auto。
   let next = getNextPermissionMode(ctx);
   // 最多绕一整圈（模式数上限）防死循环；全被禁时由调用方保持当前模式不变。
-  for (let i = 0; i < 8 && (next === "plan" || isModeDisabled(next)); i++) {
+  for (let i = 0; i < 8 && isModeDisabled(next); i++) {
     if (next === ctx.mode) break; // 绕回原点，无可切换的模式
     next = getNextPermissionMode({ ...ctx, mode: next });
   }

@@ -44,6 +44,14 @@ export const KEYS = {
   up: "\x1b[A",
   down: "\x1b[B",
   tab: "\t",
+  /**
+   * Shift+Tab = CSI Z（xterm 的 backtab 序列），与 `packages/tui/src/components/App.tsx`
+   * 里 `const shiftTab = '\u001B[Z'` 是同一个字节串。
+   *
+   * ⚠️ 不能用 `\t` 加修饰位模拟：TUI 是按**字节序列**识别这两个键的，
+   * 送 `\t` 只会被当成普通 Tab（补全），剧本会静默什么都没发生。
+   */
+  "shift-tab": "\x1b[Z",
 } as const;
 
 export type KeyName = keyof typeof KEYS;
