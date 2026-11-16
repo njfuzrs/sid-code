@@ -96,6 +96,17 @@ const SID_WAIT_GH_PR_PATTERN = /^sid-wait\s+gh-pr\s+(\d{1,9})(?:\s+--interval(?:
  */
 const CD_PREFIX = /^cd\s+(?:"[^"]*"|'[^']*'|[^\s&]+)\s*&&\s*/;
 
+/**
+ * 归一化：压空白 → 剥前置 `cd <dir> &&`。
+ *
+ * `parseSidWaitCommand` 与 `detectSidWaitMisuse` **必须共用同一把尺子**：
+ * 若两处各自归一化，「严格形态 / 近似形态」的边界就会漂移——同一条命令可能两头都判 null
+ * （既不当原语也不报错，静默落回 shell 127）或两头都命中。
+ */
+function normalizeSidWaitBody(command: string): string {
+  return command.replace(/\s+/g, " ").trim().replace(CD_PREFIX, "");
+}
+
 /** 解析结果 */
 export interface SidWaitGhPrSpec {
   kind: "gh-pr";
@@ -113,7 +124,7 @@ export interface SidWaitGhPrSpec {
  */
 export function parseSidWaitCommand(command: string): SidWaitGhPrSpec | null {
   if (typeof command !== "string" || command.length === 0) return null;
-  const normalized = command.replace(/\s+/g, " ").trim().replace(CD_PREFIX, "");
+  const normalized = normalizeSidWaitBody(command);
   const match = SID_WAIT_GH_PR_PATTERN.exec(normalized);
   if (!match) return null;
   const pr = Number(match[1]);
@@ -134,6 +145,76 @@ export function parseSidWaitCommand(command: string): SidWaitGhPrSpec | null {
 /** bash 回执/前台提示用：这条命令是不是内置原语 */
 export function isSidWaitCommand(command: string): boolean {
   return parseSidWaitCommand(command) !== null;
+}
+
+/** 「以 sid-wait 开头」的边界：后接空白或结束。`sid-wait-helper` / `grep sid-wait` 不算 */
+const SID_WAIT_HEAD = /^sid-wait(?:\s|$)/;
+
+/**
+ * 近似形态里能捞出的 PR 号：捞到就把正确写法直接给模型，省掉一轮「自己换算」。
+ * 数字后的边界是 `(?!\d)` 而不是 `(?:\s|$)`——近似形态恰恰是后面跟 `;` / `2>&1` / `|` 的那些。
+ */
+const SID_WAIT_PR_HINT = /^sid-wait\s+gh-pr\s+(\d{1,9})(?!\d)/;
+
+/** `sid-wait` 的近似形态（以 sid-wait 开头但不是合法原语） */
+export interface SidWaitMisuse {
+  /** 归一化后的正文，回执里点出「被拦下的是这一段」 */
+  body: string;
+  /** 正文里的 PR 号；没有或非法（如 0）时为 null */
+  suggestedPr: number | null;
+}
+
+/**
+ * 识别 `sid-wait` 的**近似形态**：剥掉 `cd <dir> &&` 前缀后以 `sid-wait` 开头、
+ * 但不匹配严格原语正则。
+ *
+ * 为什么需要它（26 次失败里 21 次的形态）：
+ * - `sid-wait gh-pr <n>; echo "EXIT=$?"`（11 次）——后台整条命令的退出码取末尾 `echo` 的 0，
+ *   通知于是报「执行成功」，模型以为原语跑完了，实际一次都没查；
+ * - `sid-wait gh-pr <n> 2>&1`（10 次）——同理，重定向把结果写进文件，回执里什么都没有。
+ *
+ * 判定**只看形态、不猜意图**：不以 sid-wait 开头的一律返回 null
+ * （`grep "sid-wait gh-pr"`、`bun test sid-wait-*.test.ts`、`cd r7-sid-wait && ls` 都碰不到它）。
+ */
+export function detectSidWaitMisuse(command: string): SidWaitMisuse | null {
+  if (typeof command !== "string" || command.length === 0) return null;
+  const body = normalizeSidWaitBody(command);
+  if (!SID_WAIT_HEAD.test(body)) return null;
+  // 严格原语是「正确形态」，交给正常解析路径
+  if (parseSidWaitCommand(command) !== null) return null;
+  const hinted = SID_WAIT_PR_HINT.exec(body);
+  const hintedPr = hinted ? Number(hinted[1]) : 0;
+  return {
+    body,
+    suggestedPr: Number.isInteger(hintedPr) && hintedPr > 0 ? hintedPr : null,
+  };
+}
+
+/**
+ * 近似形态的拒绝回执（bash / monitor 两个入口共用一份文案）。
+ *
+ * 三条要求来自轨迹复盘：① 一句话点出「拼接后不再是原语，后台还会假成功」——
+ * 否则模型会把它当成「原语偶发失败」，转头去怀疑 PR 或 gh；② 直接给出可替换的正确命令
+ * （捞到 PR 号就填进去），省掉一轮换算；③ 明确说「本次未启动任何进程」——
+ * 让模型知道没有遗留任务要收尾，可以立刻重发。
+ */
+export function formatSidWaitMisuseReceipt(
+  misuse: SidWaitMisuse,
+  entry: "bash" | "monitor" = "bash",
+): string {
+  const correct =
+    misuse.suggestedPr === null ? "sid-wait gh-pr <n>" : `sid-wait gh-pr ${misuse.suggestedPr}`;
+  const howToFix =
+    entry === "bash"
+      ? `请把 command 改成单独的 \`${correct}\`，并带 run_in_background=true。`
+      : `请把 command 写成单独的 \`${correct}\`（monitor 的 command 就是完整脚本）。`;
+  return (
+    `sid-wait 必须单独成为整条命令（可带 \`cd <dir> &&\` 前缀或 \`--interval <秒>\`）：` +
+    `不要拼 \`; echo $?\`、\`2>&1\`、管道、重定向——拼接后它不再是内置等待原语，` +
+    `后台还会被末尾命令的退出码报成「执行成功」（看起来像等完了，实际一次都没查）。` +
+    `退出码由工具结果直接报告，不需要自己 echo。` +
+    `${howToFix}本次未启动任何进程。`
+  );
 }
 
 /** gh REST 的单 PR 快照（只取本原语用得到的字段） */

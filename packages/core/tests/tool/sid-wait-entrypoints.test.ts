@@ -26,7 +26,7 @@ import {
   type GhPullSnapshot,
 } from "../../src/task/sid-wait.ts";
 import { __resetWaitRegistryForTest, listWaits } from "../../src/task/wait-registry.ts";
-import { clearAllTasks, getTask } from "../../src/task/registry.ts";
+import { clearAllTasks, getAllTasks, getTask } from "../../src/task/registry.ts";
 import { __resetBackgroundAwaitForTest } from "../../src/task/background-await.ts";
 import { killShellTask } from "../../src/task/shell-task.ts";
 import { killMonitorTask, __clearActiveMonitorsForTest } from "../../src/task/monitor-task.ts";
@@ -292,5 +292,76 @@ describe("R7 monitor 入口：sid-wait 走内置监控", () => {
     expect((getTask(taskId) as LocalMonitorTaskState).status).toBe("killed");
     // kill 之后最多再多一次进行中的查询（REST 无法中途打断），但不会继续下一轮
     expect(checkCalls - callsBeforeKill).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("A2 `sid-wait` 近似形态：入口在 spawn 之前拒绝", () => {
+  // 这一组守的是「失败率高」的两个主力形态：拼接 `; echo $?` 与 `2>&1`。
+  // 后台执行时整条命令的退出码取末尾命令的 0，通知于是报「执行成功」——模型以为原语
+  // 跑完了，实际一次都没查。判据是**没有 spawn**：任务表、等待表、通知队列全空。
+
+  test("bash 后台拼接 ; echo → 当场拒绝，不 spawn 任何任务", async () => {
+    installClient([openPull()]);
+    const tool = new BashTool();
+    const result = await tool.execute({
+      command: 'cd /repo && sid-wait gh-pr 779; echo "EXIT=$?"',
+      run_in_background: true,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("必须单独成为整条命令");
+    // 直接给出可替换的正确写法，省掉一轮换算
+    expect(result.output).toContain("sid-wait gh-pr 779");
+    expect(result.output).toContain("本次未启动任何进程");
+    // 没有 task_id / 没有「已启动」回执 —— 模型不会去 task_output 一个不存在的任务
+    expect(result.output).not.toContain("task_id");
+    expect(getAllTasks()).toHaveLength(0);
+    expect(listWaits()).toHaveLength(0);
+    expect(dequeuePendingNotifications()).toHaveLength(0);
+  });
+
+  test("bash 后台重定向 2>&1 → 同样拒绝且不 spawn", async () => {
+    const tool = new BashTool();
+    const result = await tool.execute({
+      command: "sid-wait gh-pr 811 2>&1",
+      run_in_background: true,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("sid-wait gh-pr 811");
+    expect(getAllTasks()).toHaveLength(0);
+    expect(listWaits()).toHaveLength(0);
+  });
+
+  test("bash 前台拼接 → 同样拒绝（不是 command not found）", async () => {
+    const tool = new BashTool();
+    const result = await tool.execute({ command: "sid-wait gh-pr 779 | tail -5" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("必须单独成为整条命令");
+    expect(result.output).not.toContain("command not found");
+    expect(getAllTasks()).toHaveLength(0);
+  });
+
+  test("monitor 入口拼接 → 拒绝且不登记等待", async () => {
+    installClient([openPull()]);
+    const tool = new MonitorTool();
+    const result = await tool.call({
+      description: "PR #780 CI",
+      command: 'sid-wait gh-pr 780; echo "EXIT=$?"',
+      timeout_ms: 60_000,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.data).toContain("必须单独成为整条命令");
+    expect(result.data).toContain("sid-wait gh-pr 780");
+    expect(result.data).not.toContain("run_in_background");
+    expect(listWaits()).toHaveLength(0);
+    expect(getAllTasks()).toHaveLength(0);
+  });
+
+  test("不误伤：命令里含 sid-wait 字面量但不是原语开头的照常执行", async () => {
+    const tool = new BashTool();
+    const result = await tool.execute({ command: 'echo "注意：用 sid-wait gh-pr 779 等" ' });
+    expect(result.isError).toBeFalsy();
+    expect(result.output).toContain("sid-wait gh-pr 779");
+    expect(getAllTasks()).toHaveLength(0);
   });
 });
