@@ -159,11 +159,11 @@ describe("T5 孤儿按「工具是否真执行过」分流", () => {
 
 // ── T7 errors ───────────────────────────────────────────────────────────────
 
-const errEntry = (index: number, context: Record<string, unknown>, atMs = T0) => ({
+const errEntry = (index: number, context: Record<string, unknown>, atMs = T0, error = "boom") => ({
   event: "Error",
   timestamp: new Date(atMs).toISOString(),
   session_id: "s",
-  data: { phase: "stream", index, error: "boom", context },
+  data: { phase: "stream", index, error, context },
 });
 
 describe("T7 errors.jsonl 区分「已恢复」与「最终失败」", () => {
@@ -198,6 +198,154 @@ describe("T7 errors.jsonl 区分「已恢复」与「最终失败」", () => {
       steps: [],
       events: [],
       errors: [errEntry(5, {})],
+    });
+    const high = find(d, "errors_jsonl_has_entries");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+  });
+
+  // 2026-11-15 四档抽检（样本 20261016-115439-8a3b2af5 的 idx=104）：
+  // willRetry=false 不等于「没恢复」—— 之后同 index 出现了 AfterModelRaw 才是硬证据。
+  it("willRetry=false 但之后同 index 有 AfterModelRaw：也算恢复（判据不看 willRetry）", () => {
+    const d = digestOf("t7recoveredNoFlag", {
+      steps: [],
+      events: [ev("AfterModelRaw", { index: 104 }, T0 + 1000)],
+      errors: [errEntry(104, { kind: "prompt_too_long", willRetry: false })],
+    });
+    expect(find(d, "errors_jsonl_has_entries")).toHaveLength(0);
+    const recovered = find(d, "errors_jsonl_recovered");
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].severity).toBe("low");
+  });
+});
+
+// ── T3 补：会话中断收尾时，采集侧已写入的 ModelCallUnpaired（2026-11-15）──
+//
+// T3 的 inflight 判据只覆盖了「从轨迹推断的 unpaired_before_model」，没覆盖采集侧
+// 已经写进 events.jsonl 的 ModelCallUnpaired。样本 20261027-154357-468fef3a：
+// idx=15 是主链最后一个 BeforeModel，300s 后看门狗 fire，7 分钟后 user_interrupt 收尾
+// —— 报 high 是把用户中断当成了 hang。
+
+const modelCallUnpaired = (index: number, atMs: number) =>
+  ev("ModelCallUnpaired", { index, model: "m", elapsed_ms: 300_000 }, atMs);
+
+describe("T3 中断收尾时看门狗那条归 inflight_at_exit", () => {
+  it("看门狗 index 是主链最后一个 BeforeModel + 中断退出：low 的 inflight，不报 hang high", () => {
+    const d = digestOf("t3watchdogInterrupt", {
+      steps: [],
+      exit: "user_interrupt",
+      events: [
+        ev("BeforeModel", { index: 14 }, T0),
+        ev("BeforeModel", { index: 15 }, T0 + 1_000),
+        modelCallUnpaired(15, T0 + 301_000),
+        ev("SessionEnd", { reason: "exit", exit_status: "user_interrupt" }, T0 + 400_000),
+      ],
+    });
+    const inflight = find(d, "model_call_inflight_at_exit");
+    expect(inflight).toHaveLength(1);
+    expect(inflight[0].severity).toBe("low");
+    expect(find(d, "model_call_unpaired_watchdog")).toHaveLength(0);
+  });
+
+  it("负向对照：看门狗之后还有新的 BeforeModel → 仍是 high（不是收尾在途）", () => {
+    const d = digestOf("t3watchdogMid", {
+      steps: [],
+      exit: "user_interrupt",
+      events: [
+        ev("BeforeModel", { index: 15 }, T0),
+        modelCallUnpaired(15, T0 + 301_000),
+        ev("BeforeModel", { index: 16 }, T0 + 302_000),
+        ev("SessionEnd", { reason: "exit", exit_status: "user_interrupt" }, T0 + 400_000),
+      ],
+    });
+    const high = find(d, "model_call_unpaired_watchdog");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+  });
+
+  it("负向对照：正常退出（end_turn）的在途请求仍是 high（真 hang 不能放过）", () => {
+    const d = digestOf("t3watchdogEndTurn", {
+      steps: [],
+      exit: "end_turn",
+      events: [
+        ev("BeforeModel", { index: 15 }, T0),
+        modelCallUnpaired(15, T0 + 301_000),
+        ev("SessionEnd", { reason: "exit", exit_status: "end_turn" }, T0 + 400_000),
+      ],
+    });
+    expect(find(d, "model_call_unpaired_watchdog")).toHaveLength(1);
+    expect(find(d, "model_call_unpaired_watchdog")[0].severity).toBe("high");
+  });
+});
+
+// ── T7 宿主休眠引起的 abort race（2026-11-15）───────────────────────────────
+//
+// 形态：进程被冻结期间 socket 被杀，唤醒后 C1 立刻发 `host_sleep_reopen`，同一条错误也
+// 落进 errors.jsonl。真实样本（20261014-224229）里两者时间戳差 **0.0 秒**；同会话另一条
+// 不紧邻休眠的 abort race 差 **966 秒** —— 这是窗口取 60s 的依据。
+
+const sleepReopen = (atMs: number) =>
+  ev(
+    "RetryTelemetry",
+    {
+      type: "host_sleep_reopen",
+      model: "m",
+      reopenReason: "host_sleep",
+      sleptMs: 566_534,
+      attemptAgeMs: 571_534,
+    },
+    atMs,
+  );
+
+const ABORT_RACE = "Stream aborted (abort race)";
+
+describe("T7 宿主休眠引起的 abort race 合成一条 low", () => {
+  it("未恢复的 abort race 紧邻 host_sleep_reopen：降为一条 low，不报 high", () => {
+    const d = digestOf("t7sleep", {
+      steps: [],
+      // 没有同 index 的 AfterModelRaw → 未恢复
+      events: [sleepReopen(T0)],
+      errors: [errEntry(22, { kind: "timeout", willRetry: true }, T0, ABORT_RACE)],
+    });
+    const entries = find(d, "errors_jsonl_has_entries");
+    expect(entries).toHaveLength(1); // 合成一条，不逐条报
+    expect(entries[0].severity).toBe("low");
+    expect(entries[0].detail).toContain("宿主休眠");
+    expect(entries.filter((a) => a.severity === "high")).toHaveLength(0);
+  });
+
+  it("abort race 离休眠 966 秒：仍报 high（不能因为会话里有休眠就整片放过）", () => {
+    const d = digestOf("t7sleepfar", {
+      steps: [],
+      events: [sleepReopen(T0)],
+      errors: [errEntry(27, { kind: "timeout", willRetry: true }, T0 + 966_000, ABORT_RACE)],
+    });
+    const high = find(d, "errors_jsonl_has_entries");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+  });
+
+  it("真错误与休眠 abort race 同时存在：high 只算真错误，detail 写出排除条数", () => {
+    const d = digestOf("t7sleepmix", {
+      steps: [],
+      events: [sleepReopen(T0)],
+      errors: [
+        errEntry(22, { kind: "timeout", willRetry: true }, T0, ABORT_RACE),
+        errEntry(30, {}, T0 + 5_000, "prompt_too_long"),
+      ],
+    });
+    const high = find(d, "errors_jsonl_has_entries");
+    expect(high).toHaveLength(1);
+    expect(high[0].severity).toBe("high");
+    expect(high[0].detail).toContain("1 条未恢复");
+    expect(high[0].detail).toContain("宿主休眠");
+  });
+
+  it("非 abort race 文案即使紧邻休眠也不放过：仍是 high", () => {
+    const d = digestOf("t7sleeptrue", {
+      steps: [],
+      events: [sleepReopen(T0)],
+      errors: [errEntry(30, {}, T0, "prompt_too_long")],
     });
     const high = find(d, "errors_jsonl_has_entries");
     expect(high).toHaveLength(1);
