@@ -250,6 +250,9 @@ describe("handleGoalGate · blocked 检测", () => {
       expect(ctx3.goal.status).not.toBe("blocked");
       expect(out3.injectMessages.length).toBeGreaterThan(0);
       expect(out3.injectMessages[0]!.content[0]!.text).toContain("换一种思路");
+      // G5：卡在同一处可能只是「一直在等同一个外部状态」，必须给出「等待也是推进」的出口，
+      // 否则模型只能继续前台轮询（回合同 20261116 的 54 轮 goal 空转）。
+      expect(out3.injectMessages[0]!.content[0]!.text).toContain("等待也是推进");
     } finally {
       if (saved === undefined) delete process.env.SID_ENABLE_GOAL_HARD_STOP;
       else process.env.SID_ENABLE_GOAL_HARD_STOP = saved;

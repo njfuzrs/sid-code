@@ -447,6 +447,9 @@ ${evalResult.progress != null ? `当前进度: ${evalResult.progress}%` : ""}
 - 确保执行的命令输出可见（评估者只能看到对话中的内容）
 - 如果遇到阻塞，尝试不同的方法而不是重复失败的操作
 - 若确认目标无法达成，请明确说明原因
+- 如果下一步取决于外部状态（CI 跑完 / PR 合并 / 部署 / 别人 review），**等待也是推进**：
+  用 monitor、\`bash --wait_until_seconds\` 或 schedule_wakeup 把等待挂上，然后结束本轮即可——
+  等待源回报时会把主循环叫醒。不要为了「显得在推进」在前台反复查询同一个状态。
 </system-reminder>`;
 }
 
@@ -482,7 +485,10 @@ function buildImpossibleReminder(goal: GoalState, evalResult: GoalEvalResult): s
 这只是评估者的判断，可能不准。请你自己决定下一步：
 - 如果确实无法达成，明确向用户说明原因和已尝试过的路径，然后收尾；
 - 如果你判断仍有别的思路没试过，换一种方法继续推进；
-- 不要因为这条提示就机械放弃一个其实还能推进的目标。
+- 不要因为这条提示就机械放弃一个其实还能推进的目标；
+- 如果只是卡在等外部状态（CI / 部署 / 别人 review），那不是「无法达成」——**等待也是推进**：
+  用 monitor、\`bash --wait_until_seconds\` 或 schedule_wakeup 挂上显式等待后结束本轮，
+  等待源回报时会把主循环叫醒，不要继续前台轮询。
 （已达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
 </system-reminder>`;
 }
@@ -502,6 +508,8 @@ function buildBlockedReminder(
 请换一种思路：
 - 回顾前几轮到底卡在哪，不要重复已经失败的同一操作；
 - 尝试从不同角度切入，或用不同工具去验证假设；
+- 如果连续受阻的原因是你一直在等同一个外部状态（CI / 部署 / 别人 review），那不算卡住——**等待也是推进**：
+  挂上显式等待（monitor / \`bash --wait_until_seconds\` / schedule_wakeup）后结束本轮，不要继续轮询；
 - 如果确实无法突破，明确说明卡点和已尝试的路径，再决定是否收尾。
 （这只是提示，不会强制终止；达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
 </system-reminder>`;

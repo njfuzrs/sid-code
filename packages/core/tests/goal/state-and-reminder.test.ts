@@ -104,12 +104,99 @@ describe("buildGoalReminder", () => {
   });
 });
 
+// ─── G5：等待也是推进 ───
+//
+// 缺陷形态：模型挂着 monitor / wait_until 等 CI 时，reminder 仍无条件写
+// 「继续推进目标」，模型把它读成「不能停下来等」→ 回前台反复 `gh pr checks` 空转。
+// 判据必须是**显式声明**的外部等待（isDeclaredExternalWait），不是 hasPromisedWait。
+describe("G5：等待版 reminder", () => {
+  /** 构造一个 deadline 型等待源（monitor 盯 PR CI） */
+  const monitorWait = (deadlineAt: number) => ({
+    id: "m7",
+    kind: "monitor" as const,
+    promise: { kind: "deadline" as const, deadlineAt },
+    description: "盯 PR #662 的 CI",
+    registeredAt: Date.now(),
+  });
+
+  test("有声明等待源时不催「继续推进」，改为说明在等什么、最晚何时回报", () => {
+    const goal = createGoal("等 PR CI 通过后合并");
+    goal.turnsUsed = 6;
+    const deadlineAt = new Date(2026, 10, 16, 14, 32, 0).getTime();
+    const reminder = buildGoalReminder(goal, { waitingSources: [monitorWait(deadlineAt)] });
+
+    // 等待源被点名，且带承诺的回报时刻（说明「在等什么、最晚何时」）
+    expect(reminder).toContain("监控 m7（盯 PR #662 的 CI）");
+    expect(reminder).toContain("最晚 14:32 前回报");
+    // 关键：不再出现「继续推进目标」这句祈使句
+    expect(reminder).not.toContain("继续推进目标");
+    // 明确「挂着等待结束本轮是合法推进」，并禁止前台轮询
+    expect(reminder).toContain("结束本轮");
+    expect(reminder).toContain("合法推进");
+    expect(reminder).toContain("反复查询");
+  });
+
+  test("无等待源时保持原有「继续推进」文案，并保留等待指引", () => {
+    const goal = createGoal("把测试修到全绿");
+    goal.turnsUsed = 3;
+    const reminder = buildGoalReminder(goal, { waitingSources: [] });
+
+    expect(reminder).toContain("继续推进目标");
+    // G5 第 2 点：即使当前没挂等待，也要告诉模型「等待也是推进」，否则它不敢收尾
+    expect(reminder).toContain("等待也是推进");
+    expect(reminder).not.toContain("最晚");
+  });
+
+  test("等待版文案随等待源内容变化，不是固定字符串（变异自证：去掉 opts 传入即失败）", () => {
+    const goal = createGoal("等部署完成");
+    const a = buildGoalReminder(goal, {
+      waitingSources: [
+        {
+          id: "w1",
+          kind: "wakeup" as const,
+          promise: { kind: "deadline" as const, deadlineAt: Date.now() + 60_000 },
+          description: "20 分钟后回来复查部署",
+          registeredAt: Date.now(),
+        },
+      ],
+    });
+    expect(a).toContain("定时唤醒 w1（20 分钟后回来复查部署）");
+    // 另一类承诺的措辞也不同（terminal → 「结束即通知」）
+    const b = buildGoalReminder(goal, {
+      waitingSources: [
+        {
+          id: "a1",
+          kind: "agent" as const,
+          promise: { kind: "terminal" as const },
+          description: "迁移剩余 3 个文件",
+          registeredAt: Date.now(),
+        },
+      ],
+    });
+    expect(b).toContain("子代理 a1（迁移剩余 3 个文件），结束即通知");
+  });
+});
+
 describe("buildFirstTurnPrompt", () => {
   test("包含目标条件和工作指令", () => {
     const goal = createGoal("清空所有 lint 错误");
     const prompt = buildFirstTurnPrompt(goal);
     expect(prompt).toContain("清空所有 lint 错误");
     expect(prompt).toContain("goal");
+  });
+
+  // G5：旧文案「在满足上述条件之前，系统不会让你停止」是半真半假的——goal gate 确实会
+  // 打回未达成的 end_turn，但挂着等待源收尾是放行的。模型照字面理解就不敢停，只能前台轮询。
+  test("不再断言「系统不会让你停止」，改为把「未达成会被推回」与「挂等待可收尾」分开说", () => {
+    const goal = createGoal("等 CI 通过并合并 PR");
+    const prompt = buildFirstTurnPrompt(goal);
+    expect(prompt).not.toContain("系统不会让你停止");
+    expect(prompt).toContain("会被评估一次并推回继续");
+    expect(prompt).toContain("不会被打回");
+    expect(prompt).toContain("等待也是推进");
+    // 必须点名具体原语，否则模型不知道「挂等待」怎么落地
+    expect(prompt).toContain("monitor");
+    expect(prompt).toContain("schedule_wakeup");
   });
 });
 
@@ -121,6 +208,14 @@ describe("buildResumeTurnPrompt", () => {
     const prompt = buildResumeTurnPrompt(goal);
     expect(prompt).toContain("迁移到新 API");
     expect(prompt).toContain("还有 3 个文件未迁移");
+  });
+
+  test("G5：恢复轮也给出「等外部状态时先挂等待再收尾」的出口", () => {
+    const goal = createGoal("等部署完成");
+    goal.turnsUsed = 4;
+    const prompt = buildResumeTurnPrompt(goal);
+    expect(prompt).toContain("先挂上显式等待再收尾");
+    expect(prompt).not.toContain("反复轮询状态");
   });
 });
 
