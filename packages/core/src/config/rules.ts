@@ -420,13 +420,30 @@ export function rulesPathsMatch(paths: string[] | undefined, activeFiles: string
  * 规则文件「归属」的目录：`<dir>/CLAUDE.md` → `<dir>`；
  * `<dir>/.claude/**` 与 `<dir>/.sid-code/**`（rules 目录、`.claude/CLAUDE.md` 等）→ `<dir>`。
  *
- * 判据是路径里最后一个 `.claude` / `.sid-code` 段，不数层数：`.claude/rules/a/b.md`
- * 这种嵌套形态数层数会算错。
+ * 判据是路径里**形态合法**的最后一个 `.claude` / `.sid-code` 段，不数层数：
+ * `.claude/rules/a/b.md` 这种嵌套形态数层数会算错。
+ *
+ * 「形态合法」= 该段之后只剩一个文件名（`.claude/CLAUDE.md`），或紧跟 `rules/` 子树
+ * （`.sid-code/rules/**`）——配置目录里只可能有这两种内容。
+ *
+ * ⚠️ **为什么必须校验形态**：git worktree 默认建在 `<repo>/.sid-code/worktrees/<name>/`，
+ * 段之后是 `worktrees/<name>/...` 而不是配置内容。不校验就会把归属目录截到 worktree **之外**
+ * （主仓根），于是 `rulesPathsMatchFromOwner` 判定 ownerDir 不在 root 之内、退化成只按根一级
+ * 匹配：`packages/cli/src/ui/CLAUDE.md` 的 `src/ui/**` 在 worktree 里永远不命中，规则静默
+ * 不注入（worktree 内 `tests/build/rules-paths-scope-nonempty.test.ts` 稳定 2 fail）。
  */
 export function ruleOwnerDir(sourcePath: string): string {
-  const segs = dirname(sourcePath).split(sep);
-  const idx = Math.max(segs.lastIndexOf(".claude"), segs.lastIndexOf(".sid-code"));
-  if (idx > 0) return segs.slice(0, idx).join(sep) || sep;
+  // 含 basename 一起分段：形态校验要看「段之后」的完整内容
+  const segs = sourcePath.split(sep);
+  // 从右往左找第一个形态合法的容器段。最靠右的段若只是同名普通目录（worktrees 那类）不能算容器，
+  // 但更左边仍可能有一个真正的配置目录（如 `<wt>/.sid-code/worktrees/x/.claude/rules/a.md`）。
+  for (let i = segs.length - 2; i > 0; i--) {
+    const seg = segs[i];
+    if (seg !== ".claude" && seg !== ".sid-code") continue;
+    const rest = segs.slice(i + 1);
+    // rest[0] === "rules" 对应 PROJECT_RULES_DIRS 的两种配置目录；length === 1 是段内单文件。
+    if (rest.length === 1 || rest[0] === "rules") return segs.slice(0, i).join(sep) || sep;
+  }
   return dirname(sourcePath);
 }
 
