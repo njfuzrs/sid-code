@@ -116,11 +116,17 @@ export function emitWebFetchModelUrl(data: { origin: string }): void {
 }
 
 /** B18。字段与 analytics 的 memory_guard 同名同值（闭集），两边可对账 */
-export function emitMemoryGuard(data: { kind: string; via: string; scope?: string }): void {
+export function emitMemoryGuard(data: {
+  kind: string;
+  via: string;
+  scope?: string;
+  memoryType?: string;
+}): void {
   emit(MEMORY_GUARD_EVENT_NAME, {
     guard_kind: data.kind,
     guard_via: data.via,
     ...(data.scope !== undefined ? { memory_scope: data.scope } : {}),
+    ...(data.memoryType !== undefined ? { memory_type: data.memoryType } : {}),
   });
 }
 
