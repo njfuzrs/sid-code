@@ -386,10 +386,36 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
   });
 
   test("跑全量 bun test 与 make build", () => {
-    expect(CI).toMatch(
-      /run:\s*bun test(?: --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\})?\s*$/m,
-    );
+    // 2026-11-15：test 步骤从单行 `run: bun test ...` 改成多行 block（① macOS 分片带
+    // `${{ matrix.retry }}` = --retry=1；② `tee` 落盘给「重试可见性」解析 `(attempt N)`）。
+    // 所以断言从「精确匹配 run: 整行」放宽成「命令里出现分片 bun test」。
+    // 验证力没有下降：分片参数由下面「test 分片覆盖完整」那组锁死，
+    // tee 的假绿风险由「test 步骤必须 set -o pipefail」锁死，retry 平台归属由
+    // 「--retry 只给 macOS」锁死 —— 放宽掉的每一块都有另一条断言接住。
+    expect(CI).toMatch(/bun test --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\}/);
     expect(CI).toMatch(/run:\s*make build\s*$/m);
+  });
+
+  // `--retry` 的两条不报红失效方式（2026-11-15 接入 macOS --retry=1 时补）：
+  //   ① 有人"统一风格"给 ubuntu 也加上 → 白付「掩盖真回归」的代价，且没有量化依据；
+  //   ② 加了 --retry 却删掉「重试可见性」步骤 → 重试变成静默的，方案文档把它写成硬前提
+  //      （「重试次数必须进遥测，否则永远不可见」），没有这一步就不许开 --retry。
+  // 外加：`bun test ... | tee` 没有 pipefail 时退出码是 tee 的 0，**测试失败会被吞成绿的**。
+  test("--retry 只给 macOS 分片，且必须带 pipefail 与重试可见性步骤", () => {
+    const matrix = (
+      parseYaml(CI) as { jobs: Record<string, { strategy?: { matrix?: { include?: unknown[] } } }> }
+    ).jobs.test?.strategy?.matrix?.include as Array<{ os: string; retry?: string }> | undefined;
+    const include = matrix ?? [];
+    expect(include.length).toBeGreaterThan(0);
+    for (const e of include) {
+      if (e.os === "macos-latest")
+        expect({ os: e.os, retry: e.retry }).toEqual({ os: e.os, retry: "--retry=1" });
+      else expect({ os: e.os, retry: e.retry }).toEqual({ os: e.os, retry: "" });
+    }
+    // tee 的假绿对冲
+    expect(CI).toMatch(/set -o pipefail/);
+    // 重试可见性步骤（缺了它 --retry 就是静默的）
+    expect(CI).toMatch(/scripts\/ci-retry-report\.ts/);
   });
 
   // G2 无头回放冒烟（#618）跑的是 `make build` 刚产出的 ./sid-code。两种不报红的失效：
@@ -504,9 +530,9 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
 
     test("rg 步骤排在全量单测之前（否则测试起手就 rg not found）", () => {
       const rgPos = CI.indexOf("挂载仓内 ripgrep 到 PATH");
-      const testPos = CI.search(
-        /run:\s*bun test(?: --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\})?\s*$/m,
-      );
+      // 2026-11-15：test 步骤改成多行 block（--retry / tee），不能再按 `run:` 整行定位，
+      // 改用「命令里出现分片 bun test」这个不受缩进与后续参数影响的位置。
+      const testPos = CI.indexOf("bun test --shard=${{ matrix.shard }}/${{ matrix.total }}");
       expect(rgPos).toBeGreaterThan(0);
       expect(testPos).toBeGreaterThan(0);
       expect(rgPos).toBeLessThan(testPos);
