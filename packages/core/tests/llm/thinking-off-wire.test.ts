@@ -39,7 +39,7 @@ describe("thinkingOffWire —— 关思考的线上写法", () => {
     );
   });
 
-  test("② 恒思考模型 → 不发（disabled 会 400 或被忽略）", () => {
+  test("② 恒思考模型 → 不发 disabled（改发 adaptive + 最低档，见 thinking-off-floor.test.ts）", () => {
     for (const m of [
       "claude-opus-5-5",
       "claude-sonnet-5-5",

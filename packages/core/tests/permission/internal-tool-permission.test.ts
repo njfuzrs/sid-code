@@ -47,7 +47,6 @@ import { TaskCreateTool } from "../../src/tool/structured-task-create.ts";
 import { TaskUpdateTool } from "../../src/tool/structured-task-update.ts";
 import { StructuredTaskGetTool } from "../../src/tool/structured-task-get.ts";
 import { StructuredTaskListTool } from "../../src/tool/structured-task-list.ts";
-import { TaskGetTool } from "../../src/tool/task-get.ts";
 import { TaskListTool } from "../../src/tool/task-list.ts";
 import { TaskOutputTool } from "../../src/tool/task-output.ts";
 import { TaskStopTool } from "../../src/tool/task-stop.ts";
@@ -95,7 +94,6 @@ function registryWithBuiltins(): Registry {
   registry.register(new StructuredTaskGetTool());
   registry.register(new StructuredTaskListTool());
   registry.register(new TaskOutputTool());
-  registry.register(new TaskGetTool());
   registry.register(new TaskListTool());
   registry.register(new CronListTool());
   registry.register(new EnterPlanModeTool(planManager));
@@ -143,7 +141,6 @@ const FIRST_BATCH = [
   "task_get",
   "task_list",
   "task_output",
-  "bg_task_get",
   "bg_task_list",
   "cron_list",
   "enter_plan_mode",
@@ -165,7 +162,7 @@ describe("B14 变放行：交互 default / acceptEdits 下首批工具不再询�
 describe("B14 变放行：无头 default 下不再直接拒绝", () => {
   // 修前这些工具落在 `step=headless:14`：阶段二把 ask 转成 deny，
   // 模型拿到的是一句没有可行动信息的「权限拒绝」，会被当成工具失败。
-  for (const name of ["think", "task_get", "task_output", "bg_task_get", "enter_plan_mode"]) {
+  for (const name of ["think", "task_get", "task_output", "enter_plan_mode"]) {
     test(`无头 default：${name} → ALLOW`, async () => {
       const checker = buildChecker("headless");
       const d = await checker.check({ toolName: name, input: {} }, toolByName(name));
@@ -216,7 +213,7 @@ describe("B14 变放行：plan 模式放行无副作用工具", () => {
 });
 
 describe("B14 变放行：deny-write 只放行「声明免权限 + 真的只读」", () => {
-  for (const name of ["think", "task_get", "bg_task_get"]) {
+  for (const name of ["think", "task_get"]) {
     test(`deny-write：${name}（readOnly=true）→ ALLOW`, async () => {
       const checker = buildChecker("deny-write");
       const d = await checker.check({ toolName: name, input: {} }, toolByName(name));
@@ -369,7 +366,6 @@ describe("B14 子代理：J9 例外——随首批放行，但 worktree 隔离�
 describe("防漂移哨兵：声明免权限的工具集合", () => {
   /** 本次（B14）确认放行的全部无条件免权限工具 */
   const EXPECTED_UNCONDITIONAL = [
-    "bg_task_get",
     "bg_task_list",
     "cron_list",
     "enter_plan_mode",

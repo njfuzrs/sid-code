@@ -32,6 +32,9 @@ import {
   extractSimpleCommands,
   extractRedirectTargets,
 } from "../../tool/bash/parser.ts";
+// 只读 git 的判定只保留一份实现（主会话这份）。在这里另写一张 git 子命令表
+// 就是第二套规则，两套必然漂移 —— 见 `isReadonlyBash` 的第 5 条口径。
+import { isReadOnlyCommand } from "../../tool/bash/read-only-validation.ts";
 // P1-12 指标 ③：越权拒绝计数（防线触发次数，恒 0 亦是信号）。
 import { logMemoryGuard } from "../../analytics/events.ts";
 
@@ -155,7 +158,8 @@ const SUBSTITUTION_RE = /\$\(|`|<\(|>\(/;
  * 1. 整串含命令/进程替换 → 拒（parser 看不见里面）；
  * 2. 任何 `>` → 拒（含 `>/dev/null`，后台代理不需要；比主路径严是刻意的）；
  * 3. AST 拆出的**每一个**简单命令都必须在白名单里（管道 / `;` / `&&` 全覆盖）；
- * 4. `find` 额外拒绝 `-exec` / `-delete` 一类谓词（主路径同样漏这条，见缺陷文档）。
+ * 4. `find` 额外拒绝 `-exec` / `-delete` 一类谓词（主路径同样漏这条，见缺陷文档）；
+ * 5. `git` 段委托主会话的 `isReadOnlyCommand` 判定，放开只读 git（见下方注释）。
  */
 export function isReadonlyBash(input: unknown): boolean {
   if (!input || typeof input !== "object") return false;
@@ -171,8 +175,25 @@ export function isReadonlyBash(input: unknown): boolean {
   const simple = extractSimpleCommands(ast);
   if (simple.length === 0) return false;
   for (const { command, args } of simple) {
-    if (!READONLY_BASH_PREFIXES.includes(command)) return false;
-    if (command === "find" && args.some((a) => FIND_UNSAFE_ARGS.has(a))) return false;
+    if (READONLY_BASH_PREFIXES.includes(command)) {
+      if (command === "find" && args.some((a) => FIND_UNSAFE_ARGS.has(a))) return false;
+      continue;
+    }
+    // 只读 git：P1-2 的核实轮要向用户承诺「可以跑 git 命令」（`extract/prompts.ts` 的
+    // 核实段），而这张白名单里没有 `git` —— 提示词承诺了、权限层拒掉，模型照提示词
+    // 行动就白烧一轮，而核实轮的预算只有一轮。
+    //
+    // 为什么复用主会话的 `isReadOnlyCommand` 而不是把 "git" 加进白名单：加进白名单是
+    // **按前缀**放行，`git commit` / `git push` / `git config --global` 会一起过。
+    // 为什么不整条命令都委托它：那个判定还认 `gh`（联网）、`jq`、`sort` 等，
+    // 后台提取代理本来连 `web_fetch` 都没有，整体委托会把能力面撑到比现在大得多。
+    // 所以只把**这一个程序**交给那份实现，规则不写第三套（两套规则必然漂移）。
+    //
+    // 越仓形态由主会话那份判定挡住：`git -C <异仓>` / `--git-dir` / `--work-tree`
+    // 都是「用哪个仓库」，B2 之后不再被剥离，`isReadOnlyCommand` 判非只读
+    // （2026-11-15 实测三条全 deny）。
+    if (command === "git" && isReadOnlyCommand([command, ...args].join(" "))) continue;
+    return false;
   }
   return true;
 }

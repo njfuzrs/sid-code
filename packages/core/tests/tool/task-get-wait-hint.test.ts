@@ -5,12 +5,12 @@
  * 「用 block=true 等 / 再次调用继续等」——模型调用时离这几处最近，description 的劝告会被抵消。
  * 基线会话 senfhxhhe 正是「阻塞满 600s → 再调一次」的形态。
  *
- * block 默认值**不改**（P1-3 防轮询原语，见 task-get.ts schema 注释），这里只锁文案出路。
+ * block 默认值**不改**（P1-3 防轮询原语，见 task-output.ts schema 注释），这里只锁文案出路。
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { registerTask, clearAllTasks } from "@sid-code/core/task/index.ts";
-import { TaskGetTool } from "@sid-code/core/tool/task-get.ts";
+import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
 import type { LocalAgentTaskState } from "@sid-code/core/task/types.ts";
 
 function runningTask(id: string): LocalAgentTaskState {
@@ -36,10 +36,10 @@ const RE_BLOCK_AGAIN = /再次调用本工具继续等|加大 timeout|要等它�
 beforeEach(() => clearAllTasks());
 afterEach(() => clearAllTasks());
 
-describe("bg_task_get 提示文案出路是「等通知」", () => {
+describe("task_output（原 bg_task_get）提示文案出路是「等通知」", () => {
   test("timeout hint 不建议再阻塞，指向 task-notification", async () => {
     registerTask(runningTask("g1"));
-    const r = await new TaskGetTool().execute({ task_id: "g1", block: true, timeout: 50 });
+    const r = await new TaskOutputTool().execute({ task_id: "g1", block: true, timeout: 50 });
     expect(r.output).toContain("timeout");
     expect(r.output).not.toMatch(RE_BLOCK_AGAIN);
     expect(r.output).toContain("task-notification");
@@ -47,14 +47,14 @@ describe("bg_task_get 提示文案出路是「等通知」", () => {
 
   test("not_ready hint 不建议用 block=true 等", async () => {
     registerTask(runningTask("g2"));
-    const r = await new TaskGetTool().execute({ task_id: "g2", block: false });
+    const r = await new TaskOutputTool().execute({ task_id: "g2", block: false });
     expect(r.output).toContain("not_ready");
     expect(r.output).not.toMatch(RE_BLOCK_AGAIN);
     expect(r.output).toContain("task-notification");
   });
 
   test("schema 的 block 描述不再声称「问一次即可拿到结果」", () => {
-    const schema = JSON.stringify(new TaskGetTool().inputSchema());
+    const schema = JSON.stringify(new TaskOutputTool().inputSchema());
     expect(schema).not.toContain("问一次即可拿到结果");
     expect(schema).toContain("自动通知");
   });

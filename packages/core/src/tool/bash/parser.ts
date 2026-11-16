@@ -301,8 +301,8 @@ function getFirstCommand(node: BashASTNode): string {
 /**
  * 从 AST 中提取所有**写入类**重定向的目标文件。
  *
- * ⚠️ 这个函数是三道安全判定的共同上游（`read-only-validation.isReadOnlyCommand`、
- * `path-validation.extractPathsFromCommand`、`checkpoint/bash-affected-files`），
+ * ⚠️ 这个函数是两道安全判定的共同上游（`read-only-validation.isReadOnlyCommand`、
+ * `checkpoint/bash-affected-files`），
  * 而 `isReadOnlyCommand` 的结果直接决定 `bash.ts` 的 `checkPermissions` 是否
  * `behavior:"allow"`（免确认放行）。**漏一个目标就是一次权限确认绕过**，
  * 且是静默的——不报错、命令照跑、用户看不到确认框。

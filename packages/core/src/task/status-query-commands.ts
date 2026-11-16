@@ -632,7 +632,7 @@ interface LoopStructure {
  * 识别「单条、非嵌套」的循环，并把它从段列表里拆出来。
  *
  * 为什么在这里拆、而不去改 `parser.ts` 加 `for_statement` 节点：parser 是权限判定的上游
- * （`isReadOnlyCommand` / `extractPathsFromCommand` / checkpoint 共用），新增节点类型要同步
+ * （`isReadOnlyCommand` / checkpoint 共用），新增节点类型要同步
  * 每一处 switch，风险与收益不成比例；而这里只回答「是不是状态查询」，扁平段列表已经够用
  * （实测 parser 把 `for pr in 694 696 697; do gh …; done` 拆成
  * `for …` / `do gh …` / `done` 三段，`do` 粘在循环体首段前面）。
@@ -816,7 +816,8 @@ function matchLoopQuery(loop: LoopStructure, heredocBody?: string): StatusQueryM
  * 2. **整条命令不含写操作**：其余每段都必须是「命中查询表」、纯过滤命令（只允许在查询段之后）
  *    或 `HARMLESS_COMMANDS`；有任何一个不认识的就放行（`gh pr checks 1 && gh pr merge 1`、
  *    `git push` 这类都会被这一条挡掉）。
- * 3. 没有写重定向（`> file`）、命令是单行；复合命令里的循环按循环体展开（见 `findLoop`）。
+ * 3. 没有写重定向（`> file`）；引号外的换行由 `flattenCommand` 保留成段分隔（不再要求
+ *    命令是单行），引号内的换行原样保留；复合命令里的循环按循环体展开（见 `findLoop`）。
  *
  * ⚠️ **为什么不直接复用 `isReadOnlyCommand`**：那个函数是给**权限放行**用的，白名单刻意窄
  * （`gh` 只认 `issue`/`pr`/`repo` 三组，`curl` 恒判非只读）。拿它做本判据会把
@@ -911,8 +912,9 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
 /**
  * 从 monitor 脚本里扫出它覆盖的命令族（D13）。
  *
- * 为什么需要单独一个函数：`matchStatusQuery` 只认**单行、单条**状态查询
- * （`flattenCommand` 见到换行直接放弃），而 monitor 的 command 是一个 shell 脚本，
+ * 为什么需要单独一个函数：`matchStatusQuery` 每次只认**一条**状态查询
+ * （`flattenCommand` 把引号外的换行保留成段分隔、逐段判定，一条脚本里多个查询只取命中段），
+ * 而 monitor 的 command 是一个 shell 脚本，
  * 查询通常裹在 `s=$(gh pr checks "$pr" --json ...)` 或 `do ... done` 循环里。
  *
  * 扫描口径刻意**保守**（扫不出 = 视为不覆盖 = 回到 120s 探测窗口）：
