@@ -17,6 +17,15 @@ export interface TurnUsage {
 }
 
 /**
+ * 预算预警档阈值（已用 ≥85%）。
+ *
+ * 导出成常量而不是在两处各写 `0.85`：门控（本文件）与 `LoopTransition` 的归因
+ * （loop.ts 按 ratio 判断是否记 `goal_budget_warning`）必须同源，
+ * 否则改了一处另一处静默漂移，统计口径与用户看到的提示对不上。
+ */
+export const GOAL_BUDGET_WARNING_RATIO = 0.85;
+
+/**
  * 无条件累加本轮用量到 goal.tokensUsed（含 cache_creation，Anthropic 对其收费高于 input）。
  *
  * ## 为什么这一步必须与预算门控分开（F1，2026-09-03 排查）
@@ -69,7 +78,7 @@ export function checkGoalBudget(
     );
     return "exceeded";
   }
-  if (ratio >= 0.85) {
+  if (ratio >= GOAL_BUDGET_WARNING_RATIO) {
     log.info(
       "GOAL_BUDGET",
       `预算预警: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, ratio=${(ratio * 100).toFixed(0)}%`,
