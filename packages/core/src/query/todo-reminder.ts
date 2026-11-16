@@ -13,6 +13,7 @@
 import type { TodoItem } from "../tool/todo-write.ts";
 import type { UnansweredShape } from "../llm/types.ts";
 import type { WaitSource } from "../task/wait-registry.ts";
+import { describeWaitLine } from "../task/wait-registry.ts";
 
 /**
  * P0-2：todo 回注节流配置。
@@ -390,27 +391,6 @@ export function buildTodoWaitSourcesMessage(unfinished: number, waits: WaitSourc
     `<system-reminder>\n清单还有 ${unfinished} 项未完成，正在等待：\n${lines.join("\n")}\n` +
     `等待期间不需要查询状态，结果会以通知送达。\n</system-reminder>`
   );
-}
-
-/** 单个等待源的描述行：承诺类型不同，措辞不同（deadline 给时刻，其余给触发条件） */
-function describeWaitLine(w: WaitSource): string {
-  const label = {
-    agent: "子代理",
-    workflow: "workflow",
-    shell: "后台命令",
-    monitor: "监控",
-    wakeup: "定时唤醒",
-  }[w.kind];
-  const head = `${label} ${w.id}（${w.description}）`;
-  if (w.promise.kind === "deadline")
-    return `${head}，最晚 ${formatClock(w.promise.deadlineAt)} 前回报`;
-  if (w.promise.kind === "terminal") return `${head}，结束即通知`;
-  return `${head}，退出或转入静默时通知`;
-}
-
-function formatClock(at: number): string {
-  const d = new Date(at);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 export function blockedSignature(todos: TodoItem[]): string {
