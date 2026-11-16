@@ -1,0 +1,1 @@
+{"index":1,"response":{"content":[{"type":"text","text":"计划已写入计划文件：先改 README 的标题，再补一行用法说明。确认后我再执行。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}

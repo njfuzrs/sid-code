@@ -187,7 +187,15 @@ export type AfterStep = DaemonStep | PrintStep;
  */
 export type TuiStep =
   | { kind: "type"; text: string }
-  | { kind: "key"; key: "enter" | "esc" | "ctrl-c" | "up" | "down" | "tab" }
+  /**
+   * 按键名必须与 `tui.ts` 的 `KEYS` 键一一对应（那边是真字节，这边只是名字）。
+   * 新增键时两处都要加——只加这边会在运行时 `KEYS[step.key]` 取到 undefined，
+   * `send(undefined)` 静默什么都不做，剧本卡在下一步等超时（失败形态很远）。
+   */
+  | {
+      kind: "key";
+      key: "enter" | "esc" | "ctrl-c" | "up" | "down" | "tab" | "shift-tab";
+    }
   | { kind: "wait"; screen: string | RegExp; timeoutMs?: number; label?: string }
   | { kind: "pause"; ms: number };
 

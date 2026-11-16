@@ -69,8 +69,14 @@ export type PlanOutcome =
 
 /** 跃迁附带信息（谁做的决定、用户修改意见多长），只用于可观测性 */
 export interface PlanTransitionMeta {
-  /** 决策来源：TUI 审批框 / 无头自动批准 / 工具调用 / 权限模式同步 / 命令 */
-  source?: "tui" | "headless" | "tool" | "permission_mode" | "command";
+  /**
+   * 决策来源：TUI 审批框 / 无头自动批准 / 工具调用 / 权限模式同步 / 键盘循环 / 命令
+   *
+   * `"keyboard"` 只在 enter 类跃迁上出现（Shift+Tab 切进 plan 时 `entrySource` 透传过来），
+   * 用来把「用户按了两下 Tab」和「模型自己调 enter_plan_mode」区分开——两者的
+   * 后续行为完全相同，但排查「这份计划怎么来的」时是两种完全不同的故事。
+   */
+  source?: "tui" | "headless" | "tool" | "permission_mode" | "keyboard" | "command";
   /** 用户修改意见的字符数（只记长度，不落正文） */
   feedbackChars?: number;
   /**
@@ -222,8 +228,17 @@ export interface PlanModeEvent {
 /** 状态变更监听器 */
 export type PlanModeListener = (event: PlanModeEvent) => void;
 
-/** 进入规划态的入口（/clear 据此决定是否恢复权限模式） */
-export type PlanEntrySource = "tool" | "permission_mode";
+/**
+ * 进入规划态的入口（/clear 据此决定是否恢复权限模式）。
+ *
+ * - `tool`：模型调 `enter_plan_mode`；
+ * - `permission_mode`：会话启动时 `config.permissionMode` 已是 plan（`--permission-mode plan` /
+ *   settings / CLAUDE.md），由 `syncWithPermissionMode()` 补进状态机。这类会话「本来就在 plan」，
+ *   /clear 后权限模式保持 plan，不能恢复成某个「之前」；
+ * - `keyboard`：Shift+Tab 键盘循环切进来的（M6 对齐 claude-code）。它和 `tool` 一样是
+ *   **用户主动进入**，进入前记下了 `prePlanMode`，/clear 时要恢复成那个模式。
+ */
+export type PlanEntrySource = "tool" | "permission_mode" | "keyboard";
 
 /** Plan Mode 状态管理器 */
 export class PlanModeManager {

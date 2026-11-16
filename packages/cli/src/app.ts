@@ -20,6 +20,7 @@ import {
 } from "@sid-code/core/permission/mode-policy.ts";
 import {
   PERMISSION_MODE_CHANGED_EVENT_NAME,
+  type PermissionMode,
   type PermissionModeChangeSource,
 } from "@sid-code/core/permission/mode.ts";
 // 工具进度路由判定（纯函数，静态引入：onToolProgress 是同步回调，不能 await import）
@@ -3672,13 +3673,18 @@ export class App {
    * 2026-10-24：从前 /clear 不碰 planManager。执行阶段不再随回合边界结束之后，
    * 不清就会把上一段对话的计划带进新对话：压缩时重注入、计划文件持续放行、Recovery Hook
    * 对新任务的失败提示「先更新旧计划」。
-   * 只有经 enter_plan_mode 进入的规划才恢复权限模式；以 `--permission-mode plan` 启动的会话
-   * 权限模式本来就是 plan，保持不变，下一个回合 syncPlanModeFromPermissionMode 会开一份新计划。
+   * 只有**用户主动进入**的规划才恢复权限模式（`enter_plan_mode` 工具与 Shift+Tab 键盘，
+   * 两者进入前都记了 prePlanMode）；以 `--permission-mode plan` 启动的会话权限模式本来就是
+   * plan，保持不变，下一个回合 syncPlanModeFromPermissionMode 会开一份新计划。
    */
   private async resetPlanStateForClear(): Promise<void> {
     const pm = this.planManager;
     if (!pm || (!pm.isActive() && !pm.isExecuting())) return;
-    const restorePermission = pm.isActive() && pm.getEntrySource() === "tool";
+    // M6：keyboard 与 tool 同为用户主动进入，/clear 后都要恢复进入前的模式；
+    // permission_mode 是「启动就该是 plan」，恢复成某个「之前」是错的。
+    const entrySource = pm.getEntrySource();
+    const restorePermission =
+      pm.isActive() && (entrySource === "tool" || entrySource === "keyboard");
     pm.forceExit("clear", { source: "command" });
     if (restorePermission) await this.deactivatePlanMode();
   }
@@ -7975,9 +7981,13 @@ export class App {
   /**
    * 退出 Plan Mode：恢复权限模式（不重建 system prompt，对标 Claude Code）
    *
-   * override：批准路径专用。无头会话批准后要切到调用方声明的 `--plan-exec-mode`，
-   * 而「进入之前的模式」对 `--permission-mode plan` 启动的会话不存在（prePlanMode 为 null）。
-   * 取消 / 拒绝超限不传它——那些路径没有「批准后要执行」这件事。
+   * override 的两个来源：
+   * - 批准路径：无头会话批准后要切到调用方声明的 `--plan-exec-mode`；
+   * - M6 键盘路径：在规划态按 Shift+Tab 时直接落到循环里 plan 的下一档，
+   *   省掉「先恢复 prePlanMode 再切档」的中间态（那会让状态栏闪一下，还会多出一条
+   *   `PermissionModeChanged`，轨迹里看起来像用户连按了两次）。
+   * 取消 / 拒绝超限不传它——那些路径没有「接下来要切到哪一档」这件事，
+   * 恢复进入前的模式才是对的。
    */
   private async deactivatePlanMode(override?: string): Promise<void> {
     const log = getLogger();
@@ -8251,49 +8261,86 @@ export class App {
    * Shift+Tab 权限模式循环切换（对齐 claude-code）。
    *
    * 落点计算在 permission/mode.ts 的 getNextKeyboardPermissionMode（纯函数，单测直接覆盖）。
-   * 它**跳过 plan 档**：plan 是独立状态机（planManager + 审批流 + plan 文件 + 每轮工作流提醒），
-   * 只能经 enter_plan_mode 工具或 /plan 进入；键盘只改 config.permissionMode 会造出
-   * 「假 plan 态」（约束提醒不触发）。auto 档现已接线（cli.ts 注入 ToolClassifier），
-   * 键盘循环放开 auto。
-   * 等价循环：无 bypass 时 default↔acceptEdits↔auto；有 bypass 时 …→always-allow→default。
+   * M6 之后 **plan 也在循环里**（claude-code 的 Shift+Tab 同样能进 plan）：
+   * 等价循环 default → acceptEdits → plan → auto → (always-allow) → default。
+   *
+   * ⚠️ plan 是独立状态机（planManager + 审批流 + plan 文件 + 每轮工作流提醒），
+   * 所以切到它时**不能只改 config.permissionMode**——那会造出「假 plan 态」：
+   * 约束提醒不发、没有计划文件、exit_plan_mode 走错分支。键盘入口走
+   * `planManager.enter(当前模式, undefined, "keyboard")` + `activatePlanMode()`，
+   * 与工具入口共用同一条状态机路径，只是 `entrySource` / `meta.source` 记成 `keyboard`。
+   *
+   * 已在 plan 态时按键的语义分三种（见 plan/state.ts 的三态）：
+   * - `isPlanning()`：还在规划、没提交计划 → 视为「放弃规划」，与审批框「取消」同一路径
+   *   （forceExit + deactivatePlanMode），然后落到循环里 plan 的下一档；
+   * - `isAwaitingApproval()`：计划已提交、审批框正等着拍板 → **不响应**。此时改模式
+   *   等于偷走审批（批准后该恢复成哪个模式已记在 prePlanMode 里）；
+   * - `isExecuting()`：批准后权限模式已恢复成非 plan，走下面的普通循环。
    *
    * bypass（always-allow）是否纳入循环由「启动时」是否开 skip-perms 门控——只有显式开了
    * skip-perms 的会话才让键盘循环到全放行，避免手滑切到危险态。
    *
    * config 引用与 PermissionChecker 共享（cli.ts 构造时同一对象），故改写即时生效。
    */
-  private cyclePermissionMode(): void {
+  private async cyclePermissionMode(): Promise<void> {
     const log = getLogger();
 
-    // plan 态不参与键盘循环：切到/切出 plan 只能走工具或斜杠命令的状态机入口。
-    if (this.planManager?.isActive() || this.config.permissionMode === "plan") {
-      this.statusNotifier?.("perm_mode_switch", "计划模式请用 exit_plan_mode 退出", 2500);
+    const planManager = this.planManager;
+    // 待审批：审批框才是决策现场，键盘改模式会让「批准后恢复成哪个模式」与用户以为的不符。
+    if (planManager?.isAwaitingApproval()) {
+      this.statusNotifier?.("perm_mode_switch", "计划已提交审批，请在审批框里选择", 2500);
       return;
     }
+    const abandoningPlan = planManager?.isPlanning() === true;
 
     const {
       getNextKeyboardPermissionMode,
       getModeName,
     } = require("@sid-code/core/permission/mode.ts");
+    // 放弃规划时**从 "plan" 出发**算落点：先 deactivate 会把模式恢复成 prePlanMode，
+    // 再按它循环又会绕回 plan（acceptEdits → plan），用户按一下等于原地转圈。
+    // 断言理由：Config.permissionMode 是 string（配置层不信任外部输入，非法值由
+    // PR-2 的归一逻辑在启动时落成 default），循环函数只认闭集。
+    const from = (abandoningPlan ? "plan" : this.config.permissionMode) as PermissionMode;
     const ctx = {
-      mode: this.config.permissionMode,
+      mode: from,
       // bypass 用启动快照,不用实时 config.skipPermissions(下方会被本方法改写)。
       isBypassAvailable: this.bypassAvailableAtLaunch,
     };
-    // 跳过逻辑（只跳 plan + 企业策略禁用的档）已提取到 permission/mode.ts，
+    // 跳过逻辑（企业策略禁用的档）已提取到 permission/mode.ts，
     // 因为这里内联时测试手抄了一份并漂移了：测试那份连 auto 一起跳，
     // 而 auto 早已接线 ToolClassifier（cli.ts），生产会正常切进去。
     // 两边现在调同一个函数，不会再各自演化。
     const next = getNextKeyboardPermissionMode(ctx, isModeDisabledByPolicy);
 
-    if (next === this.config.permissionMode) return; // 无变化不刷屏
+    if (next === from) return; // 无变化不刷屏
     // 兜底：绕圈后仍落在被禁模式（极端配置），拒绝切换
     if (isModeDisabledByPolicy(next)) {
       this.statusNotifier?.("perm_mode_switch", "该权限模式已被企业策略禁用", 2500);
       return;
     }
 
-    this.setPermissionMode(next, "keyboard");
+    if (abandoningPlan) {
+      // 放弃规划走与审批框「取消」相同的出路：forceExit 收尾 → 恢复权限模式。
+      // override 传 next，省掉「先恢复 prePlanMode 再切档」的中间态与第二条模式事件。
+      planManager!.forceExit("cancel", { source: "command" });
+      await this.deactivatePlanMode(next);
+    } else if (next === "plan") {
+      // 键盘进入 plan：必须同步进状态机（否则就是 mode.ts 警告过的「假 plan 态」）。
+      // enter() 传**当前模式**，退出时才能恢复；syncWithPermissionMode 传 undefined，
+      // 那是给「启动即 plan」（没有「之前」）用的，不能复用。
+      if (!planManager || !planManager.enter(this.config.permissionMode, undefined, "keyboard")) {
+        // 计划态下的两个分支已在上面拦掉，走到这里说明没有 planManager（精简装配）：
+        // 不假装切换成功，否则状态栏显示 plan 而实际什么都没发生。
+        this.statusNotifier?.("perm_mode_switch", "无法进入计划模式", 2500);
+        return;
+      }
+      await this.activatePlanMode(); // 内含 setPermissionMode("plan", "plan_enter") + TUI 同步
+    } else {
+      this.setPermissionMode(next, "keyboard");
+      this.tuiStateUpdater?.({ permissionMode: next });
+    }
+
     // ⚠️ 关键：skipPermissions / yesMode 是「粘性」执行开关，checker 直接读它们做早退放行
     //（checker.ts:567 skipPermissions 全放行 / :630 yesMode 自动批准），与 permissionMode 正交。
     // 若不同步,从 dangerously-skip-permissions/always-allow 循环走后,状态栏显示已切成 default,
@@ -8301,11 +8348,10 @@ export class App {
     // 故让 permissionMode 成为唯一真相源:cycle 后按目标模式反推这两个粘性开关。
     this.config.skipPermissions = next === "dangerously-skip-permissions";
     this.config.yesMode = next === "always-allow";
-    this.tuiStateUpdater?.({ permissionMode: next });
     this.statusNotifier?.("perm_mode_switch", `权限模式 → ${getModeName(next)}`, 2500);
     log.info(
       "PERMISSION",
-      `Shift+Tab 切换权限模式 → ${next}（skipPerms=${this.config.skipPermissions} yesMode=${this.config.yesMode}）`,
+      `Shift+Tab 切换权限模式 → ${next}（skipPerms=${this.config.skipPermissions} yesMode=${this.config.yesMode}${abandoningPlan ? "，放弃规划" : ""}）`,
     );
   }
 
@@ -12578,7 +12624,7 @@ export class App {
       config: this.config,
       unifiedRegistry: this.unifiedRegistry,
       // Shift+Tab 权限模式循环切换（复用 cyclePermissionMode 实例方法）
-      onCyclePermissionMode: () => this.cyclePermissionMode(),
+      onCyclePermissionMode: () => void this.cyclePermissionMode(),
       // Ctrl+B 转后台（对标 cc，P1-4）：把当前正在跑的前台 bash 命令过继给 Task 系统——
       // bash.ts 的 requestDetachForegroundBash() 找到正在跑的前台执行并让它提前返回
       // task_id 结果，主循环随之空闲、可继续接受新输入；命令本身在后台跑完后走既有的

@@ -1,6 +1,6 @@
 /**
  * 权限模式循环切换单测
- * 验证 getNextPermissionMode 的序列正确性 + 键盘循环跳过 plan 的逻辑。
+ * 验证 getNextPermissionMode 的序列正确性 + 键盘循环含 plan 的逻辑（M6）。
  */
 
 import { describe, it, expect } from "bun:test";
@@ -55,7 +55,7 @@ describe("getNextPermissionMode", () => {
   });
 });
 
-describe("键盘循环跳过 plan 的逻辑", () => {
+describe("键盘循环含 plan 的逻辑（M6）", () => {
   /**
    * 直接调生产函数 getNextKeyboardPermissionMode，**不再手抄** app.ts 的跳过逻辑。
    *
@@ -64,12 +64,16 @@ describe("键盘循环跳过 plan 的逻辑", () => {
    * 于是本文件曾断言「auto 永不出现在序列中」并一直是绿的——一份测试在为一个
    * 不存在的行为背书，website/use/permissions.md 还照着它把循环顺序写错了。
    * 复刻生产逻辑的测试注定漂移，所以现在两边共用同一个函数。
+   *
+   * M6 之后 plan 也进循环（对齐 claude-code），跳过逻辑只剩「企业策略禁用的档」。
+   * 键盘入口真正进入 plan 时要走状态机（app.ts 的 cyclePermissionMode），
+   * 那是 App 层的行为，由 packages/cli/tests/app/shift-tab-plan.test.ts 守。
    */
   function cycleSkip(mode: PermissionMode, isBypassAvailable: boolean): PermissionMode {
     return getNextKeyboardPermissionMode({ mode, isBypassAvailable });
   }
 
-  it("完整循环序列（bypass 不可用）: default→acceptEdits→auto→default", () => {
+  it("完整循环序列（bypass 不可用）: default→acceptEdits→plan→auto→default", () => {
     const seq: string[] = [];
     let mode: PermissionMode = "default";
     for (let i = 0; i < 10; i++) {
@@ -77,10 +81,10 @@ describe("键盘循环跳过 plan 的逻辑", () => {
       seq.push(mode);
       if (mode === "default") break;
     }
-    expect(seq).toEqual(["acceptEdits", "auto", "default"]);
+    expect(seq).toEqual(["acceptEdits", "plan", "auto", "default"]);
   });
 
-  it("完整循环序列（bypass 可用）: default→acceptEdits→auto→always-allow→default", () => {
+  it("完整循环序列（bypass 可用）: default→acceptEdits→plan→auto→always-allow→default", () => {
     const seq: string[] = [];
     let mode: PermissionMode = "default";
     for (let i = 0; i < 10; i++) {
@@ -88,38 +92,34 @@ describe("键盘循环跳过 plan 的逻辑", () => {
       seq.push(mode);
       if (mode === "default") break;
     }
-    expect(seq).toEqual(["acceptEdits", "auto", "always-allow", "default"]);
+    expect(seq).toEqual(["acceptEdits", "plan", "auto", "always-allow", "default"]);
   });
 
   it("从 deny-write 循环直接回 default", () => {
     expect(cycleSkip("deny-write", false)).toBe("default");
   });
 
-  it("plan 不出现在序列中（auto 会：它已接线，是正常一档）", () => {
-    const modes: PermissionMode[] = [
-      "default",
-      "acceptEdits",
-      "auto",
-      "always-allow",
-      "deny-write",
-      "dontAsk",
-    ];
-    for (const m of modes) {
-      expect(cycleSkip(m, true)).not.toBe("plan");
-    }
-    // 反向钉住：acceptEdits 的下一档必须**是** auto。
-    // 少了这条，未来有人再把 auto 加回跳过列表时，上面那圈断言依然全绿。
-    expect(cycleSkip("acceptEdits", false)).toBe("auto");
+  it("plan 在序列中：acceptEdits 的下一档就是它（M6 之前被跳过）", () => {
+    // 反向钉住：这条断言会在「有人又把 plan 塞回跳过列表」时立刻红。
+    expect(cycleSkip("acceptEdits", true)).toBe("plan");
+    expect(cycleSkip("plan", false)).toBe("auto");
   });
 
-  it("企业策略禁用某档时跳过它", () => {
-    // auto 被禁 → acceptEdits 应越过 auto 落到 default（bypass 不可用）
+  it("企业策略禁用 plan 时跳过它（不跳 auto）", () => {
+    // plan 被禁 → acceptEdits 越过 plan 落到 auto（bypass 不可用）
+    expect(
+      getNextKeyboardPermissionMode(
+        { mode: "acceptEdits", isBypassAvailable: false },
+        (m: PermissionMode) => m === "plan",
+      ),
+    ).toBe("auto");
+    // 禁用 auto 不影响 plan：跳过逻辑只跳被禁的那一档
     expect(
       getNextKeyboardPermissionMode(
         { mode: "acceptEdits", isBypassAvailable: false },
         (m: PermissionMode) => m === "auto",
       ),
-    ).toBe("default");
+    ).toBe("plan");
   });
 });
 
