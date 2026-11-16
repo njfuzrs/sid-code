@@ -197,11 +197,11 @@ export interface SubAgentTask {
    *  五档原样交给能力层（sub-agent-effort.ts）按模型族翻译线格式，不再手写塌缩：
    *  GPT-5.6 族 xhigh 原样透传，DeepSeek/GLM/o-series/Grok 由各族 applier 钳制。 */
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
-  /** Fork 模式：从主对话继承的初始消息序列（由 buildForkMessages 构建）。
-   *  存在时子代理不从空上下文起步，而是接续父对话的**尾部若干条**（含已配对的工具往返），
-   *  适合"接着主对话往下深钻某个分支"的子任务。
-   *  ⚠️ 不是 cc forkSubagent 的字节级继承：system prompt / 工具池按子代理类型重建，
-   *  不承诺命中父级 prompt cache（见 fork.ts 文件头）。 */
+  /** 预置的初始消息序列：存在时子代理不从空上下文起步，而是先灌入这些消息再续跑。
+   *  唯一来源是 send_message 的 sidechain 真恢复（P2-3，`tool/send-message.ts`）：
+   *  重建出的完整历史 + 末尾一条续传指令。
+   *  名字保留历史叫法：06H1 T7（2026-11-16）删掉了 `sub_agent` 的 `fork` 参数，
+   *  它原本也经这个字段注入父对话尾部；字段因续接仍在用而保留。 */
   forkMessages?: { role: string; content: ContentBlock[] }[];
   /** P1-3：额外消息拉取回调（swarm 团队成员用）。每轮开始时调用，返回的字符串作为
    *  user 消息注入子代理上下文——team.ts 用它把成员 mailbox 里的未读消息（来自 leader/peer）
@@ -222,10 +222,6 @@ export interface SubAgentTask {
    *  与子代理事件按键精确关联。由 query/tool-executor 注入、tool.ts 透传；swarm / workflow
    *  路径没有对应的父工具调用，缺省即可。 */
   _parentToolUseId?: string;
-  /** fork 时父对话的总消息条数（内部使用）。`forkMessages` 只是父对话的**尾部窗口**，
-   *  光有继承条数看不出「这次 fork 带过来多少、漏掉多少前缀」，两个数一起进轨迹才答得上。
-   *  由 tool.ts runSync 在调用 mainContextProvider() 时顺手记下。 */
-  _forkParentMessageCount?: number;
 }
 
 /** 计算子代理轮次上限。调用级 maxTurns 优先于 Agent 定义默认值；两者都未声明时无上限。
@@ -960,16 +956,15 @@ export class SubAgent {
     // 身份从 ALS 取（team.ts 的 withTeamMember 注入），不靠调用方自报。
     // 非团队上下文（普通子代理）不注册——否则 /ps 会被所有子代理刷屏。
     const teamCtx = getTeamMemberContext();
-    // T3：委派形态进轨迹。此前「这次委派是隔离还是 fork」只有 fork 时的一行日志，
-    // 事后无法从轨迹回答，也就统计不出 fork 到底被用了几次（T7 的判据依赖这个数）。
-    // team 优先：swarm 成员走 execute()，但不会被传 forkMessages。
-    // ⚠️ 命名边界：这里的 fork 指 `sub_agent` 的 `fork` 参数，**与 `forked-agent.ts`
-    // 的后台辅助任务无关**（后者的 `caller: agent:fork` / `agent_id: fork:*` 是记忆类任务）。
+    // T3：委派形态进轨迹。team 优先：swarm 成员走 execute()，但不会被传 forkMessages。
+    // T7（2026-11-16）：`sub_agent` 的 fork 参数删除后，forkMessages 只剩 send_message 续接
+    // 这一个来源，所以带预置历史的委派记为 resume。再记成 fork 会让「fork 用了几次」
+    // 这条历史判据和续接次数混在一起。
     const forkMessageCount = task.forkMessages?.length ?? 0;
-    const delegationMode: "isolated" | "fork" | "team" = teamCtx
+    const delegationMode: "isolated" | "resume" | "team" = teamCtx
       ? "team"
       : forkMessageCount > 0
-        ? "fork"
+        ? "resume"
         : "isolated";
     const teammateSessionId = teamCtx ? `teammate-${teamCtx.teamName}-${teamCtx.memberName}` : null;
     if (teamCtx && teammateSessionId) {
@@ -997,16 +992,8 @@ export class SubAgent {
           parentToolUseId: task._parentToolUseId,
           legacyAgentId,
           delegationMode,
-          // fork 的两个计数只在 fork 时带：非 fork 的 inherited_messages 恒为 0、
-          // parent_messages 恒缺省，写进轨迹只会让「fork 用了几次」的筛选多一层噪音。
-          ...(delegationMode === "fork"
-            ? {
-                inheritedMessages: forkMessageCount,
-                ...(task._forkParentMessageCount !== undefined
-                  ? { parentMessages: task._forkParentMessageCount }
-                  : {}),
-              }
-            : {}),
+          // 预置历史条数只在 resume 时带：其余形态恒为 0，写进轨迹只是噪音。
+          ...(delegationMode === "resume" ? { inheritedMessages: forkMessageCount } : {}),
           ...subAgentCwdFields(task.cwd),
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
@@ -1030,8 +1017,8 @@ export class SubAgent {
         runWithHookAgent(hookScope, () =>
           withIncrementedDepth(async () => {
             // T1（06H1）：forkMessages 存在时强制进程内模式——spawn 的父子协议里没有这个
-            // 字段（ParentInitMessage 只有 user_prompt），走 spawn 会把继承的父对话整段
-            // 丢掉，且调用方从结果上看不出差别。与 task.cwd 存在时强制进程内同一写法：
+            // 字段（ParentInitMessage 只有 user_prompt），走 spawn 会把 send_message 重建的
+            // 历史整段丢掉，且调用方从结果上看不出差别。与 task.cwd 存在时强制进程内同一写法：
             // 都是「这个上下文跨不了进程，必须在本进程内用」。
             if (this.shouldUseSpawn() && !task.cwd && !task.forkMessages?.length) {
               try {
@@ -2043,9 +2030,8 @@ export class SubAgent {
         cwd: getCwd(),
       });
 
-      // 添加任务提示。Fork 模式：先把继承自主对话的消息序列灌入上下文
-      // （buildForkMessages 已保证以 user 开头、只保留已配对的 tool 块），让子代理接续父对话；
-      // 末条已是 fork 子任务提示，故不再额外追加 task.prompt。
+      // 添加任务提示。有预置历史（send_message 续接）时先灌入它，末条已是续传指令，
+      // 故不再额外追加 task.prompt。
       if (task.forkMessages && task.forkMessages.length > 0) {
         for (const msg of task.forkMessages) {
           ctxMgr.addMessage({ role: msg.role as "user" | "assistant", content: msg.content });

@@ -14,8 +14,11 @@
  * （nullish 层摘掉）→ 同一次调用发两条 `ToolInputCoerced`，layer 与 field 各自可辨。
  * 值不进事件：只断言 layer/field/tool，不碰参数值。
  *
- * 不锁文件内容：T2（保留原引号风格）未开工，现在写回的是模型给的直引号；
- * 等 T2 落地后这里应改成断言弯引号，不要反过来用它限制实现。
+ * 文件内容（T2 落地后新锁）：写回后弯引号必须保持，不能把模型的直引号 new_string 原样落盘。
+ * 这条断言是 T2「归一化命中后保留原风格」的端到端契约，与
+ * `packages/core/tests/tool/edit-normalize-for-match.test.ts` 的 G1 用例互补：
+ * G1 守 `preserveFileStyle` 的对齐规则，这里守「真实执行链（读 → 归一化命中 → 落盘）上确实生效」。
+ * T2 之前这里刻意不断言文件内容（当时写回的就是直引号），现在补齐。
  */
 import { EDIT_LENIENT_MATCH_EVENT_NAME } from "@sid-code/core/tool/edit.ts";
 import type { SmokeCase } from "../../lib/types.ts";
@@ -34,6 +37,11 @@ const def: SmokeCase = {
   },
   argv: ["-p", "读取 doc.md，把 inherit 的默认值改为 false"],
   expect: {
+    files: [
+      // T2 端到端契约：归一化命中后保留文件原有字形——写回的是弯引号，不是模型的直引号。
+      // 去掉 files 断言就等于 T2 在真实执行链上没有守卫（G1 只覆盖 preserveFileStyle 本身）。
+      { path: "doc.md", equals: "配置说明：\u201cinherit\u201d 默认 false\n" },
+    ],
     events: [
       // 归一化命中单独成策略，且只此一条（精确命中不发事件）
       {

@@ -1,13 +1,14 @@
 /**
  * 子代理委派形态与结束状态进轨迹（06H1 T3）
  *
- * 背景：此前「这次委派是隔离还是 fork」在轨迹里答不上来 —— fork 只有一行 info 日志；
+ * 背景：此前「这次委派是什么形态」在轨迹里答不上来 —— 只有一行 info 日志；
  * SubagentStop 的 `status` 又只有 completed/error/unknown，分不出「执行失败」与
  * 「被中止」（本地 40 条非 completed 的 sidechain 里 13 条是 aborted，事件里与 error 同形）。
  *
  * 这里锁住四条不变式：
- * 1. 普通子代理 delegation_mode=isolated，且不带 fork 的两个计数（缺字段 ≠ 写 0）
- * 2. fork 子代理 delegation_mode=fork，并带 inherited_messages / parent_messages
+ * 1. 普通子代理 delegation_mode=isolated，且不带 inherited_messages（缺字段 ≠ 写 0）
+ * 2. 带预置历史（send_message 续接）的子代理 delegation_mode=resume，并带 inherited_messages
+ *    （06H1 T7 删掉 sub_agent 的 fork 参数后，这是 forkMessages 唯一的来源）
  * 3. 团队成员的 delegation_mode=team（身份取自 ALS，不靠调用方自报）
  * 4. SubagentStop.end_status 能区分 completed / failed / aborted，旧 status 字段口径不变
  */
@@ -122,19 +123,19 @@ async function runWithTrace(
 const findEvent = (events: RecordedEvent[], name: string) => events.find((e) => e.event === name);
 
 describe("SubagentStart.delegation_mode", () => {
-  test("普通子代理 = isolated，且不带 fork 的两个计数", async () => {
+  test("普通子代理 = isolated，且不带预置历史条数", async () => {
     const events = await runWithTrace("sess-isolated", new OneShotProvider(), (agent) =>
       agent.execute({ type: "explore", description: "核验", prompt: "看看" }),
     );
     const start = findEvent(events, "SubagentStart");
     expect(start?.data?.delegation_mode).toBe("isolated");
-    // 缺字段而不是 0：否则「fork 用了几次」的筛选会把所有隔离子代理都算进来
+    // 缺字段而不是 0：否则「续接了几次」的筛选会把所有隔离子代理都算进来
     expect(start?.data?.inherited_messages).toBeUndefined();
     expect(start?.data?.parent_messages).toBeUndefined();
   });
 
-  test("fork 子代理 = fork，并带继承条数与父对话总条数", async () => {
-    const events = await runWithTrace("sess-fork", new OneShotProvider(), (agent) =>
+  test("带预置历史 = resume，并带预置条数（不再记成 fork）", async () => {
+    const events = await runWithTrace("sess-resume", new OneShotProvider(), (agent) =>
       agent.execute({
         type: "explore",
         description: "接着聊",
@@ -143,14 +144,13 @@ describe("SubagentStart.delegation_mode", () => {
           { role: "user", content: [{ type: "text", text: "之前的问题" }] },
           { role: "assistant", content: [{ type: "text", text: "之前的回答" }] },
         ],
-        _forkParentMessageCount: 9,
       }),
     );
     const start = findEvent(events, "SubagentStart");
-    expect(start?.data?.delegation_mode).toBe("fork");
-    // 继承的是尾部窗口（2 条），父对话原有 9 条 —— 两个数一起才看得出漏了多少前缀
+    expect(start?.data?.delegation_mode).toBe("resume");
     expect(start?.data?.inherited_messages).toBe(2);
-    expect(start?.data?.parent_messages).toBe(9);
+    // parent_messages 只对 fork 有意义，随 fork 参数一起删除
+    expect(start?.data?.parent_messages).toBeUndefined();
   });
 
   test("团队成员 = team（身份来自 ALS，不靠调用方自报）", async () => {
