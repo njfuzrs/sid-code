@@ -354,6 +354,10 @@ export function spawnBuiltinShellTask(opts: {
     command: display,
     interrupted: false,
     isBackgrounded: true,
+    // 面板要能区分「真的在等 PR」与「看起来挂上、实际什么都没等」的普通后台命令
+    // （后者正是这次排查里 22 条 0 秒「执行成功」的形态）。判据落在字段上而不是
+    // 让 UI 去猜命令前缀——改文案或改执行路径时不会静默失效。
+    builtinWait: true,
   };
   registerTask(taskState);
   activeBuiltinCancels.set(taskId, () => {

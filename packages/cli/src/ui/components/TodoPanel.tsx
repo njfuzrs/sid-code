@@ -411,7 +411,12 @@ const TaskRow = React.memo(function TaskRow({
     task.type === "local_agent" && task.agentType
       ? `AG ${task.agentType}`
       : task.type === "local_shell"
-        ? "SH"
+        ? // 内置等待（`sid-wait gh-pr <n>`）单独标出来：它与普通后台命令的差别不是
+          // 「跑了什么」，而是「到底有没有在等」——后者 0 秒「执行成功」正是本轮排查里
+          // 最容易让人误判的形态（面板看着挂上了，实际什么都没等）。
+          task.builtinWait
+          ? "SH·wait"
+          : "SH"
         : task.type === "local_workflow"
           ? // state-bridge 传入 agentType="workflow:<名字>",剥前缀显示为 "WF <名字>",
             // 与 "AG"/"SH" 风格统一;无名字时退回 "WF"。

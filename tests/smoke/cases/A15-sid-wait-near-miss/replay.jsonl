@@ -1,0 +1,2 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_a15_1","name":"bash","input":{"command":"sid-wait gh-pr 779; echo \"EXIT=$?\"","run_in_background":true,"description":"后台等 PR 779 合并"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"入口拒绝了这条命令：sid-wait 必须单独成为整条命令，不能拼 echo/管道/重定向。已按回执给的写法重试。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
