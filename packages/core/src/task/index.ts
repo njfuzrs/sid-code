@@ -191,6 +191,10 @@ export {
   SID_WAIT_MAX_BACKOFF_MS,
   parseSidWaitCommand,
   isSidWaitCommand,
+  // A2：`sid-wait` 近似形态（拼接 / 重定向 / 缺参数）在 spawn 之前拒绝，bash / monitor 共用
+  type SidWaitMisuse,
+  detectSidWaitMisuse,
+  formatSidWaitMisuseReceipt,
   runSidWaitGhPr,
   formatSidWaitResultSummary,
   formatManualLoopHint,
