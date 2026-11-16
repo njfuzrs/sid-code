@@ -553,7 +553,7 @@ describe("Read 工具 - PDF 页数门限（P1-4）", () => {
 
 describe("Read 工具 — 发现4:重复窄读非阻塞引导", () => {
   test("反复窄读同一区域(≥3次高度重叠)→ 追加复用/整读提示", async () => {
-    // 用 >2000 行大文件排除"读太窄"提示(②),单独验证重复读(①)。
+    // 用 >2000 行大文件，避免触发任何其它路径，单独验证重复读提示。
     const lines = Array.from({ length: 3000 }, (_, i) => `line${i + 1}`).join("\n");
     const filePath = makeTmpFile(lines, "big.ts");
     const tool = new ReadTool(); // 同一实例内跟踪读历史
@@ -570,7 +570,7 @@ describe("Read 工具 — 发现4:重复窄读非阻塞引导", () => {
   });
 
   test("读不同区域(不重叠)不触发重复读提示", async () => {
-    // 用 >2000 行的大文件,排除"读太窄可整读"提示(②),单独验证不重叠导航不触发重复读(①)
+    // 用 >2000 行的大文件，单独验证不重叠导航不触发重复读提示。
     const lines = Array.from({ length: 3000 }, (_, i) => `line${i + 1}`).join("\n");
     const filePath = makeTmpFile(lines, "nav.ts");
     const tool = new ReadTool();
@@ -583,7 +583,7 @@ describe("Read 工具 — 发现4:重复窄读非阻塞引导", () => {
     expect(r3.output).not.toContain("[读取效率提示:");
   });
 
-  test("整读(不传 limit)不触发'读太窄'提示", async () => {
+  test("整读(不传 limit)不触发效率提示", async () => {
     const lines = Array.from({ length: 300 }, (_, i) => `line${i + 1}`).join("\n");
     const filePath = makeTmpFile(lines, "whole.ts");
     const tool = new ReadTool();
@@ -591,13 +591,16 @@ describe("Read 工具 — 发现4:重复窄读非阻塞引导", () => {
     expect(r.output).not.toContain("[读取效率提示:");
   });
 
-  test("首次对不大的文件传小 limit → '读太窄'提示可整读", async () => {
+  // T5 决策（2026-11-16）：narrow_first 提示已下线。aftereffect 口径实测 3259 次提示里
+  // 照做率 0.61%，73.2% 的提示之后模型根本没再读该文件（时机错配），只有 5.6% 是真·同段重复读，
+  // 那部分由「重复读」提示覆盖。这里守的是「不再退回去」：首次窄读不大的文件必须无提示。
+  test("首次对不大的文件传小 limit → 不再追加任何效率提示（narrow_first 已下线）", async () => {
     const lines = Array.from({ length: 300 }, (_, i) => `line${i + 1}`).join("\n");
     const filePath = makeTmpFile(lines, "narrow.ts");
     const tool = new ReadTool();
     const r = await tool.execute({ file_path: filePath, offset: 1, limit: 20 });
-    expect(r.output).toContain("[读取效率提示:");
-    expect(r.output).toContain("一次整读");
+    expect(r.output).not.toContain("[读取效率提示:");
+    expect(r.output).not.toContain("一次整读");
   });
 
   test("防回归:read 始终读磁盘最新内容,提示不缓存旧内容", async () => {
