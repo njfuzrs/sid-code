@@ -349,6 +349,7 @@ import {
 } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate, emitGoalGateDecision } from "./goal-gate.ts";
+import { collectGoalWaitingFacts, NO_GOAL_WAITING_FACTS } from "./goal-waiting.ts";
 import {
   checkGoalHardLimits,
   buildGoalTurnsLimitMessage,
@@ -5856,6 +5857,18 @@ async function* queryLoopBody(
                 minTurnsBeforeEval: effectiveGoalConfig.minTurnsBeforeEval,
               };
 
+              // G2（2026-11-16）：等待挂起判据的事实。窄口径 isDeclaredExternalWait ——
+              // 派生任务（子代理 / 普通后台 shell）承诺的是「自己结束会回报」，不构成
+              // 「目标在等外部状态」的证据（同 D12，见 wait-registry.ts 的注释）。
+              //
+              // 查询失败按「无等待」处理：宁可多评估一次（旧行为），不可因一次查询异常
+              // 把 end_turn 永久放行——那会让 goal 再也走不到评估器。
+              let waitingFacts = NO_GOAL_WAITING_FACTS;
+              try {
+                waitingFacts = collectGoalWaitingFacts(listWaits(), hasPendingNotifications());
+              } catch {
+                /* 查询失败按「无等待」处理 */
+              }
               const goalGateOutput = await handleGoalGate({
                 goal,
                 messages: ctxMgr.getMessages(),
@@ -5869,6 +5882,8 @@ async function* queryLoopBody(
                 // 会话哪一阶段"时与 hypothesis 事件不可直接比较。absoluteTurn/promptSeq 补齐后可比。
                 absoluteTurn: sessionState.getAbsoluteTurn(),
                 promptSeq,
+                // G2（2026-11-16）：有显式等待源时 goal 闸门改判「等待挂起」，不再调评估器。
+                waiting: waitingFacts,
               });
 
               // 注入消息
@@ -5892,6 +5907,22 @@ async function* queryLoopBody(
                   g.status = "impossible";
                 });
                 log.info("GOAL_GATE", "目标不可能达成，正常收尾");
+                // 落入下方正常收尾
+              } else if (result.waiting) {
+                // G2（2026-11-16）：等待挂起。goal **仍是 active**，语义只是「本轮结束，
+                // 等等待事件唤醒下一轮」——所以既不写终态、也不 continue 重跑。
+                // 唤醒走既有通知续跑通道（后台任务终态通知 → 注入 → 下一轮），
+                // 这里不另起定时器，否则会和那条通道重复唤醒。
+                //
+                // 必须走 updateGoalState：goal-gate 已把连续放行计数写进 goal 对象，
+                // 不显式触发就只留在内存 —— resume 后上限从 0 重算，等于可以无限放行。
+                deps.updateGoalState?.((g) => {
+                  g.waitPass = goal.waitPass;
+                });
+                log.info(
+                  "GOAL_GATE",
+                  `等待挂起（wait_ids=${result.waitIds?.join(",") || "-"}），本轮结束，事件到达后续跑`,
+                );
                 // 落入下方正常收尾
               } else if (result.shouldContinue) {
                 deps.updateGoalState?.((g) => {
