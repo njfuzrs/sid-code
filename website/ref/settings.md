@@ -149,6 +149,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `compressThresholdKb` | number | 压缩阈值（KB，默认 1） |
 | `largeFileThresholdLines` | number | 大文件阈值（行数，默认 1000，超过此值使用 Myers diff） |
 | `hugeFileThresholdLines` | number | 超大文件阈值（行数，默认 10000，超过此值直接存 full） |
+| `maxFileSizeMb` | number | 单文件快照上限（MB，默认 5，0 = 不限制）。 |
 
 ### `git` {#key-git}
 
