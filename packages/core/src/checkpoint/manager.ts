@@ -20,7 +20,7 @@
  */
 
 import { join } from "path";
-import { existsSync, mkdirSync, readdirSync, statSync, rmSync, unlinkSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, rmSync, unlinkSync } from "fs";
 import { computeDiff, type DiffResult } from "./diff.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -46,8 +46,15 @@ export interface Snapshot {
    * 这些文件**没有**被保护：`/undo` / `/restore` 回退不到它们。
    * 落盘保留这份清单是为了让命令层能如实告知用户「哪些文件没被快照」，
    * 而不是让用户以为所有改动都能回退（静默的不完整保护比没有更危险）。
+   *
+   * P4：`reason` 区分两类跳过原因——缺省（即字段不存在）表示 `too-large`（超过单文件上限），
+   * `non-regular` 表示目录 / 设备 / FIFO / socket / 软链（本来就不该进快照）。
+   * 展示层据此选文案：把设备文件说成「超过单文件上限」是另一种撒谎。
+   * 缺省即 too-large 而不是写显式值，是为了让**已落盘的老分片**（那时只有这一种原因）
+   * 不需要任何迁移就仍然语义正确。
+   * 非普通文件的 `bytes` 恒为 0——「字节数」对它们没有意义。
    */
-  skippedFiles?: Array<{ filePath: string; bytes: number }>;
+  skippedFiles?: Array<{ filePath: string; bytes: number; reason?: "non-regular" }>;
 }
 
 /** 快照中的单个文件 */
@@ -94,6 +101,30 @@ function decodeTextOrNull(bytes: Uint8Array): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * P4：路径在「快照」视角下的类型。
+ *
+ * - `absent`：路径不存在（保持原有语义：当作新建文件，回退时删除）
+ * - `regular`：普通文件（可以读内容、回滚时写回）
+ * - `non-regular`：目录 / 字符设备 / 块设备 / FIFO / socket / 符号链接
+ *
+ * 为什么必须用 lstat 而不是 `Bun.file(p).exists()`：后者的语义是「**是不是一个可读的
+ * 普通文件**」，不是「路径是否存在」（本机 bun 1.4.2 实测：目录、`/dev/null` 一律 false）。
+ * 拿它当 `existedBefore` 的判据，会把目录/设备记成「新建文件 + 空内容」——回退时
+ * `unlinkSync` 必然失败（设备 EPERM、非空目录 EPERM/EISDIR），`/undo` 于是被永久卡住。
+ *
+ * 为什么用 lstat 而不是 stat：`stat` 会跟随软链，于是「软链指向真文件」会被当成普通文件
+ * 快照，回退时写回那个路径会**写穿链接、改坏 target**。lstat 让软链落进 non-regular。
+ *
+ * 判据刻意不依赖 errno（EPERM / EISDIR / ENOTEMPTY）：三个平台的错误码不一致，
+ * 靠 `catch` 分支会漏，必须在动手删除之前用类型判断。
+ */
+function classifyPathForSnapshot(filePath: string): "absent" | "regular" | "non-regular" {
+  const st = lstatSync(filePath, { throwIfNoEntry: false });
+  if (!st) return "absent";
+  return st.isFile() ? "regular" : "non-regular";
 }
 
 /** N13：两份快照内容是否相同（形态不同即视为不同，触发写 full）。 */
@@ -515,15 +546,14 @@ export class CheckpointManager {
     const log = getLogger();
     const snapshotId = `s${this.index.nextId++}`;
     const files: SnapshotFile[] = [];
-    const skippedFiles: Array<{ filePath: string; bytes: number }> = [];
+    const skippedFiles: NonNullable<Snapshot["skippedFiles"]> = [];
     const maxFileBytes = this.config.maxFileSizeMb * 1024 * 1024;
 
     try {
       for (const filePath of filePaths) {
-        const file = Bun.file(filePath);
-        const existedBefore = await file.exists();
+        const pathKind = classifyPathForSnapshot(filePath);
 
-        if (!existedBefore) {
+        if (pathKind === "absent") {
           // 新文件，记录为空内容
           files.push({
             filePath,
@@ -534,6 +564,19 @@ export class CheckpointManager {
           });
           continue;
         }
+
+        // P4：非普通文件（目录 / 设备 / FIFO / socket / 软链）**不进快照**。
+        //
+        // 修之前它们被当作「新建文件 + 空内容」收进来：回退时 `unlinkSync` 必然失败
+        // （设备 EPERM、非空目录 EPERM/EISDIR），而当时的 N5 判据只看「results 为空」
+        // 就把这种失败当成了「没回滚成功」，于是快照被保留、`/undo` 永久卡在同一个快照上。
+        // 目录/设备本来就不该是「可回滚目标」——跳过比假装保护诚实。
+        if (pathKind === "non-regular") {
+          skippedFiles.push({ filePath, bytes: 0, reason: "non-regular" });
+          continue;
+        }
+
+        const file = Bun.file(filePath);
 
         // P3：超大文件不进快照。
         //
@@ -548,6 +591,7 @@ export class CheckpointManager {
             sizeBytes = 0; // stat 失败不阻断：当作 0，走后续正常读取（读失败会被外层 catch 兜住）
           }
           if (sizeBytes > maxFileBytes) {
+            // 不写 reason：缺省即 too-large（见 Snapshot.skippedFiles 的注释）
             skippedFiles.push({ filePath, bytes: sizeBytes });
             continue;
           }
@@ -589,16 +633,31 @@ export class CheckpointManager {
         // 内容没变，跳过
       }
 
-      // P3：跳过的大文件必须在日志里点明——否则用户以为 `/undo` 能救，实际救不回来。
+      // P3/P4：跳过的目标必须在日志里点明——否则用户以为 `/undo` 能救，实际救不回来。
+      // 两类原因分开说：把目录/设备说成「超过单文件上限」是另一种撒谎。
       if (skippedFiles.length > 0) {
-        const preview = skippedFiles
-          .slice(0, 3)
-          .map((s) => `${s.filePath}(${(s.bytes / 1024 / 1024).toFixed(1)}MB)`)
-          .join(", ");
-        log.info(
-          "CHECKPOINT",
-          `跳过 ${skippedFiles.length} 个超过 ${this.config.maxFileSizeMb}MB 的文件，未进快照（无法 /undo 回退）: ${preview}${skippedFiles.length > 3 ? " …" : ""}`,
-        );
+        const tooLarge = skippedFiles.filter((s) => s.reason !== "non-regular");
+        const nonRegular = skippedFiles.filter((s) => s.reason === "non-regular");
+        if (tooLarge.length > 0) {
+          const preview = tooLarge
+            .slice(0, 3)
+            .map((s) => `${s.filePath}(${(s.bytes / 1024 / 1024).toFixed(1)}MB)`)
+            .join(", ");
+          log.info(
+            "CHECKPOINT",
+            `跳过 ${tooLarge.length} 个超过 ${this.config.maxFileSizeMb}MB 的文件，未进快照（无法 /undo 回退）: ${preview}${tooLarge.length > 3 ? " …" : ""}`,
+          );
+        }
+        if (nonRegular.length > 0) {
+          const preview = nonRegular
+            .slice(0, 3)
+            .map((s) => s.filePath)
+            .join(", ");
+          log.info(
+            "CHECKPOINT",
+            `跳过 ${nonRegular.length} 个非普通文件（目录/设备/软链等），未进快照（无法 /undo 回退）: ${preview}${nonRegular.length > 3 ? " …" : ""}`,
+          );
+        }
       }
 
       if (files.length > 0) {
@@ -620,12 +679,23 @@ export class CheckpointManager {
         await this.evictIfNeeded();
         await this.saveIndex();
         log.debug("CHECKPOINT", `已创建快照 ${snapshotId}: ${files.length} 个文件`);
-      } else if (skippedFiles.length > 0) {
-        // 全部被跳过：不建空快照（`/undo` 拿到空快照会打印「已撤销」却没动任何文件，属于谎报成功）。
-        log.info("CHECKPOINT", `本次变更全部超过单文件上限，未创建快照: ${toolSummary}`);
+        return snapshotId;
       }
 
-      return snapshotId;
+      if (skippedFiles.length > 0) {
+        // 全部被跳过：不建空快照（`/undo` 拿到空快照会打印「已撤销」却没动任何文件，属于谎报成功）。
+        // P4：这里也是「纯噪音快照」的根治点之一——`ls 2>/dev/null` 这类命令过去会产出一个
+        // 只含 /dev/null 的空快照，现在直接在源头不建。
+        log.info(
+          "CHECKPOINT",
+          `本次变更全部未进快照（超限/非普通文件），未创建快照: ${toolSummary}`,
+        );
+      }
+
+      // P4：没建成快照就返回空串，而不是那个已自增但**未入列**的 id。
+      // 返回幽灵 id 的后果是调用方 `if (snapshotId)` 成立，把 s<N> 当成回退锚点记进
+      // file_changes / onSnapshotCreated —— 那个 id 在索引里根本不存在，之后拿它回退必然失败。
+      return "";
     } catch (err: any) {
       log.warn("CHECKPOINT", `创建快照失败: ${err.message}`);
       return "";
@@ -650,65 +720,107 @@ export class CheckpointManager {
     }
 
     const log = getLogger();
-    const lastSnapshot = this.getLastSnapshot();
-    if (!lastSnapshot) {
-      return null;
-    }
 
-    const results: UndoResult["files"] = [];
+    // P4：外层循环——「没有任何可回滚目标」的快照是纯噪音，消耗掉继续撤上一个。
+    //
+    // 为什么要循环、而不是消耗一次就返回 null：盘上已有 2,009 条历史坏条目
+    // （`ls 2>/dev/null` 这类命令的副作用），同一会话尾部连续不可回退快照最深 10 个。
+    // 只消耗一个的话用户要连敲 10 次 `/undo` 才能退出陷阱；循环让一次 `/undo`
+    // 就落到最近一个真正有可回滚目标的快照上。
+    //
+    // 终止性：每次迭代要么 return，要么 removeLastSnapshot（快照数严格递减），
+    // 所以最多迭代「快照总数」次，不会死循环。
+    while (true) {
+      const lastSnapshot = this.getLastSnapshot();
+      if (!lastSnapshot) {
+        return null;
+      }
 
-    for (const file of lastSnapshot.files) {
-      if (!file.existedBefore) {
-        // 新创建的文件：删除它
-        if (existsSync(file.filePath)) {
+      const results: UndoResult["files"] = [];
+      /** P4：尝试回滚但失败的文件。与「没有可回滚目标」是两件事，必须分开计。 */
+      const failedFiles: string[] = [];
+
+      for (const file of lastSnapshot.files) {
+        if (!file.existedBefore) {
+          // 新创建的文件：删除它。
+          //
+          // P4：先判类型再动手。历史快照里可能有目录 / 设备（`/dev/null`）——
+          // `unlinkSync` 对它们必然失败（设备 EPERM、非空目录 EPERM/EISDIR），
+          // 过去那个失败被 N5 的「results 为空」判据吃掉，导致 `/undo` 永久卡住。
+          // 这类目标本来就不是「可回滚目标」，跳过它既不算成功也不算失败。
+          const pathKind = classifyPathForSnapshot(file.filePath);
+          if (pathKind === "non-regular") {
+            log.debug(
+              "CHECKPOINT",
+              `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${file.filePath}`,
+            );
+            continue;
+          }
+          if (pathKind === "absent") {
+            // 已经不在了 = 目标状态已达成，不算失败（保持原语义）
+            continue;
+          }
           try {
             unlinkSync(file.filePath);
             results.push({ filePath: file.filePath, action: "deleted" });
             log.info("CHECKPOINT", `已删除新文件: ${file.filePath}`);
           } catch (err: any) {
             log.warn("CHECKPOINT", `删除文件失败: ${file.filePath} - ${err.message}`);
+            failedFiles.push(file.filePath);
           }
-        }
-      } else {
-        // 已有文件：恢复到快照前的内容
-        const content = await this.rebuildContentBeforeSnapshot(file.filePath, lastSnapshot.id);
-        if (content !== null) {
+        } else {
+          // 已有文件：恢复到快照前的内容
+          const content = await this.rebuildContentBeforeSnapshot(file.filePath, lastSnapshot.id);
+          if (content === null) {
+            // P4：重建不出内容是真失败（diff 链被淘汰切断等），不能当「没有可回滚目标」静默消耗。
+            // 与下面 catch 分支同一口径：留快照、报失败、可重试。
+            log.warn("CHECKPOINT", `无法重建快照前内容: ${file.filePath}`);
+            failedFiles.push(file.filePath);
+            continue;
+          }
           try {
             await Bun.write(file.filePath, content);
             results.push({ filePath: file.filePath, action: "restored" });
             log.info("CHECKPOINT", `已恢复文件: ${file.filePath}`);
           } catch (err: any) {
             log.warn("CHECKPOINT", `恢复文件失败: ${file.filePath} - ${err.message}`);
+            failedFiles.push(file.filePath);
           }
         }
       }
+
+      // ─────────────────────────────────────────────────────────────
+      // N5：一个文件都没回滚成功时**不能删快照、不能报成功**。
+      //
+      // 修之前是「无条件 removeLastSnapshot + 返回真值对象」，而命令层只判 `if (result)`
+      // ⇒ 打印「已撤销快照 sN:」后跟一个空列表。更糟的是快照已经被删掉，
+      // **连重试的机会都没有**：再敲一次 /undo 会去撤上一个快照。
+      // 一次"空转的成功"永久消耗掉一个快照。
+      //
+      // P4：判据从「results 为空」收紧成「results 为空 **且** 有失败」。
+      // 「没有可回滚目标」（全是目录/设备这类历史坏条目，或目标状态本就已达成）不是失败，
+      // 混进失败判据里正是 `/undo` 永久卡死的直接原因。
+      // ─────────────────────────────────────────────────────────────
+      if (results.length === 0 && failedFiles.length > 0) {
+        log.warn(
+          "CHECKPOINT",
+          `撤销失败：快照 ${lastSnapshot.id} 的 ${failedFiles.length} 个文件未能回滚，保留快照供重试`,
+        );
+        return null;
+      }
+
+      // 移除该快照
+      this.removeLastSnapshot();
+      await this.saveIndex();
+
+      if (results.length > 0) {
+        return { snapshotId: lastSnapshot.id, files: results };
+      }
+
+      // results 与 failedFiles 都为空 ⇒ 这个快照没有任何可回滚目标（纯噪音），
+      // 已经消耗掉了，继续撤上一个。
+      log.info("CHECKPOINT", `快照 ${lastSnapshot.id} 没有可回滚的目标，已消耗并继续撤销上一个`);
     }
-
-    // ─────────────────────────────────────────────────────────────
-    // N5：一个文件都没回滚成功时**不能删快照、不能报成功**。
-    //
-    // 修之前是「无条件 removeLastSnapshot + 返回真值对象」，而命令层只判 `if (result)`
-    // ⇒ 打印「已撤销快照 sN:」后跟一个空列表。更糟的是快照已经被删掉，
-    // **连重试的机会都没有**：再敲一次 /undo 会去撤上一个快照。
-    // 一次"空转的成功"永久消耗掉一个快照。
-    //
-    // 现在：results 为空 ⇒ 保留快照 + 返回 null，让命令层如实说「回滚失败」。
-    // 注意快照本身 files 为空的情形不该走到这里（createSnapshot 只在 files.length>0 时入列），
-    // 所以 results 为空必然意味着「该回滚的都失败了」，返回 null 不会误伤正常路径。
-    // ─────────────────────────────────────────────────────────────
-    if (results.length === 0) {
-      log.warn(
-        "CHECKPOINT",
-        `撤销失败：快照 ${lastSnapshot.id} 的 ${lastSnapshot.files.length} 个文件全部未能回滚，保留快照供重试`,
-      );
-      return null;
-    }
-
-    // 移除该快照
-    this.removeLastSnapshot();
-    await this.saveIndex();
-
-    return { snapshotId: lastSnapshot.id, files: results };
   }
 
   /**
@@ -728,8 +840,28 @@ export class CheckpointManager {
 
       if (fileInSnapshot) {
         if (!fileInSnapshot.existedBefore) {
-          // 新创建的文件：删除它
-          if (existsSync(filePath)) {
+          // 新创建的文件：删除它。
+          //
+          // P4：与 undo 同一口径——历史快照里的目录/设备（`/dev/null`）删不掉，
+          // 直接判定为「不是可回滚目标」并把它从快照里摘掉，否则 `/undo <该路径>`
+          // 每次都失败、该条目永久残留在快照里。
+          const pathKind = classifyPathForSnapshot(filePath);
+          if (pathKind === "non-regular") {
+            log.warn(
+              "CHECKPOINT",
+              `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${filePath}`,
+            );
+            snapshot.files = snapshot.files.filter((f) => f.filePath !== filePath);
+            if (snapshot.files.length === 0) {
+              this.index.snapshots.splice(i, 1);
+              this.markSnapshotRemoved(snapshot.id);
+            } else {
+              this.markSnapshotDirty(snapshot);
+            }
+            await this.saveIndex();
+            return null;
+          }
+          if (pathKind === "regular") {
             try {
               unlinkSync(filePath);
               log.info("CHECKPOINT", `已删除新文件: ${filePath}`);
@@ -738,6 +870,7 @@ export class CheckpointManager {
               return null;
             }
           }
+          // pathKind === "absent"：目标状态已达成，无需动文件
         } else {
           // 已有文件：恢复到快照前的内容
           const content = await this.rebuildContentBeforeSnapshot(filePath, snapshot.id);
@@ -813,8 +946,20 @@ export class CheckpointManager {
         }
 
         if (!file.existedBefore) {
-          // 新创建的文件：删除它
-          if (existsSync(file.filePath)) {
+          // 新创建的文件：删除它。
+          //
+          // P4：先判类型。历史快照里的非普通文件（目录 / 设备 / 软链）删不掉，
+          // 过去那个 unlink 失败会被记成「回滚失败」，让整次 /restore 都显示失败——
+          // 而它从来就不是可回滚目标，不该污染失败清单。跳过它，不记成功也不记失败。
+          const pathKind = classifyPathForSnapshot(file.filePath);
+          if (pathKind === "non-regular") {
+            log.debug(
+              "CHECKPOINT",
+              `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${file.filePath}`,
+            );
+            continue;
+          }
+          if (pathKind === "regular") {
             try {
               unlinkSync(file.filePath);
               affectedFiles.set(file.filePath, { action: "deleted" });
@@ -824,6 +969,7 @@ export class CheckpointManager {
               failedFiles.push(file.filePath);
             }
           }
+          // pathKind === "absent"：目标状态已达成
         } else {
           // ─────────────────────────────────────────────────────────────
           // 已有文件：恢复到目标快照时的内容。
@@ -953,7 +1099,19 @@ export class CheckpointManager {
     for (const [filePath, { file, snapshotIndex }] of earliestEntry) {
       if (!file.existedBefore) {
         // 目标时刻该文件还不存在（是回滚区间内才新建的）⇒ 删掉它。
-        if (existsSync(filePath)) {
+        //
+        // P4：与 undo / restoreToSnapshot 同一口径——先判类型，非普通文件跳过。
+        // 历史快照里的目录/设备删不掉，把它记成「回滚失败」会让整次 /rewind 都显示失败，
+        // 而它从来就不是可回滚目标。
+        const pathKind = classifyPathForSnapshot(filePath);
+        if (pathKind === "non-regular") {
+          log.debug(
+            "CHECKPOINT",
+            `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${filePath}`,
+          );
+          continue;
+        }
+        if (pathKind === "regular") {
           try {
             unlinkSync(filePath);
             affectedFiles.set(filePath, { action: "deleted" });
