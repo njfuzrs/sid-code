@@ -1,0 +1,2 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"bash","input":{"command":"git push origin main","description":"推送改动到远端"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"推送需要确认，未执行。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}

@@ -214,6 +214,31 @@ export interface ToolCapabilityFields<Input = unknown> {
   requiresPermission?(input?: Input): boolean;
 
   /**
+   * M7：本工具一执行就要阻塞等用户回答（结构化问卷这类「没有人就办不成」的工具）。
+   *
+   * ## 为什么需要它
+   *
+   * `dontAsk` 的模式承诺是「绝不弹窗」，但权限层此前无从知道某个工具「执行即阻塞等人」。
+   * 于是用户级 settings 里一条从 Claude Code 迁移过来的 `AskUserQuestion` allow 规则
+   * （Step 8 allow 规则排在阶段二 dontAsk 判断之前）就能让它弹问卷 ——
+   * 在「一切需确认的都拒」的模式里反而弹窗。
+   *
+   * 与 `requiresPermission` 的分工：那个说「我不需要权限」（免检），这个说「我必须有人回答」。
+   * 两者互不包含，`ask_user_question` 两个都不该声明成免检。
+   *
+   * ## 契约
+   *
+   * - 用工具自报、不用工具名清单：名单会漂（新增交互工具时改名单的人不知道这个判据存在），
+   *   与 `exemptFromLoopDetection` / `needsPermissionChecker` 是同一个范式。
+   * - 唯一消费点是权限层的 `enforceModeHardConstraint`（dontAsk 下一律拒绝，allow 规则 /
+   *   会话记忆 / 预授权 / hook allow 都绕不过）。
+   * - **不影响无头路径**：无头时工具自己返回 unavailable，那已经是正确行为。
+   * - 防漂移：`packages/core/tests/permission/internal-tool-permission.test.ts` 把声明了
+   *   本字段的工具与写死清单双向对账。
+   */
+  requiresUserInteraction?(): boolean;
+
+  /**
    * 工具自报「我会读执行器注入的 `_agentId`」，执行器据此**按需注入**。
    *
    * ## 为什么从「无差别注入」改成「按需注入」

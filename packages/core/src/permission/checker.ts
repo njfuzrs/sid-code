@@ -299,6 +299,21 @@ function guardMetadata(phaseOne: Decision): { metadata?: Record<string, unknown>
  */
 
 /**
+ * M8：阶段一的确认原因是「用户自己写下的 ask 规则」。
+ *
+ * ask 规则是用户明确表达的「这件事必须问我一眼」，与安全分类器（系统判断危险）不同：
+ * 任何自动批准通道都不该吞掉它。auto 分类器（M1b）、`-y`（M8）、skip 档（M8）三处
+ * 共用这一条判据——复制粘贴会漏抄，而漏抄的形态是「配置了 ask 却静默执行」，
+ * 三处各自单点测试还都是绿的。
+ *
+ * 与 `isSafetyConfirmation` 的分工：那个答「这是不是系统认定的危险」，
+ * 这个答「这是不是用户点名要问的」，两者互不包含（ask 规则可以指向完全无害的命令）。
+ */
+function isUserAskRule(reason: PermissionDecisionReason | undefined): boolean {
+  return reason?.type === "rule" && reason.behavior === "ask";
+}
+
+/**
  * auto 分类器是否允许发言。safetyCheck 命中且 classifierApprovable === false
  * （hooks / commands / settings）时分类器结果直接丢弃——这是字段存在的唯一理由。
  * classifierApprovable: true 的项（.git/、.bashrc）才允许分类器放行。
@@ -311,7 +326,7 @@ function classifierMayApprove(reason: PermissionDecisionReason | undefined): boo
   if (!reason) return true;
   if (reason.type === "dangerousCommand" || reason.type === "destructiveTool") return false;
   if (reason.type === "safetyCheck") return reason.classifierApprovable === true;
-  if (reason.type === "rule" && reason.behavior === "ask") return false;
+  if (isUserAskRule(reason)) return false;
   return true;
 }
 
@@ -1930,12 +1945,24 @@ export class PermissionChecker implements Checker {
     tool?: Tool,
   ): Decision | null {
     const mode = this.config.permissionMode;
-    if (mode !== "plan" && mode !== "deny-write") return null;
+    // M7：dontAsk 的承诺是「绝不弹窗」，而声明了 `requiresUserInteraction` 的工具
+    // 一执行就要阻塞等人回答。这道拦截必须在出口：allow 规则（Step 8）、会话记忆、
+    // 预授权、hook allow 全都排在阶段二的 dontAsk 之前，任何一条命中都会把问卷弹出来——
+    // 用户级 settings 里从 Claude Code 迁过来的 `AskUserQuestion` allow 就是最常见的那条。
+    // 与 plan / deny-write 共用一个出口，理由同上：放行面再增加一条也绕不过它。
+    if (mode !== "plan" && mode !== "deny-write" && mode !== "dontAsk") return null;
+    if (mode === "dontAsk" && tool?.requiresUserInteraction?.() !== true) return null;
     if (decision.step === "3.5") return null;
     const filePath = extractFilePath(req);
     const resource = filePath || (req.input as { command?: string })?.command || "";
     let blocked: Decision | null = null;
-    if (mode === "plan") {
+    if (mode === "dontAsk") {
+      blocked = {
+        allowed: false,
+        reason: "dontAsk 模式下不允许需要用户交互的工具",
+        decisionReason: { type: "mode", mode: "dontAsk" },
+      };
+    } else if (mode === "plan") {
       const verdict = this.checkPlanMode(req, filePath, resource, tool);
       if (!verdict.allowed) {
         blocked = {
@@ -2004,6 +2031,13 @@ export class PermissionChecker implements Checker {
       // 危险命令、敏感路径、safetyCheck 仍跳过：那是 skip 档本来的语义（无人值守、用户自负）。
       const userDeny = this.checkUserDenyUnderSkip(req, resource, options);
       if (userDeny) return userDeny;
+      // M8：用户写下的 ask 规则同样不被跳过——它与 deny 是一对，都是「人明确表达的意图」。
+      // 修前这里只挡 deny，于是 `ask: ["Bash(git push*)"]` 在 skip 下静默执行，
+      // 而 default 档同一份规则会弹确认：同一条配置在不同模式下的含义被悄悄改写了。
+      // 命中后返回 needsConfirmation 而不是在这里自己决定「无头怎么办」——交互弹窗 /
+      // 无头 deny 由下游一处统一处理，权限层不复制那条口径。
+      const userAsk = this.checkUserAskUnderSkip(req);
+      if (userAsk) return userAsk;
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(skipPermissions)`);
       this.audit(req, {
         timestamp: new Date().toISOString(),
@@ -2200,7 +2234,11 @@ export class PermissionChecker implements Checker {
     //   注意：pathValidation（如工作区外写入）属常规确认，yesMode 照常自动批准——不在"危险命令"范畴。
     if (this.config.yesMode) {
       const dr = result.decisionReason?.type;
-      if (!isSafetyConfirmation(result.decisionReason)) {
+      // M8：用户显式写的 ask 规则同样不放行。`-y` 的语义是「自动批准需确认操作」，
+      // 而 ask 规则是用户点名要求「无论什么模式都问我一眼」的那一类——把自动批准
+      // 盖在它上面，等于让 -y 静默改写用户自己的配置（配置了 ask 却直接执行）。
+      // 与 M1b（auto 分类器不得放行 ask 规则）共用同一个判据 `isUserAskRule`。
+      if (!isSafetyConfirmation(result.decisionReason) && !isUserAskRule(result.decisionReason)) {
         log.info(
           "PERMISSION",
           `${req.toolName}(${resource.slice(0, 80)}) → 允许(yesMode 自动批准普通 ask)`,
@@ -3078,6 +3116,68 @@ export class PermissionChecker implements Checker {
       ...(options?.auditSource ? { source: options.auditSource } : {}),
     });
     return denied;
+  }
+
+  /**
+   * M8：skip 档下仍然生效的「用户写下的询问」。
+   *
+   * skip 只跳过「系统认定的危险」（Step 2 危险命令 / Step 4 敏感路径 / Step 6 safetyCheck），
+   * 不跳过「用户要求我确认一下」——ask 规则与 deny 规则是一对，都是人明确表达过的意图
+   * （04 剖析 5.7 用户拍板的选项 B 写着「不跳过用户写下的拒绝」，ask 是它的姊妹）。
+   *
+   * 修前这里只查 deny：`ask: ["Bash(git push*)"]` 在 skip 下静默执行，而 default 档
+   * 同一份规则会弹确认——同一条配置在不同模式下的含义被悄悄改写了。
+   *
+   * 命中后交互模式返回 `needsConfirmation`（由 tool-executor 弹窗）；无头模式返回 deny。
+   * 为什么无头要在这里落一次：skip 早退排在阶段二的 headless 分支**之前**，走不到那个
+   * 统一落点。文案与它保持同一形状（含「重试相同输入不会改变结果」，否则模型会原样重发），
+   * 并带上规则原文——模型要知道是哪条配置拦的，才改得动命令。
+   */
+  private checkUserAskUnderSkip(req: PermissionRequest): Decision | null {
+    const ruleDecision = this.checkAskRules(req);
+    if (!ruleDecision || ruleDecision.allowed || !ruleDecision.needsConfirmation) return null;
+    const resource = String(extractFilePath(req) || (req.input as any)?.command || "");
+    const ruleText = ruleDecision.reason || "";
+    if (this.isNonInteractive()) {
+      const nonInteractive: Decision = {
+        allowed: false,
+        reason: `非交互模式下自动拒绝（skip 模式命中用户 ask 规则，无人可确认）：${ruleText}`,
+        decisionReason: {
+          type: "other",
+          reason: `非交互模式下自动拒绝（无人可确认，重试相同输入不会改变结果）：skip 模式命中用户 ask 规则 ${ruleText}`,
+        },
+        step: "skip-ask-rule",
+      };
+      getLogger().info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(skip 模式命中 ask 规则，无头无法确认)`,
+      );
+      this.denialTracking = recordDenial(
+        this.denialTracking,
+        req.toolName,
+        nonInteractive.reason || "",
+        resource,
+      );
+      this.audit(req, {
+        timestamp: new Date().toISOString(),
+        type: "tool_use",
+        tool: req.toolName,
+        resource,
+        decision: "deny",
+        reason: nonInteractive.reason,
+        decisionReason: nonInteractive.decisionReason,
+      });
+      return nonInteractive;
+    }
+    getLogger().info(
+      "PERMISSION",
+      `${req.toolName}(${resource.slice(0, 80)}) → 需确认(skipPermissions 下仍尊重用户 ask 规则)`,
+    );
+    return {
+      ...ruleDecision,
+      decisionReason: { type: "rule", rule: ruleDecision.reason || "", behavior: "ask" },
+      step: "skip-ask-rule",
+    };
   }
 
   private checkDenyRules(req: PermissionRequest): Decision | null {

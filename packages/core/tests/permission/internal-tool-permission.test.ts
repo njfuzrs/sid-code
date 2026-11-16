@@ -197,12 +197,13 @@ describe("B14 变放行：plan 模式放行无副作用工具", () => {
   });
 
   /**
-   * `ask_user_question` 本次**刻意不声明**（20261112 方案 M7 未合入）：
+   * `ask_user_question` 不声明免权限（B14 首批里刻意排除它）：
    * 它的语义是「我需要用户输入」，不是「我不需要权限」。若在这里声明免权限，
    * `dontAsk` 下会被 Step 13.6 直接放行——等于在「一切需确认的都拒」的模式里弹问卷。
-   * M7 合入后应改为声明 `requiresUserInteraction`，而不是加进本清单。
+   * M7 已合入：它改为声明 `requiresUserInteraction`，由 `enforceModeHardConstraint`
+   * 在 dontAsk 下一刀拒绝（覆盖见 m7-m8-user-interaction-and-ask-rules.test.ts）。
    */
-  test("plan：ask_user_question 仍被拒（未声明，等 M7）", async () => {
+  test("plan：ask_user_question 仍被拒（未声明免权限）", async () => {
     const checker = buildChecker("plan");
     const d = await checker.check(
       { toolName: "ask_user_question", input: {} },

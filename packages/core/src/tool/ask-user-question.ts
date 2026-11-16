@@ -138,9 +138,16 @@ export class AskUserQuestionTool implements Tool {
   // 它的语义是「我需要用户输入」，不是「我不需要权限」——若在这里声明免权限，
   // `dontAsk` 模式下它会被 Step 13.6 直接放行，等于在「一切需确认的都拒」的模式里
   // 弹出一个问卷（claude-code 在 dontAsk 下明确拒绝这个工具）。
-  // 正确的形状是另一个字段 `requiresUserInteraction` + 一刀 deny（见方案
-  // 20261112 的 M7 / PR-4），那个改动尚未合入，所以这里保持默认（走后续 Step）。
-  // 合入 M7 后**不要**把本工具加进免权限清单，而是给它声明 `requiresUserInteraction`。
+  // 免权限的反面不是「需要交互」，而是下面那个 `requiresUserInteraction`。
+
+  /**
+   * M7：声明「执行即阻塞等人」。权限层据此在 `dontAsk` 下一刀拒绝——
+   * 那个模式的承诺是绝不弹窗，而它此前会让一条从 Claude Code 迁移来的
+   * `AskUserQuestion` allow 规则（Step 8 排在阶段二之前）把问卷弹出来。
+   */
+  requiresUserInteraction(): boolean {
+    return true;
+  }
 
   /**
    * 非并发安全：交互式弹窗必须独占——多个提问同时弹出会争抢键盘焦点、互相覆盖。
