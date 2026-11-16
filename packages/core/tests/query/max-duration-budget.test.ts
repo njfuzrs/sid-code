@@ -97,6 +97,11 @@ const UNLIMITED_BUDGET: Budget = { maxDurationMs: 0, deadlineWall: 0, marginMs: 
 /**
  * 设了时间预算的用例应有的模型调用次数：第 1 轮（tool_use）+ 强制总结轮。
  * 少于它就是「第 1 轮没跑」，见 `setup()` 里 `drain()` 的注释。
+ *
+ * ⚠️ 这个 2 **不随 `toolTurns` 变**，别按「`toolTurns + 1`」去理解：`slowEachTurn` 让
+ * **每一轮**都越过 deadline，所以无论 `toolTurns` 设多大，第 2 轮开始前的检查点必然命中，
+ * 调用次数恒为「1 轮 + 总结轮」。反过来，如果将来有人写 `toolTurns: 0`（首轮直接总结、
+ * 不进工具轮）的预算用例，本断言会把它当成「余量不够」报红 —— 那种用例不该复用 `drain()`。
  */
 const CALLS_WITH_BUDGET = 2;
 
