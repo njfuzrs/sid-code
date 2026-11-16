@@ -630,6 +630,12 @@ export interface TaskDisplayInfo {
   kind?: "wakeup" | "monitor";
   agentType?: string;
   command?: string;
+  /**
+   * 内置等待原语（`sid-wait gh-pr <n>`）：harness 进程内执行，没有子进程。
+   * 面板据此把这类任务标成 `SH·wait`，与「看起来挂上、实际什么都没等」的
+   * 普通后台命令区分开——后者是本轮排查里 22 条 0 秒「执行成功」的形态。
+   */
+  builtinWait?: boolean;
   /** 监控已投递的事件数（仅 `kind === "monitor"`，面板统计列用） */
   eventCount?: number;
   /**

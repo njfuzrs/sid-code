@@ -1348,11 +1348,19 @@ export class BashTool implements Tool {
         require("../task/index.ts") as typeof import("../task/index.ts")
       ).parseSidWaitCommand(params.command);
       if (sidWaitSpec) {
+        // 子代理里必须换文案：上面 :1308 那条「子代理里不支持后台执行」与
+        // 「请补 run_in_background=true」正好互为反向指引，照做的模型会在两条回执之间
+        // 来回——补了 bg 被拒、去掉 bg 又被这里拒，永远出不来。
+        // 子代理的真实出路只有一条：交给主代理（它没有后台权限，也就拿不到终态通知）。
+        const subAgent = getAgentRoot() !== undefined;
         return {
-          output:
-            `sid-wait 是内置等待原语，只能后台执行：请补 run_in_background=true` +
-            `（可选 wait_until_seconds，默认 ${1800}s 期限）。` +
-            `它会轮询 PR #${sidWaitSpec.pr} 的合并 / 检查状态，退出即结论（合 0 / 检查失败 1 / 关闭 3 / 冲突 4）。`,
+          output: subAgent
+            ? `sid-wait 在子代理里不可用：子代理没有后台执行权限（run_in_background 会被拒绝），` +
+              `拿不到等待的终态通知。请把「等 PR #${sidWaitSpec.pr}」这件事交给主代理，` +
+              `或在本轮内改用前台 \`gh pr view ${sidWaitSpec.pr} --json state,mergedAt\` 自己轮询。`
+            : `sid-wait 是内置等待原语，只能后台执行：请补 run_in_background=true` +
+              `（可选 wait_until_seconds，默认 ${1800}s 期限）。` +
+              `它会轮询 PR #${sidWaitSpec.pr} 的合并 / 检查状态，退出即结论（合 0 / 检查失败 1 / 关闭 3 / 冲突 4）。`,
           isError: true,
         };
       }

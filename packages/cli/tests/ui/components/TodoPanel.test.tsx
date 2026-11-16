@@ -269,3 +269,63 @@ describe("TodoPanel — 空态", () => {
     expect((lastFrame() ?? "").trim()).toBe("");
   });
 });
+
+describe("TodoPanel — 内置等待与普通后台命令可区分（L5.2 整帧）", () => {
+  // 为什么需要这个区分：本次排查的 22 条失败全部是「普通后台命令 0 秒 completed、
+  // 摘要『执行成功』」——面板上看着挂上了、实际什么都没等。内置等待必须能一眼分开。
+  const shellBase: TaskDisplayInfo = {
+    id: "w1",
+    type: "local_shell",
+    status: "running",
+    description: "sid-wait gh-pr 779",
+    command: "sid-wait gh-pr 779",
+    startTime: Date.now() - 5_000,
+    durationMs: 1_000,
+  };
+
+  test("builtinWait 的任务标签是 SH·wait，普通 shell 仍是 SH", () => {
+    const builtin = render(
+      <TodoPanel todos={[]} tasks={[{ ...shellBase, builtinWait: true }]} termWidth={TERM_WIDTH} />,
+    ).lastFrame();
+    const plain = render(
+      <TodoPanel todos={[]} tasks={[shellBase]} termWidth={TERM_WIDTH} />,
+    ).lastFrame();
+
+    // 先按行过滤出任务行再断言：全帧 includes 会量到标题区/摘要区的同名字符串
+    // （TUI 规范 L5.2 明确禁止这种量错行的写法）。
+    const builtinLines = stripAnsi(builtin ?? "")
+      .split("\n")
+      .filter((l) => l.includes("sid-wait gh-pr 779"));
+    const plainLines = stripAnsi(plain ?? "")
+      .split("\n")
+      .filter((l) => l.includes("sid-wait gh-pr 779"));
+    expect(builtinLines).toHaveLength(1);
+    expect(builtinLines[0]).toContain("[SH·wait]");
+    expect(plainLines).toHaveLength(1);
+    expect(plainLines[0]).toContain("[SH]");
+    // 普通 shell 不能被误标成内置等待
+    expect(plainLines[0]).not.toContain("SH·wait");
+  });
+
+  test("标签区分不靠描述文本：命令原文相同的两条任务仍能分开", () => {
+    // 反例形态就是「描述里恰好有 sid-wait 字样」——若按命令前缀判定，
+    // 普通后台命令写同样文本也会被误标。这里让两条描述完全一致，只差字段。
+    const { lastFrame } = render(
+      <TodoPanel
+        todos={[]}
+        tasks={[
+          { ...shellBase, id: "w1", builtinWait: true },
+          { ...shellBase, id: "w2" },
+        ]}
+        termWidth={TERM_WIDTH}
+      />,
+    );
+    const lines = stripAnsi(lastFrame() ?? "")
+      .split("\n")
+      .filter((l) => l.includes("sid-wait gh-pr 779"));
+    // 两条任务的描述文本一模一样，只能靠标签区分
+    expect(lines).toHaveLength(2);
+    expect(lines.some((l) => l.includes("[SH·wait]"))).toBe(true);
+    expect(lines.some((l) => l.includes("[SH]"))).toBe(true);
+  });
+});

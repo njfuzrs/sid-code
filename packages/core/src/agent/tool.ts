@@ -62,12 +62,10 @@ const subAgentSchema = lazySchema(() => {
       .string()
       .optional()
       .describe("子代理的工作目录（省略时继承当前目录）。文件类工具会以此为基准。"),
-    fork: z
-      .boolean()
-      .optional()
-      .describe(
-        "Fork 模式：让子代理继承当前对话的最近上下文（而非空上下文起步），适合『接着当前对话深入钻研某分支』的子任务。仅同步模式支持。",
-      ),
+    // 06H1 T7（2026-11-16）：`fork` 参数已删除。有利场景实验 12 个会话、17 次同步委派，
+    // 模型一次都没选 fork（schema 每次都带描述）；真实轨迹 58 条 SubagentStart 也是 0 次。
+    // 「接着当前对话深入」的需求由主代理在 prompt 里写清背景承担。论证见 Agent Note
+    // `.agents/notes/implemented/simplification/2026-11-16-删除sub_agent的fork参数.md`。
     isolation: z
       .enum(["worktree"])
       .optional()
@@ -174,13 +172,6 @@ export class SubAgentTool implements Tool {
   private usageSink?: SubAgentUsageSink;
   /** 权限检查器（子代理 dontAsk 语义，由主会话注入） */
   private permissionChecker?: import("../permission/types.ts").Checker;
-  /** 主对话上下文提供者（fork 模式用）。由主会话注入，返回主对话当前消息历史。
-   *  未注入时 fork 模式降级为普通子代理（空上下文起步）。 */
-  private mainContextProvider?: () => {
-    role: string;
-    content: import("../llm/types.ts").ContentBlock[];
-  }[];
-
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = subAgentSchema();
 
@@ -337,16 +328,6 @@ export class SubAgentTool implements Tool {
     this.usageSink = sink;
   }
 
-  /**
-   * 注入主对话上下文提供者（fork 模式用）。主会话构造后调用，
-   * 让 fork 子代理能继承主对话尾部的消息历史（含已配对的工具往返）。
-   */
-  setMainContextProvider(
-    provider: () => { role: string; content: import("../llm/types.ts").ContentBlock[] }[],
-  ): void {
-    this.mainContextProvider = provider;
-  }
-
   /** 注入权限检查器（子代理 dontAsk 语义）。主会话创建 PermissionChecker 后调用。 */
   setPermissionChecker(checker: import("../permission/types.ts").Checker): void {
     this.permissionChecker = checker;
@@ -501,8 +482,6 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
-      /** fork 模式：继承当前对话的最近上下文。仅同步模式支持（T1 起由下方判断强制）。 */
-      fork?: boolean;
       _agentId?: string;
       /** E1：派发本次子代理的 tool_use_id（执行器注入，见 internal-fields.ts） */
       _parentToolUseId?: string;
@@ -571,21 +550,6 @@ ${typeLines}
       if (params.isolation === undefined && def.isolation === "worktree") {
         params.isolation = "worktree";
       }
-    }
-
-    // T1（06H1）：fork 只能同步跑。后台路径（runAsync → executeInBackground → SubAgent.execute）
-    // 从不传 forkMessages，spawn 的父子协议里也没有这个字段（ParentInitMessage 只有
-    // user_prompt）。此前这个组合会被静默丢掉 fork、退化成空白上下文起步，调用方从结果上
-    // 看不出差别——后台占本地委派 47%，这类静默降级最容易在真实使用里被当成"fork 没效果"。
-    // 判断必须放在 def.background 合并之后：frontmatter 声明 background: true 的 agent 类型
-    // 不显式传 run_in_background 也会走后台，放在前面会漏掉这一类。
-    if (params.fork && params.run_in_background) {
-      return {
-        output:
-          "错误: fork 只支持同步模式。后台子代理不继承父对话上下文（fork 的消息不会跨任务传递）。" +
-          "要后台运行请去掉 fork，并在 prompt 里写清背景；要继承上下文请去掉 run_in_background。",
-        isError: true,
-      };
     }
 
     // 后台执行模式
@@ -774,7 +738,6 @@ ${typeLines}
       type: string;
       description: string;
       prompt: string;
-      fork?: boolean;
       isolation?: "worktree";
       model?: string;
       cwd?: string;
@@ -784,19 +747,6 @@ ${typeLines}
     onProgress?: (event: import("../tool/types.ts").ToolProgressData) => void,
   ): Promise<ToolResult> {
     const log = getLogger();
-
-    // T2（06H1）：fork 需要主对话上下文提供者（setMainContextProvider）。此前未注入时
-    // 静默退化成「空白上下文起步」—— 调用方拿到的仍是一次"成功"的 fork，看不出区别。
-    // 嵌入方（SDK / eval / 自建 App）最容易踩这条：CLI 经 App 构造器注入，不触发。
-    // 放在 acquireSlot 之前：确定性报错不需要占用并发 slot，也不建 worktree。
-    if (params.fork && !this.mainContextProvider) {
-      return {
-        output:
-          "错误: fork 模式需要父会话注入主对话上下文（setMainContextProvider），当前调用方未注入。" +
-          "请去掉 fork 并在 prompt 里写清背景，或改用同步模式。",
-        isError: true,
-      };
-    }
 
     // 并发控制（G1/G5 修复）：超上限时排队等待 slot 而非拒绝；占位在 worktree 创建等
     // await 操作之前完成，消除 gate 检查与占位之间的 TOCTOU 竞态。等待期间被 abort 则抛出。
@@ -843,32 +793,11 @@ ${typeLines}
         subAgent.setParentSessionId(this.parentSessionId);
       }
 
-      // Fork 模式：继承主对话尾部上下文（含已配对的工具往返，不承诺缓存对齐）
-      let forkMessages:
-        | { role: string; content: import("../llm/types.ts").ContentBlock[] }[]
-        | undefined;
-      // T3：父对话总条数要单独记——forkMessages 只是尾部窗口（buildForkMessages 会裁剪），
-      // 只有继承条数看不出「这次 fork 漏掉了多少前缀」。轨迹里两个数一起才能判断继承是否够用。
-      let forkParentMessageCount: number | undefined;
-      if (params.fork && this.mainContextProvider) {
-        const { buildForkMessages } = await import("./fork.ts");
-        const parentMessages = this.mainContextProvider();
-        forkMessages = buildForkMessages(parentMessages, params.prompt) as typeof forkMessages;
-        forkParentMessageCount = parentMessages.length;
-        log.info(
-          "SUBAGENT",
-          `[fork] 继承主对话 ${parentMessages.length} 条消息，构建 ${forkMessages!.length} 条 fork 消息`,
-        );
-      }
-
       const result = await subAgent.execute(
         {
           type: params.type,
           description: params.description,
           prompt: params.prompt,
-          forkMessages,
-          // T3：与 forkMessages 成对进轨迹，说明继承的只是父对话尾部窗口
-          _forkParentMessageCount: forkParentMessageCount,
           cwd: isolatedCwd, // B7: 经 withAgentCwd 隔离，并发安全
           model: params.model, // P2-15: 每次调用可覆盖模型
           // 前台子代理不上「后台任务」面板：它的结果已由下方 return 作为 tool_result 返回、

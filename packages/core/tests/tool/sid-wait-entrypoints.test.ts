@@ -355,6 +355,27 @@ describe("A2 `sid-wait` 近似形态：入口在 spawn 之前拒绝", () => {
     expect(result.data).not.toContain("run_in_background");
     expect(listWaits()).toHaveLength(0);
     expect(getAllTasks()).toHaveLength(0);
+    // 通知队列也要空：误 spawn 的形态是「先登记任务、终态再入队一条通知」，
+    // 只断 getAllTasks 能抓到 spawn，但抓不到「任务被 evict 后仍有一条通知在飞」。
+    // 与 bash 入口那条用例保持同一组判据（原先只有 bash 侧断了队列）。
+    expect(dequeuePendingNotifications()).toHaveLength(0);
+  });
+
+  test("子代理里前台纯命令 → 给出「不可用，交给主代理」，不再让补 run_in_background", async () => {
+    // 缺陷形态：子代理里写 `sid-wait gh-pr N`（A1 提示词只约束主代理），
+    // 前台拦截回「请补 run_in_background=true」，照做又被「子代理里不支持后台执行」拒，
+    // 两条回执互为反向指引，模型在中间来回。判据：文案里不能出现补 bg 的指引。
+    const { withAgentCwd } = await import("../../src/bootstrap/cwd-context.ts");
+    await withAgentCwd(tmpHome, async () => {
+      const tool = new BashTool();
+      const result = await tool.execute({ command: "sid-wait gh-pr 811" });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("子代理里不可用");
+      expect(result.output).toContain("交给主代理");
+      // 关键：不能再把模型往 run_in_background 上引
+      expect(result.output).not.toContain("请补 run_in_background=true");
+      expect(getAllTasks()).toHaveLength(0);
+    });
   });
 
   test("不误伤：命令里含 sid-wait 字面量但不是原语开头的照常执行", async () => {
