@@ -109,7 +109,7 @@ export function createDaemonServer(config: DaemonConfig = DEFAULT_CONFIG, gate?:
         }
 
         // 异步处理（不阻塞 webhook 响应）
-        const resultPromise = Promise.resolve(prEvent);
+        const resultPromise = worker.handlePR(prEvent);
         resultPromise.catch((err) => {
           console.error(`[daemon] worker error: ${err}`);
         });
