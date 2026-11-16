@@ -12,6 +12,7 @@
 import { homedir } from "os";
 import { useMemo } from "react";
 import type { Usage } from "@sid-code/core/llm/types.ts";
+import { GOAL_TURNS_NEAR_LIMIT_RATIO } from "@sid-code/core/goal/config.ts";
 import { theme } from "../semantic-colors.ts";
 // 颜色一律用 ink 的 Color（`#hex` / `rgb()` / `ansi256()` / `ansi:*`）而不是 string：
 // 本 hook 派生出的每个 color 最终都直接喂给 Footer 的 <Text color=…>，而 Text.color
@@ -394,7 +395,9 @@ export function deriveThinking(
  *   重复表达），却容易被误读成"完成进度",故彻底移除,只保留带中文标签的 `目标 N/M 轮`。
  * - 加「目标」中文标签 + 「轮」单位,让分子分母语义自解释,不再是无锚点的裸 `3/50`。
  * - 前缀单色字形 GOAL_MARK（◎），替代违反规范的彩色 🎯 emoji。
- * - 接近上限（≥80%）转黄预警,提示快到轮次上限;paused 用 ⏸ 前缀 + 黄色。
+ * - 接近上限（≥ GOAL_TURNS_NEAR_LIMIT_RATIO，当前 80%）转黄预警,提示快到轮次上限;paused 用 ⏸ 前缀 + 黄色。
+ *   阈值与 core 侧「接近上限软提醒」共用同一个常量 —— 两处各写一个 0.8 时，任何
+ *   一边调整都会静默漂移（状态栏黄了但模型没被提醒，或反过来）。
  */
 function deriveGoal(
   goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null,
@@ -403,7 +406,7 @@ function deriveGoal(
   if (!goalDisplay) return null;
   const { turnsUsed, maxTurns, status } = goalDisplay;
   if (status !== "active" && status !== "paused") return null;
-  const nearLimit = maxTurns > 0 && turnsUsed / maxTurns >= 0.8;
+  const nearLimit = maxTurns > 0 && turnsUsed / maxTurns >= GOAL_TURNS_NEAR_LIMIT_RATIO;
   const text =
     status === "paused"
       ? `${PAUSED_MARK} 目标已暂停 ${turnsUsed}/${maxTurns} 轮`

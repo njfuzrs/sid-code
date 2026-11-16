@@ -10,7 +10,11 @@ import type { LocalCommandResult } from "../../types.ts";
 import { createGoal } from "@sid-code/core/goal/state.ts";
 import type { GoalState, GoalStatus } from "@sid-code/core/goal/state.ts";
 import { buildFirstTurnPrompt, buildResumeTurnPrompt } from "@sid-code/core/goal/reminder.ts";
-import { DEFAULT_GOAL_CONFIG, resolveGoalEvaluatorModel } from "@sid-code/core/goal/config.ts";
+import {
+  DEFAULT_GOAL_CONFIG,
+  GOAL_TURNS_NEAR_LIMIT_RATIO,
+  resolveGoalEvaluatorModel,
+} from "@sid-code/core/goal/config.ts";
 import type { GoalEvaluatorSource } from "@sid-code/core/goal/config.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
@@ -158,7 +162,7 @@ function showGoalStatus(ctx: CommandContext): LocalCommandResult {
     goal.lastEvalReason ? `上次评估: ${goal.lastEvalReason}` : "",
     evaluatorLine(ctx),
     ``,
-    `提示: 达最大轮次或 Token 预算前，模型会持续推进直至目标达成；随时可按 ESC 介入，或用 /goal turns <n> 调整轮次上限、/goal pause 暂停。`,
+    `提示: 达最大轮次或 Token 预算前，模型会持续推进直至目标达成；轮次用掉 ${Math.round(GOAL_TURNS_NEAR_LIMIT_RATIO * 100)}% 时会自动提醒模型收尾一次（状态栏同时转黄）；随时可按 ESC 介入，或用 /goal turns <n> 调整轮次上限、/goal pause 暂停。`,
   ].filter(Boolean);
 
   return { type: "text", value: lines.join("\n") };

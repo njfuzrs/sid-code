@@ -118,6 +118,15 @@ export interface TurnCompletePayload {
    * 有了它，ctx_window 耗尽 / 空参数耗尽 / 未识别停止原因不再都只是一个 `other`。
    */
   incomplete_reason?: DoneIncompleteReason;
+  /**
+   * G1/G3：本轮是 **goal 的轮次/预算上限用尽**而收尾（与 `done.goalLimitExceeded` 同源，
+   * 都读 `LoopState.goalLimitExit`）。正常收尾时**不落字段**。
+   *
+   * 与 `incomplete_reason` 并列而不是塞进它：那个字段是 `DoneIncompleteReason` 闭集，
+   * 消费方是 SDK（映射成具体错误码）。goal 预算用尽要的是 `/goal turns` / `/goal budget`，
+   * 不是 `--max-turns`。
+   */
+  goal_limit_exceeded?: { source: "turns" | "budget" };
   /** 本轮模型请求执行的工具调用数（无工具轮为 0） */
   tool_calls_in_turn: number;
   /**
@@ -256,6 +265,7 @@ export function emitTurnComplete(
       stop_reason: args.stopReason,
       stop_reason_kind: "normalized",
       ...(state.incompleteReason ? { incomplete_reason: state.incompleteReason } : {}),
+      ...(state.goalLimitExit ? { goal_limit_exceeded: { source: state.goalLimitExit } } : {}),
       tool_calls_in_turn: args.toolCallsInTurn,
       // 基准缺失（理论上不该发生）时不落字段：落 0 会污染分位数，
       // 而缺失会被 digest 侧原样跳过（它只收 > 0 的值）。
