@@ -175,23 +175,25 @@ describe("P3-1 · goal_budget_warning 必须有生产接线（此前全仓零 se
     expect(ts).not.toContain("goal_budget_warning");
   });
 
-  test("handleGoalGate 把 budgetWarning 带出到 shouldContinue=true 的返回", async () => {
-    // 单元层直接验字段：loop 侧靠它换 reason，漏带一条就是那条路径上的告警丢失。
+  test("handleGoalGate 不再做预算判定（职责已前移到每轮硬约束检查）", async () => {
+    // 2026-11-16 拆分：预算/轮次判定移到 goal/limits.ts 的 checkGoalHardLimits，
+    // 由主循环**每轮**调用。这条锁住"没人把它塞回 gate" —— 塞回来就重新变成
+    // 「模型连续 tool_use 空转时上限一次都不检查」那个事故形态。
+    // 接线本身（loop 侧按 ratio 记 goal_budget_warning）由上面两条 loop 驱动的用例守。
     const goal = createGoal("目标", { maxTurns: 150, tokenBudget: 100000 });
     goal.tokensUsed = 86000;
     const out = await handleGoalGate({
       goal,
       messages: [],
-      turnUsage: { inputTokens: 10, outputTokens: 5, cacheCreationTokens: 0 },
       // minTurnsBeforeEval=2 > goal.turnsUsed=0 → 走「前 N 轮跳过评估」那条 continue
       evalConfig: { minTurnsBeforeEval: 2 } as never,
       blockedDetector: new BlockedDetector(),
     });
     expect(out.result.shouldContinue).toBe(true);
-    expect(out.result.budgetWarning).toBe(true);
-    // 告警文案本来就在注入（这部分从来没坏），一并锁住避免"修接线时把文案弄丢"。
-    expect(out.injectMessages.length).toBeGreaterThan(0);
-    expect(out.systemMessages.some((m) => m.text.includes("预算预警"))).toBe(true);
+    // 预算告警文案与 status 都不再由 gate 产出。
+    expect(out.injectMessages).toEqual([]);
+    expect(out.systemMessages.some((m) => m.text.includes("预算预警"))).toBe(false);
+    expect(goal.status).toBe("active");
   });
 
   test("ContinueReason 闭集里每个变体都有生产引用（反漂移）", () => {
