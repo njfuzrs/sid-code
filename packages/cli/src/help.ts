@@ -69,7 +69,9 @@ LLM 配置:
   --plugin-dir <path>         会话级插件目录（可重复：--plugin-dir A --plugin-dir B）
 
 配置源:
-  --settings <file-or-json>   额外 settings 源（文件路径或内联 JSON，最后一层覆盖）
+  --settings <file-or-json>   额外 settings 源（文件路径或内联 JSON）
+                              进 getSettings 视野（permissions、stallHardStop 等生效）；
+                              model/theme/goal/maxTurns 等 config 字段与 hooks 不生效
   --setting-sources <sources>
                               限定加载的 settings 源（逗号分隔，子集：user/project/local）
 

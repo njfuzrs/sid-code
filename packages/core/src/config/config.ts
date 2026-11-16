@@ -500,7 +500,21 @@ export interface Config {
   // 配置源控制（P1-5 / P1-6）
   /**
    * 额外的 settings 源（--settings <file-or-json>）：文件路径或内联 JSON 字符串。
-   * 优先级高于常规 user/project/local 三源，作为最后一层覆盖。运行时字段，不落盘。
+   * 运行时字段，不落盘。
+   *
+   * ⚠️ **作用范围只到 settings 视野，不到 Config 对象。** 它被注入 `flagSettings` 内存源，
+   * 由 `getSettings()` / `getSettingsForSource("flagSettings")` 消费，在 `SETTING_SOURCES`
+   * 合并链里高于 local、**低于 policySettings**。
+   *
+   * `loadConfig()` 构造的 Config **完全不吃这个源**：`loadConfigFile()` 只读磁盘的
+   * `~/.sid-code/settings.json` + project/local 行为白名单 overlay，全程不取 flagSettings。
+   * 所以 `--settings '{"model":...}'` / `'{"theme":...}'` / `'{"goal":...}'` 这类只走 Config
+   * 的字段**静默无效**——要覆盖它们，写进 `~/.sid-code/settings.json` 或对应环境变量。
+   *
+   * 这条注释改写过一次：修前写的是「优先级高于常规 user/project/local 三源，作为最后一层覆盖」，
+   * 读者会理解成「对 Config 也生效」。2026-11-16 的核查正是被它误导，把「--settings 不生效」
+   * 误判成「goal 配置未接线」，从而多花了一轮排查。行为锁在
+   * `packages/core/tests/config/settings-flag-scope.test.ts`。
    */
   extraSettings?: string;
   /**
