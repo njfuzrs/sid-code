@@ -2770,7 +2770,15 @@ async function* queryLoopBody(
                 : state.goalReminderPendingAfterCompact
                   ? "after_compact"
                   : "periodic";
-            reminderParts.push(buildGoalReminder(goal));
+            // G5：等待版文案的判据与 goal-gate 的 G2 同源——只认**显式声明**的外部等待
+            // （monitor / 唤醒 / 带期限的后台命令）。用 hasPromisedWait 会把派生子代理、
+            // 普通后台 shell 也算进来，那类只承诺「自己结束时回报」，不构成
+            // 「目标在等外部状态」的证据。注入频率已受 reminderInterval 约束，无需额外节流。
+            reminderParts.push(
+              buildGoalReminder(goal, {
+                waitingSources: listWaits().filter(isDeclaredExternalWait),
+              }),
+            );
             state.lastGoalReminderTurn = state.turnCount;
             state.goalReminderPendingAfterCompact = false;
             log.info("QUERY_LOOP", `Goal 状态回注（第 ${goal.turnsUsed} 轮）`);
