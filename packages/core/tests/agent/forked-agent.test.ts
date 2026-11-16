@@ -479,7 +479,10 @@ describe("缺陷 7：fork 工具定义不按 canUseTool 裁剪（prompt cache �
     const extract = buildExtractPrompt("(空)");
     expect(extract).toContain("不要验证");
     expect(extract).toMatch(/不要跑 git/);
-    expect(buildDreamPrompt("(空)")).toContain("不要为核实去查项目");
+    // 「不要为 X 去查项目」是判据本体，X 的具体措辞会随方案演进（本 PR 把「核实」
+    // 放宽成「验证某条结论是否仍然成立」，同时允许只读核对锚点路径）。
+    // 这里匹配结构而不是整句，否则每次改文案都要同步一次断言。
+    expect(buildDreamPrompt("(空)")).toMatch(/不要为「[^」]+」去查项目/);
   });
 });
 
