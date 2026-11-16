@@ -253,6 +253,14 @@ jobs:
           bun test --shard=${{ matrix.shard }}/${{ matrix.total }} ${{ matrix.retry }} 2>&1 \
             | tee "$RUNNER_TEMP/bun-test.log"
 
+      # ⚠️ **临时步骤（本 PR 专用，验证完即删除）**：拿 20 次 macOS runner 上的样本，
+      # 确认 max-duration-budget 的 500ms 时序余量够用。放在一个 job 里跑，
+      # 不需要触发 20 轮 CI。刻意**不带 `--retry`** —— 重试会掩盖要观测的那次失败。
+      - name: 临时验证 max-duration 预算用例余量（本 PR 专用，验证后删除）
+        if: matrix.os == 'macos-latest' && matrix.shard == 1
+        shell: bash
+        run: bun test ./packages/core/tests/query/max-duration-budget.test.ts --rerun-each=20
+
       # --retry 的配套对冲（缺了这一步就不许开 --retry，见 matrix 上方注释）：
       # 把「本轮重试了几条用例」变成 CI 上看得见的一行。
       # bun 对重试过的用例会输出 `(attempt N)`（2026-11-15 实测：转绿是
