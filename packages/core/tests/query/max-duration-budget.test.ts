@@ -78,15 +78,54 @@ function summaryResp(): AccumulatedResponse {
 }
 
 /**
- * 把「未来 ms 毫秒后过期」换算成 `maxDurationMs`。
+ * 时间预算的三种表示：换算出的 `maxDurationMs`、同一个 deadline 的墙钟时刻、以及调用方给的余量。
+ *
+ * 三者必须一起带着走：`maxDurationMs` 是**从进程启动算**的绝对值（测试进程启动了几百毫秒，
+ * 所以它远大于余量），只用它报错会把人引去算错数。
+ */
+interface Budget {
+  maxDurationMs: number;
+  /** 只给测试内部等待用（`slowEachTurn`），不参与产品逻辑 */
+  deadlineWall: number;
+  /** 调用方给的余量，只用于报错文本 */
+  marginMs: number;
+}
+
+/** 「不限」：`maxDurationMs` 为 0 时 loop 里判 `> 0`，与 undefined 同义。 */
+const UNLIMITED_BUDGET: Budget = { maxDurationMs: 0, deadlineWall: 0, marginMs: 0 };
+
+/**
+ * 设了时间预算的用例应有的模型调用次数：第 1 轮（tool_use）+ 强制总结轮。
+ * 少于它就是「第 1 轮没跑」，见 `setup()` 里 `drain()` 的注释。
+ */
+const CALLS_WITH_BUDGET = 2;
+
+/** 时间预算的余量（ms）。必须远大于 `O`（第 1 轮开始前的冷启动开销），见 `budgetExpiringIn`。 */
+const BUDGET_MARGIN_MS = 500;
+
+/**
+ * 把「未来 ms 毫秒后过期」换算成 `maxDurationMs`，并记下同一 deadline 的墙钟时刻。
  *
  * ⚠️ **不能直接传一个极小的 `maxDurationMs`**（比如 1）：它的基准是**进程启动时刻**
  * （见 `config.ts` 该字段注释），而 bun test 进程此刻已经跑了几百毫秒到几秒，
  * 于是 `processStartMs + 1` 在过去 —— 第 1 轮都进不去，测到的是「一进来就退出」
  * 而不是「跑完第 1 轮后到点」。这正是本文件第一版写下时的错（3 条断言全红）。
+ *
+ * ⚠️ **余量 `ms` 必须大于 `O`**：`O` = 本函数求值完成 → 第 1 轮开始前的 deadline
+ * 检查点（`loop.ts` 的 `Date.now() >= state.deadlineAt`）执行之间耗掉的时间，
+ * 主要由**进程内第一次跑 `queryLoop` 的冷启动**决定（2026-11-16 本机实测约 28ms；
+ * 整文件跑时它落在排第一的用例上，用 `-t` 单跑则每条都会吃一次）。
+ * 原先这里取 15ms，小于冷启动开销，于是 2026-11-16 的 macOS CI 上 `:162` 收到
+ * `turns = 0`（缺陷记录见 docs-research 私有库同名文档）。现在取 500ms，
+ * 约 16 倍余量：`slowEachTurn` 负责构造不等式另一侧（每轮跨过 deadline），
+ * `setup().drain()` 的前提断言负责在 `O` 再变大时报出「余量不够」而不是死在别处。
  */
-function budgetExpiringIn(ms: number): number {
-  return Math.round(process.uptime() * 1000) + ms;
+function budgetExpiringIn(ms: number): Budget {
+  return {
+    maxDurationMs: Math.round(process.uptime() * 1000) + ms,
+    deadlineWall: Date.now() + ms,
+    marginMs: ms,
+  };
 }
 
 /**
@@ -96,7 +135,7 @@ function budgetExpiringIn(ms: number): number {
  * 必须按**调用序号**而不是"内容判断"来分派：强制总结轮的 messages 里确实有总结提示，
  * 但正常轮次经过压缩/提醒注入后也可能含「总结」字样，按内容判会误分派。
  */
-function setup({ maxDurationMs, toolTurns }: { maxDurationMs: number; toolTurns: number }) {
+function setup({ budget, toolTurns }: { budget: Budget; toolTurns: number }) {
   const ctxMgr = new ContextManager({ maxTokens: 200000 });
   ctxMgr.setSystemPrompt("test");
   ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "请完成一个复杂任务" }] });
@@ -116,7 +155,7 @@ function setup({ maxDurationMs, toolTurns }: { maxDurationMs: number; toolTurns:
 
   const sessionState = new SessionState("test-max-duration-budget");
   const loopConfig: QueryLoopConfig = {
-    config: makeConfig({ maxDurationMs }),
+    config: makeConfig({ maxDurationMs: budget.maxDurationMs }),
     ctxMgr,
     toolRegistry: new ToolRegistry(),
     sessionState,
@@ -124,33 +163,69 @@ function setup({ maxDurationMs, toolTurns }: { maxDurationMs: number; toolTurns:
     deps,
   };
 
-  return { loopConfig, ctxMgr };
+  return {
+    loopConfig,
+    ctxMgr,
+    budget,
+    /** 模型被调用的次数 = 真正跑过的轮数 + 是否跑了强制总结轮 */
+    modelCalls: () => call,
+    /**
+     * 跑完整个循环，并校验设了时间预算时的**时序前提**。
+     *
+     * 本文件三条带 `maxDurationMs` 的用例都要求「第 1 轮真的跑过，第 2 轮开始前到点」。
+     * 前提不成立（余量 `M` 小于冷启动开销 `O`，见 `budgetExpiringIn` 的注释）时，
+     * 三条用例的失败形态各不相同、且**都不指向真因**：
+     * - 「不白占一格」那条会收到 `turns = 0`，看起来像产品多算了一轮；
+     * - 「强制总结」那条报「总结轮不存在」（`setup` 的 mock 按调用序号分派，
+     *   第 1 轮没跑时强制总结轮拿到的是 tool_use），看起来像出口坏了；
+     * - 只断言 `max_duration` 的那条**静默**走过「第 1 轮前就到点」，什么都没测到。
+     * 所以在出口处统一断言模型恰好被调 2 次，让前提失败直接说人话。
+     */
+    async drain() {
+      const events: any[] = [];
+      for await (const ev of queryLoop(loopConfig)) events.push(ev);
+      if (budget.maxDurationMs > 0) {
+        expect(
+          call,
+          `前提不成立：模型被调了 ${call} 次，期望 ${CALLS_WITH_BUDGET} 次（第 1 轮 + 强制总结轮）。` +
+            `第 1 轮开始前就命中了 deadline 检查点 —— 冷启动开销 O 吃掉了余量 M=${budget.marginMs}ms，` +
+            `调大 budgetExpiringIn 的余量，不要改断言。`,
+        ).toBe(CALLS_WITH_BUDGET);
+      }
+      return events;
+    },
+  };
 }
 
-/** 让每轮真实耗时越过 deadline —— 不用假时钟，避免「测的是 mock 不是时钟」。 */
-function slowEachTurn(loopConfig: QueryLoopConfig, ms = 25) {
+/**
+ * 让每轮真实耗时越过 deadline —— 不用假时钟，避免「测的是 mock 不是时钟」。
+ *
+ * 早先是固定 `sleep(25)` 配合 15ms 余量，靠「25 > 15」保证第 2 轮开始前必然到点。
+ * 那把「本轮要够长」和「本轮之前不能到点」压成两个常数之间的配比：余量一抖就破
+ * （2026-11-16 的 macOS flake 就是这么来的）。现在直接等过 deadline，
+ * 不等式 `O + S > M` 由构造保证（`S` 不再是常数），只剩 `O < M` 需要余量。
+ */
+function slowEachTurn(loopConfig: QueryLoopConfig, deadlineWall: number) {
   const original = loopConfig.deps.processStream;
   loopConfig.deps.processStream = async (...args: any[]) => {
     const r = await (original as any)(...args);
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    // +2ms：`loop.ts` 用 `Date.now() - round(uptime()*1000)` 反推进程启动时刻，
+    // 与 `budgetExpiringIn` 里那次 `uptime()` 之间有不到 1ms 的取整误差。
+    while (Date.now() <= deadlineWall + 2) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     return r;
   };
 }
 
-async function drainLoop(loopConfig: QueryLoopConfig) {
-  const events: any[] = [];
-  for await (const ev of queryLoop(loopConfig)) events.push(ev);
-  return events;
-}
-
 describe("T10b：墙钟总预算（--max-duration-ms）", () => {
   test("到点后以 incompleteReason=max_duration 收尾，且不再产出 max_turns", async () => {
-    // 预算在「进程启动后 15ms」过期；第 1 轮里 sleep 25ms 越过它 ——
+    // 预算在「进程启动后 500ms」过期；`slowEachTurn` 让第 1 轮跨过它 ——
     // 于是第 2 轮开始前的检查点必然命中。用真实时钟，不塞假位。
-    const { loopConfig } = setup({ maxDurationMs: budgetExpiringIn(15), toolTurns: 1 });
-    slowEachTurn(loopConfig);
+    const loop = setup({ budget: budgetExpiringIn(BUDGET_MARGIN_MS), toolTurns: 1 });
+    slowEachTurn(loop.loopConfig, loop.budget.deadlineWall);
 
-    const events = await drainLoop(loopConfig);
+    const events = await loop.drain();
     const done = events.find((e) => e.kind === "done");
 
     expect(done).toBeDefined();
@@ -160,10 +235,10 @@ describe("T10b：墙钟总预算（--max-duration-ms）", () => {
   });
 
   test("到点检查发生在轮次自增之前：不白占一格预算", async () => {
-    const { loopConfig } = setup({ maxDurationMs: budgetExpiringIn(15), toolTurns: 1 });
-    slowEachTurn(loopConfig);
+    const loop = setup({ budget: budgetExpiringIn(BUDGET_MARGIN_MS), toolTurns: 1 });
+    slowEachTurn(loop.loopConfig, loop.budget.deadlineWall);
 
-    const events = await drainLoop(loopConfig);
+    const events = await loop.drain();
     const done = events.find((e) => e.kind === "done");
 
     // 只跑了第 1 轮就因到点退出：turns 应为 1（第 1 轮真的跑过），
@@ -172,10 +247,10 @@ describe("T10b：墙钟总预算（--max-duration-ms）", () => {
   });
 
   test("到点后仍然跑强制总结轮（与 maxTurns 共用出口）", async () => {
-    const { loopConfig, ctxMgr } = setup({ maxDurationMs: budgetExpiringIn(15), toolTurns: 1 });
-    slowEachTurn(loopConfig);
+    const loop = setup({ budget: budgetExpiringIn(BUDGET_MARGIN_MS), toolTurns: 1 });
+    slowEachTurn(loop.loopConfig, loop.budget.deadlineWall);
 
-    const events = await drainLoop(loopConfig);
+    const events = await loop.drain();
     const summary = events.find(
       (e) =>
         e.kind === "assistant_message" &&
@@ -188,7 +263,7 @@ describe("T10b：墙钟总预算（--max-duration-ms）", () => {
 
     // 总结轮的提示写进历史，且措辞是「时间预算」不是「轮次」——
     // 说成轮次会让模型以为还能再跑几轮，总结里写「下一轮继续」。
-    const messages = ctxMgr.getMessages();
+    const messages = loop.ctxMgr.getMessages();
     const injected = messages.find(
       (m) =>
         m.role === "user" &&
@@ -203,9 +278,9 @@ describe("T10b：墙钟总预算（--max-duration-ms）", () => {
   test("不限（maxDurationMs 未设或为 0）时行为与改动前一致：一直跑到 maxTurns", async () => {
     // 0 就是「不限」（loop 里判 `> 0`），与 undefined 同义。
     // toolTurns=3 = maxTurns：前三轮 tool_use 逼到上限，第 4 次调用是强制总结轮。
-    const { loopConfig } = setup({ maxDurationMs: 0, toolTurns: 3 });
-    loopConfig.config.maxTurns = 3;
-    const events = await drainLoop(loopConfig);
+    const loop = setup({ budget: UNLIMITED_BUDGET, toolTurns: 3 });
+    loop.loopConfig.config.maxTurns = 3;
+    const events = await loop.drain();
     const done = events.find((e) => e.kind === "done");
 
     expect(done.incompleteReason).toBeUndefined();
