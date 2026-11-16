@@ -69,7 +69,17 @@ describe("R4 §1.3 的 44 条真实命令（ca8d7e5c 窗口）", () => {
     expect(Math.max(...sigs.values())).toBe(31);
   });
 
-  test("44 条的 subject 只有三个对象（gh:pr:780 / gh:run:43203650726 / run list）", () => {
+  test("44 条的 subject 落在 4 种写法上（含 2 个多段并集形态）", () => {
+    // P1（2026-11-16）**契约变更**：多段查询的 subject 取**并集**（排序后 `+` 拼接）。
+    // 本窗口里有「先 gh pr view、再 gh run view / gh run list」的双查询命令，
+    // 于是对象的写法从 3 个变成 4 个 —— 这是方案 §4.6 第 5 条要求的改动，不是回归：
+    // 输出是两段 stdout 的拼接，只说最后一段会让回执漏说「这次还查了另一个对象」。
+    // (`gh run list` 在本窗口里**只以并集形态**出现，所以没有它的单对象形态。)
+    //
+    // 代价（写在这里，避免下一个人以为它是 bug）：`describeWaitRelation` 与 monitor 的
+    // 覆盖判定用 `subjects.includes(subject)` 精确匹配，并集形态匹配不上单对象登记 →
+    // 这几条命令回到 120s 探测窗口。方向是**多放行**（安全），但覆盖优化的收益在这类
+    // 多段命令上归零。单段命令（本窗口多数）完全不受影响。
     const subjects = new Set<string>();
     for (const row of rows) {
       const m = matchStatusQuery(row.command);
@@ -77,8 +87,9 @@ describe("R4 §1.3 的 44 条真实命令（ca8d7e5c 窗口）", () => {
     }
     expect([...subjects].sort()).toEqual([
       "gh:pr:780",
+      "gh:pr:780+gh:run:43203650726",
+      "gh:pr:780+gh:run:list:fix/tool-input-unknown-keys",
       "gh:run:43203650726",
-      "gh:run:list:fix/tool-input-unknown-keys",
     ]);
   });
 });

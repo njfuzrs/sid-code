@@ -207,7 +207,13 @@ describe("R2 同一对象的第二个等待", () => {
     killShellTask(bId);
   });
 
-  test("抽不出对象的第二个等待照常启动（抽不出就不参与去重）", async () => {
+  // P4（2026-11-16）**契约变更**：抽不出对象时不再「一律放行」，改按
+  // 「归一化命令 + 脚本正文 hash」判重复（方案 §4.9）。`sleep 30` 两次是同一条命令、
+  // 且双方都没有脚本（hash 都是 undefined）→ 第二次判 duplicate、不 spawn。
+  //
+  // 旧期望（「抽不出就不参与去重」）正是 b0aa0f1e 四个同脚本进程能同时跑四份的原因：
+  // 对象只写在脚本注释里、抽取正则没命中，于是四次全部放行。
+  test("抽不出对象时按命令 + 脚本 hash 去重：同命令第二次不启动", async () => {
     const a = await tool.execute({
       command: "sleep 30",
       run_in_background: true,
@@ -215,6 +221,25 @@ describe("R2 同一对象的第二个等待", () => {
     });
     const b = await tool.execute({
       command: "sleep 30",
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    const aId = (JSON.parse(a.output) as { task_id: string }).task_id;
+    expect(aId).toBeTruthy();
+    // duplicate 回执是文本（不是 task JSON），且必须给出 task_stop 出口
+    expect(b.output).toContain("本次未重复启动");
+    expect(b.output).toContain(`task_stop ${aId}`);
+    killShellTask(aId);
+  });
+
+  test("抽不出对象但命令不同 → 照常启动（不误伤并行的无关等待）", async () => {
+    const a = await tool.execute({
+      command: "sleep 30",
+      run_in_background: true,
+      wait_until_seconds: 600,
+    });
+    const b = await tool.execute({
+      command: "sleep 31",
       run_in_background: true,
       wait_until_seconds: 600,
     });

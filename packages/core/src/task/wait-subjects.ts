@@ -30,6 +30,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, resolve as resolvePath } from "node:path";
 import { splitShellSubcommands, splitShellWords } from "../tool/bash/parser.ts";
 import {
   type StatusQueryFamily,
@@ -52,9 +54,10 @@ export const MAX_SCRIPT_BODY_BYTES = 64 * 1024;
  *
  * - `command`：bash 命令原文（前台 / 后台都算；monitor 的脚本正文也走这里）
  * - `prompt`：唤醒的自然语言描述
- * - `scriptBodies`：命令调用到的脚本文件**正文**（由调用方读取后传入）。
- *   本模块刻意不碰 I/O：读文件牵扯 cwd、权限、大小上限，全在 bash 工具那一侧才拿得准，
- *   而纯函数才好测。
+ * - `scriptBodies`：命令调用到的脚本文件**正文**（由 {@link readWaitScriptBodies} 读出后传入）。
+ *   读取本身集中在本模块的 `readWaitScriptBodies`（P3，2026-11-16）：bash 与 monitor
+ *   两个入口都要展开脚本，各写一份的话「同一份脚本在两个入口抽出不同对象」会成为
+ *   隐性不一致；而抽取函数本身仍是纯的（正文从参数进），好测。
  */
 export interface WaitSubjectSources {
   command?: string;
@@ -160,8 +163,8 @@ function scriptPathOf(segment: string): string | null {
 /**
  * 命令里**字面出现**的脚本文件路径（纯识别，不读文件）。
  *
- * 读文件由调用方做（bash 工具的 `readWaitScriptBodies`）：只有那一侧才知道解析后的 cwd，
- * 也只有那一侧该承担「读不到就跳过」的决定。
+ * 读取交给 {@link readWaitScriptBodies}：cwd 只有调用方知道，而「读不到就跳过」的
+ * 决定也属于调用方（bash 侧的命令本来就要被 shell 执行，读它不扩大访问面）。
  *
  * 不递归：脚本 A 里再调 `bash B` 不会展开到 B。真实等待脚本都是一层，
  * 递归展开要处理自引用与深度上限，换来的收益在取证会话里一次都没出现。
@@ -173,6 +176,36 @@ export function extractScriptPaths(command: string): string[] {
     if (path) out.add(path);
   }
   return [...out];
+}
+
+/**
+ * 把命令调用到的脚本文件正文读出来（P3，2026-11-16 从 bash.ts 抽到此处）。
+ *
+ * 为什么必须读文件：`bash /tmp/wait-pr-779.sh` 的命令行上一个字都没有，对象写在文件里
+ * （b0aa0f1e / 8b8d721f 的四个脚本全是这个形态）。不展开就等于没抽。
+ *
+ * 为什么必须共享：bash 的 `planWaitUntil` 与 monitor 的准入判定都要抽对象。
+ * 抽取函数在 bash 私有方法里时，monitor 侧只能拿命令行原文去抽 —— 而 monitor 的
+ * `command` 恰好就是脚本正文，不是文件路径，于是「同一件事」在 bash 与 monitor
+ * 两个入口抽出两套对象（R2 去重判不出重复）。
+ *
+ * 四条保守边界（都是为了「抽不到就为空」这个方向）：读不到 / 不是普通文件 / 超过
+ * {@link MAX_SCRIPT_BODY_BYTES} / 只认命令里字面出现的路径（不跟随 `source`、不递归）。
+ */
+export function readWaitScriptBodies(command: string, cwd: string): string[] {
+  const bodies: string[] = [];
+  for (const raw of extractScriptPaths(command)) {
+    try {
+      const abs = isAbsolute(raw) ? raw : resolvePath(cwd, raw);
+      const stat = statSync(abs);
+      if (!stat.isFile() || stat.size > MAX_SCRIPT_BODY_BYTES) continue;
+      bodies.push(readFileSync(abs, "utf8"));
+    } catch {
+      // 不存在 / 无权限 / 是目录：跳过。抽不到 subject 只是回到改造前，不是错误，
+      // 更不能因为它让一条本来能跑的命令登记失败。
+    }
+  }
+  return bodies;
 }
 
 /** 统一入口：bash / monitor / schedule_wakeup 三处都调它 */

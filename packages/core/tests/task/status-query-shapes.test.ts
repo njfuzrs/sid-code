@@ -289,7 +289,11 @@ describe("N3 只读过滤管道", () => {
     const a = matchStatusQuery(
       `gh pr checks 701 2>&1 | head -20; echo '---'; gh api repos/o/r/commits/abc123/check-runs -q '.check_runs[] | {name,status,conclusion}' 2>&1 | head -20`,
     );
-    expect(a?.subject).toBe("gh:commit:abc123");
+    // P1（2026-11-16）**契约变更**：多段查询的 subject 取**并集**（排序后 `+` 拼接），
+    // 不再是「最后一段」。理由：输出是两段 stdout 的拼接，只报一个对象会让回执漏说
+    // 「这次还查了另一个对象」，memo 也按一个对象记账（方案 §4.6 第 5 条）。
+    // 代价：等待表的覆盖判定对这类多段命令会失配 → 回到 120s 探测窗口（方向是多放行，安全）。
+    expect(a?.subject).toBe("gh:commit:abc123+gh:pr:701");
     expect(a?.family).toBe("gh_api_checks");
     // 签名含两条查询（形态不同 → 不共享 memo），但不含 echo
     expect(a?.signature).toContain("gh pr checks 701");
@@ -299,7 +303,7 @@ describe("N3 只读过滤管道", () => {
     const b = matchStatusQuery(
       `gh api repos/o/r/commits/abc123/check-runs -q '.check_runs[]' 2>&1 | head -10; echo '=== PR ==='; gh pr view 701 --json state,mergeStateStatus --jq '{state,mergeStateStatus}'`,
     );
-    expect(b?.subject).toBe("gh:pr:701");
+    expect(b?.subject).toBe("gh:commit:abc123+gh:pr:701");
     expect(b?.family).toBe("gh_pr_view");
   });
 });

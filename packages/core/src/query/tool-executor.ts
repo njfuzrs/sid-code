@@ -52,8 +52,11 @@ import {
   emitBackgroundPollIntercepted,
 } from "../task/background-poll-guard.ts";
 // P1：等待期前台外部状态查询的拦截（与上面的 Q1 是同一条主循环入口，判据不同）
+// P5：同一入口的会话级计数升级（第 5 次提示 / 第 15 次硬拦），计数存 SessionState
 import {
   checkStatusQueryPoll,
+  defaultStatusPollContext,
+  getWaitPollEscalation,
   recordStatusQueryResult,
   markStatusPollIntervened,
   STATUS_POLL_INTERCEPT_KIND,
@@ -1641,7 +1644,12 @@ export async function executeSingleTool(
   // P1：等待期「查外部状态」——有等待源 + 命令是只读状态查询 + 结果与上次相同 → 不执行。
   // 与上面 Q1 同一位置、同一收尾方式，区别只在判据（Q1 看后台任务在跑，P1 看等待源 + 输出签名）。
   // 放在 Q1 之后：Q1 命中的（看后台任务输出文件）不该再被当成外部状态查询解释一遍。
-  const statusPoll = checkStatusQueryPoll(block.name, executedInput);
+  // P5：注入会话级计数（第 5 次提示 / 第 15 次硬拦）。计数存 `SessionState` 而不是 memo——
+  // memo 是进程级单例，跨会话、跨多段等待累积，会把「本次等待的第 15 次」算成「整个进程的」。
+  const statusPoll = checkStatusQueryPoll(block.name, executedInput, {
+    ...defaultStatusPollContext(),
+    escalation: getWaitPollEscalation(deps.sessionState),
+  });
   if (statusPoll.intercept) {
     log.info("TOOL", `P1：拦截等待期外部状态查询 ${block.name}（${statusPoll.subject}）`);
     emitBackgroundPollIntercepted({
@@ -1802,6 +1810,9 @@ export async function executeSingleTool(
     const prefixNotices: string[] = [];
     const suffixNotices: string[] = [];
     if (unknownKeysNotice) prefixNotices.push(unknownKeysNotice);
+    // P5：本次等待期间第 5 次查询的提示。只在**放行**时追加 —— 被 P1 拦下的那次，
+    // 回执里已经有「不要反复查询」，再叠一段计数只是噪音。
+    if (!statusPoll.intercept && statusPoll.hint) suffixNotices.push(statusPoll.hint);
     const replaced = result.isError
       ? undefined
       : postResult.finalOutput?.getUpdatedToolOutput?.(isMcpTool);

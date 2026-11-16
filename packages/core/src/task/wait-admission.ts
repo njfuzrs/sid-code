@@ -17,10 +17,10 @@
  *
  * ## 三个动作
  *
- * - `start`：没有同对象的等待，或本次等待抽不出对象签名（R2 修法 4：抽不出就放行——
- *   把两个无关的后台任务判成重复，比多起一个进程更糟）；
+ * - `start`：没有同对象的等待，或本次等待连**命令**都抽不出来（表外形态，不猜）；
  * - `duplicate`：同一件事的重复（同对象 + 命令归一化相同且脚本正文未变 / 新期限落在
- *   已有等待剩余期限之内）。**不启动**，直接返回回执，`isError: false`；
+ *   已有等待剩余期限之内）；抽不出对象时按「同一条归一化命令 + 同一份脚本正文」判
+ *   （P4，2026-11-16）。**不启动**，直接返回回执，`isError: false`；
  * - `replace`：同对象但换了一种等法（脚本改了、从唤醒换成后台循环）。R2 只判定不执行淘汰，
  *   启动新的、旧的照旧跑——淘汰见 R6。这里返回 `replace` 而不是塞进 `start`，是为了让
  *   R6 能只改调用点、不再动判据。
@@ -133,8 +133,12 @@ function decideWaitAdmissionCore(
   subjects: string[],
   now: number,
 ): WaitAdmissionDecision {
-  // R2 修法 4：抽不出对象签名 → 不参与去重，行为与改动前一致
-  if (subjects.length === 0) return { action: "start", existing: [] };
+  // P4（2026-11-16）：抽不出对象**不再直接放行**，改按「命令 + 脚本 hash」判重复。
+  //
+  // 原先这里写「抽不出对象签名 → 不参与去重，行为与改动前一致」，本意是「表外命令不猜」，
+  // 实际后果是 b0aa0f1e 那四个自定义脚本（`bash /tmp/wait-pr-779.sh`，对象只写在脚本注释里、
+  // 抽取正则没命中）**可以同时起四份** —— 而那正是这次事故的主形态之一。
+  if (subjects.length === 0) return decideWaitAdmissionWithoutSubjects(input, now);
 
   const existing = findActiveWaitsBySubjects(subjects, now).filter(
     (src) => input.id === undefined || src.id !== input.id,
@@ -169,6 +173,44 @@ function decideWaitAdmissionCore(
     }
   }
   return { action: "replace", existing };
+}
+
+/**
+ * 抽不出对象时的准入判定（P4，2026-11-16）。
+ *
+ * 判据只有一条：**归一化命令相同**（`bash /tmp/x.sh` 与 `cd /tmp && bash /tmp/x.sh`
+ * 归一化后是同一件事），再按脚本正文 hash 分成两个动作：
+ *
+ * - 双方 hash 相等（含双方都没有脚本）→ `duplicate`：同一条命令再挂一次，收到的通知
+ *   与已有等待完全相同，没有信息增量；
+ * - hash 不同（脚本改过，或一边有一边没有）→ `replace`：内容变了就是新的等待。
+ *
+ * 刻意**不用**判据 2（新期限更短就算重复）：没有对象时，「换了个说法」与「确实想再等
+ * 一件无关的事」分不开，拿期限判定会把 `sleep 30` 这类无害等待也吞掉。
+ * 方向是「宁可少拦」——但「同一份脚本连挂四次」这个真实事故形态必须拦住。
+ */
+function decideWaitAdmissionWithoutSubjects(
+  input: WaitAdmissionInput,
+  now: number,
+): WaitAdmissionDecision {
+  const incoming = input.command ? normalizeWaitCommand(input.command) : undefined;
+  // 连命令都没有（唤醒只给了自然语言 prompt）：不猜，放行
+  if (incoming === undefined) return { action: "start", existing: [] };
+
+  const sameCommand = listWaits(now).filter(
+    (src) =>
+      isDeclaredExternalWait(src) &&
+      (input.id === undefined || src.id !== input.id) &&
+      src.command !== undefined &&
+      normalizeWaitCommand(src.command) === incoming,
+  );
+  if (sameCommand.length === 0) return { action: "start", existing: [] };
+
+  // `undefined === undefined` → 双方都没有脚本也算同一份（命令行直接写循环的形态）
+  const sameScript = sameCommand.filter((src) => src.scriptHash === input.scriptHash);
+  return sameScript.length > 0
+    ? { action: "duplicate", existing: sameScript }
+    : { action: "replace", existing: sameCommand };
 }
 
 /**

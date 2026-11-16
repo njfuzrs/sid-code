@@ -51,6 +51,7 @@ export type StatusQueryFamily =
   | "gh_pr_checks"
   | "gh_pr_view"
   | "gh_pr_status"
+  | "gh_pr_list"
   | "gh_run_view"
   | "gh_run_watch"
   | "gh_run_list"
@@ -100,6 +101,14 @@ interface RuleMatch {
    * 否则回执里说的对象与 monitor 盯的对象对不上（S2 撤销会失配）。
    */
   prefix?: string;
+  /**
+   * 签名片段的覆盖值（默认取该段的命令原文）。
+   *
+   * 只有 `gh pr list` 需要它：过滤键的**书写顺序**不影响输出，原文当签名会让
+   * `--state open --json number` 与 `--json number --state open` 各建一个 memo，
+   * 同一批 PR 的列表被当成两个对象交替比较、永远命中不了。
+   */
+  sig?: string;
 }
 
 type Rule = {
@@ -124,6 +133,128 @@ function firstPositional(args: string[], from: number): string | null {
     return a;
   }
   return null;
+}
+
+/**
+ * `firstPositional` 的「跳过 `--limit` 取值」版本（仅 `gh run list` 用）。
+ *
+ * 为什么不能直接用 `firstPositional`：`gh run list --limit 6` 里的 `6` 不以 `-` 开头，
+ * 会被当成位置参数 —— 于是 limit 的**取值**成了 subject 的一部分（`gh:run:list:6`），
+ * `--limit 5` 与 `--limit 6` 变成两个对象，而它们的差别只是截断（D11 要求统一口径）。
+ *
+ * 只跳过 limit 本身（含 `--limit=N` / `-L N` 连写形态），其余 flag 的行为与
+ * `firstPositional` 完全一致：`--branch fix/x` 的值仍会被取到（不同分支是两个对象）。
+ */
+function firstPositionalSkippingLimit(args: string[], from: number): string | null {
+  for (let i = from; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--limit" || a === "-L") {
+      i++; // 跳过取值（下一轮循环自然越过）
+      continue;
+    }
+    if (a.startsWith("--limit=") || /^-L./.test(a)) continue;
+    if (a.startsWith("-") || FD_DUPLICATION.test(a)) continue;
+    return a;
+  }
+  return null;
+}
+
+/**
+ * `gh pr list` 的 flag → 规范键名。
+ *
+ * 为什么要单独一张表（P1，2026-11-16）：`gh pr list --json number,statusCheckRollup`
+ * 是模型在等待期最常用的「一次看一眼所有 PR」写法，而命令表原先只认
+ * `pr checks|view|status`，这类查询**一次都识别不了** —— 不进 memo 比较、
+ * 也不参与 monitor 的覆盖判定。
+ *
+ * 对象前缀与 `gh pr view <n>` **刻意不同**（`gh:prs:` vs `gh:pr:`）：后者盯一个 PR，
+ * 前者列的是一批。共用前缀会让「列出 3 个 PR 的 CI」撞上「盯 662 的 CI」，
+ * 回执会说错对象、S2 撤销也会失配。
+ */
+const GH_PR_LIST_FLAGS: Record<string, string> = {
+  "--state": "--state",
+  "-s": "--state",
+  "--author": "--author",
+  "-A": "--author",
+  "--assignee": "--assignee",
+  "-a": "--assignee",
+  "--label": "--label",
+  "-l": "--label",
+  "--limit": "--limit",
+  "-L": "--limit",
+  "--base": "--base",
+  "-B": "--base",
+  "--head": "--head",
+  "-H": "--head",
+  "--search": "--search",
+  "--draft": "--draft",
+  "-d": "--draft",
+  "--json": "--json",
+  "--jq": "--jq",
+  "-q": "--jq",
+  "--template": "--template",
+  "-t": "--template",
+  "--repo": "--repo",
+  "-R": "--repo",
+};
+
+/** 带**取值**的 flag（其余是布尔开关，如 `--draft`）；漏一个只会让签名偏严（方向安全） */
+const GH_PR_LIST_VALUE_FLAGS = new Set([
+  "--state",
+  "--author",
+  "--assignee",
+  "--label",
+  "--limit",
+  "--base",
+  "--head",
+  "--search",
+  "--json",
+  "--jq",
+  "--template",
+  "--repo",
+]);
+
+/**
+ * `gh pr list` 的匹配：subject 取 `<repo>:<state>`，签名片段按键名排序。
+ *
+ * 签名必须含过滤键与 `--json` / `--jq`（T-P1-2/3）：它们两侧的输出行数与字段完全不同，
+ * 不区分会互相污染 memo（`--json number` 的结果与 `--json author` 的不是一回事）。
+ * `--limit` 进签名但**不进 subject**（T-P1-5）：limit 只截断行数，不改变「查的是哪批 PR」。
+ */
+function matchGhPrList(args: string[]): RuleMatch | null {
+  let repo = "current";
+  let state = "open"; // gh 的默认值；显式 `--state all` 时才变成 all
+  const pairs: string[] = [];
+  for (let i = 2; i < args.length; i++) {
+    const a = args[i]!;
+    if (!a.startsWith("-")) continue; // `gh pr list` 没有位置参数，出现即忽略
+    const eq = a.indexOf("=");
+    const rawKey = eq > 0 ? a.slice(0, eq) : a;
+    const key = GH_PR_LIST_FLAGS[rawKey];
+    // 不认识的 flag（`--web` 会打开浏览器，未来也会有新形态）→ 整条不认。
+    // 「表外不拦」比猜它只读安全：猜错的代价是拦掉一个可能改变外部世界的命令。
+    if (!key) return null;
+    let value = eq > 0 ? a.slice(eq + 1) : "";
+    if (eq <= 0 && GH_PR_LIST_VALUE_FLAGS.has(key)) {
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        value = next;
+        i++;
+      }
+    }
+    if (key === "--repo") repo = value || "current";
+    if (key === "--state") state = value || "open";
+    pairs.push(value === "" ? key : `${key}=${value}`);
+  }
+  // 键名排序是刻意的：书写顺序不影响输出，而原文当签名会让同义命令各建一个 memo，
+  // 同一批 PR 的列表被当成两个对象交替比较、永远命中不了。
+  pairs.sort();
+  return {
+    tail: `${repo}:${state}`,
+    family: "gh_pr_list",
+    prefix: "gh:prs:",
+    sig: `gh pr list ${pairs.join(" ")}`.trim(),
+  };
 }
 
 /**
@@ -191,14 +322,17 @@ function ghApiGetPath(args: string[]): string | null {
  * （`hasPromisedWait()` 为真），不是靠猜。
  */
 const RULES: Rule[] = [
-  // gh pr checks/view/status：CI 状态的主战场（两条事故会话共 183 次调用）
+  // gh pr checks/view/status/list：CI 状态的主战场
   {
     command: "gh",
     kind: "gh_pr",
     match: (args) => {
       if (args[0] !== "pr") return null;
       const sub = args[1];
-      if (!sub || !["checks", "view", "status"].includes(sub)) return null;
+      if (!sub) return null;
+      // P1：`gh pr list` 是「一批 PR 的状态」，对象前缀与单个 PR 不同（见 matchGhPrList）
+      if (sub === "list") return matchGhPrList(args);
+      if (!["checks", "view", "status"].includes(sub)) return null;
       // 命令族按子命令区分（D13）：`gh pr checks` 只报告检查项，`gh pr view --json X`
       // 报告的是 X —— 拿「都是 gh_pr」判覆盖会让模型看不到 monitor 不报告的字段。
       const family: StatusQueryFamily =
@@ -222,8 +356,15 @@ const RULES: Rule[] = [
         };
       }
       if (sub === "list") {
-        const n = firstPositional(args, 2);
-        return { tail: n ? `list:${n}` : "list", family: "gh_run_list" };
+        // D11：`--limit` 只截断行数，不改变「查的是哪一批 run」→ **不进 subject**。
+        // 原先 `firstPositional(args, 2)` 会把 limit 的**取值**当位置参数吃进 subject
+        // （`gh run list --limit 6` → `gh:run:list:6`），于是 `--limit 5` 与 `--limit 6`
+        // 成了两个对象，而它们的差别只是截断 —— 必须与 `gh pr list` 的口径一致。
+        // `--branch <name>` 这类**决定对象集合**的参数仍进 subject（不同分支是两个对象），
+        // 所以这里只跳过 limit 本身，其余照 `firstPositional` 的语义取第一个位置参数。
+        // limit 仍进签名（签名含命令原文）：截断确实会改变输出，不区分会让 memo 互相污染。
+        const branch = firstPositionalSkippingLimit(args, 2);
+        return { tail: branch ? `list:${branch}` : "list", family: "gh_run_list" };
       }
       return null;
     },
@@ -882,25 +1023,44 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
   // 第一个 `head` 属于前一个子命令的管道末端，位置在查询段之前。
   // 只允许「查询段之后」会把这类最常见写法全部漏掉（实测该会话 27/34 条）。
   // 安全性不变：`isReadonlyFilter` 只认不写文件、不持续跟随的一次性过滤命令。
+  //
+  // P1（2026-11-16）：收集**所有**命中段，不再按位置筛「只有 queryIdx 之前的才算查询」。
+  // 原先 `i < queryIdx && hitSegment(seg)` 的判据在「先列 PR、再看 run」这类复合命令上
+  // （`gh pr list … | sort -n && gh run list --limit 6`）虽然能放行，但只把最后一段
+  // 当作唯一查询——subject 与覆盖判定因此漏掉前半段。
+  const queryHits: QueryHit[] = [hit];
   for (let i = 0; i < simple.length; i++) {
     if (i === queryIdx) continue;
     const seg = simple[i]!;
     if (!seg.command) return null;
     if (isHarmlessSegment(seg)) continue;
     if (isReadonlyFilter(seg, heredocBody)) continue;
-    if (i < queryIdx && hitSegment(seg)) continue; // 之前也可以是查询（`gh pr status && gh pr checks 1`）
+    const otherHit = hitSegment(seg);
+    if (otherHit) {
+      queryHits.push(otherHit);
+      continue;
+    }
     return null; // 有不认识的一段 → 可能有写操作，放行
   }
 
-  const subject = mergeDerivedSubject(hit, assigned);
+  // subject 取各命中段的并集（排序后 `+` 拼接）：输出是各段 stdout 的拼接，
+  // 只说最后一段会让回执漏掉「这次还查了别的对象」。单段命令（绝大多数）行为不变。
+  const subject = [...new Set(queryHits.map((h) => mergeDerivedSubject(h, assigned)))]
+    .sort()
+    .join("+");
+
   // 签名里带上整条复合命令（除无害段）：过滤段与前置查询都会改变输出形态，
   // 混用同一个 memo 会互相污染（`| head -10` 的输出与 `| jq …` 的不是一回事）。
   // 无害段（`cd` / `echo` / `sleep`）刻意不计入 —— 轮询时它们常变，查询语义没变。
+  // P1 新增：段级 `sig` 覆盖（`gh pr list` 的过滤键按键名排序）+ 整体排序 ——
+  // 同一组段的不同书写顺序输出相同，不排序会各建一个 memo（永远命中不了）。
   const sigParts: string[] = [];
   for (const seg of simple) {
     if (!seg.command || isHarmlessSegment(seg)) continue;
-    sigParts.push(`${seg.command} ${seg.args.join(" ")}`.trim());
+    const segHit = hitSegment(seg);
+    sigParts.push(segHit?.sig ?? `${seg.command} ${seg.args.join(" ")}`.trim());
   }
+  sigParts.sort();
   return {
     kind: hit.kind,
     family: hit.family,
@@ -1057,17 +1217,45 @@ function normalizeChecksTsv(text: string): string | null {
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
 
 /**
- * 通用归一化：去 ANSI、抹耗时 token、折叠空白。T-P1-9 的「只差耗时列」靠这一条。
+ * 墙钟时间戳：每次输出都在变，但**不携带「状态变没变」的信息**。
+ *
+ * 为什么必须抹（P2，2026-11-16）：`gh run list` 的 CREATED 列是相对时间（已被下面的耗时
+ * 正则抹掉），但模型最常用的轮询写法是 `date '+%H:%M:%S'; gh run list …` ——
+ * `date` 那一段是无害命令、放行了，它产生的**时间戳正文**却让每轮输出的首行都不同，
+ * 签名永远不相等 → P1 一次都拦不住（真实形态：`09:16:25\n#846\tBEHIND\tA`）。
+ *
+ * 抹除范围刻意收窄（多抹一种形态就可能把真实变化吞掉）：
+ * 1. ISO 8601（`2026-11-16T01:16:25Z`）—— 形态足够独特，无条件抹；
+ * 2. 时分秒（`09:16:25`）—— 同样独特，无条件抹；
+ * 3. 裸时分（`09:16`）—— **只在整行仅由它组成，或紧跟 `[` / 行首时**抹。
+ *    裸 `12:34` 可能是比值、版本号片段或表里的其它内容，无条件抹会把真实变化抹平。
+ */
+const ISO_CLOCK_RE =
+  /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+const HMS_CLOCK_RE = /\b\d{1,2}:\d{2}:\d{2}\b/g;
+/** 行首或 `[` 之后的裸时分（保留前导字符：`[09:16] open=3` 里的 `[` 属于原输出） */
+const HM_CLOCK_RE = /(^|\[)[ \t]*\d{1,2}:\d{2}\b/gm;
+/** 整行只有一个裸时分（`date +%H:%M` 的输出形态） */
+const HM_CLOCK_LINE_RE = /^[ \t]*\d{1,2}:\d{2}[ \t]*$/gm;
+
+/**
+ * 通用归一化：去 ANSI、抹时间戳、抹耗时 token、折叠空白。T-P1-9 的「只差耗时列」靠这一条。
  *
  * 耗时 token 的正则是 `\d+(\.\d+)?(ms|s|m)\b`——刻意**不**匹配裸数字（`6 项 pending`
  * 里的 6、PR 号、run id 都得留着），也不匹配 `2h` 这种（`h` 不在字符类里）：
  * 少抹一种形态最多是「签名偏严、少拦一次」，多抹一种则可能把 `6 pending → 5 pending`
- * 这种真实变化吞掉。
+ * 这种真实变化吞掉。时间戳的收窄理由同上，见 {@link ISO_CLOCK_RE} 的注释。
  */
 function normalizeText(text: string): string {
   return (
     text
       .replace(ANSI_RE, "")
+      // 时间戳必须排在耗时之前：`09:16:25` 里的 `16:25` 不会被耗时正则吃掉，
+      // 但它会挡住后面「整行只有一个时分」的判定（行里已经不止一个 token）。
+      .replace(ISO_CLOCK_RE, "<clock>")
+      .replace(HMS_CLOCK_RE, "<clock>")
+      .replace(HM_CLOCK_RE, "$1<clock>")
+      .replace(HM_CLOCK_LINE_RE, "<clock>")
       // 组合时长（`13m43s` / `1h2m3s`）要整体抹掉：下面那条单段正则对 `13m43s` 只能抹掉
       // 后一半（`13m` 后面紧跟 `4`，`\b` 不成立），两种不同时长就会归一化成不同签名。
       // 这正是 `gh run list` 的 ELAPSED 列形态，不抹干净等于「每轮都算状态变了」。
