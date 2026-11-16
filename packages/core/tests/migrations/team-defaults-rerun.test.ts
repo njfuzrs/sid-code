@@ -30,11 +30,17 @@ beforeEach(async () => {
   resetMigrationWarnings();
 });
 
-afterEach(() => {
+afterEach(async () => {
   // 恢复原值而非无条件 delete（见 tests/preload-isolate-sid-home.ts）
   if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevConfigDir;
   rmSync(TEST_HOME, { recursive: true, force: true });
+  // 退出前也要清：warnings.ts 的数组是**模块级全局**，bun test 同批文件共享一个进程。
+  // 只在 beforeEach 清，本文件最后一个用例写进去的告警会留给后面的文件 ——
+  // `tests/config/permission-default-mode.test.ts` 断言 `warningsOf(config)` 为空，
+  // 就被这条「迁移 x (v9) 失败，测试用」顶红（全量 bun test 3 fail，单跑两边都绿）。
+  const { resetMigrationWarnings } = await import("@sid-code/core/migrations/warnings.ts");
+  resetMigrationWarnings();
 });
 
 describe("backfillNewTemplateKeys（独立水位）", () => {
