@@ -13,7 +13,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  chmodSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSyncSubagentSummary } from "../../src/agent/tool.ts";
@@ -136,6 +144,36 @@ describe("buildSyncSubagentSummary — 超过上限", () => {
 
     const outputFile = outputFileOf(summary)!;
     expect(summary).toContain(`完整内容见 ${outputFile}]`);
+  });
+
+  test("落盘失败时明确告知全文没留下来（不能静默当成完整结论）", () => {
+    // 落盘失败在真实使用里只由磁盘满 / 权限异常触发，日常轨迹永远等不到样本，
+    // 所以这里**造数据**：把 tool-outputs 目录设成只读，制造 EACCES。
+    const outDir = join(tmpHome, "trajectories", "sessions", "s-fail", "tool-outputs");
+    mkdirSync(outDir, { recursive: true });
+    chmodSync(outDir, 0o500); // r-x：可进入、不可新建文件
+    try {
+      const summary = buildSyncSubagentSummary({
+        type: "general-purpose",
+        result: makeResult(longOutput),
+        sessionId: "s-fail",
+        toolUseId: "toolu_fail",
+      });
+
+      // 没有文件可指时不给 <output-file>：给了就是指向不存在的文件
+      expect(outputFileOf(summary)).toBeUndefined();
+      expect(summary).not.toContain("完整内容见 ");
+      // 正文仍按上限截断（保留能保留的部分，不是整段丢弃）
+      expect(summary).toContain(HEAD);
+      expect(summary).not.toContain(TAIL);
+      expect(summary).toContain("[输出过长，已截断 ");
+      // 关键判据：必须有一个可辨识的「全文没留下来」标记，父代理才知道内容不完整
+      expect(summary).toContain("[全文落盘失败，以上不是完整内容]");
+      // 也确实没写出任何文件（避免「标记说失败、其实写成功」的自相矛盾）
+      expect(readdirSync(outDir)).toEqual([]);
+    } finally {
+      chmodSync(outDir, 0o700); // 恢复写权限，否则 afterEach 的 rmSync 删不掉
+    }
   });
 });
 

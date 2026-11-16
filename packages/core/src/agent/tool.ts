@@ -1088,7 +1088,13 @@ export function buildSyncSubagentSummary(input: {
       NOTIFICATION_OUTPUT_MAX_CHARS,
     );
     outputFile = persisted.savedPath || undefined;
-    body = truncateForNotification(result.output, NOTIFICATION_OUTPUT_MAX_CHARS, outputFile);
+    // 落盘失败（磁盘满 / 权限）时 savedPath 为空：正文仍按上限截断，但必须显式告诉父代理
+    // 「全文没留下来」。旧路径（上下文层 >30,000）失败时会留 `文件=[保存失败]` 标记；这条
+    // 同步回程复用 persistLargeOutput 的静默降级，标记不能跟着一起丢——否则父代理会把
+    // 16,000 字的截断结果当成完整结论，且没有任何信号提示它内容不完整。
+    body = outputFile
+      ? truncateForNotification(result.output, NOTIFICATION_OUTPUT_MAX_CHARS, outputFile)
+      : `${truncateForNotification(result.output, NOTIFICATION_OUTPUT_MAX_CHARS)}\n[全文落盘失败，以上不是完整内容]`;
   }
 
   return [
