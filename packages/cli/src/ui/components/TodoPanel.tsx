@@ -56,6 +56,14 @@ const DISMISS_HINT_KEY = "taskPanelDismiss";
 /** 该提示的显示次数上限，超过后不再打扰（L4.C 渐进衰减，与 ErrorPanel/InputArea 同档）。 */
 const DISMISS_HINT_MAX_SHOWS = 3;
 
+/**
+ * 任务标签列的固定列宽（TUI 规范 L2.3「缩进对齐成列」）。
+ *
+ * `[SH·wait]`(9 列) 比 `[SH]`(4 列) 宽，不定宽会让各任务行的描述起始列参差。
+ * 12 列容得下既有的最长形态 `[AG explore]`；超长 agentType 自然延伸、由 truncate 收口。
+ */
+const TASK_LABEL_COLUMNS = 12;
+
 interface TodoPanelProps {
   todos: TodoItem[];
   /** 后台任务列表 */
@@ -411,12 +419,24 @@ const TaskRow = React.memo(function TaskRow({
     task.type === "local_agent" && task.agentType
       ? `AG ${task.agentType}`
       : task.type === "local_shell"
-        ? "SH"
+        ? // 内置等待（`sid-wait gh-pr <n>`）单独标出来：它与普通后台命令的差别不是
+          // 「跑了什么」，而是「到底有没有在等」——后者 0 秒「执行成功」正是本轮排查里
+          // 最容易让人误判的形态（面板看着挂上了，实际什么都没等）。
+          task.builtinWait
+          ? "SH·wait"
+          : "SH"
         : task.type === "local_workflow"
           ? // state-bridge 传入 agentType="workflow:<名字>",剥前缀显示为 "WF <名字>",
             // 与 "AG"/"SH" 风格统一;无名字时退回 "WF"。
             `WF ${task.agentType?.replace(/^workflow:/, "") ?? ""}`.trimEnd()
           : task.type;
+
+  // L2.3 缩进对齐成列：`[SH·wait]`(9 列) 比 `[SH]`(4 列) 宽，不定宽会让各任务行的
+  // 描述起始列参差。补齐到 12 列（容得下既有的 `[AG explore]`），超长 agentType 自然延伸。
+  // 用 stringWidth 不用 .length：agentType 可能含 CJK，码点数 ≠ 终端列宽。
+  const labelText = `[${label}]`;
+  const labelCell =
+    labelText + " ".repeat(Math.max(1, TASK_LABEL_COLUMNS - stringWidth(labelText) + 1));
 
   const desc =
     task.description ||
@@ -455,7 +475,7 @@ const TaskRow = React.memo(function TaskRow({
         </Box>
         <Box flexGrow={1} flexShrink={1}>
           <Text wrap="truncate">
-            <Text color={theme.ui.active}>{`[${label}] `}</Text>
+            <Text color={theme.ui.active}>{labelCell}</Text>
             <Text color={isRunning ? theme.text.primary : theme.text.secondary}>
               {truncate(desc, Math.max(10, maxContentLen - 24))}
             </Text>
