@@ -253,6 +253,8 @@ import {
   isTerminalStatus,
   // P1：等待期状态查询守卫拦下的调用，供下面 UnchangedObservationRun 的 intervened 埋点消费
   consumeStatusPollIntervened,
+  // P5：用户新消息到达时清零「等待期重复查询」计数（上一段的账不带进这一段）
+  resetWaitPollEscalationForNewMessage,
   // N8：停滞 L1 文案要点名「改用后台等待」，判据复用 P1 的命令表（同一条真实轨迹证据）
   matchStatusQuery,
 } from "../task/index.ts";
@@ -1181,6 +1183,10 @@ async function* queryLoopBody(
   // 显式传进来（它们各有独立的 deps，拿不到 queryLoop 内部创建的 LoopState）。
   // 读不到时闸门退回「唯一活跃 scope」推断，多 agent 并发下会漏计而非多计。
   sessionState.set(HITL_SCOPE_SESSION_KEY, hitlScopeId);
+  // P5：用户新消息到达 → 把「等待期重复查询」计数清零。
+  // 本函数每条用户消息调用一次，所以这里就是「新消息」的唯一入口；
+  // 另一处清零点在 `checkStatusQueryPoll`（等待源全部释放时）。
+  resetWaitPollEscalationForNewMessage(sessionState);
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);

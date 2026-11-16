@@ -53,6 +53,7 @@ import {
   hasDeclaredExternalWait as defaultHasDeclaredExternalWait,
   isDeclaredExternalWait,
   listWaits as defaultListWaits,
+  recordWaitTraceEvent,
   type WaitSource,
 } from "./wait-registry.ts";
 import {
@@ -77,6 +78,109 @@ export const STATUS_POLL_PROBE_INTERVAL_MS = 120_000;
  * 2 = 第 2 次相同（即第 3 次查询）起拦截：第 1 次相同放行 + 提示。见模块头注释。
  */
 export const STATUS_POLL_BLOCK_AFTER_SAME = 2;
+
+/**
+ * 等待期重复查询的升级计数（P5，2026-11-16）。
+ *
+ * ## 为什么 P1 之外还要这一层
+ *
+ * P1 的判据是「结果**没变**才拦」，而空转的主形态恰恰是「结果每轮都变一点」：
+ * `gh run list` 的行数与 ELAPSED 列每轮不同、`gh pr list --json` 带 created/updated 时间戳、
+ * 加 `date` 打时间戳的轮询命令每轮首行都变。这类查询在 P1 下**一次都不会被拦**，
+ * 模型于是连续 400+ 轮「看一眼，再等」，而轮次上限对后台等待已让位（`background-wait-fact`），
+ * 结果是整段会话都烧在空转上。
+ *
+ * P5 不看输出，只数次数：同一个等待期间查询次数本身就是「空转」的直接证据。
+ * 两档都刻意**不依赖模型自己发现循环**（它是不会发现的，否则就不会有 400 轮）：
+ *
+ * - 第 {@link WAIT_POLL_HINT_AFTER} 次：只在结果末尾加一句话 + 计数，不阻断；
+ * - 第 {@link WAIT_POLL_BLOCK_AFTER} 次起：**硬拦**，回执给出路（`task_stop` / 改成
+ *   「条件满足就退出」）+ 上次摘要。硬拦排在 P1 的探测窗口之前 —— 否则「状态一直在变」
+ *   的查询永远走不到拦截分支，而那正是本层要治的形态。
+ *
+ * ## 生命周期（方案 §4.10）
+ *
+ * - 只在**有声明等待源期间**计数；等待源全部释放时清零（`checkStatusQueryPoll` 里判）；
+ * - 用户新消息到达时清零（`loop.ts` 的每条用户消息入口，`resetWaitPollEscalation`）；
+ * - 存 `SessionState`（会话级，`tool-executor` 注入），不落盘、不跨会话 ——
+ *   **不能挂在 memo 上**：memo 是进程级单例，一个会话跨多次等待会把计数累积到 15，
+ *   于是「每一次新等待的第 15 次查询」变成「整个进程的第 15 次查询」。
+ */
+export interface WaitPollEscalation {
+  /** 有声明等待源期间被识别为状态查询的次数（不论拦截与否） */
+  count: number;
+  /** 是否已给过第 5 次提示（只给一次） */
+  hinted: boolean;
+  /** 是否已落过 level 2 事件（每段等待只落一次，回执仍逐次给） */
+  escalated: boolean;
+}
+
+/** 第几次起给提示（不阻断） */
+export const WAIT_POLL_HINT_AFTER = 5;
+
+/** 第几次起硬拦 */
+export const WAIT_POLL_BLOCK_AFTER = 15;
+
+/** 升级事件名（计数/次数的事实源，digest 与回放取证都读它） */
+export const WAIT_POLL_ESCALATED_EVENT_NAME = "WaitPollEscalated";
+
+export function createWaitPollEscalation(): WaitPollEscalation {
+  return { count: 0, hinted: false, escalated: false };
+}
+
+/** 清零（用户新消息 / 等待源全部释放） */
+export function resetWaitPollEscalation(state: WaitPollEscalation): void {
+  state.count = 0;
+  state.hinted = false;
+  state.escalated = false;
+}
+
+/** 会话状态里的键名（一个会话一份，不落盘） */
+const WAIT_POLL_ESCALATION_KEY = "waitPollEscalation";
+
+/**
+ * 从会话状态取（或首次创建）P5 计数。
+ *
+ * 参数只要 `get` / `set`，不 import `SessionState`：`task/` 不应反向依赖 `session/`
+ * （分层方向是 session → query → task），两侧靠这个窄接口对接，测试也能传一个 Map。
+ *
+ * ⚠️ 存储不完整时**降级而不是抛错**：这个方法跑在工具执行链的入口，抛出去会让整条
+ * 工具调用失败（实测：一个只做了 `as any` 强转的测试替身没实现 get，直接
+ * `TypeError: store.get is not a function`）。降级形态是「本次调用内计数、不跨调用累积」
+ * —— P5 等同关闭，P1 与其余一切照常，这是正确的失败方向。
+ */
+export function getWaitPollEscalation(store: {
+  get?: (key: string) => unknown;
+  set?: (key: string, value: unknown) => void;
+}): WaitPollEscalation {
+  if (typeof store.get !== "function" || typeof store.set !== "function") {
+    return createWaitPollEscalation();
+  }
+  const existing = store.get(WAIT_POLL_ESCALATION_KEY);
+  if (
+    existing !== null &&
+    typeof existing === "object" &&
+    typeof (existing as WaitPollEscalation).count === "number"
+  ) {
+    return existing as WaitPollEscalation;
+  }
+  const created = createWaitPollEscalation();
+  store.set(WAIT_POLL_ESCALATION_KEY, created);
+  return created;
+}
+
+/**
+ * 用户新消息到达：P5 计数清零（`loop.ts` 每条用户消息入口调用）。
+ *
+ * 为什么必须在**用户消息**处清：计数度量的是一段「模型自己在等」的过程。用户插了一句话，
+ * 等待的上下文就变了（可能已经换了目标），继续按上一段的账硬拦会拦掉合理的查询。
+ */
+export function resetWaitPollEscalationForNewMessage(store: {
+  get: (key: string) => unknown;
+  set: (key: string, value: unknown) => void;
+}): void {
+  resetWaitPollEscalation(getWaitPollEscalation(store));
+}
 
 /** 单签名的记忆。进程级：主循环只有一条，与 `defaultTaskListMemo` 同口径。 */
 interface PollMemoEntry {
@@ -106,6 +210,13 @@ export interface StatusPollContext {
   /** 当前等待源清单（回执里引用 monitor / 期限） */
   listWaits: () => WaitSource[];
   memo: StatusPollMemo;
+  /**
+   * P5 的会话级计数（由 `tool-executor` 从 `SessionState` 取出后注入）。
+   *
+   * 不传 = 不启用 P5（P1 行为逐字节不变）：`defaultStatusPollContext()` 刻意不给它，
+   * 因为默认 ctx 没有会话概念，挂个进程级单例就会让计数跨会话累积。
+   */
+  escalation?: WaitPollEscalation;
   now: () => number;
 }
 
@@ -164,7 +275,16 @@ function formatClock(ts: number): string {
 }
 
 export type StatusPollCheck =
-  | { intercept: false }
+  | {
+      intercept: false;
+      /**
+       * P5 的第 5 次提示（不阻断）：由 `tool-executor` 追加到工具结果末尾。
+       *
+       * 与 P1 的「第一次相同」提示不同时给：P1 拦截时回执里已经有「不要反复查询」，
+       * 再叠一句计数只是噪音，所以 `hint` 只在**放行**时返回。
+       */
+      hint?: string;
+    }
   | {
       intercept: true;
       subject: string;
@@ -240,6 +360,68 @@ function buildReceipt(opts: {
 }
 
 /**
+ * P5 第 5 次的提示（**只放行时给**，一句话 + 计数，不写长篇）。
+ *
+ * 为什么带计数：模型对「第几次」没有内感，它能看到的只有自己刚才调用过什么。
+ * 给一个可对照的数字，它才知道「再查 10 次就会被拦」。
+ */
+export function formatWaitPollHint(subject: string, count: number): string {
+  return (
+    `[等待期重复查询] 这是本次等待期间第 ${count} 次查询 ${subject}。` +
+    `到 ${WAIT_POLL_BLOCK_AFTER} 次会被硬拦（本次照常执行）；` +
+    "状态变化由等待源通知，不需要反复查询——没有别的事就告诉用户在等什么并结束本轮。"
+  );
+}
+
+/**
+ * P5 第 15 次起的硬拦回执（§4.10 修法 2）。
+ *
+ * 四段缺一不可：
+ * 1. **已停 + 第几次** —— 模型要知道这次没有执行、也不会再执行下去；
+ * 2. **为什么继续查没用** —— 直说「状态变化不会因为你查得多而提前」，堵掉「再试一次」；
+ * 3. **两条能缩短等待的路** —— 不给出口，模型只能继续换写法查（R2 回执的同一教训）；
+ * 4. **上次摘要 + 时间** —— 被拦不等于信息归零（与 P1 回执同一原则）。
+ *
+ * 出口命令按 kind 区分（与 `formatDuplicateWaitReceipt` 同口径）：唤醒不在 task registry
+ * 里，`task_stop` 停不掉它，给错命令比不给更糟。
+ */
+function buildHardBlockReceipt(opts: {
+  subject: string;
+  kind: StatusQueryKind;
+  count: number;
+  entry: PollMemoEntry | undefined;
+  waits: WaitSource[];
+}): string {
+  const { subject, kind, count, entry } = opts;
+  const stops = opts.waits
+    .filter((w) => isDeclaredExternalWait(w))
+    .slice(0, 2)
+    .map((w) => (w.kind === "wakeup" ? `cron_delete ${w.id}` : `task_stop ${w.id}`));
+  const exits =
+    stops.length > 0
+      ? [
+          `- 停掉没用的等待：${stops.join(" / ")}（停掉之后可以直接结束本轮）`,
+          "- 把等待改成「条件满足就退出」：停掉旧的，重新挂一个带明确退出条件的后台等待",
+        ]
+      : [
+          "- 结束本轮：等待结束会有通知，不需要盯着",
+          "- 想主动推进：先把「等什么」变成一条能自己退出的后台命令（`wait_until_seconds`）",
+        ];
+  const summary = entry ? summarizeStatusOutput(kind, entry.last) : "";
+  const lastLine = entry
+    ? `如果你只是想知道当前状态：${summary || "无输出"}（上次查询于 ${entry.lastExecutedLabel}）。`
+    : "这条查询在本次等待期间没有留下可用摘要。";
+
+  return [
+    `已停：本次等待期间这是第 ${count} 次查询 ${subject}，超过上限（${WAIT_POLL_BLOCK_AFTER} 次）。本次未执行，输出不会送达。`,
+    "继续查不会更快：状态变化不会因为查询次数变多而提前。",
+    "能缩短等待的做法：",
+    ...exits,
+    lastLine,
+  ].join("\n");
+}
+
+/**
  * 执行前判定：这条调用要不要拦。
  *
  * 纯函数式判定 + 一处**放行时**的写 memo（与 `checkBackgroundPoll` 的 `taskListMemo` 同一模式：
@@ -267,10 +449,67 @@ export function checkStatusQueryPoll(
   // 拿它当前提的后果（实测 R10）：模型起了一个无关的 `bun test`，之后连查 `gh pr view`
   // 被拦，回执还说「状态变化会以通知送达」—— 没有任何东西在盯 PR。
   // 无等待源时同命令同结果 100 次仍全部放行（T-P1-4）。
-  if (!ctx.hasDeclaredExternalWait()) return { intercept: false };
+  if (!ctx.hasDeclaredExternalWait()) {
+    // P5：等待源全部释放 → 计数清零（下一段等待从 0 起，不继承上一段的账）
+    if (ctx.escalation) resetWaitPollEscalation(ctx.escalation);
+    return { intercept: false };
+  }
+
+  // ───────────────────────── P5：先判次数，再判 P1 ─────────────────────────
+  //
+  // 顺序是刻意的：P1 的判据是「结果没变」，而空转的主形态是「结果每轮都变一点」
+  //（`gh run list` 的行数 / ELAPSED、`gh pr list --json` 的时间戳）。把 P5 放在 P1 的
+  // 探测窗口之后，那些查询会永远走不到拦截分支 —— 正是本层要治的形态。
+  //
+  // 计数在**放行前**自增：被 P1 拦下的查询也算一次（它们同样是空转的一部分）。
+  let escalationHint: string | undefined;
+  const escalation = ctx.escalation;
+  if (escalation) {
+    escalation.count += 1;
+    if (escalation.count >= WAIT_POLL_BLOCK_AFTER) {
+      const blockedEntry = ctx.memo.entries.get(matched.signature);
+      if (!escalation.escalated) {
+        escalation.escalated = true;
+        recordWaitTraceEvent(WAIT_POLL_ESCALATED_EVENT_NAME, {
+          level: 2,
+          count: escalation.count,
+          subject: matched.subject,
+          kind: matched.kind,
+        });
+      }
+      return {
+        intercept: true,
+        subject: matched.subject,
+        kind: matched.kind,
+        output: buildHardBlockReceipt({
+          subject: matched.subject,
+          kind: matched.kind,
+          count: escalation.count,
+          entry: blockedEntry,
+          waits: ctx.listWaits(),
+        }),
+      };
+    }
+    if (escalation.count >= WAIT_POLL_HINT_AFTER && !escalation.hinted) {
+      escalation.hinted = true;
+      escalationHint = formatWaitPollHint(matched.subject, escalation.count);
+      recordWaitTraceEvent(WAIT_POLL_ESCALATED_EVENT_NAME, {
+        level: 1,
+        count: escalation.count,
+        subject: matched.subject,
+        kind: matched.kind,
+      });
+    }
+  }
+
+  // P5 的提示要挂在**每一个放行分支**上：它决定的是「这一次是否已经到了第 5 次」，
+  // 与 P1 走哪个分支无关。只挂在 `!entry` 分支上会让「结果每轮都变」的查询
+  //（恰恰是空转的主形态）永远收不到提示 —— T-P5-1 就是照这个形态写的。
+  const pass = (): StatusPollCheck =>
+    escalationHint ? { intercept: false, hint: escalationHint } : { intercept: false };
 
   const entry = ctx.memo.entries.get(matched.signature);
-  if (!entry) return { intercept: false };
+  if (!entry) return pass();
 
   // 探测间隔：距上次实际执行超过阈值就放行一次，避免「拦住就永远看不到变化」。
   //
@@ -290,7 +529,7 @@ export function checkStatusQueryPoll(
         w.commandFamilies?.includes(matched.family) === true,
     );
   if (!covered && ctx.now() - entry.lastExecutedAt >= STATUS_POLL_PROBE_INTERVAL_MS) {
-    return { intercept: false };
+    return pass();
   }
 
   // `sameRun` 是「连续观察到与上次相同的次数」，首次执行为 1。所以：
@@ -298,7 +537,7 @@ export function checkStatusQueryPoll(
   //   sameRun=2 → 第 1 次相同，放行（那一次已在 recordStatusQueryResult 里追加过提示）；
   //   sameRun≥2 → 第 2 次起相同，拦。
   // 判据写成 `<` 而不是 `<=`：`<=` 会让拦截晚一轮，与 T-P1-3 的「第 3 次查询不执行」差一位。
-  if (entry.sameRun < STATUS_POLL_BLOCK_AFTER_SAME) return { intercept: false };
+  if (entry.sameRun < STATUS_POLL_BLOCK_AFTER_SAME) return pass();
 
   return {
     intercept: true,

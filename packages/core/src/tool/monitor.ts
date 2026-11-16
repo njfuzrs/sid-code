@@ -62,7 +62,9 @@ import {
 import {
   collectWaitCommandFamilies,
   collectWaitSubjects,
+  hashScriptBodies,
   normalizeWaitCommand,
+  readWaitScriptBodies,
 } from "../task/wait-subjects.ts";
 import {
   decideWaitAdmission,
@@ -302,13 +304,24 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     // R2：同一个对象同时只允许一个**有效的显式等待**，且跨类（shell × monitor × wakeup）。
     // 原来这里只在 monitor 之间比、且只追加一行提示就照常启动——b0aa0f1e 的四份同脚本进程
     // 正是「每个入口只管自己那一类」的产物。现在走统一判定：重复则不 spawn，直接返回回执。
-    const subjects = collectWaitSubjects({ command });
+    // P3（2026-11-16）：脚本正文要参与抽对象。
+    // monitor 的 `command` 本身就是脚本正文，但脚本里可能再调 `bash /tmp/x.sh`
+    //（`waits.sh` 的组合形态），不展开就会漏掉「在等哪个 PR」。
+    // 与 bash 侧共用同一个读取实现 —— 两套各写一份会让「同一件事」抽出两套对象。
+    const scriptBodies = readWaitScriptBodies(command, getCwd());
+    // 显式写出两个字段而不是传一个中间变量：T-P3-2 的静态扫描要能在调用点直接看到
+    // `scriptBodies` —— 隔着变量名就扫不出来，而「扫不出来」正是这次要防的漂移。
+    const subjects = collectWaitSubjects({ command, scriptBodies });
     const normalizedCommand = normalizeWaitCommand(command);
+    // P4（2026-11-16）：抽不出对象时按「命令 + 脚本正文 hash」判重复，
+    // 所以 hash 必须和 subjects 一起进准入判定与登记。
+    const scriptHash = hashScriptBodies(scriptBodies);
     const admission = decideWaitAdmission({
       kind: "monitor",
       toolUseId: (params as { _toolUseId?: unknown })._toolUseId as string | undefined,
       subjects,
       command: normalizedCommand,
+      scriptHash,
       deadlineAt: Date.now() + timeoutMs,
     });
     if (admission.action === "duplicate") {
@@ -376,8 +389,11 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       subjects: subjects.length > 0 ? subjects : undefined,
       // 登记归一化命令：下一个等待来判准入时要能认出「这是同一件事」
       command: normalizedCommand,
+      // P4：无对象等待（自定义脚本）的重复判定靠它。抽不出 subject 时
+      // 「同一份脚本再挂一次」必须判 duplicate，否则 monitor 会同时跑多份。
+      scriptHash,
       // R1：P1 覆盖判定要用命令族，与 subjects 同源同尺
-      commandFamilies: collectWaitCommandFamilies({ command }),
+      commandFamilies: collectWaitCommandFamilies({ command, scriptBodies }),
     });
 
     getLogger().info(
