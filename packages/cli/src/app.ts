@@ -31,6 +31,7 @@ import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { PlanModeManager } from "@sid-code/core/plan/state.ts";
 import { FIDELITY_INDICATOR_VERSION, PLAN_STEP_PARSER_VERSION } from "@sid-code/core/plan/state.ts";
+import { parsePlanApprovalDecision } from "@sid-code/core/plan/approval-decision.ts";
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { resolveAutoCompactPctOverride } from "@sid-code/core/context/auto-compact.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
@@ -177,6 +178,7 @@ import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
 import { mergeAnchoredItems } from "./ui/local-command-items.ts";
+import { appendPersistentHintTo } from "./ui/persistent-hint.ts";
 import { resolvePanel } from "./command/executor.ts";
 import { applyRuleToolDenylist } from "./utils/project-rules-tool-denylist.ts";
 import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-result-route.ts";
@@ -4332,6 +4334,8 @@ export class App {
           // 不共享主代理 tracker——避免 forked agent 读 .session_memory.md 污染主代理
           // 缓存新鲜度、绕过「先读后写」护栏。对标 cc cloneFileStateCache。
           statefulTools: createStatefulTools(new FileReadTracker()),
+          // X1H2 T3：forked 工具/模型 span 显式挂会话根，父不随启动时机漂移
+          rootSpanId: this.telemetryProbe?.rootSpanId(),
         }),
         canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
         // CG-1 / R1：与上面的 sessionMemoryFile 同源，都按工作区根，不随 cd / worktree 漂。
@@ -5414,6 +5418,8 @@ export class App {
           // FileReadTracker 隔离（缺口 A）：提取代理读文件用独立 tracker，
           // 不污染主代理「先读后写」护栏。
           statefulTools: createStatefulTools(new FileReadTracker()),
+          // X1H2 T3：与 session-memory 同口径，forked span 显式挂会话根
+          rootSpanId: this.telemetryProbe?.rootSpanId(),
         }),
         memoryDir,
         canUseTool: createExtractPermissions(memoryDir),
@@ -7990,6 +7996,21 @@ export class App {
   }
 
   /**
+   * M5：审批框里「批准并使用 auto（自动模式）」这一项是否该出现。
+   *
+   * 两个条件缺一不可——漏任何一个都会产出**看起来能选、选了静默失效**的假选项，
+   * 那比不列出来更糟（用户以为"我选了 auto"，实际回到 default 或退回上一档）：
+   * - 分类器真的接线可用：未接线时 auto 只是 default 的别名，没有任何自动判断能力；
+   * - 企业策略没有禁用它：`disabledModes` 是硬约束，对话框不是绕过它的后门。
+   */
+  private isAutoModeSelectable(): boolean {
+    if (isModeDisabledByPolicy("auto")) return false;
+    // 两级都要可选调用：`getToolClassifier` 在接口上是可选的（测试 stub 未必实现），
+    // 少了那个 `?.` 会变成「调用 undefined」的运行时 TypeError，而不是降级为「auto 不可选」。
+    return this.permissionChecker?.getToolClassifier?.()?.isAvailable() === true;
+  }
+
+  /**
    * 处理 Plan Mode 审批流程
    *
    * ADR-019：返回 followup（plan-approved / plan-rejected 反馈），由调用方 loop 在
@@ -8033,26 +8054,45 @@ export class App {
       ? await this.tuiPlanApprovalCallback(planPath)
       : "approve";
 
-    if (decision === "approve") {
+    // M5：决策串可能是 `approve:<acceptEdits|auto|previous>`——**批准之后用哪个权限模式
+    // 由用户在审批框里当场选**，不再隐式取「进入 plan 之前的那个模式」。
+    // 解析与校验放在 core 的纯函数里（`plan/approval-decision.ts`）：非法值降级为
+    // 「沿用进入前的模式」而不是让审批失败，企业策略禁用的档位同样降级——对话框不能成为
+    // 绕过 `disabledModes` 的后门。
+    const parsed = parsePlanApprovalDecision(decision);
+
+    if (parsed.kind === "approve") {
       // 步数在批准前解析：approve 的事件与紧接着的 PlanFidelity 快照都要带上这一刻的口径
       const stepCount = this.countPlanSteps(planPath);
       this.planManager.approve({ source });
-      // 无头批准后切到调用方声明的执行模式：这条入口没有「进入之前的模式」，
-      // 恢复成 default 会让批准落空（default + 无头 = 全部 ask 变 deny）。
-      await this.deactivatePlanMode(source === "headless" ? this.config.planExecMode : undefined);
+      // 执行模式有两个来源，**优先级不同**：
+      // - headless：调用方声明的 `--plan-exec-mode`（这条入口根本没有审批框，
+      //   也没有「进入之前的模式」，恢复 default 会让批准落空——见上面无审批人分支）
+      // - tui：用户在批准框里当场选的；没选/选不出来时走 getPrePlanMode()
+      const execMode =
+        source === "headless" ? this.config.planExecMode : (parsed.execMode ?? undefined);
+      if (parsed.rejectedMode) {
+        log.info(
+          "PLAN",
+          `批准时请求的执行模式 "${parsed.rejectedMode}" 不可用（非法或已被企业策略禁用），沿用进入前的模式`,
+        );
+      }
+      await this.deactivatePlanMode(execMode);
       log.info(
         "PLAN",
         source === "tui"
-          ? "用户批准计划，退出 Plan Mode"
+          ? `用户批准计划，退出 Plan Mode（执行模式: ${execMode ?? "沿用进入前"}）`
           : `无头会话按 --plan-exec-mode=${this.config.planExecMode} 批准计划`,
       );
       // W12.D2 / ADR-017：批准消息是 LLM 进入执行阶段唯一保留的「plan 上下文锚点」
       // （deactivatePlanMode 后 plan prompt 不再注入），嵌入失败更新执行守则。
       // W12.D3：headless 也注入（否则 plan_recovery capability eval 永远拿不到指令）。
-      return wrap(prompt.buildPlanApprovedMessage(planPath, stepCount));
+      // M5：把**当前生效的模式**一并告诉模型——它会据此判断「这次 edit 要不要先问」，
+      // 猜错就会多问一轮或被拒后重试。
+      return wrap(prompt.buildPlanApprovedMessage(planPath, stepCount, execMode ?? null));
     }
 
-    if (decision === "cancel") {
+    if (parsed.kind === "cancel") {
       this.planManager.forceExit("cancel", { source });
       await this.deactivatePlanMode();
       log.info("PLAN", "用户取消计划，退出 Plan Mode");
@@ -8062,10 +8102,7 @@ export class App {
     }
 
     // reject（可能带 feedback）
-    const feedback =
-      typeof decision === "string" && decision.startsWith("reject:")
-        ? decision.slice("reject:".length).trim()
-        : "";
+    const feedback = parsed.feedback;
     const meta = { source, feedbackChars: feedback.length };
     const countBefore = this.planManager.getRejectionCount();
     const canContinue = this.planManager.reject(meta);
@@ -10716,14 +10753,19 @@ export class App {
      * 与命令结果同走 localCommandItems 侧表——不进 ctxMgr（不发给模型），但全量重建时不丢。
      */
     const appendPersistentHint = (text: string) => {
-      const item: import("./ui/types.ts").HistoryItemWithoutId = { type: "hint", text };
-      localCommandItems.push({ anchor: this.ctxMgr.getMessages().length, item });
-      historyIdCounter += 1;
       updateState({
-        historyItems: [
-          ...bridge.current.historyItems,
-          { ...item, id: historyIdCounter } as import("./ui/types.ts").HistoryItem,
-        ],
+        historyItems: appendPersistentHintTo(
+          {
+            historyItems: bridge.current.historyItems,
+            localItems: localCommandItems,
+            anchor: this.ctxMgr.getMessages().length,
+            allocateId: () => {
+              historyIdCounter += 1;
+              return historyIdCounter;
+            },
+          },
+          text,
+        ),
       });
     };
 
@@ -10933,7 +10975,15 @@ export class App {
                 resolve(decision);
               };
               updateState({
-                planApprovalRequest: { planFilePath, planContent, resolve: wrappedResolve },
+                planApprovalRequest: {
+                  planFilePath,
+                  planContent,
+                  // M5：审批框里要不要出现 auto 那一项，由**这里**算好传下去。
+                  // 两个条件缺一不可：分类器真的接线可用（没接线时选 auto 等于选了个静默
+                  // 失效的档），以及企业策略没禁用（`disabledModes` 是硬约束，列出来就是骗人）。
+                  autoAvailable: this.isAutoModeSelectable(),
+                  resolve: wrappedResolve,
+                },
               });
             }),
           // 排队期间被取消 = 取消审批（不是拒绝，拒绝会带反馈回模型）

@@ -47,6 +47,7 @@ import {
   isBashLikeTool,
   initialPermissionChoiceIndex,
   initialShellChoiceIndex,
+  matchHotkey,
   type HotkeyChoice,
   type PermissionAnswer,
 } from "./permission-choices.ts";
@@ -303,13 +304,57 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
   const [editingOther, setEditingOther] = useState(false);
   const [otherText, setOtherText] = useState("");
 
-  const options = [
-    { label: "批准并执行", action: "approve" },
-    { label: "拒绝，附修改意见", action: "reject-feedback" },
+  // M5：批准不再是一个笼统的「批准并执行」，而是当场决定**批准之后用哪个权限模式**。
+  //
+  // 旧的单选项把执行模式藏进了「进入 plan 之前的那个模式」——用户批准完才发现自己
+  // 回到了 default，每次 edit 都要按一遍确认，而他在批准框里没有任何表达机会。
+  //
+  // 三条约束（改动时不要破）：
+  // 1. **按「批准后会发生什么」写文案**，模式内部名只作为括号里的对照，因为这里问的是
+  //    「接下来我该怎么干活」，不是「你要哪个枚举值」。
+  // 2. **auto 只在真的可用时出现**（分类器已接线且未被企业策略禁用）——列一个选了会
+  //    静默失效的选项，比不列更糟。
+  // 3. **y / m / a 字母直达与 ↑↓ + Enter 并存**（L4-E「三条路径并存」），不因为拆成三项
+  //    就退化成只有方向键。
+  type PlanApprovalOption = {
+    label: string;
+    action: "approve" | "reject-feedback" | "cancel";
+    /** approve 专用：批准后切到的模式；"previous" = 沿用进入 plan 之前的模式 */
+    execMode?: "acceptEdits" | "previous" | "auto";
+    hotkey?: string;
+  };
+  const options: PlanApprovalOption[] = [
+    {
+      label: "批准 — 编辑自动放行，命令仍需确认（acceptEdits）",
+      action: "approve",
+      execMode: "acceptEdits",
+      hotkey: "y",
+    },
+    {
+      label: "批准 — 沿用进入前的权限模式",
+      action: "approve",
+      execMode: "previous",
+      hotkey: "m",
+    },
+    ...(request.autoAvailable
+      ? [
+          {
+            label: "批准 — 自动判断安全操作，其余仍需确认（auto）",
+            action: "approve" as const,
+            execMode: "auto" as const,
+            hotkey: "a",
+          },
+        ]
+      : []),
+    { label: "拒绝，附修改意见", action: "reject-feedback", hotkey: "n" },
     { label: "取消（退出计划模式）", action: "cancel" },
   ];
   const otherIndex = options.length; // "其他…"行
   const totalRows = options.length + 1;
+  const approveHotkeys = options
+    .filter((o) => o.action === "approve" && o.hotkey)
+    .map((o) => o.hotkey)
+    .join("/");
 
   const accent = theme.ui.active;
 
@@ -386,7 +431,8 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
       if (cursor < options.length) {
         const opt = options[cursor];
         if (opt.action === "approve") {
-          finish("approve");
+          // 「批准」必须带上执行模式：「approve」裸串保留，只为兼容外部构造的旧决策
+          finish(opt.execMode ? `approve:${opt.execMode}` : "approve");
           return true;
         }
         if (opt.action === "cancel") {
@@ -403,15 +449,44 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
         return true;
       }
     }
-    // 快捷键（不在编辑态时）
-    if (key.insertable) {
-      if (key.name === "y") {
-        finish("approve");
-        return true;
+    // 快捷键（不在编辑态时）：按 options 里的 hotkey 字段匹配，不在这里另抄一份键位表——
+    // 抄一份的后果是「选项加了但键没加」，用户按了没反应且看不出为什么。
+    // 大小写敏感：`key.shift` 必须一起判（L4-E），否则裸 a 会截胡 Shift+A。
+    if (key.insertable && !key.shift) {
+      // 数字直达（L4-E「三条路径并存」里的一条）：1..N 选中第 N 项。
+      // 一项也不许少时，用户不必先数方向键；`其他…` 行同样编号（它也是可选项）。
+      if (/^[1-9]$/.test(key.name)) {
+        const idx = Number(key.name) - 1;
+        if (idx < totalRows) {
+          if (idx === otherIndex) {
+            setEditingOther(true);
+            return true;
+          }
+          const opt = options[idx];
+          if (opt.action === "approve") {
+            finish(opt.execMode ? `approve:${opt.execMode}` : "approve");
+          } else if (opt.action === "cancel") {
+            finish("cancel");
+          } else {
+            setCursor(idx);
+            setEditingFeedback(true);
+          }
+          return true;
+        }
+        return true; // 超出范围的数字也吃掉，避免它被当成其它快捷键
       }
-      if (key.name === "n") {
-        setEditingFeedback(true);
-        setCursor(1);
+      const hit = matchHotkey(
+        options.filter((o): o is PlanApprovalOption & { hotkey: string } => !!o.hotkey),
+        key.name,
+        key.shift,
+      );
+      if (hit) {
+        if (hit.action === "approve") {
+          finish(hit.execMode ? `approve:${hit.execMode}` : "approve");
+        } else if (hit.action === "reject-feedback") {
+          setCursor(options.indexOf(hit));
+          setEditingFeedback(true);
+        }
         return true;
       }
     }
@@ -491,7 +566,7 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
         <Text>
           {editingFeedback || editingOther
             ? "Enter 提交 · Esc 返回"
-            : "↑↓ 移动 · Enter 选择 · y 批准 · n 拒绝 · Esc 取消"}
+            : `↑↓ 移动 · Enter 选择 · ${approveHotkeys} 批准 · n 拒绝 · Esc 取消`}
         </Text>
       </Box>
     </Box>

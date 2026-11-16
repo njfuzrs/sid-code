@@ -27,7 +27,6 @@ import { ListMcpResourcesTool, ReadMcpResourceTool } from "@sid-code/core/tool/m
 import { BundledSkillTool } from "@sid-code/core/skill/bundled/tool.ts";
 import { AskUserQuestionTool } from "@sid-code/core/tool/ask-user-question.ts";
 import { BashTool } from "@sid-code/core/tool/bash.ts";
-import { TaskGetTool } from "@sid-code/core/tool/task-get.ts";
 import { TaskListTool } from "@sid-code/core/tool/task-list.ts";
 import { CronCreateTool } from "@sid-code/core/tool/cron-create.ts";
 import { CronDeleteTool } from "@sid-code/core/tool/cron-delete.ts";
@@ -78,7 +77,6 @@ const FACTORIES: Record<string, () => LegacyTool> = {
   Skill: () => new BundledSkillTool(anyDep(), anyDep(), anyDep()) as unknown as LegacyTool,
   ask_user_question: () => new AskUserQuestionTool() as unknown as LegacyTool,
   bash: () => new BashTool() as unknown as LegacyTool,
-  bg_task_get: () => new TaskGetTool() as unknown as LegacyTool,
   bg_task_list: () => new TaskListTool() as unknown as LegacyTool,
   cron_create: () => new CronCreateTool() as unknown as LegacyTool,
   cron_delete: () => new CronDeleteTool() as unknown as LegacyTool,

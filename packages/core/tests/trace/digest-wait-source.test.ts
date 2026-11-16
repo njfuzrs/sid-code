@@ -54,6 +54,34 @@ function assistantThinking(text: string): Record<string, unknown> {
   return { role: "assistant", content: [{ type: "thinking", thinking: text }] };
 }
 
+/** 起了一次 monitor 的 tool_result（文案与 monitor.ts 的启动回执逐字一致，id 形如 m+8 位） */
+function monitorLaunchReceipt(): Record<string, unknown> {
+  return {
+    type: "tool_result",
+    tool_use_id: "t2",
+    content: JSON.stringify({
+      task_id: "mabcd1234",
+      status: "running",
+      message:
+        "已启动监控 mabcd1234（等 PR 780 的 CI），最晚 12:30:00 结束（30 分钟期限）。\n" +
+        "每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。",
+    }),
+  };
+}
+
+/** R2 判成 duplicate 时的 tool_result（文案与 formatDuplicateWaitReceipt 一致，不是启动回执） */
+function duplicateWaitReceipt(): Record<string, unknown> {
+  return {
+    type: "tool_result",
+    tool_use_id: "t3",
+    content: JSON.stringify({
+      status: "duplicate",
+      message:
+        "已有等待在盯同一个对象，本次未重复启动：\n- 后台任务 a1（bash wait-779.sh），对象 gh:pr:779，最晚 12:00:00 回报",
+    }),
+  };
+}
+
 const EVENT_REGISTERED = "WaitRegistered";
 const EVENT_RELEASED = "WaitReleased";
 const EVENT_ADMISSION = "WaitAdmission";
@@ -206,5 +234,81 @@ describe("R9 三态：算不出来 ≠ 0", () => {
 
   test("两类事件全无 → 整节为 null（老会话 / 该版本没接线）", () => {
     expect(aggregateWaitSourceStats([], [])).toBeNull();
+  });
+});
+
+describe("R9 修法 3 补齐：monitor 启动的等待同样是「等待启动」", () => {
+  const monitorRegistered = {
+    event: EVENT_REGISTERED,
+    timestamp: "2026-11-12T10:00:00.000Z",
+    data: {
+      id: "mabcd1234",
+      kind: "monitor",
+      promise_kind: "exit_or_quiescent",
+      description: "monitor wait-pr-780.sh",
+      subjects: ["gh:pr:780"],
+    },
+  };
+
+  test("monitor 启动后当轮声称「又被杀」→ 计入（此前漏在判据外）", () => {
+    const history = [
+      { role: "user", content: [monitorLaunchReceipt()] },
+      assistantThinking("监控 mabcd1234 又被杀了，还没拿到结果，再查一次状态。"),
+    ];
+    const stats = aggregateWaitSourceStats([monitorRegistered], history)!;
+    expect(stats.staleNotificationClaims).toBe(1);
+  });
+
+  test("monitor 启动后正常等通知 → 不计（判据仍然只认误读措辞）", () => {
+    const history = [
+      { role: "user", content: [monitorLaunchReceipt()] },
+      assistantThinking("监控已启动，先结束本轮，等通知。"),
+    ];
+    expect(aggregateWaitSourceStats([monitorRegistered], history)!.staleNotificationClaims).toBe(0);
+  });
+});
+
+describe("R9 验收 2：R2 生效后的轨迹形态（合成轨迹，非真实采样）", () => {
+  test("同一对象 4 次调用 = 1 次 start + 3 次 duplicate → 并存峰值 1、误读 0", () => {
+    // 为什么是合成数据：验收 2 要求「修复后新轨迹上并存 ≤ 1」，但它需要真实出现
+    // 「同一对象连挂多次」的场景。该场景本身是被 R2 消灭的坏行为 —— 修复生效后
+    // 日常使用可能永远不再产生，等真实采样等于等一个不该再发生的事件。
+    // 所以这里按 R2 的**确定性判定**构造期望轨迹（第 1 次 start 登记、后 3 次 duplicate
+    // 不登记），期望值来自判定规则，不是从 digest 实现反推。
+    // 修复前的真实轨迹（b0aa0f1e，4 条同对象并存）见上方验收 1，两组对照即验收 2 的判据。
+    const events = [
+      registered("a1", "bash wait-779.sh", ["gh:pr:779"]),
+      { event: EVENT_ADMISSION, data: { action: "start", kind: "shell" } },
+      {
+        event: EVENT_ADMISSION,
+        data: { action: "duplicate", kind: "shell", existing_ids: ["a1"] },
+      },
+      {
+        event: EVENT_ADMISSION,
+        data: { action: "duplicate", kind: "shell", existing_ids: ["a1"] },
+      },
+      {
+        event: EVENT_ADMISSION,
+        data: { action: "duplicate", kind: "shell", existing_ids: ["a1"] },
+      },
+    ];
+    const history = [
+      { role: "user", content: [launchReceipt()] },
+      assistantThinking("等待 #779 的 CI，已结束本轮。"),
+      { role: "user", content: [duplicateWaitReceipt()] },
+      assistantThinking("同一个对象已在等，本轮不重复启动。"),
+      { role: "user", content: [duplicateWaitReceipt()] },
+      assistantThinking("确认已有等待，继续等通知。"),
+      { role: "user", content: [duplicateWaitReceipt()] },
+      assistantThinking("不再重挂，等通知。"),
+    ];
+    const stats = aggregateWaitSourceStats(events, history)!;
+    // 验收 2 的主判据：并存峰值 ≤ 1（修复前真实轨迹是 4）
+    expect(stats.maxConcurrentWaitsPerSubject).toBe(1);
+    // duplicate 回执不是「启动回执」，不能被误算成一次新的等待启动
+    expect(stats.registered).toBe(1);
+    expect(stats.admissions).toBe(4);
+    expect(stats.waitDuplicatesBlocked).toBe(3);
+    expect(stats.staleNotificationClaims).toBe(0);
   });
 });

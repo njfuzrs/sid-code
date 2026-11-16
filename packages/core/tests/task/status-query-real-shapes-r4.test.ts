@@ -145,6 +145,8 @@ describe("R4 六种形态各自命中", () => {
   });
 
   test("F5 末尾无害段（date / echo）不再是放弃理由", () => {
+    // 裸 date 与带参数的 date 都要认：`isHarmlessSegment` 只把改时钟的 -s/--set 排除
+    expect(matchStatusQuery("gh pr view 780 --json state; date")?.subject).toBe("gh:pr:780");
     expect(matchStatusQuery("gh pr view 780 --json state; date -u +%H:%M:%S")?.subject).toBe(
       "gh:pr:780",
     );
@@ -167,6 +169,8 @@ describe("R4 扩匹配面没有放松安全边界", () => {
       `gh pr view 1 --json state | python3 -c "import subprocess; subprocess.run(['git','push'])"`,
       `gh pr view 1 --json state | python3 -c "import requests; requests.get('http://x')"`,
       `gh pr view 1 --json state | python3 -c "import os; os.system('git push')"`,
+      // 同一正则组里的 remove 单独锁一条：os.system 命中不代表 remove 也命中
+      `gh pr view 1 --json state | python3 -c "import os; os.remove('/tmp/x')"`,
       `gh pr view 1 --json state | python3 -c "import socket"`,
       `gh pr view 1 --json state | node -e "require('child_process').execSync('git push')"`,
       `gh pr view 1 --json state | node -e "require('fs').writeFileSync('/tmp/x','y')"`,

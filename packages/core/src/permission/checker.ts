@@ -1856,6 +1856,13 @@ export class PermissionChecker implements Checker {
     req: PermissionRequest,
     final: Decision,
   ): { metadata?: Record<string, unknown> } {
+    // monitor 的 `command` 走 bash 同一条权限管线（§5.4.6）：规则名按 `bash` 匹配，
+    // 审计要能区分「这条决策是 monitor 继承 bash 规则来的」与「bash 自己的」。
+    // 只标这一个字段，**不继承** bashShape / envPrefixVars——那是 bash 工具自己的
+    // 统计口径（命令形状桶专门用于分析 bash 的确认分布），把 monitor 混进去会污染分母。
+    if (req.toolName === "monitor") {
+      return { metadata: { ...final.metadata, effectiveTool: "bash" } };
+    }
     if (req.toolName !== "bash") return {};
     const command = (req.input as { command?: unknown } | null)?.command;
     if (typeof command !== "string") return {};
@@ -3327,6 +3334,44 @@ export class PermissionChecker implements Checker {
       return { allowed: true };
     }
 
+    // M4：bash 的**只读命令**放行。
+    //
+    // plan 的承诺是「不改任何东西」，而 `git log` / `git diff` / `git status` /
+    // `ls -la` / `rg foo` 不写任何东西。此前这里只认 READ_ONLY_TOOLS 名单，bash 不在
+    // 名单里，于是规划阶段最常用的几条命令全被拒，模型只能改用 read/grep/glob 绕路，
+    // 或者干脆少看——这与 plan「先摸清楚再动手」的目的相反。
+    //
+    // 四条约束（改动时不要破）：
+    // 1. **只放 bash，不放 monitor**：monitor 的子进程是裸 spawn，不经沙箱
+    //    （与上面沙箱自动放行那段同一个理由，见 `shouldAutoAllowBash` 的注释）。
+    // 2. **只认 `isReadOnlyCommand`**：不用 `isReadOnlyIgnoringCd`（它的注释明确写着
+    //    「不许拿去做权限放行」），也不用 allow-composition 的组合规则（那是给 allow
+    //    规则匹配复合命令用的，口径不同）。
+    // 3. **不挪位置**：这里是 Step 5.5（工具级 allow）与 Step 9（出口总闸
+    //    `enforceModeHardConstraint`）共同的落点，两者都排在 Step 1（deny 规则）/
+    //    Step 2（危险命令）/ Step 4（路径）/ Step 5（ask 规则）之后。所以
+    //    `cat ~/.ssh/id_rsa`、`env`、`cat ../x` 仍在 Step 2 被拦，放行面不比 default 宽。
+    // 4. **不在 `enforceModeHardConstraint` 里另写一份判断**：那里调的就是本函数，
+    //    改一处两处生效；写两份必然漂移。
+    if (req.toolName === "bash" && tool) {
+      const command = (req.input as { command?: unknown } | undefined)?.command;
+      if (typeof command === "string" && isReadOnlyCommand(command)) {
+        // 这一支**只在 Step 5.5 的路径上才安全**，判据就是 `tool` 参数在不在：
+        //
+        // - Step 5.5（工具级 allow）→ 本函数由 `allowAtToolLevel` 调，前面刚跑过
+        //   `evaluateReadOnlyReadPaths`，`cat /etc/passwd` 那类「读工作区外文件」已被拦成确认。
+        // - Step 9（出口总闸）→ 本函数由 `enforceModeHardConstraint` 调，**前面没有那道检查**。
+        //   2026-11-15 实测：不加这个 `&& tool`，`plan + cat /etc/passwd` 会在这里被放行，
+        //   而 `default` 下它需要确认——那就比 default 宽了，违反 M4 的硬约束。
+        //
+        // 所以「只读命令放行」的资格来自**工具自己确认过**（Step 5.5 已判只读并校验过读路径），
+        // 权限层不替它猜。不传 tool 的调用（测试 / 嵌入 / SDK）退回原拒绝，方向是多拒一条，
+        // 不是多放一条。
+        log.info("PERMISSION", `bash(${resource.slice(0, 80)}) → 允许(plan模式+只读bash命令)`);
+        return { allowed: true };
+      }
+    }
+
     // Plan Mode 专用工具放行
     if (PLAN_MODE_EXTRA_TOOLS.has(req.toolName)) {
       if (req.toolName === "sub_agent") {
@@ -3376,7 +3421,10 @@ export class PermissionChecker implements Checker {
     log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(plan模式)`);
     return {
       allowed: false,
-      reason: "计划模式下只允许只读操作",
+      // 文案要点出「墙在哪里」：只写「只允许只读操作」时模型会反复试 bash（2026-08-29
+      // headless Note 的教训：拒绝不解释边界，模型只会盲试）。括号里给出合法样例，
+      // 且样例必须是 `isReadOnlyCommand` 真会放行的那几条，写错等于重新制造盲试。
+      reason: "计划模式下只允许只读操作（bash 只允许只读命令，如 git log / ls / rg）",
       decisionReason: { type: "mode", mode: "plan" },
     };
   }

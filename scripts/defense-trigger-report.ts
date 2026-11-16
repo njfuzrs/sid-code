@@ -51,7 +51,11 @@ const COVERAGE_PROBES: Record<string, (e: TraceEvent) => boolean> = {
   LoopTransition: (e) => e.event === "LoopTransition",
   TurnComplete: (e) => e.event === "TurnComplete",
   "TurnComplete.continue_counts": (e) => e.event === "TurnComplete" && !!e.data?.continue_counts,
-  "AfterModel.tool_use_facts": (e) => e.event === "AfterModel" && !!e.data?.tool_use_facts,
+  // tool_use_facts 是平铺进 AfterModelRaw 的四个整数（trace/collector.ts），不在 AfterModel 上，
+  // 也没有嵌套键。初版探测写成 `AfterModel.tool_use_facts`，于是恒报「窗口内从未出现」。
+  "AfterModelRaw.tool_use_total": (e) =>
+    e.event === "AfterModelRaw" && typeof e.data?.tool_use_total === "number",
+  EditFailureReminder: (e) => e.event === "EditFailureReminder",
   GateExhausted: (e) => e.event === "GateExhausted",
   StallEscalation: (e) => e.event === "StallEscalation",
   EndTurnShape: (e) => e.event === "EndTurnShape",
@@ -72,6 +76,14 @@ export interface Count {
   sessions: number;
 }
 
+/**
+ * `AfterModelRaw` 截断的三个分项，对应方案 T6 / T5 的判据：
+ *   - `text_only`：截断但最后一个块不是 `tool_use` —— 只是回答被切短，重问即可
+ *   - `with_tool_use`：截断且带工具调用 —— T5 要防的形态（可能写坏文件）
+ *   - `params_truncated`：`tool_use_truncated > 0`，参数在传输中被截断 —— 写坏文件的直接证据
+ */
+export type TruncatedKind = "text_only" | "with_tool_use" | "params_truncated";
+
 export interface GroupReport {
   /** 分组键（模型名或 provider） */
   key: string;
@@ -85,6 +97,10 @@ export interface GroupReport {
   nag: Record<string, Count>;
   end_turn_shape: Record<string, Count>;
   stop_max_tokens: Count;
+  /** 截断分项（来源 `AfterModelRaw`，口径同 T6） */
+  truncated: Record<TruncatedKind, Count>;
+  /** 编辑失败提醒按失败形态拆（`EditFailureReminder.kind`） */
+  edit_failure_reminder: Record<string, Count>;
   turn_complete: number;
 }
 
@@ -113,6 +129,12 @@ function emptyGroup(key: string): GroupReport {
     nag: {},
     end_turn_shape: {},
     stop_max_tokens: { count: 0, sessions: 0 },
+    truncated: {
+      text_only: { count: 0, sessions: 0 },
+      with_tool_use: { count: 0, sessions: 0 },
+      params_truncated: { count: 0, sessions: 0 },
+    },
+    edit_failure_reminder: {},
     turn_complete: 0,
   };
 }
@@ -240,6 +262,23 @@ export function aggregateDefenseReport(
         case "AfterModel":
           if (d.stop_reason === "max_tokens") tally.add(keyOf(), "stop_max_tokens", "");
           break;
+        case "AfterModelRaw": {
+          // 口径同方案 T6：扫原始 stop_reason（`length` 是 OpenAI 兼容侧的原始值，
+          // `max_tokens` 是 AfterModel 上的归一化值），按「带不带工具调用」拆，
+          // 再单独记一类「参数被截断」——后者才是 T5 要防的写坏文件形态。
+          const stop = String(d.stop_reason ?? "");
+          if (stop === "max_tokens" || stop === "length") {
+            const toolUse = Number(d.tool_use_total ?? 0);
+            tally.add(keyOf(), "truncated", toolUse > 0 ? "with_tool_use" : "text_only");
+            if (Number(d.tool_use_truncated ?? 0) > 0) {
+              tally.add(keyOf(), "truncated", "params_truncated");
+            }
+          }
+          break;
+        }
+        case "EditFailureReminder":
+          tally.add(keyOf(), "edit_failure_reminder", String(d.kind ?? "unknown"));
+          break;
       }
     }
 
@@ -298,6 +337,12 @@ function applyHit(g: GroupReport, metric: string, sub: string, n: number): void 
     case "stop_max_tokens":
       g.stop_max_tokens.count += n;
       g.stop_max_tokens.sessions++;
+      return;
+    case "truncated":
+      bump(g.truncated as Record<string, Count>, sub, n);
+      return;
+    case "edit_failure_reminder":
+      bump(g.edit_failure_reminder, sub, n);
       return;
     case "continue":
     case "gates_exhausted":
@@ -394,10 +439,16 @@ export function renderText(r: DefenseReport): string {
   );
   section("停滞升级（StallEscalation，_shadow = acted:false）", (g) => g.stall);
   section("无进展回注（NoProgressNagInjected.kind）", (g) => g.nag);
+  section("编辑失败提醒（EditFailureReminder.kind）", (g) => g.edit_failure_reminder);
   section("end_turn 形态（EndTurnShape.kind）", (g) => g.end_turn_shape);
   L.push("");
   L.push(
     `## 截断：AfterModel stop_reason=max_tokens ${r.total.stop_max_tokens.count} 次 / ${r.total.model_calls} 次调用（${pct(r.total.stop_max_tokens.count, r.total.model_calls)}）`,
+  );
+  // T6 判据：截断里「带工具调用」才是 T5 要防的形态；`params_truncated` 是写坏文件的直接证据
+  const tr = r.total.truncated;
+  L.push(
+    `  AfterModelRaw 分项：纯文本 ${tr.text_only.count} · 带工具调用 ${tr.with_tool_use.count}（${pct(tr.with_tool_use.count, r.total.model_calls)}）· 参数被截断 ${tr.params_truncated.count}`,
   );
 
   // 按分组拆：只列非 tool_use 的防线触发，tool_use 是正常路径
@@ -416,6 +467,9 @@ export function renderText(r: DefenseReport): string {
     push("incomplete:", g.incomplete_reason);
     push("stall:", g.stall);
     if (g.stop_max_tokens.count) parts.push(`max_tokens=${g.stop_max_tokens.count}`);
+    if (g.truncated.with_tool_use.count)
+      parts.push(`trunc_tool=${g.truncated.with_tool_use.count}`);
+    push("edit_failure:", g.edit_failure_reminder);
     L.push(
       `  ${g.key}  会话 ${g.sessions} · 消息 ${g.prompts} · 调用 ${g.model_calls}${parts.length ? "\n      " + parts.join("  ") : "  （无防线触发）"}`,
     );

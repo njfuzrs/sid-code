@@ -13,6 +13,7 @@ import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings, PerModelStreamTimeouts } from "./network-profile.ts";
 import type { LanguagePref } from "./prompt-lang.ts";
 import type { UserHookHandlerType } from "../hook/handler-types.ts";
+import type { StartModeDiagnostic } from "./permission-mode-source.ts";
 
 /**
  * 团队默认配置模板（scripts/team-defaults.template.json）里 apiKey 的占位符值。
@@ -1389,7 +1390,10 @@ export const normalizeConfigKeysForTest = normalizeConfigKeys;
  * （sessionRetention 30d）因此盖掉了 settings.json 与代码默认，见 2026-10-11 Agent Note。
  * 旧格式 config.yaml 已废弃，不再读取（历史用户请手动迁移到 settings.json）。
  */
-async function loadConfigFile(): Promise<Partial<Config>> {
+async function loadConfigFile(): Promise<{
+  config: Partial<Config>;
+  startModeDiagnostics: StartModeDiagnostic[];
+}> {
   const configDir = getSidHome();
   const settingsPath = join(configDir, "settings.json");
 
@@ -1410,7 +1414,53 @@ async function loadConfigFile(): Promise<Partial<Config>> {
     const { settings } = getSettingsForSource(source);
     if (settings) overlay = mergeConfig(overlay, pickProjectBehaviorFields(settings));
   }
-  return mergeConfig(userConfig, overlay);
+
+  // M2/M17/M3/M18：起始权限模式不能走上面那条 `PROJECT_BEHAVIOR_FIELDS` 叠加链——
+  // 它是嵌套字段 `permissions.defaultMode`，而白名单只收顶层键；更关键的是
+  // 「哪个来源能指定哪个档位」比「字段能否覆盖」更细：项目级可以写 default/plan，
+  // 但不能写 skip。所以交给 resolveStartPermissionMode 用一张信任度表统一判。
+  const { resolveStartPermissionMode } = await import("./permission-mode-source.ts");
+  const { isGitTrackedFile } = await import("./settings/security.ts");
+  const { getSettingsFilePath } = await import("./settings/constants.ts");
+  // 被 git 追踪的 settings.local.json 会随仓库分发，视同项目级；未追踪的才是「用户自己写的」。
+  const localPath = getSettingsFilePath("localSettings");
+  const localTracked = localPath ? isGitTrackedFile(localPath) : false;
+  const startMode = resolveStartPermissionMode([
+    // 企业 managed settings（本地 managed-settings.json + drop-in）。管理员下发，可信。
+    {
+      origin: "policy",
+      label: "企业 managed settings",
+      settings: getSettingsForSource("policySettings").settings,
+      trust: "full",
+    },
+    {
+      origin: "local",
+      label: localTracked ? "被 git 追踪的 settings.local.json" : "settings.local.json（未追踪）",
+      settings: getSettingsForSource("localSettings").settings,
+      trust: localTracked ? "restricted" : "no-skip",
+    },
+    {
+      origin: "project",
+      label: "项目级 settings.json",
+      settings: getSettingsForSource("projectSettings").settings,
+      trust: "restricted",
+    },
+    {
+      origin: "user",
+      label: "用户级 settings.json",
+      settings: getSettingsForSource("userSettings").settings,
+      trust: "full",
+    },
+  ]);
+
+  const merged = mergeConfig(userConfig, overlay);
+  // 解析结果显式盖在最上面：`userConfig` 里的顶层 `permissionMode` 可能是被更高优先级
+  // 来源压过的旧值（或一个该被归一的别名），不覆盖会两套数据并存。
+  // `builtin` 表示四个来源都没声明——此时保留 userConfig，避免把默认值写成「显式配置」。
+  if (startMode.origin !== "builtin") {
+    merged.permissionMode = startMode.mode;
+  }
+  return { config: merged, startModeDiagnostics: startMode.diagnostics };
 }
 
 /**
@@ -1702,7 +1752,7 @@ function loadManagedIdentity(): IdentityConfig | undefined {
 /** 加载完整配置 */
 export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config> {
   const defaults = defaultConfig();
-  const fileConfig = await loadConfigFile();
+  const { config: fileConfig, startModeDiagnostics } = await loadConfigFile();
   const envConfig = loadFromEnv();
 
   // 合并：默认值 → 配置文件 → 环境变量 → 命令行参数
@@ -1885,6 +1935,41 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     }
   }
 
+  // M3/M18：字面量归一。三条入口都汇到这里——CLI `--permission-mode`、settings 顶层
+  // `permissionMode`、以及各来源的 `permissions.defaultMode`（后者在 loadConfigFile 里已归一）。
+  //
+  // 位置必须在下面「无 model 提前 return」之前：onboarding 首次启动恰恰是
+  // 「照着 CC 文档传 --permission-mode bypassPermissions」最常发生的场景，放在 return
+  // 之后会让 CLI 值在配好模型前保持原样——同一份 flag 在两个启动阶段表现不同，最难归因。
+  //
+  // 必须先归一再 validateConfig：否则 `bypassPermissions` 这类 CC 写法会撞上「无效值」
+  // 检查——报一行错，却把原值保留下来，下游拿到一个不在任何集合里的模式名
+  // （既不被识别成 skip、也不被识别成 always-allow），两边判断都不成立。
+  // 拼错的值同理：落到 default 并给一行 warning，比留一个幽灵模式安全。
+  const modeDiagnostics: StartModeDiagnostic[] = [];
+  {
+    const { normalizePermissionModeLiteral } = await import("./permission-mode-source.ts");
+    const normalized = normalizePermissionModeLiteral(config.permissionMode);
+    if (normalized.kind === "alias" && normalized.raw !== "manual") {
+      // manual 的归一是既有静默行为（P2-4），不为它新增启动噪音。
+      modeDiagnostics.push({
+        level: "info",
+        message: `permissionMode="${normalized.raw}" 是别名，已按 "${normalized.mode}" 处理`,
+      });
+    } else if (normalized.kind === "invalid") {
+      modeDiagnostics.push({
+        level: "warning",
+        message: `permissionMode="${normalized.raw}" 不是有效权限模式，已按 "default" 启动`,
+      });
+    }
+    config.permissionMode = normalized.mode;
+  }
+  // 诊断先出口一次：下面「无 model 提前 return」分支不会再走到 validateConfig 的
+  // 整体赋值处，只在归一处挂上会丢。recordStartupWarning 自带去重，重复调用无害。
+  for (const d of [...startModeDiagnostics, ...modeDiagnostics]) {
+    recordStartupWarning(config, "permissionMode", d.message);
+  }
+
   // 如果 model 和 availableModels 都为空：
   //   - headless（print）模式：仍按原样 throw，无头场景无法交互引导，必须显式报错
   //   - TUI 模式：不 throw，标记 _needsOnboarding，放行进界面由 OnboardingDialog 引导。
@@ -1922,12 +2007,6 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   // 统一钳制：即便用户显式配置，请求预算也不能超过当前模型的物理输出上限（否则网关直接 400）。
   clampMaxTokensToModelCeiling(config);
 
-  // P2-4：CC 的 "manual" 是 sid "default" 的别名，归一到内部规范名
-  // （对齐 CC v2.1.200 default→Manual 改名；sid 内部仍用 default 作规范键）。
-  if (config.permissionMode === "manual") {
-    config.permissionMode = "default";
-  }
-
   // skipPermissions / yesMode 同步到 permissionMode（状态栏显示用）
   if (config.skipPermissions) {
     config.permissionMode = "dangerously-skip-permissions";
@@ -1942,9 +2021,17 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   // 暂存校验诊断：此刻 logger 尚未 initLogger（仍是 enabled=false 的兜底实例，
   // 会把 WARN 强制刷到 stderr 污染首屏、又吞掉 INFO/DEBUG 不落盘）。
   // 故不在此直接打印，挂到 config 上由上层在 logger 就绪后统一输出。
-  if (validation.warnings.length > 0 || validation.errors.length > 0) {
+  //
+  // 起始模式的来源诊断（M2/M17：哪个来源的 defaultMode 被采纳或被忽略）与
+  // 字面量归一诊断（M3/M18：别名、拼错值）一起挂在这里——它们都产生于
+  // validateConfig 之前，出口与校验诊断相同，不必另开一条上报通道。
+  const modeWarnings = [...startModeDiagnostics, ...modeDiagnostics];
+  if (validation.warnings.length > 0 || validation.errors.length > 0 || modeWarnings.length > 0) {
     config._validationDiagnostics = {
-      warnings: validation.warnings.map((w) => ({ path: w.path, message: w.message })),
+      warnings: [
+        ...validation.warnings.map((w) => ({ path: w.path, message: w.message })),
+        ...modeWarnings.map((d) => ({ path: "permissionMode", message: d.message })),
+      ],
       errors: validation.errors.map((e) => ({ path: e.path, message: e.message })),
     };
   }

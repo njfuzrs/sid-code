@@ -31,8 +31,13 @@ import { MEMORY_FORK_REQUIRED_TOOLS } from "../../agent/fork-prefix.ts";
 
 /**
  * 解析抽取节流间隔（横向剖析 T2）。优先级：env `SID_CODE_MEMORY_EXTRACT_INTERVAL` >
- * settings `memoryExtractInterval` > 1。非正整数一律回落 1（宁可行为不变，也不让一个
+ * settings `memoryExtractInterval` > 3。非正整数一律回落缺省值（宁可行为不变，也不让一个
  * 拼错的值把抽取整个关掉 —— 关掉有专门的 autoMemory 开关）。
+ *
+ * 缺省 3 的依据（2026-11-15 复查 T2 生产数据）：872 次真跑、849 条写入，平均每次
+ * 0.97 条；N=3 把 fork 调用压到约 1/3（少跑约 2/3），而每条记忆平均被 3 个 end_turn
+ * 后再写 —— 抽取 fork 每次都看完整对话，晚写不丢上下文。收尾 `drainPending` 对积压
+ * 补跑一次，长会话不会因为最后一个不足 N 的尾巴而漏抽。
  */
 export function resolveMemoryExtractInterval(settingValue?: number): number {
   const parse = (v: unknown): number | undefined => {
@@ -44,7 +49,7 @@ export function resolveMemoryExtractInterval(settingValue?: number): number {
     const n = parse(env);
     if (n !== undefined) return n;
   }
-  return parse(settingValue) ?? 1;
+  return parse(settingValue) ?? 3;
 }
 
 /**
@@ -90,9 +95,37 @@ export interface ExtractContext {
 }
 
 /**
- * 检查主代理是否在最后一条用户消息之后写入了记忆文件。
+ * 收集「已确认落盘」的工具调用 id。
+ *
+ * 为什么必须看 `tool_result`：`tool_use` 只证明「模型发起了这次写入」，不证明「写成功了」。
+ * 闸门拒绝（feedback 原话 / secret 拦截 / scope 越权 / 索引满）返回的是
+ * `is_error: true` 的 tool_result，而 assistant 消息里那个 `tool_use` 照样在 ——
+ * 于是被拒的写入会被算进 `written`（遥测和「已保存 N 条记忆」的用户可见文案都会说错），
+ * 也会让 `main_wrote` 把整轮后台提取跳过。两条都是把「发起了」误读成「写成了」。
+ *
+ * 没有配对 tool_result 的调用同样不算：fork 触顶 `maxTurns` 或超时中断时，
+ * 最后那条 `tool_use` 根本没执行，把它当写入是纯误报。
+ *
+ * 这也是 §8.5 回滚判据（「连续 3 天 `written` p50 = 0」）的前提：口径不改，
+ * P0-2 生效后被拒的写入照样计数，指标永远掉不下来，判据测不出「掐死了没有」。
+ */
+function settledToolUseIds(messages: Message[]): Set<string> {
+  const ids = new Set<string>();
+  for (const msg of messages) {
+    for (const block of msg.content) {
+      if (block.type !== "tool_result") continue;
+      // `is_error` 缺省视为成功：工具正常返回时执行器不写这个字段。
+      if (block.is_error === true) continue;
+      ids.add(block.tool_use_id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * 检查主代理是否在最后一条用户消息之后**成功**写入了记忆文件。
  * 扫描 assistant 消息中的 tool_use 块，检查是否有 save_memory，
- * 或 Write/Edit 指向记忆目录。
+ * 或 Write/Edit 指向记忆目录；被拒的调用（`tool_result.is_error`）不算写入。
  */
 export function hasMemoryWritesSince(messages: Message[], memoryDir: string): boolean {
   // 找到最后一条 user（非 tool_result）消息的位置
@@ -108,11 +141,13 @@ export function hasMemoryWritesSince(messages: Message[], memoryDir: string): bo
     }
   }
 
+  const settled = settledToolUseIds(messages);
   for (let i = Math.max(0, lastUserIdx); i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== "assistant") continue;
     for (const block of msg.content) {
       if (block.type !== "tool_use") continue;
+      if (!settled.has(block.id)) continue;
       if (block.name === "save_memory") return true;
       if (block.name === "write" || block.name === "edit") {
         const input = block.input as Record<string, unknown> | undefined;
@@ -125,14 +160,21 @@ export function hasMemoryWritesSince(messages: Message[], memoryDir: string): bo
   return false;
 }
 
-/** 从 forked agent 结果中提取被写入的记忆文件路径 */
+/**
+ * 从 forked agent 结果中提取**真正落盘**的记忆文件路径。
+ *
+ * 被拒的写入（`tool_result.is_error`）不返回：这个列表既进 `MEMORY_EXTRACT.written`
+ * 遥测，又拼成「已保存 N 条记忆」注入回主对话，把失败项列在里面是双重误导。
+ */
 export function extractWrittenPaths(messages: Message[], memoryDir: string): string[] {
   const path = require("path");
+  const settled = settledToolUseIds(messages);
   const paths: string[] = [];
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
     for (const block of msg.content) {
       if (block.type !== "tool_use") continue;
+      if (!settled.has(block.id)) continue;
       if (block.name === "save_memory") {
         const input = block.input as Record<string, unknown> | undefined;
         const key = input?.key;
