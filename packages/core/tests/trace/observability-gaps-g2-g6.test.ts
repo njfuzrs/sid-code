@@ -235,19 +235,12 @@ describe("G3 · read 引导提示落 ReadHint 事件", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  test("首次窄读 → narrow_first（主循环不带 agent_id）", async () => {
+  // T5 决策（2026-11-16）：narrow_first 已下线（照做率 0.61%，73.2% 是"提示后根本没再读"）。
+  // 这条守的是「不再退回去」：首次窄读一个不大的文件不得再产 ReadHint 事件。
+  test("首次窄读 → 不产 ReadHint 事件（narrow_first 已下线）", async () => {
     const tool = new ReadTool();
     await tool.execute({ file_path: file, offset: 1, limit: 10 });
-    expect(got).toHaveLength(1);
-    expect(got[0]).toMatchObject({
-      kind: "narrow_first",
-      hint_file_path: file,
-      read_count: 1,
-      total_lines: 50,
-      start_line: 1,
-      end_line: 10,
-    });
-    expect(Object.keys(got[0]!)).not.toContain("agent_id");
+    expect(got).toHaveLength(0);
   });
 
   test("子代理里重复窄读 → repeat_narrow 带 agent_id", async () => {
@@ -258,14 +251,31 @@ describe("G3 · read 引导提示落 ReadHint 事件", () => {
     const repeat = got.filter((e) => e.kind === "repeat_narrow");
     expect(repeat).toHaveLength(1);
     expect(repeat[0]).toMatchObject({ agent_id: "sub-9", read_count: 3, overlap_ratio: 1 });
+    expect(Object.keys(repeat[0]!)).toContain("agent_id");
+    expect(Object.keys(repeat[0]!)).toContain("hint_file_path");
+  });
+
+  test("主循环重复窄读 → repeat_narrow 不带 agent_id", async () => {
+    const tool = new ReadTool();
+    for (let i = 0; i < 3; i++) await tool.execute({ file_path: file, offset: 5, limit: 10 });
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatchObject({
+      kind: "repeat_narrow",
+      hint_file_path: file,
+      read_count: 3,
+      total_lines: 50,
+      start_line: 5,
+      end_line: 14,
+    });
+    expect(Object.keys(got[0]!)).not.toContain("agent_id");
   });
 
   test("hint_file_path 只留本地：上传前被剥掉，其余字段保留", () => {
     const line = JSON.stringify({
       event: "ReadHint",
-      data: { kind: "narrow_first", hint_file_path: "/secret/a.ts", read_count: 1 },
+      data: { kind: "repeat_narrow", hint_file_path: "/secret/a.ts", read_count: 3 },
     });
     const out = JSON.parse(stripLocalOnlyEventFields(line));
-    expect(out.data).toEqual({ kind: "narrow_first", read_count: 1 });
+    expect(out.data).toEqual({ kind: "repeat_narrow", read_count: 3 });
   });
 });
