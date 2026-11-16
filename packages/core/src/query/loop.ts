@@ -342,9 +342,14 @@ import {
   getDeliverableText,
   resetDeliverableText,
 } from "./deliverable-text.ts";
-import { buildGoalReminder } from "../goal/reminder.ts";
+import {
+  buildGoalReminder,
+  buildNearTurnLimitReminder,
+  shouldWarnNearTurnLimit,
+} from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate, emitGoalGateDecision } from "./goal-gate.ts";
+import { collectGoalWaitingFacts, NO_GOAL_WAITING_FACTS } from "./goal-waiting.ts";
 import {
   checkGoalHardLimits,
   buildGoalTurnsLimitMessage,
@@ -356,7 +361,11 @@ import {
   GOAL_BUDGET_WARNING_RATIO,
 } from "../goal/budget.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
-import { DEFAULT_GOAL_CONFIG, resolveGoalEvaluatorModel } from "../goal/config.ts";
+import {
+  DEFAULT_GOAL_CONFIG,
+  GOAL_TURNS_NEAR_LIMIT_RATIO,
+  resolveGoalEvaluatorModel,
+} from "../goal/config.ts";
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -2761,7 +2770,15 @@ async function* queryLoopBody(
                 : state.goalReminderPendingAfterCompact
                   ? "after_compact"
                   : "periodic";
-            reminderParts.push(buildGoalReminder(goal));
+            // G5：等待版文案的判据与 goal-gate 的 G2 同源——只认**显式声明**的外部等待
+            // （monitor / 唤醒 / 带期限的后台命令）。用 hasPromisedWait 会把派生子代理、
+            // 普通后台 shell 也算进来，那类只承诺「自己结束时回报」，不构成
+            // 「目标在等外部状态」的证据。注入频率已受 reminderInterval 约束，无需额外节流。
+            reminderParts.push(
+              buildGoalReminder(goal, {
+                waitingSources: listWaits().filter(isDeclaredExternalWait),
+              }),
+            );
             state.lastGoalReminderTurn = state.turnCount;
             state.goalReminderPendingAfterCompact = false;
             log.info("QUERY_LOOP", `Goal 状态回注（第 ${goal.turnsUsed} 轮）`);
@@ -2770,6 +2787,38 @@ async function* queryLoopBody(
               goal_turns_used: goal.turnsUsed,
               turn: state.turnCount,
             });
+          }
+
+          // 轮次接近上限（≥80%）的一次性软提醒。
+          //
+          // 为什么放在这里：`turnsUsed` 刚在上一行自增，这是**每轮必经**的位置 ——
+          // 与「只在模型想停时判定」的 end_turn 路径不同，连续 tool_use 空转时它照样
+          // 会触发。`maxTurns` 放宽到 300 若不配套这条提醒，翻倍的上限只是把「毫无
+          // 自知地跑到被掐断」的成本也翻倍。
+          //
+          // 只发一次由 `goal.softLimitWarned` 保证（否则只要还在 80% 以上，每轮都会
+          // 塞一条一模一样的话）；阈值与 cli 状态栏变黄共用 GOAL_TURNS_NEAR_LIMIT_RATIO。
+          if (shouldWarnNearTurnLimit(goal)) {
+            goal.softLimitWarned = true;
+            deps.updateGoalState?.((g) => {
+              g.softLimitWarned = true;
+            });
+            reminderParts.push(buildNearTurnLimitReminder(goal));
+            emitReminderInjectedEvent(deps, sessionState.sessionId, "GoalReminderInjected", {
+              reason: "near_turn_limit",
+              goal_turns_used: goal.turnsUsed,
+              max_turns: goal.maxTurns,
+              turn: state.turnCount,
+            });
+            log.info(
+              "QUERY_LOOP",
+              `Goal 轮次软提醒（${goal.turnsUsed}/${goal.maxTurns}，阈值 ${GOAL_TURNS_NEAR_LIMIT_RATIO}）`,
+            );
+            yield {
+              kind: "system",
+              level: "warning",
+              text: `Goal 轮次已用 ${goal.turnsUsed}/${goal.maxTurns}（≥${Math.round(GOAL_TURNS_NEAR_LIMIT_RATIO * 100)}%），已提醒模型收尾`,
+            };
           }
         }
       }
@@ -5816,6 +5865,18 @@ async function* queryLoopBody(
                 minTurnsBeforeEval: effectiveGoalConfig.minTurnsBeforeEval,
               };
 
+              // G2（2026-11-16）：等待挂起判据的事实。窄口径 isDeclaredExternalWait ——
+              // 派生任务（子代理 / 普通后台 shell）承诺的是「自己结束会回报」，不构成
+              // 「目标在等外部状态」的证据（同 D12，见 wait-registry.ts 的注释）。
+              //
+              // 查询失败按「无等待」处理：宁可多评估一次（旧行为），不可因一次查询异常
+              // 把 end_turn 永久放行——那会让 goal 再也走不到评估器。
+              let waitingFacts = NO_GOAL_WAITING_FACTS;
+              try {
+                waitingFacts = collectGoalWaitingFacts(listWaits(), hasPendingNotifications());
+              } catch {
+                /* 查询失败按「无等待」处理 */
+              }
               const goalGateOutput = await handleGoalGate({
                 goal,
                 messages: ctxMgr.getMessages(),
@@ -5829,6 +5890,8 @@ async function* queryLoopBody(
                 // 会话哪一阶段"时与 hypothesis 事件不可直接比较。absoluteTurn/promptSeq 补齐后可比。
                 absoluteTurn: sessionState.getAbsoluteTurn(),
                 promptSeq,
+                // G2（2026-11-16）：有显式等待源时 goal 闸门改判「等待挂起」，不再调评估器。
+                waiting: waitingFacts,
               });
 
               // 注入消息
@@ -5852,6 +5915,22 @@ async function* queryLoopBody(
                   g.status = "impossible";
                 });
                 log.info("GOAL_GATE", "目标不可能达成，正常收尾");
+                // 落入下方正常收尾
+              } else if (result.waiting) {
+                // G2（2026-11-16）：等待挂起。goal **仍是 active**，语义只是「本轮结束，
+                // 等等待事件唤醒下一轮」——所以既不写终态、也不 continue 重跑。
+                // 唤醒走既有通知续跑通道（后台任务终态通知 → 注入 → 下一轮），
+                // 这里不另起定时器，否则会和那条通道重复唤醒。
+                //
+                // 必须走 updateGoalState：goal-gate 已把连续放行计数写进 goal 对象，
+                // 不显式触发就只留在内存 —— resume 后上限从 0 重算，等于可以无限放行。
+                deps.updateGoalState?.((g) => {
+                  g.waitPass = goal.waitPass;
+                });
+                log.info(
+                  "GOAL_GATE",
+                  `等待挂起（wait_ids=${result.waitIds?.join(",") || "-"}），本轮结束，事件到达后续跑`,
+                );
                 // 落入下方正常收尾
               } else if (result.shouldContinue) {
                 deps.updateGoalState?.((g) => {

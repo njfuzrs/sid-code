@@ -18,8 +18,11 @@ import {
 import {
   buildGoalReminder,
   buildFirstTurnPrompt,
+  buildNearTurnLimitReminder,
   buildResumeTurnPrompt,
+  shouldWarnNearTurnLimit,
 } from "@sid-code/core/goal/reminder.ts";
+import { DEFAULT_GOAL_CONFIG, GOAL_TURNS_NEAR_LIMIT_RATIO } from "@sid-code/core/goal/config.ts";
 
 describe("createGoal", () => {
   test("使用默认值正确初始化", () => {
@@ -29,7 +32,10 @@ describe("createGoal", () => {
     expect(goal.status).toBe("active");
     expect(goal.tokensUsed).toBe(0);
     expect(goal.turnsUsed).toBe(0);
-    expect(goal.maxTurns).toBe(150);
+    // G6：默认轮次 150 → 300。既锁死值（防有人改回 150），也锁死同源
+    // （createGoal 必须引用常量，不能自己再写一个字面量）。
+    expect(DEFAULT_GOAL_CONFIG.defaultMaxTurns).toBe(300);
+    expect(goal.maxTurns).toBe(DEFAULT_GOAL_CONFIG.defaultMaxTurns);
     expect(goal.evidenceLog).toEqual([]);
     expect(goal.createdAt).toBeGreaterThan(0);
     expect(goal.updatedAt).toBeGreaterThan(0);
@@ -75,7 +81,18 @@ describe("serializeGoalState / deserializeGoalState", () => {
     expect(restored.status).toBe("active");
     expect(restored.tokensUsed).toBe(0);
     expect(restored.turnsUsed).toBe(0);
+    // G6 的第二处兜底：反序列化缺 maxTurns 时也必须走常量，不能自己写 150/300
+    expect(restored.maxTurns).toBe(DEFAULT_GOAL_CONFIG.defaultMaxTurns);
+    // 旧会话没有这个字段 = 当时确实没提醒过，不应因缺字段就当作已提醒
+    expect(restored.softLimitWarned).toBe(false);
     expect(restored.evidenceLog).toEqual([]);
+  });
+
+  test("softLimitWarned 往返保留（resume 后不重复提醒）", () => {
+    const original = createGoal("长任务");
+    original.softLimitWarned = true;
+    const restored = deserializeGoalState(serializeGoalState(original));
+    expect(restored.softLimitWarned).toBe(true);
   });
 });
 
@@ -104,12 +121,99 @@ describe("buildGoalReminder", () => {
   });
 });
 
+// ─── G5：等待也是推进 ───
+//
+// 缺陷形态：模型挂着 monitor / wait_until 等 CI 时，reminder 仍无条件写
+// 「继续推进目标」，模型把它读成「不能停下来等」→ 回前台反复 `gh pr checks` 空转。
+// 判据必须是**显式声明**的外部等待（isDeclaredExternalWait），不是 hasPromisedWait。
+describe("G5：等待版 reminder", () => {
+  /** 构造一个 deadline 型等待源（monitor 盯 PR CI） */
+  const monitorWait = (deadlineAt: number) => ({
+    id: "m7",
+    kind: "monitor" as const,
+    promise: { kind: "deadline" as const, deadlineAt },
+    description: "盯 PR #662 的 CI",
+    registeredAt: Date.now(),
+  });
+
+  test("有声明等待源时不催「继续推进」，改为说明在等什么、最晚何时回报", () => {
+    const goal = createGoal("等 PR CI 通过后合并");
+    goal.turnsUsed = 6;
+    const deadlineAt = new Date(2026, 10, 16, 14, 32, 0).getTime();
+    const reminder = buildGoalReminder(goal, { waitingSources: [monitorWait(deadlineAt)] });
+
+    // 等待源被点名，且带承诺的回报时刻（说明「在等什么、最晚何时」）
+    expect(reminder).toContain("监控 m7（盯 PR #662 的 CI）");
+    expect(reminder).toContain("最晚 14:32 前回报");
+    // 关键：不再出现「继续推进目标」这句祈使句
+    expect(reminder).not.toContain("继续推进目标");
+    // 明确「挂着等待结束本轮是合法推进」，并禁止前台轮询
+    expect(reminder).toContain("结束本轮");
+    expect(reminder).toContain("合法推进");
+    expect(reminder).toContain("反复查询");
+  });
+
+  test("无等待源时保持原有「继续推进」文案，并保留等待指引", () => {
+    const goal = createGoal("把测试修到全绿");
+    goal.turnsUsed = 3;
+    const reminder = buildGoalReminder(goal, { waitingSources: [] });
+
+    expect(reminder).toContain("继续推进目标");
+    // G5 第 2 点：即使当前没挂等待，也要告诉模型「等待也是推进」，否则它不敢收尾
+    expect(reminder).toContain("等待也是推进");
+    expect(reminder).not.toContain("最晚");
+  });
+
+  test("等待版文案随等待源内容变化，不是固定字符串（变异自证：去掉 opts 传入即失败）", () => {
+    const goal = createGoal("等部署完成");
+    const a = buildGoalReminder(goal, {
+      waitingSources: [
+        {
+          id: "w1",
+          kind: "wakeup" as const,
+          promise: { kind: "deadline" as const, deadlineAt: Date.now() + 60_000 },
+          description: "20 分钟后回来复查部署",
+          registeredAt: Date.now(),
+        },
+      ],
+    });
+    expect(a).toContain("定时唤醒 w1（20 分钟后回来复查部署）");
+    // 另一类承诺的措辞也不同（terminal → 「结束即通知」）
+    const b = buildGoalReminder(goal, {
+      waitingSources: [
+        {
+          id: "a1",
+          kind: "agent" as const,
+          promise: { kind: "terminal" as const },
+          description: "迁移剩余 3 个文件",
+          registeredAt: Date.now(),
+        },
+      ],
+    });
+    expect(b).toContain("子代理 a1（迁移剩余 3 个文件），结束即通知");
+  });
+});
+
 describe("buildFirstTurnPrompt", () => {
   test("包含目标条件和工作指令", () => {
     const goal = createGoal("清空所有 lint 错误");
     const prompt = buildFirstTurnPrompt(goal);
     expect(prompt).toContain("清空所有 lint 错误");
     expect(prompt).toContain("goal");
+  });
+
+  // G5：旧文案「在满足上述条件之前，系统不会让你停止」是半真半假的——goal gate 确实会
+  // 打回未达成的 end_turn，但挂着等待源收尾是放行的。模型照字面理解就不敢停，只能前台轮询。
+  test("不再断言「系统不会让你停止」，改为把「未达成会被推回」与「挂等待可收尾」分开说", () => {
+    const goal = createGoal("等 CI 通过并合并 PR");
+    const prompt = buildFirstTurnPrompt(goal);
+    expect(prompt).not.toContain("系统不会让你停止");
+    expect(prompt).toContain("会被评估一次并推回继续");
+    expect(prompt).toContain("不会被打回");
+    expect(prompt).toContain("等待也是推进");
+    // 必须点名具体原语，否则模型不知道「挂等待」怎么落地
+    expect(prompt).toContain("monitor");
+    expect(prompt).toContain("schedule_wakeup");
   });
 });
 
@@ -122,9 +226,95 @@ describe("buildResumeTurnPrompt", () => {
     expect(prompt).toContain("迁移到新 API");
     expect(prompt).toContain("还有 3 个文件未迁移");
   });
+
+  test("G5：恢复轮也给出「等外部状态时先挂等待再收尾」的出口", () => {
+    const goal = createGoal("等部署完成");
+    goal.turnsUsed = 4;
+    const prompt = buildResumeTurnPrompt(goal);
+    expect(prompt).toContain("先挂上显式等待再收尾");
+    expect(prompt).not.toContain("反复轮询状态");
+  });
 });
 
-// ─── F6：evidenceLog 写放大（2026-09-03 排查）───
+// ─── G6：接近轮次上限的软提醒 ───
+//
+// 缺陷背景：默认轮次从 150 放宽到 300，若不配套提醒，等于把「毫无自知地跑到被
+// 掐断」的成本也翻倍。这里锁三件事：阈值来源、判定边界、只提醒一次。
+describe("G6：轮次接近上限软提醒", () => {
+  test("阈值常量是 0.8 且默认上限 300（240 轮触发）", () => {
+    expect(GOAL_TURNS_NEAR_LIMIT_RATIO).toBe(0.8);
+    expect(DEFAULT_GOAL_CONFIG.defaultMaxTurns).toBe(300);
+    expect(DEFAULT_GOAL_CONFIG.defaultMaxTurns * GOAL_TURNS_NEAR_LIMIT_RATIO).toBe(240);
+  });
+
+  test("未达阈值不提醒，恰好到阈值才提醒（边界）", () => {
+    const goal = createGoal("长任务");
+    goal.turnsUsed = 239;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(false);
+    goal.turnsUsed = 240;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(true);
+  });
+
+  test("只提醒一次：置位后即使仍在阈值之上也不再返回真", () => {
+    const goal = createGoal("长任务");
+    goal.turnsUsed = 250;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(true);
+
+    // 调用方在首次命中时置位（loop.ts 里与判定相邻）
+    goal.softLimitWarned = true;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(false);
+    goal.turnsUsed = 260;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(false);
+  });
+
+  // T-G6-2 的直接映射：239 → 240 → 241 连续跑，只在 240 那一轮"注入"一次。
+  // 这里按 loop.ts 的接线原样模拟（判定为真才 push + 置位），所以断言的是
+  // 注入次数，而不是单次的布尔返回值。
+  test("239→245 连续六轮：只在第 240 轮注入一次", () => {
+    const goal = createGoal("长任务"); // maxTurns=300
+    const injectedAt: number[] = [];
+    for (let turn = 239; turn <= 245; turn++) {
+      goal.turnsUsed = turn;
+      if (shouldWarnNearTurnLimit(goal)) {
+        goal.softLimitWarned = true;
+        injectedAt.push(turn);
+      }
+    }
+    expect(injectedAt).toEqual([240]);
+  });
+
+  test("maxTurns<=0（不设上限的退化输入）永不提醒", () => {
+    const goal = createGoal("长任务");
+    goal.turnsUsed = 999;
+    goal.maxTurns = 0;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(false);
+    goal.maxTurns = -1;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(false);
+  });
+
+  test("用户调小上限到当前已用轮次：立刻提醒（不等下一轮）", () => {
+    // /goal turns <n> 把上限降到已用之下时应当马上告知，否则接下来直接被
+    // turns_limited 掐断而模型没有任何准备。
+    const goal = createGoal("长任务");
+    goal.turnsUsed = 50;
+    goal.maxTurns = 60;
+    expect(shouldWarnNearTurnLimit(goal)).toBe(true);
+  });
+
+  test("文案包含已用/上限/剩余轮次与收尾指引", () => {
+    const goal = createGoal("审计并修复所有 P0");
+    goal.turnsUsed = 250;
+    goal.maxTurns = 300;
+    const text = buildNearTurnLimitReminder(goal);
+    expect(text).toContain("250/300");
+    expect(text).toContain("83%");
+    expect(text).toContain("剩余 50 轮");
+    expect(text).toContain("审计并修复所有 P0");
+    // 必须说明「这是提醒不是终止」，否则模型会误以为已经无法继续
+    expect(text).toContain("不会终止任务");
+  });
+});
+
 //
 // 缺陷形态：`evidenceLog` 无上限 + 每次变更**全量序列化**落盘（appendMetadata 是
 // append 语义），于是第 N 轮那一次写入就有 N 条证据的完整体积。实测 150 轮：
