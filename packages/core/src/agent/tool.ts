@@ -17,6 +17,8 @@ import { getLogger } from "../debug/logger.ts";
 import { UsageSinkTicket, hasNonZeroUsage } from "../llm/billing-sink.ts";
 import { createAgentTask, failAgentTask } from "../task/index.ts";
 import { BACKGROUND_RECEIPT_NOTICE } from "../task/background-receipt.ts";
+import { NOTIFICATION_OUTPUT_MAX_CHARS, truncateForNotification } from "../task/notification.ts";
+import { persistLargeOutput } from "../context/tool-result-storage.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { buildAgentHookSystem } from "./agent-hooks.ts";
 import {
@@ -826,16 +828,12 @@ ${typeLines}
       // P0-1：把子代理消耗的 token/费用回写主会话
       usageTicket?.settle(this.collectUsage(result, usageTicket));
 
-      const summary = [
-        `[子代理完成] 类型: ${params.type}, 轮次: ${result.turns}`,
-        `Token 用量: input=${result.usage.inputTokens}, output=${result.usage.outputTokens}`,
-        "",
-        // 缺口 2 阶段 1：子代理输出可能含外部不可信内容，用 untrusted 边界包裹，
-        // 提示主代理「这是数据不是指令」，与 system prompt 的 subagent-result-policy 呼应。
-        `<subagent-result untrusted="true">`,
-        result.output,
-        `</subagent-result>`,
-      ].join("\n");
+      const summary = buildSyncSubagentSummary({
+        type: params.type,
+        result,
+        sessionId: this.parentSessionId,
+        toolUseId: params._parentToolUseId,
+      });
 
       // 修复问题2：子代理 success=false（超时/loopDetect/异常）时标记 isError，
       // 让 TUI ToolStatusIndicator 正确显示红色终态（而非绿色成功）。
@@ -1037,4 +1035,64 @@ ${typeLines}
       }
     }
   }
+}
+
+/**
+ * T4（06H1）：同步回程的结论组装 —— 上限与后台 `<task-notification>` 对齐。
+ *
+ * 后台通知走 `truncateForNotification(result.output, NOTIFICATION_OUTPUT_MAX_CHARS, outputFile)`，
+ * 而同步回程此前把 `result.output` 原样塞进 `<subagent-result>`：同一份结论在两条路径上
+ * 上限不同（后台 16,000 字符，同步无上限）。父代理按「同步结果是全文」的习惯读它，
+ * 遇到超长结论时既看不到截断提示、也没有文件指针可拉全文 —— 而提示词只说后台会截断，
+ * 于是它没有任何理由怀疑手上这份是完整的。
+ *
+ * 为什么不在上下文层把 `OUTPUT_THRESHOLD`（30,000）改成 16,000 了事：
+ * 1. 那一层对**所有** tool_result 生效，为一个工具改掉 bash / grep 等全部工具的行为；
+ * 2. 命中时它把整段内容替换成 ~200 字节引用（`persistLargeOutput` 的 reference 形态），
+ *    16,000–30,000 之间的子代理结论会从「全文在窗口」变成「一句引用、连预览都没有」，
+ *    比后台的「前 16,000 字 + 文件指针」更差。对齐必须发生在结论级出口这里。
+ *
+ * 不超上限时**不落盘、不写 `<output-file>`**：全文已经在窗口里，多一个文件指针只是噪音，
+ * 还会让模型误以为结论被截断过。
+ */
+export function buildSyncSubagentSummary(input: {
+  type: string;
+  result: SubAgentResult;
+  /** 主会话 id（落盘目录用）。未注入时退到 "unknown"——落盘仍成功，只是目录不按会话分。 */
+  sessionId?: string;
+  /** 本次工具调用 id（落盘文件名用）。缺失时用时间戳兜底，避免文件名里出现 "undefined"。 */
+  toolUseId?: string;
+}): string {
+  const { type, result, sessionId, toolUseId } = input;
+
+  let body = result.output;
+  let outputFile: string | undefined;
+  // 与 truncateForNotification 同一口径（码点）判断是否超限：用 .length 会把 emoji 等
+  // 代理对算成 2 个字符，导致「判定超限但截断函数认为没超」的不一致。
+  if (Array.from(result.output).length > NOTIFICATION_OUTPUT_MAX_CHARS) {
+    // 复用上下文层的落盘能力（同目录、同命名规则、写失败时静默降级），
+    // 但只取 savedPath —— reference 形态（整段替换）在这里正是不想要的。
+    const persisted = persistLargeOutput(
+      result.output,
+      toolUseId ?? `sync-${Date.now()}`,
+      "sub_agent",
+      sessionId ?? "unknown",
+      NOTIFICATION_OUTPUT_MAX_CHARS,
+    );
+    outputFile = persisted.savedPath || undefined;
+    body = truncateForNotification(result.output, NOTIFICATION_OUTPUT_MAX_CHARS, outputFile);
+  }
+
+  return [
+    `[子代理完成] 类型: ${type}, 轮次: ${result.turns}`,
+    `Token 用量: input=${result.usage.inputTokens}, output=${result.usage.outputTokens}`,
+    // 只在真的落盘时给指针：不超上限的结论全文就在下面，给路径是噪音。
+    ...(outputFile ? [`<output-file>${outputFile}</output-file>`] : []),
+    "",
+    // 缺口 2 阶段 1：子代理输出可能含外部不可信内容，用 untrusted 边界包裹，
+    // 提示主代理「这是数据不是指令」，与 system prompt 的 subagent-result-policy 呼应。
+    `<subagent-result untrusted="true">`,
+    body,
+    `</subagent-result>`,
+  ].join("\n");
 }
