@@ -53,6 +53,11 @@ interface ReplacementResult {
   matchEndLine?: number;
   /** 仅模糊匹配：1 - 加权编辑距离/长度，越大越像。 */
   similarity?: number;
+  /**
+   * 仅归一化歧义（occurrences=-2）：文件里归一化后能命中的不同原文形态（去重、按出现顺序）。
+   * 上层据此给出「补上下文 / 用 replace_all」的具体建议，而不是笼统的「近似匹配歧义」。
+   */
+  ambiguousVariants?: string[];
 }
 
 /** 字符偏移 → 1-based 行号（offset 落在首字符之前时按第 1 行算）。 */
@@ -346,20 +351,184 @@ function tryFuzzyMatch(
   };
 }
 
-// ─── 引号规范化 ─────────────────────────────────────────────────────────────
+// ─── 字形归一化（1:1 逐字符映射） ───────────────────────────────────────────
+
+/** 全角 ASCII U+FF01–FF5E ↔ 半角 U+0021–007E（94 个码点，逐个 1:1，偏移固定 0xFEE0） */
+const FULLWIDTH_ASCII_PAIR = (() => {
+  let chars = "";
+  let mapTo = "";
+  for (let cp = 0xff01; cp <= 0xff5e; cp++) {
+    chars += String.fromCharCode(cp);
+    mapTo += String.fromCharCode(cp - 0xfee0);
+  }
+  return { chars, mapTo };
+})();
 
 /**
- * 将弯引号规范化为直引号（LLM 常见行为：把代码里的直引号输出成弯引号）。
+ * 归一化字符表：每个分组里 `chars` 的第 i 个字符映射到 `mapTo` 的第 i 个字符。
  *
- * 必须保持长度不变（1:1 字符映射）：calculateReplacement 的引号匹配路径会用
- * quotedContent 的下标去 slice normalizedContent 定位原始子串，一旦规范化改变了
- * 字符串长度，下标就会错位、slice 出错误子串导致替换污染前后文。
- * 故这里只做单字符到单字符映射；破折号/省略号等变长归一化一律不做（CC 同）。
+ * 为什么需要它：LLM 写 old_string 时经常把字形「写成看起来一样、码点却不同」的变体——
+ * 弯引号当直引号、长破折号当连字符、全角标点当半角、不间断空格当空格。这些差异肉眼
+ * 不可分辨，但 `indexOf` 是码点比较，此前直接判「未找到要替换的字符串」。
+ *
+ * **必须保持长度不变（每个映射都是 1 个码点 → 1 个码点）**：归一化命中路径要用
+ * 归一化串的下标去 slice 原文定位实际子串（见 tryNormalizedMatch），一旦某个字符
+ * 变长或变短，下标就会错位、slice 出错误子串导致替换污染前后文。这同时是**不能直接
+ * 用 NFKC** 的原因：NFKC 会把 `…` 拆成 `...`、把连字 `ﬁ` 拆成 `fi`，长度会变。
+ * 全角 ASCII 段只是 NFKC 里恰好 1:1 的那一截，所以单独列出来就够。
+ *
+ * 出处：弯引号是原有行为；破折号与 Unicode 空格两组对齐 codex `seek_sequence.rs`、
+ * opencode `normalizeForMatch` 与 pi；全角 ASCII 等价于 pi 用 NFKC 达到的效果。
+ *
+ * 导出仅供测试枚举校验 1:1 不变量，不是对外 API。
  */
-function normalizeQuotes(str: string): string {
-  return str
-    .replace(/[\u201C\u201D]/g, '"') // curly double quotes -> "
-    .replace(/[\u2018\u2019]/g, "'"); // curly single quotes -> '
+export const MATCH_NORMALIZE_GROUPS: ReadonlyArray<{
+  chars: string;
+  mapTo: string;
+  source: string;
+}> = [
+  { chars: "\u201C\u201D", mapTo: '""', source: "弯双引号 U+201C/201D" },
+  { chars: "\u2018\u2019", mapTo: "''", source: "弯单引号 U+2018/2019" },
+  {
+    // 多对一：中文文档里同一个词用不同破折号并存是常态，扩表后歧义会比以前更常触发
+    // （「安全但更吵」的取舍，由 tryNormalizedMatch 的 distinct 检查兜住）。
+    chars: "\u2010\u2011\u2012\u2013\u2014\u2015\u2212",
+    mapTo: "-------",
+    source: "破折号 / 连字符 U+2010–2015、减号 U+2212",
+  },
+  {
+    chars: "\u00A0\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000",
+    mapTo: "             ",
+    source: "Unicode 空格 U+00A0、U+2002–200A、U+202F、U+205F、U+3000",
+  },
+  {
+    chars: FULLWIDTH_ASCII_PAIR.chars,
+    mapTo: FULLWIDTH_ASCII_PAIR.mapTo,
+    source: "全角 ASCII U+FF01–FF5E（含 ：（） ，）",
+  },
+];
+
+/** 展平后的逐字符查找表（由 MATCH_NORMALIZE_GROUPS 派生，避免表与实现两处漂移） */
+const MATCH_NORMALIZE_MAP: ReadonlyMap<string, string> = (() => {
+  const map = new Map<string, string>();
+  for (const group of MATCH_NORMALIZE_GROUPS) {
+    for (let i = 0; i < group.chars.length; i++) {
+      map.set(group.chars[i]!, group.mapTo[i]!);
+    }
+  }
+  return map;
+})();
+
+/** 需要归一化的字符类（由表派生：表里有的字符一定被替换，不会漏） */
+const MATCH_NORMALIZE_RE = new RegExp(
+  `[${[...MATCH_NORMALIZE_MAP.keys()].map((ch) => ch.replace(/[\\\]^-]/g, "\\$&")).join("")}]`,
+  "g",
+);
+
+/**
+ * 把字形变体归一成半角基准形态，仅用于**匹配**（写入的仍是模型给的 new_string 原文）。
+ *
+ * 长度不变由上面的表保证：正则只匹配表内的单码点字符，回调也只产出单码点字符。
+ * 没有任何变体时 `String.replace` 直接返回原串，不额外分配。
+ */
+export function normalizeForMatch(str: string): string {
+  return str.replace(MATCH_NORMALIZE_RE, (ch) => MATCH_NORMALIZE_MAP.get(ch) ?? ch);
+}
+
+/**
+ * 字形归一化匹配：在归一化串上定位，再回到原文做替换。
+ *
+ * 为什么不能只取 `indexOf` 的第一处：不同原文（`x—y` 与 `x-y`）归一化后可能撞车，
+ * 只按第一处切出的原文去替换，另一处会被**无声漏掉**——`replace_all=false` 时用户
+ * 以为改了唯一一处，`replace_all=true` 时用户以为全改了。所以先按命中位置的
+ * **distinct 原文形态**分类，再分三支处理：
+ *
+ * - 只有一种形态：等价于在该原文上做精确匹配（保留「找到 N 处匹配」的既有报错）；
+ * - 多种形态 + `replace_all=false`：无法确定改哪一处 → 返回 occurrences=-2 让上层拒绝；
+ * - 多种形态 + `replace_all=true`：按位置逐处替换，不允许只换一种形态。
+ *
+ * ⚠️ 判据不能用「命中次数 > 1」：文件里多处**字面完全相同**时也成立，而那种情况
+ * 现状报的是准确的「找到 N 处匹配」，换成「歧义」是误报。
+ *
+ * @param content 原文（CRLF 已归一为 LF）
+ * @param matchContent `normalizeForMatch(content)` 的结果（长度与 content 相同，下标通用）
+ * @param matchSearch 归一化后的 old_string
+ */
+function tryNormalizedMatch(
+  content: string,
+  matchContent: string,
+  matchSearch: string,
+  replace: string,
+  replaceAll: boolean,
+): ReplacementResult | null {
+  if (matchSearch.length === 0) return null;
+
+  // 收集全部命中位置（非重叠，与 String.split 的计数口径一致）
+  const positions: number[] = [];
+  let from = 0;
+  while (from <= matchContent.length - matchSearch.length) {
+    const idx = matchContent.indexOf(matchSearch, from);
+    if (idx === -1) break;
+    positions.push(idx);
+    from = idx + matchSearch.length;
+  }
+  if (positions.length === 0) return null;
+
+  const first = positions[0]!;
+  const matchStartLine = lineOfOffset(content, first);
+  const matchEndLine = lineOfOffset(content, first + matchSearch.length - 1);
+
+  // 归一化撞车的判据：命中位置的**原文**有几种。归一化不改变长度，下标可直接用于原文。
+  const variants: string[] = [];
+  for (const idx of positions) {
+    const actualOld = content.slice(idx, idx + matchSearch.length);
+    if (!variants.includes(actualOld)) variants.push(actualOld);
+  }
+
+  if (variants.length === 1) {
+    const origExact = tryExactMatch(content, variants[0]!, replace, replaceAll);
+    if (!origExact || origExact.occurrences === 0) return null;
+    return {
+      ...origExact,
+      // 归一化命中单独成策略：未读文件守卫与 exact 同权（见 execute 的 deferUnreadCheck），
+      // 但事件层必须能把它和真正的精确命中分开统计。
+      strategy: "normalized",
+      matchStartLine,
+      matchEndLine,
+    };
+  }
+
+  if (!replaceAll) {
+    // 不同原文归一后撞车 + 单处替换：无法确定改哪一处 → 拒绝（occurrences=-2 专用信号，
+    // -1 已被模糊匹配歧义占用）。strategy 写 normalized 而不是 fuzzy：未读文件守卫
+    // 仍按「归一化命中」放行，报出歧义本身的诊断（fuzzy 会先被当成近似匹配拒掉）。
+    return {
+      newContent: content,
+      occurrences: -2,
+      strategy: "normalized",
+      matchStartLine,
+      matchEndLine,
+      ambiguousVariants: variants,
+    };
+  }
+
+  // 多种形态 + replace_all：按位置逐处替换。
+  // 不能用 split/join（它只认一种原文形态，而这里恰好有多种），也不能按形态逐个 split
+  // （替换进来的新文本可能再被下一轮命中）。
+  let replaced = "";
+  let prev = 0;
+  for (const idx of positions) {
+    replaced += content.slice(prev, idx) + replace;
+    prev = idx + matchSearch.length;
+  }
+  replaced += content.slice(prev);
+  return {
+    newContent: restoreTrailingNewline(content, replaced),
+    occurrences: positions.length,
+    strategy: "normalized",
+    matchStartLine,
+    matchEndLine,
+  };
 }
 
 // ─── EditLenientMatch 事件（宽进命中的可观测口径） ───────────────────────────
@@ -410,27 +579,20 @@ function calculateReplacement(
   const exact = tryExactMatch(normalizedContent, normalizedSearch, normalizedReplace, replaceAll);
   if (exact) return exact;
 
-  // 引号规范化后重试精确匹配（LLM 常将直引号替换为弯引号）。
-  // normalizeQuotes 保证长度不变（1:1 映射），故 indexOf 偏移可直接用于原串 slice。
-  const quotedSearch = normalizeQuotes(normalizedSearch);
-  const quotedContent = normalizeQuotes(normalizedContent);
-  if (quotedSearch !== normalizedSearch || quotedContent !== normalizedContent) {
-    const idx = quotedContent.indexOf(quotedSearch);
-    if (idx !== -1) {
-      // 长度不变 → 偏移直接映射回原串
-      const actualOld = normalizedContent.slice(idx, idx + quotedSearch.length);
-      const origExact = tryExactMatch(normalizedContent, actualOld, normalizedReplace, replaceAll);
-      if (origExact && origExact.occurrences > 0) {
-        return {
-          ...origExact,
-          // 归一化命中单独成策略：未读文件守卫仍与 exact 同权（见下方 deferUnreadCheck），
-          // 但事件层必须能把它和真正的精确命中分开统计。
-          strategy: "normalized",
-          matchStartLine: lineOfOffset(normalizedContent, idx),
-          matchEndLine: lineOfOffset(normalizedContent, idx + quotedSearch.length - 1),
-        };
-      }
-    }
+  // 字形归一化后重试精确匹配（LLM 常把直引号写成弯引号、`-` 写成 `—`、
+  // 半角标点写成全角）。normalizeForMatch 保证长度不变（1:1 映射），
+  // 故归一化串上的下标可直接用于原串 slice。
+  const matchSearch = normalizeForMatch(normalizedSearch);
+  const matchContent = normalizeForMatch(normalizedContent);
+  if (matchSearch !== normalizedSearch || matchContent !== normalizedContent) {
+    const normalized = tryNormalizedMatch(
+      normalizedContent,
+      matchContent,
+      matchSearch,
+      normalizedReplace,
+      replaceAll,
+    );
+    if (normalized) return normalized;
   }
 
   const flexible = tryFlexibleMatch(
@@ -748,6 +910,31 @@ export class EditTool implements Tool {
             `错误: old_string 与文件中多个位置都近似匹配（模糊匹配歧义），无法确定要修改哪一处。` +
             `请提供更精确、更长的 old_string（包含唯一的上下文行）以消除歧义。\n` +
             `你提供的 old_string:\n${preview}`,
+          isError: true,
+        };
+      }
+
+      // 归一化歧义信号（occurrences=-2）：文件里同一段文字存在多种字形写法（`—`/`–`/`-`、
+      // 全角/半角标点混用），归一化后都能命中，单处替换无法确定改哪一处。
+      // 文案不能复用上面那条「模糊匹配歧义」：用户的 old_string 字形上是准的，
+      // 该建议的是 replace_all 或补上下文，而不是「提供更精确的 old_string」。
+      if (result.occurrences === -2) {
+        const preview = oldString.length > 200 ? oldString.slice(0, 200) + " …[已截断]" : oldString;
+        const variants = result.ambiguousVariants ?? [];
+        // 未读文件不回显文件内容片段（先 read 才看得到原文到底是哪种字形）
+        const variantLines = deferUnreadCheck
+          ? ""
+          : `\n文件里命中的 ${variants.length} 种原文写法（字形归一化后相同）:\n` +
+            variants
+              .map((v, i) => `  ${i + 1}. ${v.replace(/\n/g, "\\n").slice(0, 120)}`)
+              .join("\n");
+        return {
+          output:
+            `错误: old_string 在文件里命中了 ${variants.length} 种不同的原文写法（字形归一化后相同），` +
+            `replace_all=false 时无法确定要改哪一处。\n` +
+            `请设置 replace_all=true 全部替换，或在 old_string 里补上能区分这些位置的上下文（前后各多带几个字符）。` +
+            variantLines +
+            `\n你提供的 old_string:\n${preview}`,
           isError: true,
         };
       }
