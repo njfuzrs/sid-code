@@ -356,6 +356,7 @@ import {
   buildGoalLimitSummaryPrompt,
 } from "../goal/limits.ts";
 import {
+  accumulateGoalTokens,
   buildBudgetLimitMessage,
   buildBudgetWarningMessage,
   GOAL_BUDGET_WARNING_RATIO,
@@ -2748,24 +2749,42 @@ async function* queryLoopBody(
       // 首轮必注入，之后每 N 轮回注一次。
       if (deps.getGoalState) {
         const goal = deps.getGoalState();
+        // plan mode 期间 goal 暂停计量（2026-11-16 复核）：不累加 turnsUsed、不记账、不判上限。
+        // 判据与下方每轮硬约束检查（goalLimitExit 段）同源——计划模式不执行操作，不该消耗
+        // goal 的轮次/预算，也不该因 goal 预算被终止。
+        //
+        // 此前只豁免了「判上限」而没豁免「累加轮次」，三者不一致：plan mode 里调研 N 轮，
+        // turnsUsed 涨 N 而 tokensUsed 恒为 0，退出 plan mode 后立刻 turns_limited，
+        // 且这些轮的 token 对 tokenBudget 完全隐形。实测复现（maxTurns=3、10 轮 tool_use）：
+        // plan mode → turnsUsed=50 / tokensUsed=0 / status=active；
+        // default   → turnsUsed=3  / tokensUsed=450 / status=turns_limited。
+        const goalPausedInPlanMode = deps.getCurrentPermissionMode?.() === "plan";
         if (goal && goal.status === "active") {
-          // 更新轮次计数
-          goal.turnsUsed++;
-          goal.updatedAt = Date.now();
-          deps.updateGoalState?.((g) => {
-            g.turnsUsed = goal.turnsUsed;
-            g.updatedAt = goal.updatedAt;
-          });
+          // 更新轮次计数（plan mode 暂停）
+          if (!goalPausedInPlanMode) {
+            goal.turnsUsed++;
+            goal.updatedAt = Date.now();
+            deps.updateGoalState?.((g) => {
+              g.turnsUsed = goal.turnsUsed;
+              g.updatedAt = goal.updatedAt;
+            });
+          }
 
           // 按间隔回注（首轮必注入，之后每 N 轮，compact 后强制注入）
+          //
+          // 首轮判据用 `state.lastGoalReminderTurn === undefined`（本消息内还没注入过），
+          // 不能用 `turnsUsed === 1`：plan mode 暂停计量后 turnsUsed 会停在 1，
+          // 那会让「首轮」在 plan mode 的每一轮都命中，同一段 reminder 被每轮重复注入。
+          // 副作用是每条用户消息的首轮都会注入一次（原实现只有 goal 的第 1 轮会）——
+          // 与「首轮必注入」的原意一致，代价是每条消息多一段约 1KB 的附件。
           const turnsSinceGoalReminder = state.turnCount - (state.lastGoalReminderTurn ?? 0);
           const shouldInject =
-            goal.turnsUsed === 1 ||
+            state.lastGoalReminderTurn === undefined ||
             turnsSinceGoalReminder >= effectiveGoalConfig.reminderInterval ||
             state.goalReminderPendingAfterCompact;
           if (shouldInject) {
             const goalReason =
-              goal.turnsUsed === 1
+              state.lastGoalReminderTurn === undefined
                 ? "first_turn"
                 : state.goalReminderPendingAfterCompact
                   ? "after_compact"
@@ -4740,6 +4759,29 @@ async function* queryLoopBody(
       const getSchema = (name: string) => toolRegistry.get(name)?.inputSchema();
       const emptyParamHits = detectEmptyParamToolUses(response.content, getSchema);
       if (emptyParamHits.length > 0) {
+        // G4（2026-11-16 复核）：退化重试轮也要记账。
+        // 这条分支在下面的每轮硬约束检查（checkGoalHardLimits）**之前**就 continue /
+        // return 了，那一轮真实发生的模型调用不进 goal.tokensUsed。
+        // 实测（goal maxTurns=20、退化轮 + 正常轮 + 收尾轮各 150）：修复前 450、修复后 600。
+        // 轮次不动——重试是同一轮的第二次请求，`turnsUsed` 已在轮首自增。
+        // 口径与每轮检查一致：plan mode 不记（见轮首的暂停计量注释）。
+        const retryGoal = deps.getGoalState?.();
+        if (
+          retryGoal &&
+          retryGoal.status === "active" &&
+          deps.getCurrentPermissionMode?.() !== "plan"
+        ) {
+          accumulateGoalTokens(retryGoal, {
+            inputTokens: response.usage.inputTokens,
+            outputTokens: response.usage.outputTokens,
+            cacheCreationTokens: (response.usage as { cacheCreationInputTokens?: number })
+              .cacheCreationInputTokens,
+          });
+          deps.updateGoalState?.((g) => {
+            g.tokensUsed = retryGoal.tokensUsed;
+          });
+        }
+
         const names = emptyParamHits.map((h) => h.name).join("、");
         // 始终先把空参数 tool_use 替换为 text，再入历史（无论是否还重试，都要消除孤儿）
         const sanitizedContent = replaceEmptyParamToolUses(response.content, getSchema);
@@ -7420,6 +7462,25 @@ async function* queryLoopBody(
         );
       } catch {
         /* 入账失败不阻断收尾 */
+      }
+      // G4（2026-11-16 复核）：强制总结轮也要计入 goal.tokensUsed。
+      // 每轮检查只覆盖 while 循环内的轮次，收尾轮在 while 之外、不经过那段代码——
+      // 撞上限的会话里 `tokensUsed` 会少记一轮（实测 maxTurns=5 记为 750 而非 900，
+      // 比值 0.83，与方案 §7.5 的 0.95–1.05 校验线冲突）。
+      // 只记账、不再判上限：已经处于终止路径，判了也没有下文。
+      // 条件必须包含 goalLimitExit：命中上限时 goal.status 已被改成 turns_limited /
+      // budget_limited，只判 active 会正好漏掉最该记的这一次。
+      const summaryGoal = deps.getGoalState?.();
+      if (summaryGoal && (summaryGoal.status === "active" || state.goalLimitExit)) {
+        accumulateGoalTokens(summaryGoal, {
+          inputTokens: summaryResponse.usage.inputTokens,
+          outputTokens: summaryResponse.usage.outputTokens,
+          cacheCreationTokens: (summaryResponse.usage as { cacheCreationInputTokens?: number })
+            .cacheCreationInputTokens,
+        });
+        deps.updateGoalState?.((g) => {
+          g.tokensUsed = summaryGoal.tokensUsed;
+        });
       }
       if (hookSystem) {
         try {

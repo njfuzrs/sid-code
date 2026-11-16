@@ -549,6 +549,9 @@ const MONITOR_WAIT: GoalWaitingFacts = {
   hasDeclaredExternalWait: true,
   hasPendingNotifications: false,
   waitIds: ["mon_ci"],
+  // 计数键取等待**类型**而不是实例 id（见 goal-waiting.ts 的 waitKinds 注释）：
+  // 用 id 当键时「每轮重挂一个新 monitor」会把连续放行上限绕过去。
+  waitKinds: ["monitor"],
 };
 
 describe("handleGoalGate · G2 等待挂起", () => {
@@ -573,7 +576,7 @@ describe("handleGoalGate · G2 等待挂起", () => {
     expect(decision).toBeDefined();
     expect(decision!.data!.wait_ids).toEqual(["mon_ci"]);
     expect(decision!.data!.shouldContinue).toBe(false);
-    expect(ctx.goal.waitPass).toEqual({ key: "mon_ci", count: 1 });
+    expect(ctx.goal.waitPass).toEqual({ key: "monitor", count: 1 });
 
     // 用户可见回执：告诉他「在等」，而不是静默收尾。
     expect(out.systemMessages.some((m) => m.text.includes("等待中"))).toBe(true);
@@ -581,7 +584,12 @@ describe("handleGoalGate · G2 等待挂起", () => {
 
   test("T-G2-2 只有派生后台任务、没有显式等待 → 照常调评估器", async () => {
     const { ctx, calls } = makeWaitingCtx({
-      waiting: { hasDeclaredExternalWait: false, hasPendingNotifications: false, waitIds: [] },
+      waiting: {
+        hasDeclaredExternalWait: false,
+        hasPendingNotifications: false,
+        waitIds: [],
+        waitKinds: [],
+      },
     });
     const out = await handleGoalGate(ctx);
     expect(calls()).toBe(1);
@@ -593,7 +601,7 @@ describe("handleGoalGate · G2 等待挂起", () => {
     for (let i = 1; i <= MAX_CONSECUTIVE_WAIT_PASSES; i++) {
       const out = await handleGoalGate(ctx);
       expect(out.result.waiting).toBe(true);
-      expect(ctx.goal.waitPass).toEqual({ key: "mon_ci", count: i });
+      expect(ctx.goal.waitPass).toEqual({ key: "monitor", count: i });
     }
     expect(calls()).toBe(0);
 
@@ -607,7 +615,12 @@ describe("handleGoalGate · G2 等待挂起", () => {
 
   test("T-G2-4 有待投递通知 → 也放行，不调评估器", async () => {
     const { ctx, calls } = makeWaitingCtx({
-      waiting: { hasDeclaredExternalWait: false, hasPendingNotifications: true, waitIds: [] },
+      waiting: {
+        hasDeclaredExternalWait: false,
+        hasPendingNotifications: true,
+        waitIds: [],
+        waitKinds: [],
+      },
     });
     const out = await handleGoalGate(ctx);
     expect(calls()).toBe(0);
@@ -626,7 +639,7 @@ describe("handleGoalGate · G2 等待挂起", () => {
     ctx.goal.turnsUsed = ctx.goal.maxTurns;
     const out = await handleGoalGate(ctx);
     expect(out.result.waiting).toBe(true);
-    expect(ctx.goal.waitPass).toEqual({ key: "mon_ci", count: 1 });
+    expect(ctx.goal.waitPass).toEqual({ key: "monitor", count: 1 });
     expect(calls()).toBe(0);
   });
 });
