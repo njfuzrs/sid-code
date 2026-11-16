@@ -58,6 +58,9 @@ afterEach(() => {
 
 // ─── 命中侧：每类字形变体 ────────────────────────────────────────────────────
 
+// 本组的文件内容断言都是 **T2（保留原风格）之后的期望值**：命中是 T1 扩表带来的，
+// 写回时要保持文件原有字形（弯引号 / 长破折号 / 不间断空格 / 全角 ASCII），
+// 不能把模型的基准字形原样落盘。T2 之前这几条断言的是模型的半角版本，已随契约变更同步。
 describe("归一化扩表：每类字形变体都能命中", () => {
   test("弯引号（原有行为保持）：文件是弯引号，old_string 写直引号", async () => {
     const file = writeFixture("curly.ts", "const s = “inherit”;\n");
@@ -67,7 +70,8 @@ describe("归一化扩表：每类字形变体都能命中", () => {
       new_string: 'const s = "x";',
     });
     expect(r.isError).toBeFalsy();
-    expect(readBack(file)).toBe('const s = "x";\n');
+    // T2：开闭两个弯引号都按位置还原（不是整串替换，见 preserveFileStyle）
+    expect(readBack(file)).toBe("const s = “x”;\n");
     expect(r.output).toContain("归一化匹配");
   });
 
@@ -79,7 +83,7 @@ describe("归一化扩表：每类字形变体都能命中", () => {
       new_string: "const range = 1-3;",
     });
     expect(r.isError).toBeFalsy();
-    expect(readBack(file)).toBe("const range = 1-3;\n");
+    expect(readBack(file)).toBe("const range = 1—3;\n");
   });
 
   test("Unicode 空格：文件是不间断空格，old_string 写普通空格", async () => {
@@ -90,7 +94,7 @@ describe("归一化扩表：每类字形变体都能命中", () => {
       new_string: "const a = 2;",
     });
     expect(r.isError).toBeFalsy();
-    expect(readBack(file)).toBe("const a = 2;\n");
+    expect(readBack(file)).toBe("const a\u00A0= 2;\n");
   });
 
   test("全角 ASCII：文件是全角冒号/括号，old_string 写半角", async () => {
@@ -101,7 +105,7 @@ describe("归一化扩表：每类字形变体都能命中", () => {
       new_string: "注意(重要)请读:第二行",
     });
     expect(r.isError).toBeFalsy();
-    expect(readBack(file)).toBe("注意(重要)请读:第二行\n");
+    expect(readBack(file)).toBe("注意（重要）请读：第二行\n");
   });
 });
 
@@ -228,10 +232,9 @@ describe("扩表后的可观测性与已知缺口", () => {
     });
   });
 
-  // ⚠️ 这是 T1 的**已知缺口**，不是期望行为：归一化命中后写入的是模型给的 new_string 原文，
-  // 所以文件里的中文全角标点会被半角化（文档 §T1 风险第 3 条实跑复现）。
-  // T2「归一化命中后保留原风格」落地后，这条断言要反过来——改成断言仍是全角。
-  test("已知缺口（T2 才修）：全角标点命中后写入模型的半角 new_string", async () => {
+  // T2 关闭了这个洞：T1 单独上线时，`错误：` 会被模型的半角 new_string 覆盖成 `错误:`。
+  // 现在文件里的全角冒号保持不变，见 preserveFileStyle。
+  test("T2 已修：全角标点命中后保留文件的全角字形", async () => {
     const file = writeFixture("fullwidth-side-effect.ts", "后端返回错误：文件过大\n");
     const r = await new EditTool().execute({
       file_path: file,
@@ -239,6 +242,118 @@ describe("扩表后的可观测性与已知缺口", () => {
       new_string: "错误!文件过大",
     });
     expect(r.isError).toBeFalsy();
+    // `!` 是模型新写的字符，不在 old_string 里 → 保持它写的半角（不猜字形）。
+    // 这条同时证明 T2 不是「整串按文件风格重写」：只有和 old_string 对得上的位置才还原。
     expect(readBack(file)).toBe("后端返回错误!文件过大\n");
+  });
+});
+
+// ─── T2：归一化命中后保留原风格 ──────────────────────────────────────────────
+
+describe("T2 保留原风格：归一化命中后不把文件字形改成模型字形", () => {
+  test("弯引号：old/new 都写直引号，写回仍按开闭位置还原成弯引号", async () => {
+    const file = writeFixture("t2-curly.ts", "say “hello” now\n");
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: 'say "hello" now',
+      new_string: 'say "hi" now',
+    });
+    expect(r.isError).toBeFalsy();
+    // 中间段 hello→hi 长度不同，按位置映射会错位，但两端引号在前后缀区里，
+    // 各自对得上 old_string 的对应位置（开 → U+201C，闭 → U+201D）
+    expect(readBack(file)).toBe("say “hi” now\n");
+  });
+
+  test("全角冒号：new_string 里与 old_string 对齐的半角冒号还原成全角", async () => {
+    const file = writeFixture("t2-fullwidth-colon.ts", "错误：文件过大\n");
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: "错误:文件过大",
+      new_string: "警告:文件过大",
+    });
+    expect(r.isError).toBeFalsy();
+    expect(readBack(file)).toBe("警告：文件过大\n");
+  });
+
+  test("new_string 新增的直引号不动（不是 CC 式整串替换）", async () => {
+    // 文件里已有弯引号，模型新加一段带直引号的片段 → 新增部分必须逐字保留，
+    // 否则中文文档里的代码片段会被悄悄改成弯引号（这是比 CC 保守的那条取舍）
+    const file = writeFixture("t2-new-halfwidth.ts", "say “hello” now\n");
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: 'say "hello" now',
+      new_string: 'say "hello" "world" now',
+    });
+    expect(r.isError).toBeFalsy();
+    expect(readBack(file)).toBe('say “hello” "world" now\n');
+  });
+
+  test("没走归一化路径时 new_string 原样写入（精确命中不受 T2 影响）", async () => {
+    const file = writeFixture("t2-exact-path.ts", 'say "hello" now\n');
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: 'say "hello" now',
+      new_string: "say 'hi' now",
+    });
+    expect(r.isError).toBeFalsy();
+    expect(readBack(file)).toBe("say 'hi' now\n");
+  });
+
+  test("replace_all=true：每处按各自的原文形态还原（不会只按第一处算）", async () => {
+    // 两处是**不同**的破折号变体（em dash / en dash），归一化后都是 `x-y`：
+    // 逐处保留风格才能得到 `x—z` 与 `x–z`；只按第一处算会让另一处也变成 `x—z`
+    const file = writeFixture("t2-replace-all-variants.ts", "x—y and x–y\n");
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: "x-y",
+      new_string: "x-z",
+      replace_all: true,
+    });
+    expect(r.isError).toBeFalsy();
+    expect(readBack(file)).toBe("x—z and x–z\n");
+    expect(r.output).toContain("替换了 2 处");
+  });
+
+  test("中间段长度不等时只还原前后缀，中间段不按位置猜", async () => {
+    // old 中间段 `hello`(5) 与 new 中间段 `hello — extra`(13) 长度不同 → 中间段整段不还原；
+    // 但公共前后缀仍对齐，两端引号必须保持弯引号，新写的 `—` 保持模型给的字形
+    const file = writeFixture("t2-insert-middle.ts", "say “hello” now\n");
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: 'say "hello" now',
+      new_string: 'say "hello — extra" now',
+    });
+    expect(r.isError).toBeFalsy();
+    expect(readBack(file)).toBe("say “hello — extra” now\n");
+  });
+
+  test("前后缀都对不齐 + 长度不等时，中间段不得按旧位置改字形（长度守卫）", async () => {
+    // 变异自证专用夹具（穷举 368 万组 old/new/原文组合找出可区分场景）：
+    // 模型把「标签：」整体改成「名称：」并加一个字，长度 6→7，前后缀都无公共部分。
+    // 去掉 `oldLen === newLen` 守卫后，new 第 3 位的 `:` 会被 old 同位置的变体（全角 `：`）
+    // 覆盖成 `名称："值"旧` —— 那是在改**模型新写的内容**，正是守卫要防的错位。
+    const file = writeFixture("t2-middle-guard.ts", "标签：“值”\n");
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: '标签:"值"',
+      new_string: '名称:"值"旧',
+    });
+    expect(r.isError).toBeFalsy();
+    // 期望：对不齐 → 整串按模型原文写入，一个字形都不还原
+    expect(readBack(file)).toBe('名称:"值"旧\n');
+  });
+
+  // 已知缺口（刻意不做，见 Agent Note）：反方向——文件是直引号、模型写弯引号——不还原。
+  // 补这个方向要把 new_string 里的弯引号批量转成文件字形，中文源码里误伤面比收益大；
+  // 这条断言把「不支持」显式记下来，避免后来的人以为它坏了。
+  test("已知缺口（刻意不支持）：文件直引号 + 模型写弯引号 → 写回模型的弯引号", async () => {
+    const file = writeFixture("t2-reverse-direction.ts", 'say "foo" now\n');
+    const r = await new EditTool().execute({
+      file_path: file,
+      old_string: "say “foo” now",
+      new_string: "say “bar” now",
+    });
+    expect(r.isError).toBeFalsy();
+    expect(readBack(file)).toBe("say “bar” now\n");
   });
 });
