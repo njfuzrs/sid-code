@@ -54,6 +54,24 @@ const ALIASES: ReadonlyArray<{ from: string; to: string }> = [
   // 字段不会打断兼容；两键同时出现时下面的守卫保留协议字段。
   { from: "total_max_matches", to: "head_limit" },
   { from: "is_background", to: "run_in_background" },
+  // T4（20261116 字段名盘点）：CC 这几个工具的协议字段是 camelCase，sid 同功能工具是
+  // snake_case。与 activeForm / grep 短参数同一口径——CC 的字段名就是这个，属于跨产品
+  // 协议先验，不是猜测的命名风格漂移，所以直接登记，不等用量证据。
+  //
+  // 一个值得记下的事实：**CC 自己也不统一**。TaskGetTool / TaskUpdateTool 用 `taskId`
+  // （`src/tools/TaskGetTool/TaskGetTool.ts:15`、`TaskUpdateTool.ts:38`），而 TaskStopTool /
+  // TaskOutputTool 用 `task_id`。所以模型写 camelCase 不是它不稳，是它在照着 CC 的接口写；
+  // 同一件事在 CC 内有两种拼法，说明「改 schema 统一成某一种」也堵不住另一路。
+  { from: "taskId", to: "task_id" },
+  { from: "addBlocks", to: "add_blocks" },
+  { from: "addBlockedBy", to: "add_blocked_by" },
+  // LSP：CC 的 LSPTool 每个分支都是 `filePath`（`src/tools/LSPTool/schemas.ts` 的
+  // discriminated union），而 sid 的 read / edit / write / notebook_edit 全是 `file_path`。
+  // 把 lsp 单独改成 camelCase 会在协议层开一个口子，所以走别名对齐。
+  { from: "filePath", to: "file_path" },
+  // AskUserQuestion：CC 是 `questions[].multiSelect`，sid 是 `questions[].multi_select`。
+  // 这条是**嵌套**字段，靠 walk 的逐字段下钻命中——路径与 todo_write 的 `todos[].activeForm` 相同。
+  { from: "multiSelect", to: "multi_select" },
 ];
 
 /**
