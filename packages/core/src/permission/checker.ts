@@ -458,6 +458,78 @@ const ACCEPT_EDITS_FS_COMMANDS = new Set(["mkdir", "touch", "cp", "sed"]);
 /** 即使被加回白名单也不得自动放行（第二道闸，防名单回潮）。 */
 const ACCEPT_EDITS_DESTRUCTIVE_COMMANDS = new Set(["rm", "rmdir", "mv"]);
 
+/**
+ * acceptEdits 放行侧允许剥离的环境变量名前缀（M9）。
+ * 只放纯展示性变量：它们不改变命令要做什么，剥掉只是让「顺手写了 LANG=C」不再多弹一次确认。
+ * 值另需匹配 ACCEPT_EDITS_ENV_VALUE_RE —— `LANG='a b'`、`FOO=$(curl evil)` 这类
+ * 需要 shell 解释的形态一律不剥。
+ */
+const ACCEPT_EDITS_ENV_PREFIX_KEYS = new Set(["LANG", "LC_ALL", "NO_COLOR", "TERM"]);
+/** 环境变量值只认「不需要 shell 解释」的字符集；带引号/空格/展开的一律不剥。 */
+const ACCEPT_EDITS_ENV_VALUE_RE = /^[A-Za-z0-9_.-]+$/;
+/** `timeout` 的时长参数（GNU coreutils NUMBER[SUFFIX] 的子集）：`30` / `5s` / `1.5m`。 */
+const ACCEPT_EDITS_TIMEOUT_DURATION_RE = /^\d+(?:\.\d+)?[smhd]?$/;
+
+/**
+ * M9：剥掉 acceptEdits 放行侧的**最小**前缀（进程包装器 + 纯展示性环境变量）。
+ *
+ * 为什么不复用 `expandShellCommand`：那份实现是为「拦」设计的——递归展开 `sh -c`/`eval`/
+ * 命令替换，剥 `sudo`/`xargs`。放行侧沿用它等于把「拦」的宽口径借给「放」，
+ * `env mkdir x`、`xargs mkdir` 会被直接放行（10-24 Note 的否决论证）。
+ * 这里只认三种不改变被调命令语义的包装器和四个展示性变量，且**至多剥一层包装器**。
+ *
+ * 「只剥一层」是刻意的：`timeout 5 timeout 5 mkdir x` 剥完 baseCmd 仍是 `timeout`，
+ * 不在 fs 白名单里，落回 ask。递归剥离会让放行面随嵌套深度线性扩大，收益接近零。
+ * 剥离顺序也固定为「先环境变量（可多个）→ 再一个包装器」：反过来剥
+ * （`timeout 5 LANG=C mkdir x`）在 shell 里本来就是错的——`timeout` 会把 `LANG=C`
+ * 当成要执行的命令名。
+ *
+ * `stripped` 单独返回，是因为 `touch` 有例外：CC 的 acceptEdits 只信任裸 `touch`，
+ * 带任何前缀都不自动接受（方案 §4.7 约束 2）。
+ */
+function stripAcceptEditsSafePrefixes(tokens: string[]): { tokens: string[]; stripped: boolean } {
+  let i = 0;
+  // 1. 环境变量前缀：允许连续多个（`LANG=C LC_ALL=C mkdir x`），每个都必须在白名单且值形态合规。
+  while (i < tokens.length) {
+    const tok = tokens[i]!;
+    const eq = tok.indexOf("=");
+    if (eq <= 0) break;
+    const key = tok.slice(0, eq);
+    const value = tok.slice(eq + 1);
+    if (!ACCEPT_EDITS_ENV_PREFIX_KEYS.has(key) || !ACCEPT_EDITS_ENV_VALUE_RE.test(value)) break;
+    i++;
+  }
+  const envStripped = i > 0;
+
+  // 2. 进程包装器：至多剥一个，参数格式不认识就不剥（落回 ask 是安全方向）。
+  let wrapperStripped = false;
+  const head = tokens[i];
+  if (head === "timeout") {
+    const duration = tokens[i + 1];
+    if (duration && ACCEPT_EDITS_TIMEOUT_DURATION_RE.test(duration) && i + 2 < tokens.length) {
+      i += 2;
+      wrapperStripped = true;
+    }
+  } else if (head === "nohup") {
+    if (i + 1 < tokens.length) {
+      i += 1;
+      wrapperStripped = true;
+    }
+  } else if (head === "nice") {
+    // `nice [-n N] cmd`；`nice -10 cmd` 这类老式调整量不认。
+    const next = tokens[i + 1];
+    if (next === "-n" && tokens[i + 2] && /^-?\d+$/.test(tokens[i + 2]!) && i + 3 < tokens.length) {
+      i += 3;
+      wrapperStripped = true;
+    } else if (next && !next.startsWith("-")) {
+      i += 1;
+      wrapperStripped = true;
+    }
+  }
+
+  return { tokens: tokens.slice(i), stripped: envStripped || wrapperStripped };
+}
+
 /** Plan Mode 下额外允许的工具（在 READ_ONLY_TOOLS 基础上） */
 const PLAN_MODE_EXTRA_TOOLS = new Set(["enter_plan_mode", "exit_plan_mode", "sub_agent"]);
 
@@ -992,12 +1064,21 @@ export class PermissionChecker implements Checker {
     for (const sub of subCommands) {
       const trimmed = sub.trim();
       if (!trimmed) return false;
-      const tokens = trimmed.split(/\s+/);
+      // M9：先剥掉「安全前缀」，再用剥完的 tokens 走原有三道校验。
+      // 剥的顺序是刻意的——下面的破坏性第二道闸**必须**在剥离之后判，
+      // 否则 `timeout 5 rm -rf .` 的 baseCmd 是 `timeout`，第二道闸形同不存在。
+      const stripped = stripAcceptEditsSafePrefixes(trimmed.split(/\s+/));
+      const tokens = stripped.tokens;
       const baseCmd = tokens[0];
+      if (!baseCmd) return false;
       // P1-3：rm/rmdir/mv 即使被加回白名单也不得自动放行（第二道闸）。
       if (ACCEPT_EDITS_DESTRUCTIVE_COMMANDS.has(baseCmd)) return false;
       // baseCmd 必须是白名单 fs 命令
       if (!ACCEPT_EDITS_FS_COMMANDS.has(baseCmd)) return false;
+      // M9：`touch` 例外——带任何前缀都不自动放行（对齐 CC permission-modes.md:281）。
+      // `touch` 是白名单里唯一会**创建**文件的命令，前缀让「他到底要 touch 什么」
+      // 从命令名字面上看不全，CC 的取舍是宁可多问一次。
+      if (stripped.stripped && baseCmd === "touch") return false;
 
       // 路径参数（非 - 开头的 token，跳过 baseCmd 本身）都必须在 cwd 内
       for (let i = 1; i < tokens.length; i++) {
