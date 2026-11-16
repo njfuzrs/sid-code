@@ -1314,6 +1314,25 @@ export class BashTool implements Tool {
       };
     }
 
+    // A2（2026-11-16 排查）：`sid-wait` 的**近似形态**必须在 spawn 之前拒绝。
+    //
+    // 为什么在入口拦而不是等 shell 报错：后台执行时整条命令的退出码取**末尾命令**的退出码，
+    // `sid-wait gh-pr <n>; echo "EXIT=$?"` 于是以 0 收尾 → 通知报「执行成功」→ 模型以为
+    // 原语跑完了，转头去怀疑 PR / gh（26 次失败里 11 次是这个形态，另 10 次是 `2>&1`）。
+    // 前台虽然能看到 127，但同样是一轮无效往返，一并在这里拒掉。
+    //
+    // 只拒绝、不替模型改写命令：改写等于猜语义，与 `parseSidWaitCommand` 的「不猜意图」同一条原则。
+    {
+      const taskModule = require("../task/index.ts") as typeof import("../task/index.ts");
+      const sidWaitMisuse = taskModule.detectSidWaitMisuse(params.command);
+      if (sidWaitMisuse) {
+        return {
+          output: taskModule.formatSidWaitMisuseReceipt(sidWaitMisuse, "bash"),
+          isError: true,
+        };
+      }
+    }
+
     // Task 系统后台模式（统一通道）。
     // 旧后台参数已由别名层（input-alias.ts）在执行之前改名成 run_in_background，
     // 所以执行层只认协议字段。P2-10 的教训保留在这里：旧后台通道（不进 Task 系统、
