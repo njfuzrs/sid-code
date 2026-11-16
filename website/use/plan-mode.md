@@ -198,8 +198,14 @@ Todo 不只是给你看的进度条，它是模型自己的工作记忆。长任
 
 | 闸 | 默认值 | 触发什么 |
 | --- | --- | --- |
-| 最大轮次 | **150** 轮（`packages/core/src/goal/config.ts`，"给长任务留足空间"） | 到了 → `turns_limited` |
+| 最大轮次 | **300** 轮（`packages/core/src/goal/config.ts`，"给长任务留足空间"） | 达上限 → `turns_limited`；用掉 80% 时软提醒一次 |
 | Token 预算 | 可配（`/goal budget`） | 到了 → `budget_limited` |
+
+轮次用掉 80%（默认 240 轮）时，会向模型注入一次「只剩 20% 轮次」的提醒，
+状态栏的 `目标 N/M 轮` 同步转黄。这只是提醒、不会终止任务，目的是让模型在还剩
+余量时把「必须做完」和「做不完」分开交代，而不是跑到最后一轮才发现来不及。
+阈值在 `packages/core/src/goal/config.ts` 的 `GOAL_TURNS_NEAR_LIMIT_RATIO`，
+core 提醒与状态栏共用这一个常量。
 
 还有一个**卡住检测**：连续 3 轮撞上同一个 blocker（`packages/core/src/goal/blocked-detector.ts`，
 默认 threshold=3）→ 判 `blocked`。比如连续 3 轮都卡在"找不到某个依赖"，它会停下来

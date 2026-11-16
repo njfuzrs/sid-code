@@ -6,6 +6,50 @@
  */
 
 import type { GoalState } from "./state.ts";
+import { GOAL_TURNS_NEAR_LIMIT_RATIO } from "./config.ts";
+
+/**
+ * 本轮是否该发「接近轮次上限」的软提醒（每轮调用，只在首次越过阈值时为真）。
+ *
+ * 刻意做成**纯判定**（不改 `goal`）：置位交给调用方，测试才能把「判定」与
+ * 「副作用」分开断言 —— 判定错了和置位漏了是两种不同的 bug。
+ *
+ * 三个条件缺一不可：
+ * - 没发过（`softLimitWarned`）：否则只要还在 80% 以上就每轮刷一条同样的提醒；
+ * - 有上限（`maxTurns > 0`）：0/负数表示「不设上限」的退化输入，不能触发；
+ * - 越过阈值（`>= ratio`）：与 cli 状态栏变黄的判据共用同一个常量。
+ */
+export function shouldWarnNearTurnLimit(goal: GoalState): boolean {
+  if (goal.softLimitWarned) return false;
+  if (goal.maxTurns <= 0) return false;
+  return goal.turnsUsed >= goal.maxTurns * GOAL_TURNS_NEAR_LIMIT_RATIO;
+}
+
+/**
+ * 构建「接近轮次上限」软提醒。
+ *
+ * 为什么要有这条：`maxTurns` 从 150 放宽到 300 后，如果不在 80% 处告诉模型，
+ * 上限翻倍只是把「毫无自知地跑到被掐断」的成本也翻倍。提醒的核心是**逼出一次
+ * 显式取舍**（哪些必须做完、哪些承认做不完），而不是催它快点。
+ */
+export function buildNearTurnLimitReminder(goal: GoalState): string {
+  const usedPct = Math.round((goal.turnsUsed / goal.maxTurns) * 100);
+  const remaining = Math.max(goal.maxTurns - goal.turnsUsed, 0);
+  return `<system-reminder>
+[Goal 轮次提醒 — 已用 ${goal.turnsUsed}/${goal.maxTurns} 轮（${usedPct}%）]
+
+目标: ${goal.objective}
+
+轮次预算已用掉 ${usedPct}%，剩余 ${remaining} 轮。到上限后任务会被强制收尾
+（turns_limited），无法再调用工具。请据此调整节奏：
+- 优先完成"没有它目标就算没达成"的核心部分，把可延后的部分明确列为未完成；
+- 每步都在对话里留下可验证的输出（命令结果、测试结果），评估者只能看到这些；
+- 如果判断剩余轮次不够，现在就如实报告进度与缺口并给出后续建议，
+  不要拖到最后一轮才发现来不及。
+
+（这只是提醒，不会终止任务；用户可用 /goal turns <n> 调整上限。）
+</system-reminder>`;
+}
 
 /** 构建目标状态 reminder（注入到 reminderParts） */
 export function buildGoalReminder(goal: GoalState): string {
