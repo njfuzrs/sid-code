@@ -40,6 +40,9 @@ import {
   // R7：内置等待原语 `sid-wait gh-pr <n>`——harness 自己轮询，不 spawn 外部脚本
   spawnBuiltinMonitorTask,
   parseSidWaitCommand,
+  // A2：`sid-wait` 近似形态（拼接 / 重定向 / 缺参数）在 spawn 之前拒绝，与 bash 入口同一判据
+  detectSidWaitMisuse,
+  formatSidWaitMisuseReceipt,
   runSidWaitGhPr,
   createSidWaitClient,
   formatSidWaitResultSummary,
@@ -284,6 +287,16 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
         data: `错误: 同时运行的 monitor 已达上限 ${effectiveMaxConcurrent} 个（当前：${listRunningMonitorBrief()}）。请先用 task_stop 停掉不需要的监控。`,
         isError: true,
       };
+    }
+
+    // A2（2026-11-16 排查）：`sid-wait` 的**近似形态**在 spawn 之前拒绝，与 bash 入口同一判据。
+    // 放在准入判定之前：近似形态不是等待对象，不该进 duplicate/replace 的比较，
+    // 更不能被登记成等待源（否则模型会收到一条永远不会回报的通知）。
+    {
+      const sidWaitMisuse = detectSidWaitMisuse(command);
+      if (sidWaitMisuse) {
+        return { data: formatSidWaitMisuseReceipt(sidWaitMisuse, "monitor"), isError: true };
+      }
     }
 
     // R2：同一个对象同时只允许一个**有效的显式等待**，且跨类（shell × monitor × wakeup）。

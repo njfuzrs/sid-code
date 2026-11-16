@@ -59,7 +59,7 @@ import {
   hasPendingNotifications,
   takeTrailingLines,
 } from "./notification.ts";
-import { formatClockWithSeconds } from "./monitor-text.ts";
+import { formatClock, formatClockWithSeconds } from "./monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 回报承诺：最晚何时、以何种方式把空闲主循环叫醒 */
@@ -979,6 +979,23 @@ export function describeWaitSource(src: WaitSource): string {
     wakeup: "定时唤醒",
   }[src.kind];
   return `${label} ${src.id}（${src.description}）`;
+}
+
+/**
+ * 单个等待源的描述行：承诺类型不同，措辞不同（deadline 给时刻，其余给触发条件）。
+ *
+ * G5（2026-11-16）：原来这份实现在 `query/todo-reminder.ts` 里是私有的，
+ * goal reminder 的等待版文案要用同一措辞，于是提到这里做成唯一来源——
+ * 标签复用 `describeWaitSource`，本函数只补「什么时候回报」那半句。
+ * 复制第三份的话，「最晚 14:32 前回报」这类措辞迟早三处各写一个版本。
+ */
+export function describeWaitLine(w: WaitSource): string {
+  const head = describeWaitSource(w);
+  if (w.promise.kind === "deadline") {
+    return `${head}，最晚 ${formatClock(w.promise.deadlineAt)} 前回报`;
+  }
+  if (w.promise.kind === "terminal") return `${head}，结束即通知`;
+  return `${head}，退出或转入静默时通知`;
 }
 
 /**

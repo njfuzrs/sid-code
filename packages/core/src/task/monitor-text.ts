@@ -17,12 +17,20 @@
  * `task_output` 的 `<deadline>` 必须是同一个本地时钟口径，复制三份就会再漂移一次。
  */
 
+/**
+ * 本地时钟 HH:MM：等待源的「最晚几点回报」用这个口径。
+ *
+ * 与下面 `formatClockWithSeconds` 同源（先算 HH:MM 再补秒），不复制整段实现——
+ * 两份时钟格式化迟早漂移一次（D17 踩过）。
+ */
+export function formatClock(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 /** 本地时钟 HH:MM:SS：monitor 的「最晚几点结束」按用户本地时区显示，不做 UTC 换算 */
 export function formatClockWithSeconds(ts: number): string {
-  const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(
-    d.getSeconds(),
-  ).padStart(2, "0")}`;
+  return `${formatClock(ts)}:${String(new Date(ts).getSeconds()).padStart(2, "0")}`;
 }
 
 /** 限流合并提示：暂存行已全部并入正文，只是延迟送达（不是「还有 N 条没给你」） */

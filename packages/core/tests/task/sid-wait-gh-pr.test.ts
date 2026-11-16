@@ -13,6 +13,8 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import {
   parseSidWaitCommand,
+  detectSidWaitMisuse,
+  formatSidWaitMisuseReceipt,
   runSidWaitGhPr,
   formatSidWaitResultSummary,
   isSidWaitCommand,
@@ -470,5 +472,84 @@ describe("R7 formatManualLoopHint（手写循环只提示一次）", () => {
   test("不同 PR 各自提示一次（按对象去重，不是全局一次性）", () => {
     expect(formatManualLoopHint(["gh:pr:781"], "gh pr view 781")).toContain("sid-wait gh-pr 781");
     expect(formatManualLoopHint(["gh:pr:782"], "gh pr view 782")).toContain("sid-wait gh-pr 782");
+  });
+});
+
+describe("A2 detectSidWaitMisuse（`sid-wait` 近似形态）", () => {
+  test("严格原语（含 cd 前缀 / --interval）不是近似形态", () => {
+    for (const command of [
+      "sid-wait gh-pr 779",
+      "  sid-wait   gh-pr   779 ",
+      "cd /repo && sid-wait gh-pr 779",
+      'cd "/repo with space" && sid-wait gh-pr 779',
+      "sid-wait gh-pr 779 --interval 15",
+      "sid-wait gh-pr 779 --interval=15",
+    ]) {
+      expect(detectSidWaitMisuse(command)).toBeNull();
+    }
+  });
+
+  test("拼接 / 重定向 / 管道 / 缺参数 / 非法 PR → 命中近似形态", () => {
+    // 前两条是 26 次失败里的主力形态：后台整条命令的退出码取末尾命令的 0，通知报「执行成功」
+    const withEcho = detectSidWaitMisuse('cd /repo && sid-wait gh-pr 811; echo "EXIT=$?"');
+    expect(withEcho?.suggestedPr).toBe(811);
+    expect(withEcho?.body).toBe('sid-wait gh-pr 811; echo "EXIT=$?"');
+
+    expect(detectSidWaitMisuse("sid-wait gh-pr 811 2>&1")?.suggestedPr).toBe(811);
+    expect(detectSidWaitMisuse("sid-wait gh-pr 811 | tail -5")?.suggestedPr).toBe(811);
+    expect(detectSidWaitMisuse("sid-wait gh-pr 811 > /tmp/x")?.suggestedPr).toBe(811);
+    expect(detectSidWaitMisuse("sid-wait gh-pr 811 && echo done")?.suggestedPr).toBe(811);
+    // 缺参数 / 非法 PR 也是「以 sid-wait 开头但不是原语」，一并拒绝而不是落回 shell 127
+    expect(detectSidWaitMisuse("sid-wait gh-pr")).toEqual({
+      body: "sid-wait gh-pr",
+      suggestedPr: null,
+    });
+    expect(detectSidWaitMisuse("sid-wait gh-pr abc")?.suggestedPr).toBeNull();
+    expect(detectSidWaitMisuse("sid-wait gh-pr 0")?.suggestedPr).toBeNull();
+    expect(detectSidWaitMisuse("sid-wait")?.suggestedPr).toBeNull();
+    expect(detectSidWaitMisuse("sid-wait gh-pr 811 --interval")?.suggestedPr).toBe(811);
+  });
+
+  test("不以 sid-wait 开头的一律不算（grep / 测试路径 / worktree 名碰不到）", () => {
+    for (const command of [
+      "",
+      "gh pr view 779",
+      'echo "sid-wait gh-pr 779"',
+      'grep -rn "sid-wait gh-pr" packages/core/src',
+      "bun test packages/core/tests/task/sid-wait-gh-pr.test.ts",
+      "cd r7-sid-wait && bash run.sh",
+      "cd /repo && grep sid-wait README.md",
+      "sid-wait-helper foo",
+      "bash /tmp/wait-pr-779.sh",
+    ]) {
+      expect(detectSidWaitMisuse(command)).toBeNull();
+    }
+  });
+
+  test("拒绝回执：点出拼接会假成功、给可直接替换的正确命令、说明未启动进程", () => {
+    const receipt = formatSidWaitMisuseReceipt(
+      detectSidWaitMisuse('sid-wait gh-pr 811; echo "EXIT=$?"')!,
+      "bash",
+    );
+    expect(receipt).toContain("必须单独成为整条命令");
+    expect(receipt).toContain("执行成功");
+    expect(receipt).toContain("不需要自己 echo");
+    expect(receipt).toContain("sid-wait gh-pr 811");
+    expect(receipt).toContain("run_in_background=true");
+    expect(receipt).toContain("本次未启动任何进程");
+
+    const monitorReceipt = formatSidWaitMisuseReceipt(
+      detectSidWaitMisuse("sid-wait gh-pr 811 2>&1")!,
+      "monitor",
+    );
+    expect(monitorReceipt).toContain("sid-wait gh-pr 811");
+    // monitor 没有后台参数，不该把模型往 bash 的 run_in_background 上引
+    expect(monitorReceipt).not.toContain("run_in_background");
+  });
+
+  test("抽不到 PR 号时回执给占位写法，不编一个数字", () => {
+    const receipt = formatSidWaitMisuseReceipt(detectSidWaitMisuse("sid-wait gh-pr")!, "bash");
+    expect(receipt).toContain("sid-wait gh-pr <n>");
+    expect(receipt).not.toMatch(/sid-wait gh-pr \d+/);
   });
 });
