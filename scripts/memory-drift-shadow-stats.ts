@@ -44,9 +44,20 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { extractRepoPaths } from "@sid-code/core/memory/anchor-health.ts";
 import { memoryAgeDays } from "@sid-code/core/memory/freshness.ts";
 import { resolveProjectRoot, sanitizeProjectKey } from "@sid-code/core/memory/paths.ts";
 import { readMemoryFrontmatter, stripFrontmatter } from "@sid-code/core/memory/scan.ts";
+
+/**
+ * 提取口径已移到 core（`memory/anchor-health.ts`，2026-11-15）：
+ * 索引注入侧的 T3 埋点（`memory_index_health.anchor_dead_count`）要用**同一份**正则，
+ * 放在 `scripts/` 下 core 引用不到 —— 两份正则各改一半是必然结局（本脚本头部
+ * 「三条口径，口径变了要一起改」那条注释正是为此写的）。
+ *
+ * 这里 re-export 保持本脚本测试的 import 路径不变。
+ */
+export { extractRepoPaths };
 
 /**
  * 四档阈值：1 天是当前实现，7 / 30 是方案待选的两档，90 是兜底档。
@@ -58,32 +69,6 @@ export const AGED_THRESHOLDS = [1, 7, 30, 90] as const;
 
 /** 与 `store.ts` 的 `annotateIndexAges` 逐字一致：只认 `- [key](file) desc` 这种条目行 */
 const INDEX_LINE_RE = /^\s*-\s*\[([^\]]*)\]\([^)]*\)/;
-
-/**
- * 仓内相对路径的保守提取。
- *
- * 逐条排除的都是实测见过的误报来源：
- * - 绝对路径（`/Users/...`）与 `~/...`：token 首段前面就是分隔符，已被 lookbehind 挡掉；
- * - URL（`https://github.com/a/b.ts`）：`github.com/a/b.ts` 前面是 `/`，同样被挡；
- * - `node_modules/` 下的路径：依赖包路径没有"锚点"语义，仓库升级就会失效；
- * - 裸文件名（`store.ts`）：没有 `/` 就无法确定是哪个目录，宁可漏报。
- *
- * 行号后缀（`:556`、`:12-18`）在捕获组外，天然不会被带进路径。
- */
-const REPO_PATH_RE =
-  /(?<![\w.\-~:\/])((?:[\w.@-]+\/)+[\w.@-]+\.[a-zA-Z]{1,6})(?::\d+(?:[-,]\d+)?)?/g;
-
-/** 纯函数：正文 → 去重排序后的仓内相对路径。单测直接测它。 */
-export function extractRepoPaths(body: string): string[] {
-  const out = new Set<string>();
-  for (const m of body.matchAll(REPO_PATH_RE)) {
-    const p = m[1];
-    if (/^(?:https?|ftp):/.test(p) || p.includes("://")) continue;
-    if (p.includes("node_modules/")) continue;
-    out.add(p);
-  }
-  return [...out].sort();
-}
 
 export interface AgeBucket {
   /** 阈值（天） */

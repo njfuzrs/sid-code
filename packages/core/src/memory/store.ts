@@ -156,6 +156,19 @@ let summaryCacheEntry: { summary: string | null; timestamp: number; key: string 
 const SUMMARY_CACHE_TTL = 30_000; // 30 秒
 
 /**
+ * 索引里带 ⏳ 的条目占比（`annotateIndexAges`）。
+ *
+ * 取 30% 不是拍的：指标口径就是「带年龄标注的行 ÷ 索引行」的 p50 ≤ 0.3
+ * （northstar 记忆索引区分度），而这个值直接决定分母上的分子。
+ *
+ * 为什么是**分位**而不是「超过 N 天」：2026-11-07 的影子统计实测，
+ * sid-code 库 ≥7 天占 46.7%、≥30 天占 0% —— 任何固定天数都落在
+ * 「一半都标」和「一条不标」两端，没有中间态，指标不可控。
+ * 否决论证见 `.agents/notes/implemented/feature/2026-11-15-索引年龄标注改分位.md`。
+ */
+export const INDEX_AGED_FRACTION = 0.3;
+
+/**
  * 模块级「记忆已被写过」代数（P1-11）。
  *
  * ─── 为什么必须是模块级的，而不是实例字段 ───
@@ -516,8 +529,21 @@ function serializeMemoryFile(entry: MemoryEntry): string {
  * - 警告段落与具体某条记忆之间没有绑定关系，模型读到第 40 行时早忘了段首那句；
  * - 逐行注解让年龄与摘要**同处一行**，引用哪条就看到哪条的年龄。
  *
- * 只给超过 1 天的条目加（`buildFreshnessWarning` 的同一判据，见 freshness.ts）：
- * 今天刚写的记忆加「today」纯属噪声，还会每天击穿一次 prompt cache 前缀。
+ * 只给**索引里最旧的一批**条目加 ⏳（`INDEX_AGED_FRACTION`，默认 30%），
+ * 而不是「超过 N 天」的固定档位。原因来自 2026-11-07 的影子统计：
+ *
+ * - sid-code 库 ≥7 天占 46.7%、≥30 天占 0% —— 7 天档等于「一半都标」，
+ *   30 天档等于「一条都不标」，**任何单档天数都在两端之间跳，没有中间态**；
+ * - 而本指标的目标是「带标记的行占比 p50 ≤ 0.3」（见 northstar 记忆索引区分度），
+ *   固定天数无法把占比控在目标上，只有按分位取最旧的一批才能直接钉住。
+ *
+ * 代价点破：标记语义从「绝对年龄超过 N 天」变成「在本库里相对最旧」——
+ * 同一个 ⏳ 在不同老化程度的库里对应不同天数。换来的是**每轮注入的标注量恒定**，
+ * 不会因为库整体变老而让 ⏳ 铺满索引（那正是缺口本身）。
+ * 年龄本身仍逐行给出（`⏳47 days ago`），模型判断「多旧」不依赖标记有无。
+ *
+ * 今天刚写的记忆仍然不标（`days < 1`，与 `buildFreshnessWarning` 同判据）：
+ * 加「today」纯属噪声，还会每天击穿一次 prompt cache 前缀。
  *
  * ⚠️ cache 影响是刻意接受的 trade-off（北极星「更安全 ↔ 更省」）：
  * 相对天数每天会变一次，所以这段内容**按天漂移**、跨天会击穿一次静态前缀。
@@ -539,17 +565,43 @@ export function annotateIndexAges(
   out?: { entryCount?: number; agedCount?: number },
 ): string {
   const now = Date.now();
-  let entryCount = 0;
+  const lines = text.split("\n");
+
+  // 第一遍只收集**索引里真实出现的行**的年龄：分母必须是索引行，
+  // 不是磁盘文件数 —— 截断线外的条目根本不注入，把它们算进分母会系统性低估占比。
+  const lineKeys: string[] = [];
+  const indexAges = new Map<string, number>();
+  for (const line of lines) {
+    const m = line.match(/^(\s*-\s*\[([^\]]*)\]\([^)]*\))(.*)$/);
+    if (!m) continue;
+    lineKeys.push(m[2]);
+    const entry = entries.get(m[2]);
+    if (entry) indexAges.set(m[2], entry.updatedAt); // 孤儿行（索引有、内存没有）不编造年龄
+  }
+
+  // 第二遍取最旧的 quota 条。用 key 集合而不是 updatedAt 阈值：
+  // 同 `updatedAt` 的条目（同一批导入 / 同一次 dream）可能很多，
+  // 用 `<= threshold` 会把它们整批标上，占比一次性冲破 30%。
+  const quota = Math.floor(indexAges.size * INDEX_AGED_FRACTION);
+  const oldest =
+    quota > 0
+      ? new Set(
+          [...indexAges.entries()]
+            .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+            .slice(0, quota)
+            .map(([key]) => key),
+        )
+      : new Set<string>();
+
   let agedCount = 0;
-  const result = text
-    .split("\n")
+  const result = lines
     .map((line) => {
       // 只处理索引条目行；段标题、空行、截断警告原样保留
       const m = line.match(/^(\s*-\s*\[([^\]]*)\]\([^)]*\))(.*)$/);
       if (!m) return line;
-      entryCount++;
       const entry = entries.get(m[2]);
       if (!entry) return line; // 索引里有、内存里没有（孤儿行）：不编造年龄
+      if (!oldest.has(m[2])) return line; // 不在最旧的一批里
       const days = memoryAgeDays(entry.updatedAt, now);
       if (days < 1) return line; // 与 buildFreshnessWarning 同判据：1 天内不加噪声
       agedCount++;
@@ -557,7 +609,7 @@ export function annotateIndexAges(
     })
     .join("\n");
   if (out) {
-    out.entryCount = entryCount;
+    out.entryCount = lineKeys.length;
     out.agedCount = agedCount;
   }
   return result;
@@ -1334,7 +1386,15 @@ export class MemoryStore {
           );
           // P1-12 指标 ③：驱逐计数。P0-2 之前这条路径是**完全静默**的 unlink，
           // 「记忆被淘汰了多少条」在轨迹里查不到；现在归档了，但没有计数一样查不到。
-          logMemoryGuard({ kind: "evicted_to_archive", via: "store", scope });
+          // `memoryType` 是 2026-11-15 补的：只记「淘汰了几条」答不出「淘汰的是不是
+          // user」，而 T1 整个改造就是为了让 user 不再被优先挤走 —— 缺这个维度，
+          // 改造有没有生效只能靠单测，生产上看不见。
+          logMemoryGuard({
+            kind: "evicted_to_archive",
+            via: "store",
+            scope,
+            ...(old.type ? { memoryType: old.type } : {}),
+          });
           if (archived) {
             evicted.push({ key: old.key, type: old.type, archivedAs: archived });
             // PR-A（D2）：只有**归档成功**才记账 —— 归档失败时文件还在原目录，
@@ -1770,6 +1830,29 @@ export class MemoryStore {
       const scope = dir === this.globalDir ? "global" : "project";
       const diskFiles = await enumerateMemoryFiles(dir);
       const { logMemoryIndexHealth } = await import("../analytics/events.ts");
+      // ─── T3：锚点健康度（2026-11-15）───
+      //
+      // 只统计、不进索引行：影子统计实测「全部失效」的误报面 71%–97%
+      // （iam-studio-fe 单根判定 97% 是「整条记忆在讲别的仓库」），把 ⚠ 常驻进
+      // system prompt 的代价远大于收益。这里只要两个数，先让分布说话。
+      //
+      // 只对 project scope 且有仓库根时算：global 记忆不属于任何仓库，
+      // 拿 cwd 去判会把「讲别的项目」的记忆全判成失效。
+      const anchor =
+        scope === "project" && this.projectRoot
+          ? await (async () => {
+              try {
+                const { countAnchorHealth } = await import("./anchor-health.ts");
+                // 直接用 load 进内存的正文，不重新读盘：`value` 已是剥过 frontmatter 的正文。
+                return countAnchorHealth(
+                  visible.map((e) => e.value),
+                  [this.projectRoot as string],
+                );
+              } catch {
+                return undefined; // 统计失败不影响索引写入
+              }
+            })()
+          : undefined;
       logMemoryIndexHealth({
         scope,
         // P0-3：分母要扣掉「按设计就不进索引」的那部分（`agent_action`）。
@@ -1785,6 +1868,12 @@ export class MemoryStore {
         indexEntryCount: entryCount,
         shadowedCount: this.shadowedFiles.filter((s) => s.scope === scope).length,
         truncated,
+        ...(anchor
+          ? {
+              anchorReferencedCount: anchor.referencedEntries,
+              anchorDeadCount: anchor.deadEntries,
+            }
+          : {}),
       });
     } catch {
       /* 埋点失败不影响索引写入 */
@@ -1847,7 +1936,12 @@ export class MemoryStore {
           `（${c.type || "未分类"}，${ageDays} 天未更新、从未被 Read；未删除，可人工恢复）`,
       );
       // P1-12 指标 ③：与超限淘汰共用同一个计数口径，`via` 区分是哪条路径触发的
-      logMemoryGuard({ kind: "evicted_to_archive", via: "index-truncation", scope });
+      logMemoryGuard({
+        kind: "evicted_to_archive",
+        via: "index-truncation",
+        scope,
+        ...(c.type ? { memoryType: c.type } : {}),
+      });
     }
     return archivedCount;
   }
