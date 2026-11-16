@@ -145,6 +145,19 @@ describe("常驻回归 — 健康的慢流不被任何一层杀掉", () => {
     // 2026-11-10 CI macOS 上 PR #725 实测这条失败于
     // 「SSE 内容进展超时：0.08s 无有效内容」—— 就是 80ms 阈值被一次 event loop
     // 抢占吃掉（间隔 10ms 时余量只有 8x）。
+    //
+    // ⚠️ 两个余量防护的是**不同性质**的东西，别混为一谈（2026-11-15 复核时点破）：
+    //   · 间隔余量（12x）才是真正的防护 —— content-progress 判的是
+    //     `Date.now() - lastContentProgressAt`（相邻两次有效进展的间隔），
+    //     而 reasoning_content 在 openai.ts 里被算作有效进展（markContentProgress）。
+    //     所以这条流每 10ms 就刷新一次计时器，正常**永远到不了阈值**。
+    //   · 总时长余量（5x）服务的是**反向验证**：若某层退回"绝对计时"（按总时长判），
+    //     这条 600ms 的流必然让它开枪，用例就会红。它不是"防误杀"的余量。
+    //   · idle 阈值跟着涨到 120 不是顺手放宽，而是**必要前提**：idle 判的是字节间隔
+    //     （openai.ts 的 armRead 每读到字节就重新 arm），若 idle 留在 60 而
+    //     content-progress 是 120，idle 会先击发，测的就变成 idle 层了。
+    //     代价要说清：idle 层的验证力因此下降（idle 若回归到 100ms，旧阈值 60 会红、
+    //     新阈值 120 不会）。这是"让被测层成为被测层"的必然代价，不是白拿的余量。
     const CHUNKS = 60;
     const GAP_MS = 10;
     const CONTENT_PROGRESS_MS = 120;
@@ -171,7 +184,11 @@ describe("常驻回归 — 健康的慢流不被任何一层杀掉", () => {
     expect(sawStop).toBe(true);
     // ③ 前提确认：这条流确实"慢"—— 总时长超过了 content-progress 阈值。
     //    若这条不成立，用例退化成"测了一条快流"，证不了任何事。
-    expect(elapsed).toBeGreaterThan(80);
+    //    ⚠️ 阈值必须用 CONTENT_PROGRESS_MS 而不是硬编码数字：2026-11-15 复核发现，
+    //    阈值从 80 涨到 120 时这里仍写着 80，断言只证到"越过旧阈值 80"，
+    //    elapsed 落在 81~120ms 时断言照样绿，但"总时长超过阈值"这个前提已经不成立，
+    //    于是上一条反向验证（若某层退回绝对计时必开枪）静默失效。
+    expect(elapsed).toBeGreaterThan(CONTENT_PROGRESS_MS);
     // ④ 进展确实是靠 reasoning 维持的（deltas 数量 ≈ chunk 数）
     expect(reasoningDeltas).toBeGreaterThan(CHUNKS / 2);
     // ⑤ PR13：**一枪都没开**（比 ① 更强）。

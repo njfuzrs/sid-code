@@ -122,11 +122,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, shard: 1, total: 3 }
-          - { os: ubuntu-latest, shard: 2, total: 3 }
-          - { os: ubuntu-latest, shard: 3, total: 3 }
-          - { os: macos-latest, shard: 1, total: 2 }
-          - { os: macos-latest, shard: 2, total: 2 }
+          # ⚠️ macOS 分片带 `--retry=1`，ubuntu 不带 —— 这是**按平台条件**的刻意差异，
+          # 不是漏配。理由有量化证据：按分片归一的失败密度 macOS 是 ubuntu 的 2.3 倍
+          # （2026-11-10 统计，见 docs-research 私有库该日期的 macOS runner 时序敏感度
+          # 方案文档 §二），而一次 macOS 时序失败 = 整队 PR 的墙钟后移 6–8 分钟
+          # （strict + auto-merge 把合并串行化）。
+          # 重试发生在**同一个 job 内**，不占额外 runner 名额、不改分片数，是唯一不触碰
+          # Free 档 macOS 并发上限 5 的兜底手段（3 片 × 2 run = 6 > 5 会排队，反而更慢）。
+          #
+          # ⚠️ 代价必须点破：`--retry` **会掩盖真回归** —— 一个真 bug 若只在特定时序下
+          # 复现，重试后偶发通过就会变绿。对冲是下面「重试可见性」那一步：解析 bun 输出的
+          # `(attempt N)` 标记把本轮重试次数打进 job summary。**没有那一步就不许加 --retry**，
+          # 反漂移断言在 tests/release-flow-contract.test.ts。
+          #
+          # ubuntu 不加重试：没有量化证据支持它需要，就不为不存在的风险付「掩盖真回归」的代价。
+          # 哪天 ubuntu 也出现同类密度，改这两行数据即可，不需要动步骤逻辑。
+          - { os: ubuntu-latest, shard: 1, total: 3, retry: "" }
+          - { os: ubuntu-latest, shard: 2, total: 3, retry: "" }
+          - { os: ubuntu-latest, shard: 3, total: 3, retry: "" }
+          - { os: macos-latest, shard: 1, total: 2, retry: "--retry=1" }
+          - { os: macos-latest, shard: 2, total: 2, retry: "--retry=1" }
 
     # 本地全量约 200s（9177 test / 649 文件）；给足余量覆盖 CI 冷启动与依赖安装
     timeout-minutes: 25
@@ -224,8 +239,31 @@ jobs:
       # eval-runner-trajectory-meta）在 vendor 成 workspace 后已能正常解析。
       #
       # 分片后仍是裸 `bun test`（只多一个 --shard），[slow] 用例照样在某一片里跑。
+      #
+      # 2026-11-15 起这一步从单行改成 block，两处新增：
+      #   ① `${{ matrix.retry }}`：macOS 分片带 `--retry=1`，ubuntu 为空（理由见 matrix 上方）；
+      #   ② `tee` 落盘：给下面「重试可见性」解析 `(attempt N)`。
+      # `set -o pipefail` 不是装饰 —— 没有它 `bun test ... | tee` 的退出码是 tee 的 0，
+      # **测试失败会被吞成绿的**。这是加 tee 时最容易引入的假绿，反漂移断言在
+      # tests/release-flow-contract.test.ts「test 步骤必须 pipefail」。
       - name: 全量单测（分片）
-        run: bun test --shard=${{ matrix.shard }}/${{ matrix.total }}
+        shell: bash
+        run: |
+          set -o pipefail
+          bun test --shard=${{ matrix.shard }}/${{ matrix.total }} ${{ matrix.retry }} 2>&1 \
+            | tee "$RUNNER_TEMP/bun-test.log"
+
+      # --retry 的配套对冲（缺了这一步就不许开 --retry，见 matrix 上方注释）：
+      # 把「本轮重试了几条用例」变成 CI 上看得见的一行。
+      # bun 对重试过的用例会输出 `(attempt N)`（2026-11-15 实测：转绿是
+      # `(pass) … (attempt 2)`、终败是 `(fail) … (attempt 2)`），所以不需要额外埋点。
+      # `if: always()`：测试失败/超时也要出这份报告 —— 最需要看它的时候它不能缺席。
+      # 该步骤**不会让 CI 变红**（脚本恒退出 0），它只报告；把它做成阻断项的结果
+      # 只会是有人加 `|| true`，然后连报告都不看了。
+      - name: 重试可见性（--retry 掩盖真回归的唯一对冲）
+        if: always()
+        shell: bash
+        run: bun run scripts/ci-retry-report.ts "$RUNNER_TEMP/bun-test.log"
 
       # 测试不得改动被 git 追踪的文件。这不是洁癖：`evals/holdout/real-tasks/holdout-sids.txt`
       # 是「永封」文件，实测被测试写脏过（残留 fixture 字面量 `tampered-extra-line`，
