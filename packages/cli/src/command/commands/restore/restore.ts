@@ -61,6 +61,29 @@ export class RestoreCommand implements LocalCommandModule {
       lines.push(`  ... 还有 ${affectedFiles.size - 10} 个文件`);
     }
 
+    // P3：超过单文件上限的文件**从未进快照**（checkpoint 不保护它们）。
+    // 不点明的话，用户会把「已恢复」理解成「所有改动都回退了」，而实际上这些大文件
+    // 停在回滚后的状态——静默的不完整保护比没有保护更危险。
+    // 范围取 targetIndex 起（含目标快照）：目标快照自身跳过的文件，同样在恢复范围之外。
+    const unprotected = new Map<string, number>();
+    for (const s of allSnapshots.slice(targetIndex)) {
+      for (const f of cpMgr.getSnapshotDetail(s.id)?.skippedFiles ?? []) {
+        unprotected.set(f.filePath, f.bytes);
+      }
+    }
+    if (unprotected.size > 0) {
+      lines.push("");
+      lines.push(
+        `⚠️ 另有 ${unprotected.size} 个文件超过单文件上限，从未进快照，本次恢复不会改动它们:`,
+      );
+      for (const [file, bytes] of Array.from(unprotected).slice(0, 5)) {
+        lines.push(`  ${file} (${(bytes / 1024 / 1024).toFixed(1)}MB)`);
+      }
+      if (unprotected.size > 5) {
+        lines.push(`  ... 还有 ${unprotected.size - 5} 个`);
+      }
+    }
+
     lines.push("");
     lines.push("⚠️ 此操作将丢失这些快照之后的所有变更！");
     lines.push("");

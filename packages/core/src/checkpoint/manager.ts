@@ -7,7 +7,16 @@
  * - 二进制文件（含 NUL / 非法 UTF-8）按原始字节 base64 存 full，不做 diff（N13）
  * - 后续保存增量 diff（LCS 算法）
  * - 每文件最多 50 个 checkpoint，总共最多 200MB，30 天自动清理
+ * - 超过 maxFileSizeMb（默认 5MB）的单文件不进快照（P3）
  * - 存储路径：~/.sid-code/checkpoints/<session-id>/
+ *
+ * P3：**索引分片落盘**。`index.json` 只存头（version / sessionId / createdAt / nextId），
+ * 每个快照单独写 `snapshots/<id>.json`，一次快照只写 1 个新分片 + 几百字节头。
+ *
+ * 修之前是所有快照内联在 index.json 里、每次快照整份 stringify 两次再整份写盘：
+ * 一次 `ls -la` 把 79MB 的编译产物收进索引后，24 个快照就把 index.json 撑到 42MB，
+ * 单个快照 38–88ms 主线程阻塞、864MB 累计写盘（写放大 O(N²)）。
+ * 现在写放大是 O(N)：新内容只写进自己的分片，老分片不被重写。
  */
 
 import { join } from "path";
@@ -31,6 +40,14 @@ export interface Snapshot {
   messageId?: string;
   /** 包含的文件变更列表 */
   files: SnapshotFile[];
+  /**
+   * P3：因超过 `maxFileSizeMb` 而未进快照的文件。
+   *
+   * 这些文件**没有**被保护：`/undo` / `/restore` 回退不到它们。
+   * 落盘保留这份清单是为了让命令层能如实告知用户「哪些文件没被快照」，
+   * 而不是让用户以为所有改动都能回退（静默的不完整保护比没有更危险）。
+   */
+  skippedFiles?: Array<{ filePath: string; bytes: number }>;
 }
 
 /** 快照中的单个文件 */
@@ -147,6 +164,24 @@ function stripLegacyFields(index: CheckpointIndex): CheckpointIndex {
   return index;
 }
 
+/**
+ * P3：分片索引格式版本。2 = `index.json` 只存头，快照逐个落在 `snapshots/<id>.json`。
+ * 缺省（无 version 字段）= 旧格式，所有快照内联在 index.json 里，init 时迁移。
+ */
+const INDEX_VERSION = 2;
+
+/** 快照分片所在子目录（相对会话 checkpoint 目录） */
+const SNAPSHOTS_SUBDIR = "snapshots";
+
+/** P3：分片格式的 index.json（只存头，不存快照内容） */
+interface ShardedIndexHead {
+  version: number;
+  sessionId: string;
+  createdAt: number;
+  /** 快照 id 计数器；init 时会自愈为 max(此值, 最大分片序号 + 1) */
+  nextId: number;
+}
+
 /** 旧版索引格式（兼容） */
 interface LegacyCheckpointEntry {
   filePath: string;
@@ -217,6 +252,22 @@ export class CheckpointManager {
   private dirty: boolean = false;
   private config: Required<CheckpointConfig>;
 
+  // ── P3：分片落盘的增量状态 ──
+  /** 本次变更里需要重写分片的快照 id（只重写这些，不重写历史分片） */
+  private dirtySnapshotIds = new Set<string>();
+  /** 本次变更里已从内存移除、需要 unlink 分片的快照 id */
+  private removedSnapshotIds = new Set<string>();
+  /** 已确认落在盘上的快照 id；落盘前用它做双向兜底，漏标脏不会让快照静默丢失 */
+  private persistedIds = new Set<string>();
+  /** 每个快照分片的序列化字节数（写盘时算一次，供 evictBySize 增量求和） */
+  private snapshotBytes = new Map<string, number>();
+  /** 全部分片的字节数之和（O(1) 维护，替代每次 stringify 整份索引） */
+  private totalSnapshotBytes = 0;
+  /** index.json 头本身的字节数（几百字节，每次落盘顺手算） */
+  private headBytes = 0;
+  /** 本次变更里已算好 JSON 的快照（stringify 只做一次，写盘直接复用） */
+  private pendingJson = new Map<string, string>();
+
   constructor(sessionId: string, config?: CheckpointConfig) {
     this.sessionId = sessionId;
     this.baseDir = sidPaths.checkpoints(sessionId);
@@ -236,6 +287,9 @@ export class CheckpointManager {
       compressThresholdKb: config?.compressThresholdKb ?? 1,
       largeFileThresholdLines: config?.largeFileThresholdLines ?? 1000,
       hugeFileThresholdLines: config?.hugeFileThresholdLines ?? 10000,
+      // P3：5MB。挡的是编译产物 / 大资产（实测 79MB 的 sid-code 二进制），
+      // 同时保留绝大多数源码与中小资源——PNG 图标这类小二进制仍能字节级回退（N13）。
+      maxFileSizeMb: config?.maxFileSizeMb ?? 5,
     };
   }
 
@@ -255,15 +309,33 @@ export class CheckpointManager {
         const data = await Bun.file(indexPath).text();
         const parsed = JSON.parse(data);
 
-        // 检测是否为旧格式
-        if (parsed.files && !parsed.snapshots) {
+        if (parsed.version === INDEX_VERSION) {
+          // P3 分片格式：index.json 只有头，快照逐个读分片目录。
+          // loadSnapshotShards 顺手把每个分片的字节数与「已落盘 id」填进增量状态。
+          const loaded = await this.loadSnapshotShards();
+          this.index = {
+            sessionId: parsed.sessionId ?? this.sessionId,
+            createdAt: parsed.createdAt ?? Date.now(),
+            // nextId 自愈：上一轮若在「写完分片、还没写头」之间中断，头里的 nextId 会落后于
+            // 实际最大分片序号；不回填的话新快照会复用 id、把旧分片覆盖掉。
+            nextId: Math.max(parsed.nextId ?? 1, this.maxShardSeq + 1),
+            snapshots: loaded,
+          };
+          this.headBytes = Buffer.byteLength(data, "utf-8");
+        } else if (parsed.files && !parsed.snapshots) {
+          // 旧格式（files 字段）：先迁移成 snapshots 结构，再按分片格式落盘。
           this.index = this.migrateLegacyIndex(parsed as LegacyCheckpointIndex);
-          await this.saveIndex(); // 立即保存迁移后的索引
+          this.markAllSnapshotsDirty();
+          await this.saveIndex();
         } else {
+          // 旧格式（所有快照内联在 index.json 里）：剥离废弃字段后改写成分片。
           this.index = stripLegacyFields(parsed as CheckpointIndex);
+          this.markAllSnapshotsDirty();
+          await this.saveIndex();
         }
-      } catch {
+      } catch (err: any) {
         // 索引损坏，重新创建
+        getLogger().warn("CHECKPOINT", `索引读取失败，重建空索引: ${err?.message ?? String(err)}`);
         this.index = {
           sessionId: this.sessionId,
           createdAt: Date.now(),
@@ -275,6 +347,111 @@ export class CheckpointManager {
 
     // 清理过期的其他会话
     this.cleanupOldSessions();
+  }
+
+  /** 分片目录：`<session>/snapshots` */
+  private shardDir(): string {
+    return join(this.baseDir, SNAPSHOTS_SUBDIR);
+  }
+
+  /** 某个快照分片的路径 */
+  private shardPath(id: string): string {
+    return join(this.shardDir(), `${id}.json`);
+  }
+
+  /**
+   * 从 `s<N>` 解出序号；解不出返回 0（排序时排最前，不影响正确性）。
+   * 用数值而不是字典序：`s10` 在字典序里小于 `s2`，按字典序加载会把时间序打乱，
+   * `rebuildContentAtSnapshot` 的 diff 链就会从中间断掉。
+   */
+  private static shardSeq(id: string): number {
+    const n = Number.parseInt(id.replace(/^s/, ""), 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  /** 本次加载到的最大分片序号（供 nextId 自愈） */
+  private maxShardSeq = 0;
+
+  /**
+   * 读一个会话目录下的全部快照分片（按时间序）。
+   *
+   * 单个分片损坏只跳过那一个并告警——旧格式是单文件，一处损坏就得整份丢弃；
+   * 分片后损坏是局部事件，没有理由让它带走整个会话的回退历史。
+   */
+  private async readSnapshotShardsFrom(dir: string): Promise<Snapshot[]> {
+    const shardDir = join(dir, SNAPSHOTS_SUBDIR);
+    if (!existsSync(shardDir)) return [];
+
+    const log = getLogger();
+    const loaded: Array<{ seq: number; snap: Snapshot }> = [];
+    for (const name of readdirSync(shardDir)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const raw = await Bun.file(join(shardDir, name)).text();
+        const snap = JSON.parse(raw) as Snapshot;
+        if (!snap?.id || !Array.isArray(snap.files)) throw new Error("缺少 id / files");
+        loaded.push({ seq: CheckpointManager.shardSeq(snap.id), snap });
+      } catch (err: any) {
+        log.warn("CHECKPOINT", `快照分片损坏，已跳过 ${name}: ${err?.message ?? String(err)}`);
+      }
+    }
+    loaded.sort((a, b) => a.seq - b.seq);
+    return loaded.map((x) => x.snap);
+  }
+
+  /** 加载当前会话的分片，并把字节数 / 已落盘 id 填进增量状态（不重复读盘）。 */
+  private async loadSnapshotShards(): Promise<Snapshot[]> {
+    const shards = await this.readSnapshotShardsFrom(this.baseDir);
+    const shardDir = this.shardDir();
+    for (const snap of shards) {
+      try {
+        const bytes = statSync(join(shardDir, `${snap.id}.json`)).size;
+        this.snapshotBytes.set(snap.id, bytes);
+        this.totalSnapshotBytes += bytes;
+      } catch {
+        // stat 失败不影响功能：大小统计退化为 0，evictBySize 少算这一份。
+      }
+      this.persistedIds.add(snap.id);
+      this.maxShardSeq = Math.max(this.maxShardSeq, CheckpointManager.shardSeq(snap.id));
+    }
+    return shards;
+  }
+
+  /**
+   * 把快照标成脏并立即量出它的序列化字节数。
+   *
+   * 为什么在这里 stringify：`evictIfNeeded` 在落盘前就要用总量判断淘汰，而总量必须含
+   * 这次新增/改写的快照。这次 stringify 结果会存进 pendingJson，落盘直接复用——
+   * 一次快照只 stringify **它自己**，不再 stringify 整份索引。
+   */
+  private markSnapshotDirty(snapshot: Snapshot): void {
+    this.dirty = true;
+    this.dirtySnapshotIds.add(snapshot.id);
+    this.removedSnapshotIds.delete(snapshot.id);
+    const json = JSON.stringify(snapshot);
+    this.pendingJson.set(snapshot.id, json);
+    const bytes = Buffer.byteLength(json, "utf-8");
+    const prev = this.snapshotBytes.get(snapshot.id) ?? 0;
+    this.snapshotBytes.set(snapshot.id, bytes);
+    this.totalSnapshotBytes += bytes - prev;
+    this.maxShardSeq = Math.max(this.maxShardSeq, CheckpointManager.shardSeq(snapshot.id));
+  }
+
+  /** 把快照标成已移除（落盘时 unlink 分片）。 */
+  private markSnapshotRemoved(id: string): void {
+    this.dirty = true;
+    this.dirtySnapshotIds.delete(id);
+    this.pendingJson.delete(id);
+    this.removedSnapshotIds.add(id);
+  }
+
+  /** 全量标脏（迁移 / fork 继承）：所有内存中的快照都需要重写分片。 */
+  private markAllSnapshotsDirty(): void {
+    for (const snap of this.index.snapshots) this.markSnapshotDirty(snap);
+    // 旧的单文件 index.json 里可能还内联着已被内存遗弃的内容，交给 saveIndex 的兜底清理。
+    for (const id of this.persistedIds) {
+      if (!this.index.snapshots.some((s) => s.id === id)) this.markSnapshotRemoved(id);
+    }
   }
 
   /** 迁移旧格式索引到新格式 */
@@ -338,6 +515,8 @@ export class CheckpointManager {
     const log = getLogger();
     const snapshotId = `s${this.index.nextId++}`;
     const files: SnapshotFile[] = [];
+    const skippedFiles: Array<{ filePath: string; bytes: number }> = [];
+    const maxFileBytes = this.config.maxFileSizeMb * 1024 * 1024;
 
     try {
       for (const filePath of filePaths) {
@@ -354,6 +533,24 @@ export class CheckpointManager {
             compressed: false,
           });
           continue;
+        }
+
+        // P3：超大文件不进快照。
+        //
+        // 判据用 statSync 的**原始字节**而不是压缩后大小：用户看到「上限 5MB」时理解的
+        // 就是磁盘上的文件大小，而 gzip 压缩率随内容浮动（文本能到 1/5，二进制常常只到 1/2），
+        // 拿压缩后字节当门槛就无法向用户解释「为什么这个 4MB 文件被跳过了」。
+        if (maxFileBytes > 0) {
+          let sizeBytes = 0;
+          try {
+            sizeBytes = statSync(filePath).size;
+          } catch {
+            sizeBytes = 0; // stat 失败不阻断：当作 0，走后续正常读取（读失败会被外层 catch 兜住）
+          }
+          if (sizeBytes > maxFileBytes) {
+            skippedFiles.push({ filePath, bytes: sizeBytes });
+            continue;
+          }
         }
 
         // N13：读字节再判定，不再 `file.text()`（那一步对二进制是有损且不可逆的）。
@@ -392,22 +589,40 @@ export class CheckpointManager {
         // 内容没变，跳过
       }
 
+      // P3：跳过的大文件必须在日志里点明——否则用户以为 `/undo` 能救，实际救不回来。
+      if (skippedFiles.length > 0) {
+        const preview = skippedFiles
+          .slice(0, 3)
+          .map((s) => `${s.filePath}(${(s.bytes / 1024 / 1024).toFixed(1)}MB)`)
+          .join(", ");
+        log.info(
+          "CHECKPOINT",
+          `跳过 ${skippedFiles.length} 个超过 ${this.config.maxFileSizeMb}MB 的文件，未进快照（无法 /undo 回退）: ${preview}${skippedFiles.length > 3 ? " …" : ""}`,
+        );
+      }
+
       if (files.length > 0) {
-        this.index.snapshots.push({
+        const snapshot: Snapshot = {
           id: snapshotId,
           timestamp: Date.now(),
           toolName,
           toolSummary,
           messageId,
           files,
-        });
+          skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
+        };
+        this.index.snapshots.push(snapshot);
+        // P3：标脏 + 量出本快照自己的字节数（只 stringify 它自己，不再 stringify 整份索引）。
+        this.markSnapshotDirty(snapshot);
 
-        this.dirty = true;
         // P1-2：写时双层 eviction（per-file 版本上限 + 总量上限），淘汰时保护 diff 链完整性。
         // 放在 push 之后、saveIndex 之前——确定性强、无需定时器（同 CC 写时淘汰思路）。
         await this.evictIfNeeded();
         await this.saveIndex();
         log.debug("CHECKPOINT", `已创建快照 ${snapshotId}: ${files.length} 个文件`);
+      } else if (skippedFiles.length > 0) {
+        // 全部被跳过：不建空快照（`/undo` 拿到空快照会打印「已撤销」却没动任何文件，属于谎报成功）。
+        log.info("CHECKPOINT", `本次变更全部超过单文件上限，未创建快照: ${toolSummary}`);
       }
 
       return snapshotId;
@@ -545,6 +760,10 @@ export class CheckpointManager {
         // 如果快照为空，移除整个快照
         if (snapshot.files.length === 0) {
           this.index.snapshots.splice(i, 1);
+          // P3：分片落盘——整组移除要 unlink 它的分片，否则下次 init 会把它读回来。
+          this.markSnapshotRemoved(snapshot.id);
+        } else {
+          this.markSnapshotDirty(snapshot);
         }
 
         await this.saveIndex();
@@ -650,7 +869,11 @@ export class CheckpointManager {
     }
 
     // 移除目标快照之后的所有快照
+    const droppedByRestore = this.index.snapshots.slice(targetIndex + 1);
     this.index.snapshots = this.index.snapshots.slice(0, targetIndex + 1);
+    // P3：分片落盘——被截断的快照必须 unlink 分片，否则下次 init 会把它们从盘上读回来
+    // （表现就是「刚 restore 完，重启后那些快照又复活了」）。
+    for (const s of droppedByRestore) this.markSnapshotRemoved(s.id);
     await this.saveIndex();
 
     if (failedFiles.length > 0) {
@@ -784,7 +1007,10 @@ export class CheckpointManager {
     // 截断 index：sN 及其之后的快照都不再存在（磁盘已回到产生 sN 之前的状态）。
     // `nextId` 不回退——旧快照 id 仍可能挂在别处（如 file_changes 的 lastSnapshotId），
     // id 复用会让那些旧锚点误命中新快照。
+    const droppedByRestore = this.index.snapshots.slice(targetIndex);
     this.index.snapshots = this.index.snapshots.slice(0, targetIndex);
+    // P3：分片落盘——被截断的快照必须 unlink 分片，否则下次 init 会把它们读回来。
+    for (const s of droppedByRestore) this.markSnapshotRemoved(s.id);
     await this.saveIndex();
 
     if (failedFiles.length > 0) {
@@ -1021,7 +1247,8 @@ export class CheckpointManager {
       f.type = "full";
       f.diff = undefined;
       encodeFullEntry(f, rebuilt, this.config.compressThresholdKb * 1024);
-      this.dirty = true;
+      // P3：分片落盘——被重锚定的那个快照要重写自己的分片（其余分片不动）。
+      this.markSnapshotDirty(this.index.snapshots[i]);
       return true;
     }
     // 该文件在 fromSnapshotIndex 之后无其他条目 → 无 diff 依赖该 full → 删除安全（LRU 丢弃老孤版本）。
@@ -1037,11 +1264,14 @@ export class CheckpointManager {
     const snapshot = this.index.snapshots[snapshotIndex];
     if (!snapshot) return false;
     snapshot.files = snapshot.files.filter((f) => f.filePath !== filePath);
-    this.dirty = true;
     if (snapshot.files.length === 0) {
       this.index.snapshots.splice(snapshotIndex, 1);
+      // P3：整组移除要 unlink 分片，否则下次 init 从盘上把它读回来。
+      this.markSnapshotRemoved(snapshot.id);
       return true;
     }
+    // P3：只重写被改动的那一个分片。
+    this.markSnapshotDirty(snapshot);
     return false;
   }
 
@@ -1106,13 +1336,21 @@ export class CheckpointManager {
 
       // 整组移除最旧快照。
       this.index.snapshots.shift();
-      this.dirty = true;
+      // P3：分片落盘——被淘汰的快照必须 unlink 分片，否则下次 init 会把它们读回来，
+      // 淘汰就等于没做（而且索引会重新膨胀）。
+      this.markSnapshotRemoved(oldest.id);
     }
   }
 
-  /** 计算当前 index 序列化后的字节数（与 saveIndex 落盘格式一致）。 */
+  /**
+   * 当前 checkpoint 落盘后的字节数（与分片格式一致）。
+   *
+   * P3：改成**增量求和**。修之前是 `JSON.stringify(this.index, null, 2)` —— 42MB 索引
+   * 一次 8–18ms，而 evictBySize 在 while 循环里每轮都调它一次；一次快照要 stringify
+   * 两遍全文（这里 + saveIndex）。现在只累加各分片的字节数（写盘时算一次后缓存），O(1)。
+   */
   private serializedSize(): number {
-    return Buffer.byteLength(JSON.stringify(this.index, null, 2), "utf-8");
+    return this.totalSnapshotBytes + this.headBytes;
   }
 
   /** 获取最后一个快照 */
@@ -1124,8 +1362,9 @@ export class CheckpointManager {
   /** 移除最后一个快照 */
   private removeLastSnapshot(): void {
     if (this.index.snapshots.length > 0) {
-      this.index.snapshots.pop();
-      this.dirty = true;
+      const removed = this.index.snapshots.pop()!;
+      // P3：分片落盘——移除的快照要 unlink 分片，否则下次 init 会把它读回来（undo 等于没做）。
+      this.markSnapshotRemoved(removed.id);
     }
   }
 
@@ -1165,19 +1404,32 @@ export class CheckpointManager {
     }
 
     try {
-      const srcIndexPath = join(sidPaths.checkpoints(srcSessionId), "index.json");
+      const srcDir = sidPaths.checkpoints(srcSessionId);
+      const srcIndexPath = join(srcDir, "index.json");
       if (!existsSync(srcIndexPath)) {
         log.info("CHECKPOINT", `源会话无 checkpoint 可继承: ${srcSessionId}`);
         return 0;
       }
       const parsed = JSON.parse(await Bun.file(srcIndexPath).text());
-      // 源可能是旧格式（files 而非 snapshots）——复用既有迁移逻辑，继承后即为新格式。
-      const srcIndex: CheckpointIndex =
-        parsed.files && !parsed.snapshots
-          ? this.migrateLegacyIndex(parsed as LegacyCheckpointIndex)
-          : stripLegacyFields(parsed as CheckpointIndex);
+      // 源可能是三种格式：P3 分片（version=2）/ 旧内联 snapshots / 更旧的 files 结构。
+      let snapshots: Snapshot[];
+      let srcCreatedAt: number | undefined;
+      let srcNextId: number | undefined;
+      if (parsed.version === INDEX_VERSION) {
+        snapshots = await this.readSnapshotShardsFrom(srcDir);
+        srcCreatedAt = parsed.createdAt;
+        srcNextId = parsed.nextId;
+      } else {
+        // 旧格式（files 而非 snapshots）复用既有迁移逻辑，继承后即为新格式。
+        const srcIndex: CheckpointIndex =
+          parsed.files && !parsed.snapshots
+            ? this.migrateLegacyIndex(parsed as LegacyCheckpointIndex)
+            : stripLegacyFields(parsed as CheckpointIndex);
+        snapshots = Array.isArray(srcIndex.snapshots) ? srcIndex.snapshots : [];
+        srcCreatedAt = srcIndex.createdAt;
+        srcNextId = srcIndex.nextId;
+      }
 
-      const snapshots = Array.isArray(srcIndex.snapshots) ? srcIndex.snapshots : [];
       if (snapshots.length === 0) {
         log.info("CHECKPOINT", `源会话 checkpoint 为空，无需继承: ${srcSessionId}`);
         return 0;
@@ -1186,11 +1438,12 @@ export class CheckpointManager {
       // 深拷贝：两会话此后独立演进，改一边不影响另一边（structuredClone 覆盖 diff 嵌套结构）。
       this.index = {
         sessionId: this.sessionId,
-        createdAt: srcIndex.createdAt ?? Date.now(),
-        nextId: typeof srcIndex.nextId === "number" ? srcIndex.nextId : snapshots.length + 1,
+        createdAt: srcCreatedAt ?? Date.now(),
+        nextId: typeof srcNextId === "number" ? srcNextId : snapshots.length + 1,
         snapshots: structuredClone(snapshots),
       };
-      this.dirty = true;
+      // P3：继承来的快照在当前会话目录里还没有分片，全部标脏由 saveIndex 逐个写出去。
+      this.markAllSnapshotsDirty();
       await this.saveIndex();
       log.info(
         "CHECKPOINT",
@@ -1206,13 +1459,89 @@ export class CheckpointManager {
     }
   }
 
-  /** 保存索引到磁盘 */
+  /**
+   * 把变更落盘（P3：分片格式）。
+   *
+   * 一次快照只写 1 个新分片 + 几百字节的 index.json 头，历史分片不动 ⇒ 写放大 O(N)。
+   * 修之前是整份索引 stringify + 整份写盘：42MB 索引一次 9–15ms，24 个快照累计写盘 864MB。
+   *
+   * 落盘顺序刻意是「先写分片、后写头」：中途崩溃时 index.json 还是上一轮的完整状态，
+   * 下次 init 重读不会丢历史；反过来先写头再写分片，崩溃就只剩一个指向不存在分片的头。
+   */
   private async saveIndex(): Promise<void> {
     if (!this.dirty) return;
 
+    const log = getLogger();
     const indexPath = join(this.baseDir, "index.json");
-    await Bun.write(indexPath, JSON.stringify(this.index, null, 2));
-    this.dirty = false;
+
+    try {
+      const shardDir = this.shardDir();
+      if (!existsSync(shardDir)) mkdirSync(shardDir, { recursive: true });
+
+      // 兜底：内存里有、从未落盘过的 → 补写；已落盘、已从内存移除的 → 补删。
+      // 为什么需要这层：分片后「盘上有什么」不再由单一 index.json 决定，任何一条变更路径
+      // 忘了调 markSnapshotDirty 都会让那个快照静默消失（用户 /undo 到一半发现历史缺口）。
+      // 双向比对是 O(snapshots)，比漏数据的代价小得多。
+      const liveIds = new Set(this.index.snapshots.map((s) => s.id));
+      for (const id of liveIds) {
+        if (!this.persistedIds.has(id)) this.dirtySnapshotIds.add(id);
+      }
+      for (const id of this.persistedIds) {
+        if (!liveIds.has(id)) this.removedSnapshotIds.add(id);
+      }
+
+      // 1) 删除已移除的快照分片
+      for (const id of this.removedSnapshotIds) {
+        try {
+          unlinkSync(this.shardPath(id));
+        } catch {
+          // 文件本来就不在（首次迁移 / 重复删除）——无需处理
+        }
+        this.persistedIds.delete(id);
+        const bytes = this.snapshotBytes.get(id);
+        if (bytes !== undefined) {
+          this.totalSnapshotBytes -= bytes;
+          this.snapshotBytes.delete(id);
+        }
+      }
+      this.removedSnapshotIds.clear();
+
+      // 2) 写脏分片（JSON 在 markSnapshotDirty 时已算好，这里复用，不重复 stringify）
+      for (const id of this.dirtySnapshotIds) {
+        const snap = this.index.snapshots.find((s) => s.id === id);
+        if (!snap) continue;
+        const json = this.pendingJson.get(id) ?? JSON.stringify(snap);
+        await Bun.write(this.shardPath(id), json);
+        const bytes = Buffer.byteLength(json, "utf-8");
+        const prev = this.snapshotBytes.get(id) ?? 0;
+        this.snapshotBytes.set(id, bytes);
+        this.totalSnapshotBytes += bytes - prev;
+        this.persistedIds.add(id);
+      }
+      this.dirtySnapshotIds.clear();
+      this.pendingJson.clear();
+
+      // 3) 写头（几百字节，不是整份索引）
+      const head: ShardedIndexHead = {
+        version: INDEX_VERSION,
+        sessionId: this.index.sessionId,
+        createdAt: this.index.createdAt,
+        nextId: this.index.nextId,
+      };
+      const headJson = JSON.stringify(head, null, 2);
+      await Bun.write(indexPath, headJson);
+      this.headBytes = Buffer.byteLength(headJson, "utf-8");
+
+      this.dirty = false;
+    } catch (err: any) {
+      // 落盘失败：保留 dirty 让下次重试，内存索引不受影响（本次工具调用照常继续）。
+      // 不向上抛，是因为 init 的迁移路径也在调 saveIndex —— 抛出去会被 init 的 catch
+      // 当成「索引损坏」而重建空索引，等于把整份历史丢掉。
+      log.warn(
+        "CHECKPOINT",
+        `索引落盘失败（保留脏标记，下次重试）: ${err?.message ?? String(err)}`,
+      );
+    }
   }
 
   /** 清理过期的其他会话目录 */
@@ -1279,7 +1608,12 @@ export class CheckpointManager {
     }
   }
 
-  /** 计算目录大小 */
+  /**
+   * 计算目录大小。
+   *
+   * P3：必须**递归**——快照本体现在在 `snapshots/` 子目录里，只统计一层的话
+   * cleanupOldSessions 看到的会是一个几百字节的 index.json，跨会话总量清理等于失效。
+   */
   private getDirSize(dir: string): number {
     let size = 0;
     try {
@@ -1289,6 +1623,8 @@ export class CheckpointManager {
         const stat = statSync(filePath);
         if (stat.isFile()) {
           size += stat.size;
+        } else if (stat.isDirectory()) {
+          size += this.getDirSize(filePath);
         }
       }
     } catch {
