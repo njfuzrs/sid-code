@@ -57,6 +57,10 @@ const FORWARDED_KEYS: Record<ForwardedKey, true> = {
   // 新接口 + bridge 的路径，丢了它交互模式又要为「记一条思考」弹确认，
   // 且构建不报错、测试也不会红（除非哨兵显式盯住它）。
   requiresPermission: true,
+  // M7：不转发会让声明「执行即阻塞等人」的工具在 dontAsk 下丢掉这道拒绝——
+  // 用户级 settings 里一条 `AskUserQuestion` 的 allow 就能把问卷弹出来，
+  // 而构建不报错、G1 也不会红（除非哨兵显式盯住 registry 带出的那一份）。
+  requiresUserInteraction: true,
   consumesAgentId: true,
   // R3：不转发会让 bash / monitor 经 bridge 注册时丢掉「我要 _toolUseId」的声明，
   // 后台通知的 `<tool-use-id>` 锚点静默消失（构建不报错、测试也不会红）。
