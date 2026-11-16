@@ -1,0 +1,3 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"think","input":{"thought":"先记一笔：这次要验证的是内部工具免确认。"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_2","name":"todo_write","input":{"todos":[{"content":"验证内部工具免确认","active_form":"正在验证内部工具免确认","status":"completed"}]}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"text","text":"两笔记账都写完了：记了一条思考，也把待办清单建好了。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}

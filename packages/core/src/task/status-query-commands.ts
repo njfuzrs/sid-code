@@ -632,7 +632,7 @@ interface LoopStructure {
  * 识别「单条、非嵌套」的循环，并把它从段列表里拆出来。
  *
  * 为什么在这里拆、而不去改 `parser.ts` 加 `for_statement` 节点：parser 是权限判定的上游
- * （`isReadOnlyCommand` / `extractPathsFromCommand` / checkpoint 共用），新增节点类型要同步
+ * （`isReadOnlyCommand` / checkpoint 共用），新增节点类型要同步
  * 每一处 switch，风险与收益不成比例；而这里只回答「是不是状态查询」，扁平段列表已经够用
  * （实测 parser 把 `for pr in 694 696 697; do gh …; done` 拆成
  * `for …` / `do gh …` / `done` 三段，`do` 粘在循环体首段前面）。

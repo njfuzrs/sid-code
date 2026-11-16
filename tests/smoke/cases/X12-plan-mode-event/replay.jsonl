@@ -1,0 +1,2 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"enter_plan_mode","input":{"topic":"冒烟验证"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"已进入计划模式。本工具的职责只是把会话切到规划态：不创建工作区，不改任何文件，也不会重建 system prompt（对标 Claude Code 的做法）。后续的代码探索、方案设计与计划文件撰写，由调用方继续完成。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
