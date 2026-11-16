@@ -18,12 +18,16 @@ export interface GoalConfig {
    * 会向模型注入一次软提醒。
    *
    * 检查时机（写注释前先看代码，别按设计稿写）：
-   * - **软提醒**：每轮在 loop.ts 的 goal 回注段判定一次（`turnsUsed` 自增之后），
-   *   首次越过 `GOAL_TURNS_NEAR_LIMIT_RATIO` 时注入一次。
-   * - **硬上限**：目前仍在 end_turn 的 `handleGoalGate` 里判定 —— 即只有模型想停的
-   *   那一轮才会被拦，连续 `tool_use` 空转时不生效（G1「每轮检查」的修法见方案
-   *   文档 §4.1，落地后这里才谈得上「每轮检查」）。在这里写「每轮检查」会造成
-   *   注释与实现不符，而注释与实现不符比没有注释更糟。
+   * - **软提醒**：每轮在 loop.ts 的 goal 回注段判定一次（`turnsUsed` 自增之后、发请求
+   *   之前），首次越过 `GOAL_TURNS_NEAR_LIMIT_RATIO` 时注入一次。放在请求前是为了让
+   *   模型在本轮开工前就知道「只剩 20%」，而不是等它想停（end_turn）时才说。
+   * - **硬上限**：每轮由 `goal/limits.ts` 的 `checkGoalHardLimits` 判定（G1，PR #881
+   *   已合入），在 AfterModel 之后、检查停止原因之前；命中时本轮若带 tool_use，先把
+   *   工具执行完再退出。
+   *
+   * 两者**刻意不共用**同一个判定点：软提醒是「请求前预告」，硬上限是「响应后拦截」，
+   * 时机语义不同，合并会让其中一个失去意义（合并到请求前则拦截不到本轮已用满的轮次，
+   * 合并到 AfterModel 则提醒晚了一整轮）。代价是每轮多一次 O(1) 比较。
    */
   defaultMaxTurns: number;
   /** reminder 回注间隔（轮次） */

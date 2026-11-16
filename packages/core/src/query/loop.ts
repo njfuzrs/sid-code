@@ -348,7 +348,17 @@ import {
   shouldWarnNearTurnLimit,
 } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
-import { handleGoalGate } from "./goal-gate.ts";
+import { handleGoalGate, emitGoalGateDecision } from "./goal-gate.ts";
+import {
+  checkGoalHardLimits,
+  buildGoalTurnsLimitMessage,
+  buildGoalLimitSummaryPrompt,
+} from "../goal/limits.ts";
+import {
+  buildBudgetLimitMessage,
+  buildBudgetWarningMessage,
+  GOAL_BUDGET_WARNING_RATIO,
+} from "../goal/budget.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
 import {
   DEFAULT_GOAL_CONFIG,
@@ -1502,6 +1512,16 @@ async function* queryLoopBody(
           `墙钟总预算 ${config.maxDurationMs}ms 已用尽（第 ${state.turnCount} 轮开始前），走强制总结出口`,
         );
         state.incompleteReason = "max_duration";
+        break;
+      }
+      // ─── /goal 硬上限命中：上一轮的工具已执行完，交还给下面的强制总结出口 ───
+      // 检查点与 deadlineAt 同位置（本轮任何工作之前）：命中后不能再发新请求，
+      // 也不能再占一格 turnCount —— 否则 num_turns 会多出一个与事实不符的数。
+      if (state.goalLimitExit) {
+        log.info(
+          "QUERY_LOOP",
+          `Goal 硬上限（${state.goalLimitExit}）已在上一轮命中，走强制总结出口`,
+        );
         break;
       }
       state.turnCount++;
@@ -5019,6 +5039,87 @@ async function* queryLoopBody(
         }
       }
 
+      // ─── /goal：硬约束每轮检查（G1 / G3 / G4）───
+      // 「还能不能继续」是确定性事实（轮次 / 预算），必须每轮都判一次；
+      // 「该不该继续」才是评估器的活，只在模型想停时才有信息量。
+      //
+      // 改动前这三项都写在 handleGoalGate 里，而它只在 isEndTurnLike 分支被调用 ——
+      // 实测一次会话里模型连续 119 轮 tool_use 空转，goal.maxTurns=150 与 tokenBudget
+      // 一次都没被检查过，上限形同虚设（2026-11-16 事故）。把上限绑在「模型想停」上，
+      // 等于上限不存在。
+      if (deps.getGoalState && !state.goalLimitExit) {
+        const activeGoal = deps.getGoalState();
+        // Plan Mode 与 Goal Gate 同口径：计划模式不执行操作，不该因 goal 预算而终止。
+        const goalInPlanMode = deps.getCurrentPermissionMode?.() === "plan";
+        if (activeGoal && activeGoal.status === "active" && !goalInPlanMode) {
+          const hardLimit = checkGoalHardLimits(activeGoal, {
+            inputTokens: response.usage?.inputTokens ?? 0,
+            outputTokens: response.usage?.outputTokens ?? 0,
+            cacheCreationTokens: response.usage?.cacheCreationInputTokens ?? 0,
+          });
+
+          if (hardLimit.kind === "turns_limited" || hardLimit.kind === "budget_limited") {
+            const source = hardLimit.kind === "turns_limited" ? "turns" : "budget";
+            state.goalLimitExit = source;
+            activeGoal.status = hardLimit.kind;
+            // 终态必须经 updateGoalState 同步：缺这一步不写 JSONL（resume 时仍显示 active）、
+            // 状态栏也不刷新 —— 与 Goal Gate 其余终态同一条约定。
+            deps.updateGoalState?.((g) => {
+              g.status = hardLimit.kind;
+            });
+            log.warn(
+              "QUERY_LOOP",
+              `Goal 硬上限命中（${source}）: turns=${activeGoal.turnsUsed}/${activeGoal.maxTurns}, ` +
+                `tokens=${activeGoal.tokensUsed}/${activeGoal.tokenBudget ?? "∞"}，本轮结束后收尾`,
+            );
+            // reason 沿用旧取值（turns_limited / budget_exceeded），不新增分桶：
+            // 既有 digest 与统计都按这个字符串分组，改名等于让历史曲线断层。
+            emitGoalGateDecision(
+              {
+                goal: activeGoal,
+                traceAppendEvent: deps.traceAppendEvent,
+                sessionId: sessionState.sessionId,
+                absoluteTurn: sessionState.getAbsoluteTurn(),
+                promptSeq,
+              },
+              source === "turns" ? "turns_limited" : "budget_exceeded",
+              false,
+              { limitSource: source, limitCheckedEveryTurn: true },
+            );
+            ctxMgr.addMessage({
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text:
+                    source === "turns"
+                      ? buildGoalTurnsLimitMessage(activeGoal)
+                      : buildBudgetLimitMessage(activeGoal),
+                },
+              ],
+            });
+            yield {
+              kind: "system",
+              level: "warning",
+              text:
+                source === "turns"
+                  ? `Goal 已达最大轮次 (${activeGoal.maxTurns})，进入收尾模式`
+                  : "Goal 预算耗尽，进入收尾模式",
+            };
+          } else if (hardLimit.kind === "budget_warning" && hardLimit.firstNotice) {
+            // 只在首次跨过告警档时提示：ratio 一旦 ≥85% 每轮都会判出 warning，
+            // 不去重就是每轮塞一条一模一样的提醒（T-G3-1）。
+            const ratio = Math.round((activeGoal.tokensUsed / (activeGoal.tokenBudget || 1)) * 100);
+            log.info("QUERY_LOOP", `Goal 预算预警: ratio=${ratio}%`);
+            ctxMgr.addMessage({
+              role: "user",
+              content: [{ type: "text", text: buildBudgetWarningMessage(activeGoal) }],
+            });
+            yield { kind: "system", level: "warning", text: `Goal 预算预警 (${ratio}%)` };
+          }
+        }
+      }
+
       // ─── 检查停止原因 ───
       // F2：end_turn 兜底——模型有时 stop_reason=end_turn 却在 content 里留下正常参数的 tool_use。
       // 此处的 tool_use 必为非空参数（空参数已被上方 F1 拦截：要么 continue 重试，要么 return）。
@@ -5113,6 +5214,15 @@ async function* queryLoopBody(
             /* trace 写入失败不阻断主循环 */
           }
         }
+      }
+      // ─── /goal 硬上限命中且本轮无工具可执行 → 直接进强制总结轮 ───
+      // 有工具的执行分支会让本轮工具正常跑完再 continue 回顶部，由顶部那条
+      // `if (state.goalLimitExit) break` 退出 —— 两条路径都保证 tool_use/tool_result
+      // 成对（G1 的 T-G1-2 就是守这个：第 N 轮正在写的文件必须落盘）。
+      // 这里不便走 isEndTurnLike 的收尾链：撞 maxTurns 时同样跳过 Stop hooks
+      // （while 条件不满足直接出循环），两者对"预算用尽"的处置保持一致。
+      if (state.goalLimitExit && !hasPendingToolUse) {
+        break;
       }
       if (isEndTurnLike) {
         // ─── S1 L1：end_turn 形态事实（每次都落，零行为）───
@@ -5746,15 +5856,9 @@ async function* queryLoopBody(
                 minTurnsBeforeEval: effectiveGoalConfig.minTurnsBeforeEval,
               };
 
-              const lastTurnUsage = {
-                inputTokens: response.usage?.inputTokens ?? 0,
-                outputTokens: response.usage?.outputTokens ?? 0,
-                cacheCreationTokens: response.usage?.cacheCreationInputTokens ?? 0,
-              };
               const goalGateOutput = await handleGoalGate({
                 goal,
                 messages: ctxMgr.getMessages(),
-                turnUsage: lastTurnUsage,
                 evalConfig,
                 goalConfig: effectiveGoalConfig,
                 blockedDetector: goalBlockedDetector,
@@ -5798,13 +5902,20 @@ async function* queryLoopBody(
                 // 「预算告警续跑」按 `LoopTransition.type` 统计恒为 0（告警文案本身
                 // 一直在进对话，缺的只是可观测接线）。
                 //
+                // 2026-11-16：预算判定移到每轮硬约束检查后，这里**按当前 ratio 现算**，
+                // 不再从 handleGoalGate 拿 budgetWarning —— 阈值与检查侧共用
+                // GOAL_BUDGET_WARNING_RATIO，避免两处各写一个 0.85 后静默漂移。
+                //
                 // ⚠️ 必须**替换**而不是追加一条事件：一次 continue 只对应一条 transition，
                 // 追加会让「按 type 数续跑次数」的分母凭空多一份 —— 分母口径一变，
                 // 曲线整体平移。所以 `goal_gate_retry` 与 `goal_budget_warning`
                 // 在同一次 continue 上互斥，两者之和才是「Goal 闸门续跑总数」。
+                const goalBudgetWarned =
+                  !!goal.tokenBudget &&
+                  goal.tokensUsed / goal.tokenBudget >= GOAL_BUDGET_WARNING_RATIO;
                 setTransition(
                   state,
-                  { type: result.budgetWarning ? "goal_budget_warning" : "goal_gate_retry" },
+                  { type: goalBudgetWarned ? "goal_budget_warning" : "goal_gate_retry" },
                   deps,
                   sessionState.sessionId,
                 );
@@ -7140,19 +7251,27 @@ async function* queryLoopBody(
   // 与该字段「唯一写入点」的约定一致，避免两处各写一份而分叉）。
   const deadlineExit =
     state.incompleteReason === "max_duration" && state.turnCount < state.maxTurns;
+  // G1/G3：goal 的轮次或 token 预算已在**某一轮中途**（每轮检查）判定耗尽。
+  // 与上面两条同出口、但**不写 incompleteReason** —— `DoneIncompleteReason` 是闭集，
+  // 其消费方是 SDK（`error_max_turns` 等），goal 预算用尽不是「本条消息没跑完」而是
+  // 「目标的预算用完了」，混进闭集会让 SDK 提示用户去调 `--max-turns`。
+  // 归因走 done.goalLimitExceeded（与 budgetExceeded / structuredOutputDelivered 同范式）。
+  const goalLimitExit = state.goalLimitExit;
   // 与其它出口同一写入点：下方 emitTurnCompleteHere 读 state.incompleteReason
   if (stalledExit) state.incompleteReason = "stalled";
   if (
-    (state.turnCount >= state.maxTurns || stalledExit || deadlineExit) &&
+    (state.turnCount >= state.maxTurns || stalledExit || deadlineExit || goalLimitExit) &&
     !deps.getAbortSignal?.()?.aborted
   ) {
     log.info(
       "QUERY_LOOP",
       stalledExit
         ? "停滞升级 L2：请求强制总结（现状 / 卡点 / 可选方案）"
-        : deadlineExit
-          ? `T10b：墙钟总预算 ${config.maxDurationMs}ms 已用尽（第 ${state.turnCount} 轮后），请求强制总结`
-          : `P1-1：达到最大轮次 ${state.maxTurns}，请求强制总结`,
+        : goalLimitExit
+          ? `Goal 硬上限（${goalLimitExit}）命中：请求强制总结`
+          : deadlineExit
+            ? `T10b：墙钟总预算 ${config.maxDurationMs}ms 已用尽（第 ${state.turnCount} 轮后），请求强制总结`
+            : `P1-1：达到最大轮次 ${state.maxTurns}，请求强制总结`,
     );
     ctxMgr.addMessage({
       role: "user",
@@ -7161,11 +7280,15 @@ async function* queryLoopBody(
           type: "text",
           text: stalledExit
             ? buildStallSummaryPrompt(deps.getGoalState?.()?.objective)
-            : deadlineExit
-              ? // 与 maxTurns 版提示同构，但**不谎称是轮数**：说「时间预算」，
-                // 否则模型会以为自己还能再跑几轮、总结里写「下一轮继续」。
-                "本次运行的时间预算已用尽，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。"
-              : "你已达到最大轮次限制，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。",
+            : goalLimitExit
+              ? // 与 maxTurns 版同构，但**不谎称是轮数**：goal 轮次用尽与主循环
+                // maxTurns 是两个预算（前者 /goal turns 可调），说错会让用户白调参数。
+                buildGoalLimitSummaryPrompt(deps.getGoalState?.() ?? ({} as any), goalLimitExit)
+              : deadlineExit
+                ? // 与 maxTurns 版提示同构，但**不谎称是轮数**：说「时间预算」，
+                  // 否则模型会以为自己还能再跑几轮、总结里写「下一轮继续」。
+                  "本次运行的时间预算已用尽，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。"
+                : "你已达到最大轮次限制，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。",
         },
       ],
     });
@@ -7375,6 +7498,10 @@ async function* queryLoopBody(
     turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
     // 停滞叫停不是「正常说完」：headless 据此不续等后台任务，SDK 映射 error_stalled
     ...(state.incompleteReason ? { incompleteReason: state.incompleteReason } : {}),
+    // G1/G3 归因：goal 的轮次/预算上限用尽（显式声明字段，不挤 `incompleteReason` 闭集）。
+    // 与 budgetExceeded 同范式：那个闭集的消费方是 SDK，会把任何成员映射成具体错误码，
+    // 而「目标预算用完」该让用户看到的是 `/goal turns` / `/goal budget`，不是 `--max-turns`。
+    ...(state.goalLimitExit ? { goalLimitExceeded: { source: state.goalLimitExit } } : {}),
   };
 }
 

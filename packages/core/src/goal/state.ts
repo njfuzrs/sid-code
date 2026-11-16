@@ -69,6 +69,15 @@ export interface GoalState {
    * 反序列化按 `=== true` 判定，旧会话缺这个字段时视为未提醒（那时也确实没提醒过）。
    */
   softLimitWarned?: boolean;
+  /**
+   * 预算告警（≥85%）是否已提示过。
+   *
+   * 「硬约束每轮检查」之后，预算进入告警档的每一轮都会重新判定出 `warning`，
+   * 没有这个标记就是每轮往对话里塞一条一模一样的提醒。挂在 `GoalState` 而不是
+   * `LoopState`：后者每条用户消息重建，而 goal 跨消息累计 —— 挂错了同一档预算
+   * 会在第二条消息里再提示一遍（模板与本字段同源，见 good/limits.ts）。
+   */
+  budgetWarningEmitted?: boolean;
   /** 创建时间戳 */
   createdAt: number;
   /** 最后更新时间戳 */
@@ -169,6 +178,7 @@ export function deserializeGoalState(json: string): GoalState {
     turnsUsed: parsed.turnsUsed ?? 0,
     maxTurns: parsed.maxTurns ?? DEFAULT_GOAL_CONFIG.defaultMaxTurns,
     softLimitWarned: parsed.softLimitWarned === true,
+    budgetWarningEmitted: parsed.budgetWarningEmitted === true,
     createdAt: parsed.createdAt ?? Date.now(),
     updatedAt: parsed.updatedAt ?? Date.now(),
     lastEvalReason: parsed.lastEvalReason,
