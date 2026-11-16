@@ -826,16 +826,13 @@ export interface SubagentStartInput extends HookInput {
   /** 工作目录落在隔离 worktree（`<主仓>/.sid-code/worktrees/<name>`）内时为 "worktree"。
    *  轨迹按它筛出隔离子代理，不必再回父会话 raw.jsonl 找派发入参。 */
   isolation?: "worktree";
-  /** 委派形态：isolated=普通隔离子代理；fork=继承父对话尾部（`sub_agent` 的 `fork` 参数，
-   *  **与 `forked-agent.ts` 的后台辅助任务无关**，后者的 `caller: agent:fork` /
-   *  `agent_id: fork:*` 是记忆类任务）；team=swarm 团队成员。
-   *  此前「这次委派是隔离还是 fork」在轨迹里答不上来——fork 只有一行日志。 */
-  delegation_mode?: "isolated" | "fork" | "team";
-  /** fork 时：从父对话尾部继承的消息条数（= forkMessages.length）。非 fork 缺省 */
+  /** 委派形态：isolated=普通隔离子代理；resume=带预置历史续跑（send_message 的 sidechain
+   *  真恢复）；team=swarm 团队成员。
+   *  ⚠️ 2026-11-07 ~ 11-16 的轨迹里还可能出现 `fork`（`sub_agent` 的 fork 参数，06H1 T7 已删除；
+   *  那段时间 send_message 续接也被记成 fork）。读历史数据时两者都要认。 */
+  delegation_mode?: "isolated" | "resume" | "team";
+  /** resume 时：预置的历史消息条数（= forkMessages.length）。其余形态缺省 */
   inherited_messages?: number;
-  /** fork 时：父对话总消息条数。与 inherited_messages 之差 = 未继承的前缀条数，
-   *  用于判断这次 fork 实际带过来多少上下文（继承的是尾部窗口，不是全部）。 */
-  parent_messages?: number;
 }
 
 /** SubagentStop 输入（携带子代理实际用量，供遥测单独计费 / 按 model 分类） */
