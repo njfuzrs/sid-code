@@ -183,6 +183,21 @@ export type QueryLoopYield =
        * （与 budgetExceeded / max_turns 同一条反模式），所以判据必须是这条显式声明。
        */
       structuredOutputDelivered?: true;
+      /**
+       * G1/G3：这次 done 是 **goal 的轮次/预算上限用尽**，不是模型说完了。
+       *
+       * 与 `budgetExceeded` 同范式（显式声明字段），理由也同型：末轮 `stop_reason`
+       * 可能是 `tool_use`（工具刚跑完就被叫停），不声明就会被 collector 的兜底桶
+       * 记成 `user_interrupt`——而没有任何人中断过。
+       *
+       * 不挤进 `incompleteReason` 闭集：那个闭集的消费方是 SDK，会把成员统一映射成
+       * 具体错误码（`error_max_turns` 等）。goal 预算用尽该让用户看到的是
+       * `/goal turns` / `/goal budget`，不是 `--max-turns`。
+       */
+      goalLimitExceeded?: {
+        /** 哪个预算用尽。`turns` → `/goal turns`；`budget` → `/goal budget`。 */
+        source: "turns" | "budget";
+      };
     };
 
 /** `kind: "done"` 上「不是正常说完」的闭集。新增取值必须同步 message-converter。 */
@@ -797,6 +812,18 @@ export interface LoopState {
    * 两处各写一份必然分叉（此前 TurnComplete 877 条里 0 条带该字段）。
    */
   incompleteReason?: DoneIncompleteReason;
+  /**
+   * goal 的硬上限（轮次 / token 预算）已命中：本轮工具执行完后不再发新请求，
+   * 跳出主循环走强制总结出口（与 `maxTurns` / `stallStopRequested` / `deadlineAt` 同一个出口）。
+   *
+   * 写成 `"turns" | "budget"` 而非 boolean：它同时是 `done.goalLimitExceeded.source`
+   * 的归因来源 —— 两者让用户做的事不同（`/goal turns <n>` vs `/goal budget <n>`），
+   * 合成一个 boolean 之后用户只能看到"停了"却不知道该调哪个。
+   *
+   * 由 `goal/limits.ts` 的每轮检查置位（2026-11-16：此前上限只在 end_turn 被检查，
+   * 模型连续 tool_use 空转时形同虚设）。
+   */
+  goalLimitExit?: "turns" | "budget";
 }
 
 /**
