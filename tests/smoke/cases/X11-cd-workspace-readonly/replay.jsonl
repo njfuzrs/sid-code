@@ -1,0 +1,3 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"bash","input":{"command":"cd ${CASE_ROOT} && ls","description":"看工作区文件"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_2","name":"bash","input":{"command":"cd ${CASE_ROOT} && git status --short","description":"看 git 状态"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"text","text":"工作区干净，只有一个文件。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}

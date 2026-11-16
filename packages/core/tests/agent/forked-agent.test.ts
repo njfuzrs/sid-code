@@ -479,7 +479,10 @@ describe("缺陷 7：fork 工具定义不按 canUseTool 裁剪（prompt cache �
     const extract = buildExtractPrompt("(空)");
     expect(extract).toContain("不要验证");
     expect(extract).toMatch(/不要跑 git/);
-    expect(buildDreamPrompt("(空)")).toContain("不要为核实去查项目");
+    // 「不要为 X 去查项目」是判据本体，X 的具体措辞会随方案演进（本 PR 把「核实」
+    // 放宽成「验证某条结论是否仍然成立」，同时允许只读核对锚点路径）。
+    // 这里匹配结构而不是整句，否则每次改文案都要同步一次断言。
+    expect(buildDreamPrompt("(空)")).toMatch(/不要为「[^」]+」去查项目/);
   });
 });
 
@@ -538,6 +541,19 @@ describe("createSessionMemoryPermissions", () => {
 describe("hasMemoryWritesSince / extractWrittenPaths", () => {
   const memDir = "/tmp/sid-mem-dir";
 
+  /** 一次成功的工具结果（执行器正常返回时不写 `is_error`） */
+  const ok = (id: string): Message => ({
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: id, content: "ok" }],
+  });
+  /** 一次被拒的工具结果：闸门拒绝返回 `is_error: true`，而 tool_use 仍留在 assistant 消息里 */
+  const denied = (id: string): Message => ({
+    role: "user",
+    content: [
+      { type: "tool_result", tool_use_id: id, content: "错误: 该写入被闸门拒绝", is_error: true },
+    ],
+  });
+
   test("检测 save_memory 调用", () => {
     const messages: Message[] = [
       { role: "user", content: [{ type: "text", text: "记住这个" }] },
@@ -547,6 +563,7 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
           { type: "tool_use", id: "t1", name: "save_memory", input: { key: "k", value: "v" } },
         ],
       },
+      ok("t1"),
     ];
     expect(hasMemoryWritesSince(messages, memDir)).toBe(true);
   });
@@ -558,6 +575,7 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
         role: "assistant",
         content: [{ type: "tool_use", id: "t1", name: "read", input: { file_path: "x" } }],
       },
+      ok("t1"),
     ];
     expect(hasMemoryWritesSince(messages, memDir)).toBe(false);
   });
@@ -569,6 +587,7 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
         role: "assistant",
         content: [{ type: "tool_use", id: "t1", name: "write", input: { file_path: fp } }],
       },
+      ok("t1"),
     ];
     expect(hasMemoryWritesSince(mk(`${memDir}/feedback_x.md`), memDir)).toBe(true);
     expect(hasMemoryWritesSince(mk(`${memDir}-backup/notes.md`), memDir)).toBe(false);
@@ -590,6 +609,7 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
           },
         ],
       },
+      ok("t1"),
     ];
     expect(extractWrittenPaths(messages, memDir)).toEqual(["coding_style"]);
   });
@@ -608,6 +628,7 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
           },
         ],
       },
+      ok("t1"),
       {
         role: "assistant",
         content: [
@@ -619,11 +640,94 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
           },
         ],
       },
+      ok("t2"),
     ];
     const raw = extractWrittenPaths(messages, memDir);
     expect(raw).toEqual(["publish-preview-history-api-doc", "publish-preview-history-api-doc"]);
     // 调用侧（extractor.ts）用 [...new Set(...)] 去重，最终提醒文案只列一次
     expect([...new Set(raw)]).toEqual(["publish-preview-history-api-doc"]);
+  });
+
+  // ─── §8.5 口径：只计「真正落盘」，不是「发起过写入」 ───
+
+  test("被拒的 save_memory 不算写入（is_error 的 tool_result）", () => {
+    // P0-2 原话闸门拒绝时返回 is_error，但 assistant 消息里的 tool_use 照样在。
+    // 旧实现只看 tool_use，于是遥测 written 与「已保存 N 条记忆」文案都会说错。
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "归档一下" }] },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "save_memory",
+            input: { key: "archive_with_attachment", value: "先归档再移附件" },
+          },
+        ],
+      },
+      denied("t1"),
+    ];
+    expect(extractWrittenPaths(messages, memDir)).toEqual([]);
+    expect(hasMemoryWritesSince(messages, memDir)).toBe(false);
+  });
+
+  test("被拒的 write 到记忆目录不算写入", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "q" }] },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "write",
+            input: { file_path: `${memDir}/feedback_x.md` },
+          },
+        ],
+      },
+      denied("t1"),
+    ];
+    expect(extractWrittenPaths(messages, memDir)).toEqual([]);
+    expect(hasMemoryWritesSince(messages, memDir)).toBe(false);
+  });
+
+  test("没有配对 tool_result 的调用不算（fork 触顶 maxTurns / 超时中断）", () => {
+    // 最后那条 tool_use 根本没执行，把它当写入是纯误报。
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "q" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "t1", name: "save_memory", input: { key: "k", value: "v" } },
+        ],
+      },
+    ];
+    expect(extractWrittenPaths(messages, memDir)).toEqual([]);
+    expect(hasMemoryWritesSince(messages, memDir)).toBe(false);
+  });
+
+  test("成功与失败混合时只列成功的", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "q" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "t1", name: "save_memory", input: { key: "kept", value: "v" } },
+          {
+            type: "tool_use",
+            id: "t2",
+            name: "save_memory",
+            input: { key: "rejected", value: "v" },
+          },
+        ],
+      },
+      ok("t1"),
+      denied("t2"),
+    ];
+    expect(extractWrittenPaths(messages, memDir)).toEqual(["kept"]);
+    // 只要有一条成功就算「主代理写过」，整轮提取仍然跳过
+    expect(hasMemoryWritesSince(messages, memDir)).toBe(true);
   });
 });
 

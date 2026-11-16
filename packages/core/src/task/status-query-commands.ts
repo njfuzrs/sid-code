@@ -632,7 +632,7 @@ interface LoopStructure {
  * 识别「单条、非嵌套」的循环，并把它从段列表里拆出来。
  *
  * 为什么在这里拆、而不去改 `parser.ts` 加 `for_statement` 节点：parser 是权限判定的上游
- * （`isReadOnlyCommand` / `extractPathsFromCommand` / checkpoint 共用），新增节点类型要同步
+ * （`isReadOnlyCommand` / checkpoint 共用），新增节点类型要同步
  * 每一处 switch，风险与收益不成比例；而这里只回答「是不是状态查询」，扁平段列表已经够用
  * （实测 parser 把 `for pr in 694 696 697; do gh …; done` 拆成
  * `for …` / `do gh …` / `done` 三段，`do` 粘在循环体首段前面）。
@@ -753,10 +753,21 @@ function loopSubject(
  * 查询，但它表达的是「等这条命令成功」而不是轮询，拦它没有意义（也不该拦）。
  */
 function matchLoopQuery(loop: LoopStructure, heredocBody?: string): StatusQueryMatch | null {
-  // 循环外：`cd …` / `sleep …` 这类，必须无害
+  // 循环外：`cd …` / `sleep …` 这类必须无害；**查询段与只读过滤段也允许**（R5，2026-11-15）。
+  // 之前只允许无害段，于是 `gh pr view 1; for n in …; do gh pr view $n; done`
+  // （真实轨迹 4 条）整条判 null —— 与主判据 2「查询段之前也可以是查询」
+  // （`gh pr status && gh pr checks 1`）自相矛盾，且失败方向是漏拦。
+  // 其余段（写操作 / 表外命令）照旧一律放行，安全边界不放松。
+  const outsideQueries: string[] = [];
   for (const seg of loop.outside) {
     if (!seg.command) return null;
     if (isHarmlessSegment(seg)) continue;
+    if (isReadonlyFilter(seg, heredocBody)) continue;
+    if (hitSegment(seg)) {
+      // 进签名：循环外查的对象/字段不同，输出形态就不同，共享 memo 会互相污染。
+      outsideQueries.push(`${seg.command} ${seg.args.join(" ")}`.trim());
+      continue;
+    }
     return null;
   }
   if (!loop.body || loop.body.length === 0) return null;
@@ -790,7 +801,8 @@ function matchLoopQuery(loop: LoopStructure, heredocBody?: string): StatusQueryM
     kind: first.kind,
     family: first.family,
     subject,
-    signature: `${subject}\x1f${bodies.join("; ")}`.trim(),
+    // 循环外的查询段排在前面（它们先于循环执行）；为空时行为与之前完全一致。
+    signature: `${subject}\x1f${[...outsideQueries, ...bodies].join("; ")}`.trim(),
   };
 }
 
@@ -804,7 +816,8 @@ function matchLoopQuery(loop: LoopStructure, heredocBody?: string): StatusQueryM
  * 2. **整条命令不含写操作**：其余每段都必须是「命中查询表」、纯过滤命令（只允许在查询段之后）
  *    或 `HARMLESS_COMMANDS`；有任何一个不认识的就放行（`gh pr checks 1 && gh pr merge 1`、
  *    `git push` 这类都会被这一条挡掉）。
- * 3. 没有写重定向（`> file`）、命令是单行；复合命令里的循环按循环体展开（见 `findLoop`）。
+ * 3. 没有写重定向（`> file`）；引号外的换行由 `flattenCommand` 保留成段分隔（不再要求
+ *    命令是单行），引号内的换行原样保留；复合命令里的循环按循环体展开（见 `findLoop`）。
  *
  * ⚠️ **为什么不直接复用 `isReadOnlyCommand`**：那个函数是给**权限放行**用的，白名单刻意窄
  * （`gh` 只认 `issue`/`pr`/`repo` 三组，`curl` 恒判非只读）。拿它做本判据会把
@@ -899,8 +912,9 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
 /**
  * 从 monitor 脚本里扫出它覆盖的命令族（D13）。
  *
- * 为什么需要单独一个函数：`matchStatusQuery` 只认**单行、单条**状态查询
- * （`flattenCommand` 见到换行直接放弃），而 monitor 的 command 是一个 shell 脚本，
+ * 为什么需要单独一个函数：`matchStatusQuery` 每次只认**一条**状态查询
+ * （`flattenCommand` 把引号外的换行保留成段分隔、逐段判定，一条脚本里多个查询只取命中段），
+ * 而 monitor 的 command 是一个 shell 脚本，
  * 查询通常裹在 `s=$(gh pr checks "$pr" --json ...)` 或 `do ... done` 循环里。
  *
  * 扫描口径刻意**保守**（扫不出 = 视为不覆盖 = 回到 120s 探测窗口）：

@@ -2008,16 +2008,16 @@ export async function main(): Promise<void> {
     const toolSearchTool = new ToolSearchTool(toolRegistry);
     toolRegistry.register(toolSearchTool);
 
-    // 注册后台任务工具（运行态 shell/agent/workflow：bg_task_get/bg_task_list/task_output/task_stop）
+    // 注册后台任务工具（运行态 shell/agent/workflow：bg_task_list/task_output/task_stop）
+    // D5（T8）：`bg_task_get` 已并入 `task_output`，旧名由注册表别名表承接
+    // （`tool/tool-name-aliases.ts` 的 RETIRED_INTERNAL_TOOL_NAMES），不再单独注册。
     const { TaskOutputTool } = await import("@sid-code/core/tool/task-output.ts");
     const { TaskStopTool } = await import("@sid-code/core/tool/task-stop.ts");
     const { TaskListTool } = await import("@sid-code/core/tool/task-list.ts");
-    const { TaskGetTool } = await import("@sid-code/core/tool/task-get.ts");
     const { SendMessageTool } = await import("@sid-code/core/tool/send-message.ts");
     toolRegistry.register(new TaskOutputTool());
     toolRegistry.register(new TaskStopTool());
     toolRegistry.register(new TaskListTool());
-    toolRegistry.register(new TaskGetTool());
     toolRegistry.register(new SendMessageTool(providerRegistry, toolRegistry));
 
     // 注册 monitor 工具（M1：按行事件监控外部状态，等待期前台零请求）。

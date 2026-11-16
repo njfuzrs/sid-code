@@ -13,6 +13,7 @@ import { aggregatePerfDetail, type PerfDetail } from "@sid-code/core/trace/perf-
 import { aggregateSessionMetrics, percentile } from "@sid-code/core/trace/digest.ts";
 import { aggregateLatencyByModel } from "@sid-code/core/trace/latency-by-model.ts";
 import {
+  buildByVersion,
   buildSessionPerf,
   fmtDuration,
   judgeBottleneck,
@@ -20,9 +21,11 @@ import {
   type SessionPerfInput,
   type SessionPerfReport,
 } from "@sid-code/core/trace/perf-report.ts";
+import type { SessionIndexEntry } from "@sid-code/core/trace/session-index.ts";
 import {
   bar,
   distCells,
+  renderByVersion,
   renderSessionPerf,
   wrapLines,
   NARROW_WIDTH,
@@ -329,5 +332,135 @@ describe("T-B10 --json", () => {
 describe("T-B11 整帧快照（人工对照方案 4.2 版式核过）", () => {
   test("取证会话 100 列无色渲染", () => {
     expect(renderSessionPerf(report, { width: 100, color: false })).toMatchSnapshot();
+  });
+});
+
+// ── 跨会话「按版本」视图（D14 / D12 / A8）──
+//
+// 方案 5.2 表只给到 T-B1…T-B11，覆盖的全是**会话视图**；`--by-version` 的三处改动
+// （D14 两列、D12 incomplete 脚注、A8 旧口径提示）当时只有实现、没有断言，
+// 5.3 第 6 步要求的端到端取证也没留输出。坏了不会有任何东西变红。
+//
+// 这里用**合成的索引行自己造数据**（不依赖本机有没有历史版本）把三处锁成回归：
+// 造数据而不是等真实数据，是因为这三项判据是开关型的（出没出那两列、加没加脚注），
+// 只靠碰巧攒够某个 incomplete 占比 >30% 的版本，可能永远等不到。
+
+/** 合成一条 `session-index.jsonl` 行。只写判据用得到的字段，其余落最小合法值 */
+function idxRow(over: Partial<SessionIndexEntry> & { session_id: string }): SessionIndexEntry {
+  return {
+    ts: 1_700_000_000,
+    model: "m1",
+    exit_status: "end_turn",
+    duration_ms: 60_000,
+    turns: 3,
+    total_steps: 10,
+    cost_usd: 0,
+    tokens_sent: 1000,
+    tokens_received: 500,
+    ttft_n: 1,
+    e2e_n: 1,
+    real_errors: 0,
+    anomalies_count: 0,
+    pathological: [],
+    compactions: 0,
+    defense_triggered: false,
+    ...over,
+  };
+}
+
+describe("D14 按版本视图补「生成 P95」「工具/会话 P50」两列", () => {
+  const versionReport = buildByVersion(
+    [
+      idxRow({
+        session_id: "a",
+        app_version: "0.1.616",
+        ttft_p50: 1000,
+        ttft_p95: 2000,
+        gen_p95: 8000,
+        tps: 30,
+        e2e_p95: 60_000,
+        tool_duration_ms: 4000,
+        perf_scope: "main",
+      }),
+    ],
+    10,
+  );
+
+  test("非窄终端出这两列，值取自索引行的 gen_p95 / tool_p50", () => {
+    const text = strip(renderByVersion(versionReport, { width: 200, color: false }));
+    expect(text).toContain("生成 P95");
+    expect(text).toContain("工具/会话 P50");
+    expect(text).toContain("8.0s"); // gen_p95 = 8000ms
+    expect(text).toContain("4.0s"); // tool_duration_ms = 4000ms
+  });
+
+  test("窄终端省略这两列（否则会折行挤乱表格）", () => {
+    const text = strip(renderByVersion(versionReport, { width: 60, color: false }));
+    expect(text).not.toContain("生成 P95");
+    expect(text).not.toContain("工具/会话 P50");
+  });
+
+  test("整列无样本时给「—」并说明是当时没该字段，不是 0", () => {
+    const noTps = buildByVersion(
+      [idxRow({ session_id: "b", app_version: "0.1.605", perf_scope: "main" })],
+      10,
+    );
+    const text = strip(renderByVersion(noTps, { width: 200, color: false }));
+    expect(text).toContain("0.1.605");
+    expect(text).toContain("不是 0");
+  });
+});
+
+describe("D12 incomplete 占比 >30% 的版本加脚注", () => {
+  test("50% 出脚注且报出分子分母；25% 不出", () => {
+    const versionReport = buildByVersion(
+      [
+        // 0.1.607：1 收尾 + 1 incomplete = 50% > 30% → 该出脚注
+        idxRow({ session_id: "a", app_version: "0.1.607", perf_scope: "main" }),
+        idxRow({ session_id: "b", app_version: "0.1.607", exit_status: "incomplete" }),
+        // 0.1.616：3 收尾 + 1 incomplete = 25% ≤ 30% → 不该出
+        idxRow({ session_id: "c", app_version: "0.1.616", perf_scope: "main" }),
+        idxRow({ session_id: "d", app_version: "0.1.616", perf_scope: "main" }),
+        idxRow({ session_id: "e", app_version: "0.1.616", perf_scope: "main" }),
+        idxRow({ session_id: "f", app_version: "0.1.616", exit_status: "incomplete" }),
+      ],
+      10,
+    );
+    const text = strip(renderByVersion(versionReport, { width: 200, color: false }));
+    expect(text).toContain("0.1.607 有 1/2 行未收尾");
+    expect(text).toContain("样本偏少");
+    expect(text).not.toContain("0.1.616 有");
+  });
+
+  test("incomplete 行不计入会话数（被 settled() 剔除）", () => {
+    const versionReport = buildByVersion(
+      [
+        idxRow({ session_id: "a", app_version: "0.1.700", perf_scope: "main" }),
+        idxRow({ session_id: "b", app_version: "0.1.700", exit_status: "incomplete" }),
+      ],
+      10,
+    );
+    expect(versionReport.versions[0]!.sessions).toBe(1);
+    expect(versionReport.versions[0]!.incompleteSessions).toBe(1);
+  });
+});
+
+describe("A8 按版本视图点名旧口径版本", () => {
+  test("有旧口径行时点名版本并说明不可比；全是主循环时不出现", () => {
+    const legacy = buildByVersion(
+      [idxRow({ session_id: "a", app_version: "0.1.610" })], // 无 perf_scope = 旧口径
+      10,
+    );
+    const legacyText = strip(renderByVersion(legacy, { width: 200, color: false }));
+    expect(legacyText).toContain("0.1.610 含旧口径会话");
+    expect(legacyText).toContain("不可直接比");
+
+    const current = buildByVersion(
+      [idxRow({ session_id: "b", app_version: "0.1.616", perf_scope: "main" })],
+      10,
+    );
+    expect(strip(renderByVersion(current, { width: 200, color: false }))).not.toContain(
+      "含旧口径会话",
+    );
   });
 });

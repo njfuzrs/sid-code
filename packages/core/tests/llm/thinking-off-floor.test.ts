@@ -42,6 +42,7 @@ import {
   resolveEffortCapability,
   getDisplayedEffort,
   resolveThinking,
+  type EffortSetting,
 } from "@sid-code/core/llm/effort.ts";
 import {
   __resetCapabilityCacheForTest,
@@ -63,6 +64,23 @@ function wireBody(model: string, thinking: SendParams["thinking"], effort?: stri
 
 function cap(model: string) {
   return resolveEffortCapability({ model, provider: "openai", baseURL: "https://gw.example/v1" });
+}
+
+/**
+ * 主循环端到端：capability applier 产出 → 真实线格式层序列化。
+ *
+ * 这是 §5.1 要求的那条链（`applyToSendParams` 之后再进线格式层）。此前 applier 产出
+ * 与线格式层消费是两段独立断言，中间「applier 写进 params 的取值，线格式层会不会
+ * 按自己的规则又改回去」这一环没人守 —— 而那正是「判定散在多处、改一处漏一处」的
+ * 复发位置（本次缺陷的病根就是这个形态）。
+ */
+function mainLoopBody(model: string, effort: EffortSetting, thinking: boolean): any {
+  const params: SendParams = { model, wireModel: model, messages: [], maxTokens: 0 };
+  cap(model).applyToSendParams(params, effort, thinking);
+  const body: any = {};
+  const provider = new OpenAIProvider("test-key", model, "https://gateway.example.com/v1");
+  (provider as any).applyDeepSeekThinking(body, params, model);
+  return body;
 }
 
 let savedConfigDir: string | undefined;
@@ -247,6 +265,17 @@ describe("③ OpenAI 线格式：GLM 关思考 → enabled + 最低档", () => {
     expect(body.reasoning_effort).toBe("low");
   });
 
+  test("网关改名 / 日期快照名同样兜底（最终请求体，不止判定入口）", () => {
+    // §5.1 这两行要求的是「同上」= 最终请求体。只断言 `thinkingOffEffortFloor` 返回 low
+    // 漏掉了「线格式层真的把它写进 body」这一层：模糊查找命中后必须能走到同一个
+    // `alwaysThinking` 分支，否则判定对了、发出去的仍是服务端默认 max。
+    for (const m of ["glm-5.3-0815", "origin-glm-5.3"]) {
+      const body = wireBody(m, SIDE_CALL_NO_THINK);
+      expect(body.thinking, `${m} 应下发 enabled`).toEqual({ type: "enabled" });
+      expect(body.reasoning_effort, `${m} 应实发 low`).toBe("low");
+    }
+  });
+
   test("`off` 覆盖用户显式档位：/think off + /effort max → 实发 low", () => {
     const body = wireBody("glm-5.3", { enabled: false, budgetTokens: 0 }, "max");
     expect(body.thinking).toEqual({ type: "enabled" });
@@ -266,8 +295,10 @@ describe("③ OpenAI 线格式：GLM 关思考 → enabled + 最低档", () => {
 });
 
 describe("③ 无 thinking.type 开关字段的族：只发最低档", () => {
-  test("Kimi K3 / Grok 4.7 / o3-mini 关思考 → reasoning_effort: low", () => {
-    for (const model of ["kimi-k3", "grok-4.7", "o3-mini"]) {
+  test("Kimi K3 / Grok 4.5 / Grok 4.7 / o3-mini 关思考 → reasoning_effort: low", () => {
+    // grok-4.5 单列：它官方无 xhigh（档位表 low/medium/high），与 4.6/4.7 不是同一份数据，
+    // 不能靠 4.7 代表 —— §5.1 表格点名要求这一行。
+    for (const model of ["kimi-k3", "grok-4.5", "grok-4.7", "o3-mini"]) {
       const body = wireBody(model, SIDE_CALL_NO_THINK);
       expect(body.reasoning_effort, `${model}`).toBe("low");
       // 这些族本来就没有 thinking 字段，兜底不得凭空造一个
@@ -281,9 +312,13 @@ describe("③ 无 thinking.type 开关字段的族：只发最低档", () => {
 });
 
 describe("④ Anthropic 线格式：恒思考 → adaptive + 最低档", () => {
-  const sendParams = (thinking: SendParams["thinking"], effort?: string): SendParams => ({
-    model: "claude-opus-5-5",
-    wireModel: "claude-opus-5-5",
+  const sendParams = (
+    thinking: SendParams["thinking"],
+    effort?: string,
+    model = "claude-opus-5-5",
+  ): SendParams => ({
+    model,
+    wireModel: model,
     messages: [],
     maxTokens: 1024,
     thinking,
@@ -300,6 +335,19 @@ describe("④ Anthropic 线格式：恒思考 → adaptive + 最低档", () => {
     // dropEffort 必须为 false：正是要让最低档发出去
     expect(wire.dropEffort).toBe(false);
     // ⚠ 不能是 manual 的 budget_tokens（side-call 没有 outputConfig.thinkingType，会静默退回 manual）
+    expect(wire.param).not.toHaveProperty("thinking.budget_tokens");
+  });
+
+  test("Claude Sonnet 5.5 同族走同一条路（不能只由 Opus 代表）", () => {
+    // §5.1 表格把 opus / sonnet 列成两行：两者在注册表里是独立条目、各自登记档位表，
+    // 同族不代表同数据，所以各断言一次（o4-mini 那种「同族同数据」才可由代表覆盖）。
+    const wire = buildThinkingWire(
+      sendParams({ enabled: false, budgetTokens: 0 }, undefined, "claude-sonnet-5-5"),
+      "claude-sonnet-5-5",
+    );
+    expect(wire.param).toEqual({ thinking: { type: "adaptive" } });
+    expect(wire.effortFloor).toBe("low");
+    expect(wire.dropEffort).toBe(false);
     expect(wire.param).not.toHaveProperty("thinking.budget_tokens");
   });
 
@@ -374,5 +422,16 @@ describe("⑤ capability 层：applier 与展示都读同一个兜底档", () =>
     expect(c.thinkingOffFloor).toBe("low");
     // 它是无开关字段的族：不支持 thinking.type，但档位照样能压到最低
     expect(c.supportsThinkingToggle).toBe(false);
+  });
+
+  test("主循环端到端：applier 产出经线格式层 → thinking:enabled + low", () => {
+    // 上面几条是分开断言的（capability 产出 / 线格式层消费）。这一条把它们串起来：
+    // applier 写进 params 的取值必须被线格式层原样发出，不能被它自己的规则改回去 ——
+    // 「两处各算一次、改一处漏一处」正是本次缺陷的病根。
+    const body = mainLoopBody("glm-5.3", "max", false);
+    expect(body.thinking).toEqual({ type: "enabled" });
+    expect(body.reasoning_effort).toBe("low");
+    // 同一链路开思考时兜底不得污染用户档位
+    expect(mainLoopBody("glm-5.3", "max", true).reasoning_effort).toBe("max");
   });
 });

@@ -26,6 +26,7 @@ import {
   splitIsolatedWorktreePath,
   getIsolatedWorktree,
 } from "@sid-code/core/bootstrap/cwd-context.ts";
+import { getCwd, setCwd } from "@sid-code/core/bootstrap/state.ts";
 import { BashTool } from "@sid-code/core/tool/bash.ts";
 import { setJitTraceSink } from "@sid-code/core/trace/jit-telemetry.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
@@ -182,10 +183,22 @@ describe("隔离子代理的系统提示词", () => {
   });
 
   test("未绑定 cwd 时不出现隔离提示（主仓子代理行为不变）", async () => {
-    const provider = new RecordingProvider();
-    const agent = new SubAgent(provider, "m", new Registry());
-    await agent.execute({ type: "explore", description: "核验", prompt: "看看" });
-    expect(provider.systems[0]).not.toContain("【隔离环境提示】");
+    // 本用例守的是「未绑定 cwd 的子代理不该被凭空判定成隔离环境」。前提是「当前不在隔离
+    // worktree 内」——本文件若在 `<repo>/.sid-code/worktrees/<name>` 里运行，进程 cwd 本身
+    // 就是隔离 worktree 根，子代理未绑定 cwd 时会继承它（sub-agent 里
+    // `cwd: task.cwd ?? getCwd()`）→ 提示必然出现。那不是产品缺陷（在 worktree 里就该提示），
+    // 而是本用例对运行目录的隐藏依赖。把会话启动目录显式钉到模拟主仓，断言只反映
+    // 「未绑定 cwd」这一件事，用例在任何 checkout 路径下同解。
+    const prevCwd = getCwd();
+    setCwd(mainRepo);
+    try {
+      const provider = new RecordingProvider();
+      const agent = new SubAgent(provider, "m", new Registry());
+      await agent.execute({ type: "explore", description: "核验", prompt: "看看" });
+      expect(provider.systems[0]).not.toContain("【隔离环境提示】");
+    } finally {
+      setCwd(prevCwd);
+    }
   });
 
   test("自定义子代理路径同样支持 cwd（此前无此字段）", async () => {

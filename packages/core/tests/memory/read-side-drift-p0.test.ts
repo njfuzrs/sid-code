@@ -21,6 +21,7 @@ import {
   MemoryStore,
   clearMemorySummaryCache,
   annotateIndexAges,
+  type MemoryEntry,
 } from "@sid-code/core/memory/store.ts";
 import { buildMemorySystemPrompt } from "@sid-code/core/memory/prompt.ts";
 import { memoryAge, memoryAgeDays } from "@sid-code/core/memory/freshness.ts";
@@ -113,15 +114,51 @@ describe("annotateIndexAges：把年龄带进索引行", () => {
         updatedAt: Date.now(),
       },
     ],
+    // T2-2（2026-11-15）：标注口径从「超过 1 天」改成「索引里最旧的一批（30%）」，
+    // 配额 = floor(n × 0.3)，n=4 时恰好 1 条 —— 加两条中年条目让 `old` 成为唯一的最旧。
+    [
+      "mid20",
+      {
+        key: "mid20",
+        value: "v",
+        scope: "project" as const,
+        source: "inferred" as const,
+        createdAt: 0,
+        updatedAt: Date.now() - 20 * DAY,
+      },
+    ],
+    [
+      "mid10",
+      {
+        key: "mid10",
+        value: "v",
+        scope: "project" as const,
+        source: "inferred" as const,
+        createdAt: 0,
+        updatedAt: Date.now() - 10 * DAY,
+      },
+    ],
   ]);
 
-  test("超过 1 天的条目带上相对天数（模型不擅长算日期差，所以给的是「N days ago」）", () => {
-    const out = annotateIndexAges("- [old](reference_old.md) — 某条结论", entries);
+  test("最旧的一批带上相对天数（模型不擅长算日期差，所以给的是「N days ago」）", () => {
+    const out = annotateIndexAges(
+      [
+        "- [old](reference_old.md) — 某条结论",
+        "- [mid20](reference_mid20.md) — 20 天前",
+        "- [mid10](reference_mid10.md) — 10 天前",
+        "- [fresh](reference_fresh.md) — 刚写的",
+      ].join("\n"),
+      entries,
+    );
     expect(out).toContain("⏳");
     expect(out).toContain(memoryAge(entries.get("old")!.updatedAt));
     // 摘要与链接都要保留，注解是追加而非替换
     expect(out).toContain("[old](reference_old.md)");
     expect(out).toContain("某条结论");
+    // 只有最旧那条带标记：其余三条没有 —— 这正是「区分度」的定义
+    const lines = out.split("\n");
+    expect(lines[0]).toContain("⏳");
+    expect(lines.slice(1).every((l) => !l.includes("⏳"))).toBe(true);
   });
 
   test("当天写的不加标记（否则纯噪声，且每天击穿一次 prompt cache）", () => {
@@ -139,25 +176,41 @@ describe("annotateIndexAges：把年龄带进索引行", () => {
     expect(annotateIndexAges(text, entries)).toBe(text);
   });
 
-  test("与 buildFreshnessWarning 同判据：1 天为界（不是两套阈值）", () => {
-    // 这条钉住「注解阈值」与「警告阈值」同源。分叉了就会出现
-    // 「索引说 today、警告说 1 day old」这种自相矛盾的注入。
+  test("最旧的一批里 1 天内的不标（与 buildFreshnessWarning 同判据）", () => {
+    // T2-2（2026-11-15）起「是否标」由分位决定，但「1 天内不标」仍是硬判据 ——
+    // 否则一条刚写的记忆只要恰好是库里最旧的，就会被打上 `⏳today` 这种纯噪声。
+    // 与 `buildFreshnessWarning` 的分界保持同源，避免出现
+    // 「索引说 today、Read 时不提醒」这种自相矛盾的注入。
     const justOver = Date.now() - (DAY + 1000);
     expect(memoryAgeDays(justOver)).toBe(1);
-    const m = new Map([
-      [
-        "k",
-        {
-          key: "k",
-          value: "v",
-          scope: "project" as const,
-          source: "inferred" as const,
-          createdAt: 0,
-          updatedAt: justOver,
-        },
-      ],
+    const fresh = Date.now();
+    const mk = (key: string, updatedAt: number): [string, MemoryEntry] => [
+      key,
+      {
+        key,
+        value: "v",
+        scope: "project",
+        source: "inferred",
+        createdAt: 0,
+        updatedAt,
+      },
+    ];
+    // 4 条 → 配额 1；`k` 是唯一的最旧（1 天多），其余是当天
+    const m = new Map<string, MemoryEntry>([
+      mk("k", justOver),
+      mk("a", fresh),
+      mk("b", fresh),
+      mk("c", fresh),
     ]);
-    expect(annotateIndexAges("- [k](reference_k.md) — x", m)).toContain("⏳");
+    const out = annotateIndexAges(
+      ["- [k](reference_k.md) — x", "- [a](a.md) — a", "- [b](b.md) — b", "- [c](c.md) — c"].join(
+        "\n",
+      ),
+      m,
+    );
+    const lines = out.split("\n");
+    expect(lines[0]).toContain("⏳"); // 最旧的（1 天多）标
+    expect(lines.slice(1).join("\n")).not.toContain("⏳"); // 当天的三条不标
   });
 });
 
@@ -171,6 +224,15 @@ describe("getIndexContent：年龄真的到达注入内容（端到端）", () =
       description: "某个已修复的结论",
       updated: Date.now() - 47 * DAY,
     });
+    // T2-2（2026-11-15）：标注口径改成「索引里最旧的一批（30%）」，配额 = floor(n × 0.3)。
+    // 只写 1 条会让配额为 0（floor(0.3) = 0）—— 必须凑到 ≥4 条，stale 才落在「最旧的一批」里。
+    for (const name of ["fresh-a", "fresh-b", "fresh-c"]) {
+      writeMem(projDir, `reference_${name}.md`, {
+        name,
+        description: `${name} 的新记忆`,
+        updated: Date.now(),
+      });
+    }
     // 索引文件本身要存在（getIndexContent 读的是磁盘索引）
     const store = new MemoryStore(tmpProject, {
       projectMemoryDir: projDir,
@@ -191,6 +253,15 @@ describe("getIndexContent：年龄真的到达注入内容（端到端）", () =
       description: "某个已修复的结论",
       updated: Date.now() - 47 * DAY,
     });
+    // T2-2（2026-11-15）：标注口径改成「索引里最旧的一批（30%）」，配额 = floor(n × 0.3)。
+    // 只写 1 条会让配额为 0（floor(0.3) = 0）—— 必须凑到 ≥4 条，stale 才落在「最旧的一批」里。
+    for (const name of ["fresh-a", "fresh-b", "fresh-c"]) {
+      writeMem(projDir, `reference_${name}.md`, {
+        name,
+        description: `${name} 的新记忆`,
+        updated: Date.now(),
+      });
+    }
     const store = new MemoryStore(tmpProject, {
       projectMemoryDir: projDir,
       globalMemoryDir: globalDir,

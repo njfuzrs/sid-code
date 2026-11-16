@@ -7,9 +7,9 @@
  *
  * ## 为什么要单独一个模块
  *
- * 有**两个**执行器需要做同一件事（`query/tool-executor.ts` 主循环、
- * `agent/tool-executor.ts` 子代理），且字段有常量与函数两种形态、函数还可能抛。
- * 两处各写一遍 `typeof m === "function" ? m(input) : m` 迟早漂移出
+ * 有**两处**调用点要解析同一个档位（`query/tool-executor.ts` 主循环、
+ * `query/run-tool-use.ts` 的 `runToolUse` —— 子代理路径也复用它），且字段有常量与函数两种形态、
+ * 函数还可能抛。两处各写一遍 `typeof m === "function" ? m(input) : m` 迟早漂移出
  * 「主循环隐藏了、子代理没隐藏」这类只在特定路径复现的不一致——本仓库在
  * `buildSettledToolCallIfReady`（history-adapter.ts）上已经吃过一次同型的亏。
  *

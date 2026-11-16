@@ -10,7 +10,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { registerTask, clearAllTasks } from "@sid-code/core/task/index.ts";
 import { TaskListTool } from "@sid-code/core/tool/task-list.ts";
-import { TaskGetTool } from "@sid-code/core/tool/task-get.ts";
 import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
 import type { LocalMonitorTaskState } from "@sid-code/core/task/types.ts";
 
@@ -51,10 +50,10 @@ describe("D17：bg_task_list 输出 monitor 的 deadline 与 event-count", () =>
   });
 });
 
-describe("D17：bg_task_get 输出 monitor 的 command / deadline / event-count", () => {
+describe("D17：task_output（原 bg_task_get）输出 monitor 的 command / deadline / event-count", () => {
   test("三个字段都在", async () => {
     registerTask(monitorTask());
-    const r = await new TaskGetTool().execute({ task_id: "m1", block: false });
+    const r = await new TaskOutputTool().execute({ task_id: "m1", block: false });
     expect(r.output).toContain("<command>gh pr checks 123</command>");
     expect(r.output).toContain("<deadline>03:04:05</deadline>");
     expect(r.output).toContain("<event-count>2</event-count>");
@@ -62,7 +61,7 @@ describe("D17：bg_task_get 输出 monitor 的 command / deadline / event-count"
 
   test("超长 command 截断到 500 字（与 shell 同）", async () => {
     registerTask(monitorTask({ command: "x".repeat(600) }));
-    const r = await new TaskGetTool().execute({ task_id: "m1", block: false });
+    const r = await new TaskOutputTool().execute({ task_id: "m1", block: false });
     expect(r.output).toContain(`<command>${"x".repeat(500)}</command>`);
     expect(r.output).not.toContain("x".repeat(501));
   });
