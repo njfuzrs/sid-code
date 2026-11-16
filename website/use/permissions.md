@@ -115,8 +115,10 @@ default → acceptEdits → plan → auto → always-allow → default # 启动�
 ::: tip plan 模式的读写边界
 plan 模式下 `read` / `grep` / `glob` 放行，`bash` 只放行**只读命令**——
 `git log` / `git diff` / `git status` / `ls` / `rg` / `cat` 这类不写任何东西的命令可以直接跑，
-判据与 `default` 模式下的「只读命令」同一套。其余 bash 命令（`npm install`、`make`、
-`sed -i`、输出重定向等）与 `edit` / `write` 写非计划文件一律拒绝，提示是
+判据与 `default` 模式下的「只读命令」同一套。**读工作区外的文件**（如 `cat /etc/passwd`、`ls /`）
+不走这条自动放行：只读判定只看「会不会写」，不看读的是哪里，工作区外的读路径会像
+`default` 一样走普通确认。
+其余 bash 命令（`npm install`、`make`、`sed -i`、输出重定向等）与 `edit` / `write` 写非计划文件一律拒绝，提示是
 「计划模式下只允许只读操作（bash 只允许只读命令，如 git log / ls / rg）」。
 
 这一条**不放松安全层**：读凭证（`cat ~/.ssh/id_rsa`）、转储环境变量（`env`）、
