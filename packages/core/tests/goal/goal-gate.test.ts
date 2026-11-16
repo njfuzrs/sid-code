@@ -16,6 +16,10 @@
 
 import { describe, test, expect } from "bun:test";
 import { handleGoalGate, type GoalGateContext } from "@sid-code/core/query/goal-gate.ts";
+import {
+  MAX_CONSECUTIVE_WAIT_PASSES,
+  type GoalWaitingFacts,
+} from "@sid-code/core/query/goal-waiting.ts";
 import { createGoal } from "@sid-code/core/goal/state.ts";
 import { BlockedDetector } from "@sid-code/core/goal/blocked-detector.ts";
 import { DEFAULT_GOAL_CONFIG } from "@sid-code/core/goal/config.ts";
@@ -499,5 +503,130 @@ describe("handleGoalGate · trace 事件", () => {
     await handleGoalGate(ctx);
     expect(events.length).toBeGreaterThan(0);
     expect(events[0]!.event).toBe("GoalGateDecision");
+  });
+});
+
+// ─── G2：等待挂起（修复方案 §4.2） ───
+
+/**
+ * 数调用次数的 mock 评估者。
+ *
+ * T-G2-1/3/4 的核心断言是「评估器**没被调用**」—— 只看返回结果分不出
+ * 「因等待放行了」和「评估完之后恰好也放行」，所以必须数。
+ */
+function countingProvider(responseText: string): { provider: Provider; calls: () => number } {
+  let calls = 0;
+  return {
+    provider: {
+      name: () => "mock-count",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: responseText },
+        } as StreamEvent;
+      },
+    },
+    calls: () => calls,
+  };
+}
+
+function makeWaitingCtx(opts: { waiting?: GoalWaitingFacts; evalResponse?: string } = {}) {
+  const counter = countingProvider(
+    opts.evalResponse ?? JSON.stringify({ satisfied: false, reason: "继续推进" }),
+  );
+  const ctx = makeCtx({ goalOverrides: { turnsUsed: 5 } });
+  // 非测试类目标：避开报告型 fast-path，让「评估器是否被调用」这个断言有意义。
+  ctx.goal.objective = "完成迁移工作";
+  ctx.evalConfig = evalConfig(counter.provider);
+  if (opts.waiting) ctx.waiting = opts.waiting;
+  return { ctx, calls: counter.calls };
+}
+
+/** 一个「已挂上 monitor 等 CI」的事实包 */
+const MONITOR_WAIT: GoalWaitingFacts = {
+  hasDeclaredExternalWait: true,
+  hasPendingNotifications: false,
+  waitIds: ["mon_ci"],
+};
+
+describe("handleGoalGate · G2 等待挂起", () => {
+  test("T-G2-1 有显式等待源 → 放行 end_turn、不调评估器、goal 仍 active", async () => {
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { ctx, calls } = makeWaitingCtx({ waiting: MONITOR_WAIT });
+    ctx.traceAppendEvent = (e) => events.push(e);
+    ctx.sessionId = "sess-g2";
+
+    const out = await handleGoalGate(ctx);
+
+    expect(calls()).toBe(0);
+    expect(out.result.waiting).toBe(true);
+    expect(out.result.shouldContinue).toBe(false);
+    expect(out.result.completed).toBe(false);
+    expect(out.result.impossible).toBe(false);
+    expect(out.result.waitIds).toEqual(["mon_ci"]);
+    // 关键：不是终态。goal 仍然 active，通知到达后下一轮继续评估。
+    expect(ctx.goal.status).toBe("active");
+
+    const decision = events.find((e) => e.data?.reason === "waiting");
+    expect(decision).toBeDefined();
+    expect(decision!.data!.wait_ids).toEqual(["mon_ci"]);
+    expect(decision!.data!.shouldContinue).toBe(false);
+    expect(ctx.goal.waitPass).toEqual({ key: "mon_ci", count: 1 });
+
+    // 用户可见回执：告诉他「在等」，而不是静默收尾。
+    expect(out.systemMessages.some((m) => m.text.includes("等待中"))).toBe(true);
+  });
+
+  test("T-G2-2 只有派生后台任务、没有显式等待 → 照常调评估器", async () => {
+    const { ctx, calls } = makeWaitingCtx({
+      waiting: { hasDeclaredExternalWait: false, hasPendingNotifications: false, waitIds: [] },
+    });
+    const out = await handleGoalGate(ctx);
+    expect(calls()).toBe(1);
+    expect(out.result.waiting).toBeUndefined();
+  });
+
+  test("T-G2-3 同一组等待源连续放行到上限 → 第 4 次回到评估器", async () => {
+    const { ctx, calls } = makeWaitingCtx({ waiting: MONITOR_WAIT });
+    for (let i = 1; i <= MAX_CONSECUTIVE_WAIT_PASSES; i++) {
+      const out = await handleGoalGate(ctx);
+      expect(out.result.waiting).toBe(true);
+      expect(ctx.goal.waitPass).toEqual({ key: "mon_ci", count: i });
+    }
+    expect(calls()).toBe(0);
+
+    // 到顶后不再放行：评估器必须能看到这条路径（否则挂个等待就绕过了评估）。
+    const over = await handleGoalGate(ctx);
+    expect(over.result.waiting).toBeUndefined();
+    expect(over.result.shouldContinue).toBe(true);
+    expect(calls()).toBe(1);
+    expect(ctx.goal.status).toBe("active");
+  });
+
+  test("T-G2-4 有待投递通知 → 也放行，不调评估器", async () => {
+    const { ctx, calls } = makeWaitingCtx({
+      waiting: { hasDeclaredExternalWait: false, hasPendingNotifications: true, waitIds: [] },
+    });
+    const out = await handleGoalGate(ctx);
+    expect(calls()).toBe(0);
+    expect(out.result.waiting).toBe(true);
+    expect(ctx.goal.waitPass?.key).toBe("notification");
+  });
+
+  test("硬上限不归 gate 管（#881 已移到每轮检查）：轮次耗尽时仍按等待放行", async () => {
+    // #881（2026-11-16）把轮次/预算检查移到了 `goal/limits.ts` 的 checkGoalHardLimits，
+    // 由 loop 每轮在 gate **之前**调用（`goal-hard-limits-loop.test.ts` 守）。
+    //
+    // 所以本条断言的是**新契约**：gate 只按等待判据走，轮次耗尽的终止语义由 loop 侧负责。
+    // 这同时防住「有人把轮次检查又塞回 gate」——那会让终止语义出现两个出口，
+    // 而 G2 的等待放行恰好会把其中一个出口挡住。
+    const { ctx, calls } = makeWaitingCtx({ waiting: MONITOR_WAIT });
+    ctx.goal.turnsUsed = ctx.goal.maxTurns;
+    const out = await handleGoalGate(ctx);
+    expect(out.result.waiting).toBe(true);
+    expect(ctx.goal.waitPass).toEqual({ key: "mon_ci", count: 1 });
+    expect(calls()).toBe(0);
   });
 });

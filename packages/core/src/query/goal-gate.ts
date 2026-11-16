@@ -22,6 +22,11 @@ import { evaluateGoal, extractEvalContext } from "../goal/evaluator.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
 import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
 import type { GoalConfig } from "../goal/config.ts";
+import {
+  decideWaitSuspend,
+  MAX_CONSECUTIVE_WAIT_PASSES,
+  type GoalWaitingFacts,
+} from "./goal-waiting.ts";
 import { getLogger } from "../debug/logger.ts";
 
 const log = getLogger();
@@ -39,6 +44,16 @@ export interface GoalGateResult {
   feedback?: string;
   /** 评估结果 */
   evalResult?: GoalEvalResult;
+  /**
+   * G2（2026-11-16）：本轮因「等待挂起」放行。
+   *
+   * `shouldContinue=false` 但 goal **仍是 active** —— 语义是「本轮结束，等等待事件
+   * 唤醒下一轮」，调用方**不得**按 completed / impossible / 「终止」处理（那会写终态、
+   * 把 goal 关掉）。与 `blocked` 的区别是：这里模型没卡住，它只是唯一能做的事就是等。
+   */
+  waiting?: boolean;
+  /** 等待挂起时命中的等待源 id（进回执与 trace 的 `wait_ids`） */
+  waitIds?: string[];
 }
 
 export interface GoalGateContext {
@@ -64,6 +79,15 @@ export interface GoalGateContext {
   absoluteTurn?: number;
   /** 缺口7：第几条用户消息，让 turn 回绕可还原。可选，同 absoluteTurn。 */
   promptSeq?: number;
+  /**
+   * G2（2026-11-16）：等待挂起判据的外部事实，由调用方现算后传入。
+   *
+   * 之所以不让本模块自己去读 registry：`GoalGateContext` 的既有契约就是「事实由调用方
+   * 现算、判定逻辑保持纯」（`blockedDetector`、`traceAppendEvent` 都是这个形状），
+   * 单测因此可以直接构造「有显式等待 / 只有派生任务 / 有待投递通知」三种组合。
+   * 不传 = 无等待态，行为与改动前逐字节一致（极简路径与既有测试不受影响）。
+   */
+  waiting?: GoalWaitingFacts;
 }
 
 /** GoalGateDecision 事件的最小上下文 —— 评估器路径与每轮硬约束路径共用同一份字段口径。 */
@@ -132,7 +156,15 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   /** 需要显示给用户的系统消息 */
   systemMessages: Array<{ level: "info" | "warning"; text: string }>;
 }> {
-  const { goal, messages, evalConfig, goalConfig = DEFAULT_GOAL_CONFIG, blockedDetector } = ctx;
+  const {
+    goal,
+    messages,
+    evalConfig,
+    goalConfig = DEFAULT_GOAL_CONFIG,
+    blockedDetector,
+    // G2（2026-11-16）：等待挂起判据的外部事实（不传 = 无等待态，旧行为）
+    waiting,
+  } = ctx;
   const injectMessages: Array<{ role: "user"; content: Array<{ type: "text"; text: string }> }> =
     [];
   const systemMessages: Array<{ level: "info" | "warning"; text: string }> = [];
@@ -153,6 +185,44 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     emitTraceEvent("eval_skipped", true);
     return {
       result: { shouldContinue: true, completed: false, impossible: false },
+      injectMessages,
+      systemMessages,
+    };
+  }
+
+  // 3.5 等待挂起（G2，2026-11-16）
+  //
+  // 模型挂上显式等待源（monitor / wait_until / schedule_wakeup）后 end_turn 是在**等**，
+  // 不是「以为做完了」。此时调评估器只会得到「未达成，继续推进」，把模型打回下一轮
+  // 去重复查询状态（P1 守卫要拦的同一件事），还额外烧一次评估调用。
+  //
+  // 位置在前 N 轮跳过评估之后：那是「模型刚开始、本来就不评估」的分支，优先级更高；
+  // 也在预算 / 轮次两个硬上限之后：那两条是终止语义，等待不该豁免它们。
+  const waitSuspend = decideWaitSuspend(goal, waiting);
+  goal.waitPass = waitSuspend.nextWaitPass;
+  if (waitSuspend.release) {
+    log.info(
+      "GOAL_GATE",
+      `等待挂起: wait_ids=${waitSuspend.waitIds.join(",") || "(通知)"}, 连续第 ${waitSuspend.count}/${MAX_CONSECUTIVE_WAIT_PASSES} 次放行`,
+    );
+    systemMessages.push({
+      level: "info",
+      text: `⏸ 目标等待中（${waitSuspend.count}/${MAX_CONSECUTIVE_WAIT_PASSES}）：本轮结束，等待事件到达后自动续跑`,
+    });
+    // trace 字段名按修复方案 §4.2 用 `wait_ids`：离线分析要能按等待源对账
+    // 「这次 end_turn 是为了等谁」，与 `WaitReleased` 的 id 口径一致。
+    emitTraceEvent("waiting", false, {
+      wait_ids: waitSuspend.waitIds,
+      wait_pass_count: waitSuspend.count,
+    });
+    return {
+      result: {
+        shouldContinue: false,
+        completed: false,
+        impossible: false,
+        waiting: true,
+        waitIds: waitSuspend.waitIds,
+      },
       injectMessages,
       systemMessages,
     };
