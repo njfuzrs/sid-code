@@ -20,11 +20,16 @@
 import type { Message } from "../../llm/types.ts";
 import type { ForkedAgentContext, CanUseToolFn } from "../../agent/forked-agent.ts";
 import { runForkedAgent } from "../../agent/forked-agent.ts";
-import { scanMemoryFiles, formatMemoryManifest } from "../scan.ts";
+import { scanMemoryFiles, formatMemoryManifest, stripFrontmatter } from "../scan.ts";
 import { buildDreamPrompt } from "./prompts.ts";
+import {
+  evaluateDreamPrunes,
+  MAX_USER_PRUNES_PER_DREAM,
+  type DreamEntrySnapshot,
+} from "./guard.ts";
 import { getLogger } from "../../debug/logger.ts";
 import { join } from "path";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { MEMORY_FORK_REQUIRED_TOOLS } from "../../agent/fork-prefix.ts";
 
 /** dream 触发配置 */
@@ -115,6 +120,81 @@ export async function reconcileMemoryDir(memoryDir: string): Promise<void> {
 }
 
 /**
+ * T4-3 的宿主侧损失闸门（2026-11-15）。
+ *
+ * dream 的 prune 是「用 write 把正文写空」，模型有自由裁量权；`user` 类记忆是用户画像，
+ * 误删一次就永久消失。prompt 里已经写了「保守优先」，但**只靠 prompt 约束一个会误判的
+ * 模型**本身不可靠，所以在宿主侧加硬闸：一次归档 >1 条 user 就整次作废 + 按快照回滚。
+ *
+ * 快照在 `runForkedAgent` **之前**取：此时磁盘上还是 dream 未动手的状态，
+ * 回滚只需按原文写回，不需要理解模型做过什么。
+ */
+function snapshotMemoryDir(dir: string): Map<string, DreamEntrySnapshot> {
+  const out = new Map<string, DreamEntrySnapshot>();
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".md"));
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    try {
+      const text = readFileSync(join(dir, name), "utf-8");
+      out.set(name, { text, type: readMemoryType(text) });
+    } catch {
+      /* 读不到就当它不存在：回滚时也不碰它，避免伪造一份残缺内容 */
+    }
+  }
+  return out;
+}
+
+/** 只读 frontmatter 里的 `type:`；解析不出来时返回空串（按「非 user」处理，不误触发回滚） */
+function readMemoryType(text: string): string {
+  const fm = text.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!fm) return "";
+  const t = fm[1].match(/^type:\s*(.+)$/m);
+  return t ? t[1].trim().replace(/^["']|["']$/g, "") : "";
+}
+
+function readMemoryBodies(dir: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".md"));
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    try {
+      out.set(name, readFileSync(join(dir, name), "utf-8"));
+    } catch {
+      /* 读不到就当作「文件已删」，由判定侧算作 prune */
+    }
+  }
+  return out;
+}
+
+/** 按快照把被清空/删除的文件写回原文；返回成功回滚的条数 */
+function rollbackPrunedEntries(
+  dir: string,
+  snapshot: ReadonlyMap<string, DreamEntrySnapshot>,
+  filenames: readonly string[],
+): number {
+  let restored = 0;
+  for (const name of filenames) {
+    const before = snapshot.get(name);
+    if (!before) continue;
+    try {
+      writeFileSync(join(dir, name), before.text, "utf-8");
+      restored++;
+    } catch {
+      /* 单条回滚失败不阻断其余：尽力恢复，失败情况留在日志里 */
+    }
+  }
+  return restored;
+}
+
+/**
  * 判断是否应触发 dream（三级 gate）。
  * 返回 { should, reason }——reason 用于日志（说明为何触发/跳过）。
  */
@@ -190,6 +270,9 @@ export function initAutoDream(ctx: DreamContext): AutoDreamHandle {
       { role: "user", content: [{ type: "text", text: promptText }] },
     ];
 
+    // T4-3：快照必须在模型动手**之前**取。回滚只需按原文写回，
+    // 不需要理解模型做过什么；事后推断「它删了哪条」反而会漏。
+    const snapshot = snapshotMemoryDir(ctx.memoryDir);
     try {
       const result = await runForkedAgent(ctx.getMainContext(), {
         promptMessages,
@@ -203,6 +286,26 @@ export function initAutoDream(ctx: DreamContext): AutoDreamHandle {
     } catch (err) {
       log.warn("DREAM", `记忆巩固失败: ${err}`);
     } finally {
+      // T4-3：宿主侧损失闸门。放在 reconcile **之前** —— 先把越界的删除回滚，
+      // 再让 load 重建索引；顺序反了会先归档、再回滚出一批「磁盘上有但索引里没有」的孤儿。
+      const verdict = evaluateDreamPrunes(
+        snapshot,
+        readMemoryBodies(ctx.memoryDir),
+        stripFrontmatter,
+      );
+      if (verdict.rejected) {
+        const restored = rollbackPrunedEntries(
+          ctx.memoryDir,
+          snapshot,
+          verdict.pruned.map((p) => p.filename),
+        );
+        log.warn(
+          "DREAM",
+          `一次巩固归档了 ${verdict.userPruned} 条 user 记忆（上限 ${MAX_USER_PRUNES_PER_DREAM}）：` +
+            `整次作废` +
+            (restored > 0 ? `，已按快照回滚 ${restored} 条` : `，回滚失败，须人工检查 archive/`),
+        );
+      }
       // 缺陷 3：dream 的 prune 是「用 write 写空」，而归档 + 重建索引只发生在
       // `MemoryStore.load()` 里。dream 跑在会话退出的 cleanup 中，此后不会再有人 load，
       // 不在这里收口的话：空文件留在原处 → 下一次 dream 的 manifest 仍列出它 → 又删一次。

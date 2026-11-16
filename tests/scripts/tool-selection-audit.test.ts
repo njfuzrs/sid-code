@@ -22,8 +22,10 @@
 import { describe, test, expect } from "bun:test";
 import {
   auditSession,
+  classifySince,
   extractUserText,
   judge,
+  lastTimestamp,
   SCENARIOS,
   type Choice,
 } from "../../scripts/tool-selection-audit.ts";
@@ -363,5 +365,61 @@ describe("期望工具表", () => {
     };
     // monitor 命中可接受替代 → matched，尽管前台也轮询了（expected 先于 isMisuseForm 判定）
     expect(judge(choice, rule)).toBe("matched");
+  });
+});
+
+// ── D) `--since` 跨天会话切分（2026-11-15 修：旧实现会静默丢样本） ──
+//
+// 旧实现 `startedAt < since` 直接排除整会话，导致「切分点前开始、之后仍在跑」的会话
+// 永远不进后段分母（本机 1145 会话实测漏 2 个）。消息级切分做不到（user 消息无 ts、
+// traj 不保留用户消息行），所以改为「默认排除但计数 + --include-mixed 纳入」双口径。
+// 这组测试锁住三条：跨天必须被识别为 mixed（不是 before）、默认口径与历史基线可比、
+// `--include-mixed` 只能把 mixed 拉进来而不能改变 in-range/before 的归属。
+
+describe("--since 切分：跨天会话不静默丢样本", () => {
+  const CUT = "2026-11-10T06:59:00.000Z";
+
+  test("lastTimestamp：取 traj 最大的 timestamp，忽略缺失/非字符串", () => {
+    expect(lastTimestamp([])).toBeNull();
+    expect(
+      lastTimestamp([
+        { message_type: "action", timestamp: "2026-11-09T01:00:00.000Z" },
+        { message_type: "action", timestamp: undefined },
+        { message_type: "observation" },
+        { message_type: "action", timestamp: "2026-11-09T03:00:00.000Z" },
+      ] as never),
+    ).toBe("2026-11-09T03:00:00.000Z");
+  });
+
+  test("开始于切分点之后 → in-range（后段）", () => {
+    expect(classifySince("2026-11-11T00:00:00.000Z", "2026-11-11T01:00:00.000Z", CUT)).toBe(
+      "in-range",
+    );
+  });
+
+  test("切分点之前就结束 → before（排除）", () => {
+    expect(classifySince("2026-11-09T00:00:00.000Z", "2026-11-09T02:00:00.000Z", CUT)).toBe(
+      "before",
+    );
+  });
+
+  test("跨天会话（开始在前、最后活动在后）→ mixed，不再被当成 before", () => {
+    expect(classifySince("2026-11-09T22:00:00.000Z", "2026-11-10T08:00:00.000Z", CUT)).toBe(
+      "mixed",
+    );
+  });
+
+  test("开始时间缺失 → in-range（保留旧「穿透」语义：最新会话不能整个丢）", () => {
+    expect(classifySince(null, "2026-11-09T02:00:00.000Z", CUT)).toBe("in-range");
+  });
+
+  test("未给 --since → in-range（全量口径不受影响）", () => {
+    expect(classifySince("2026-11-09T00:00:00.000Z", "2026-11-09T02:00:00.000Z", undefined)).toBe(
+      "in-range",
+    );
+  });
+
+  test("有开始时间但 traj 无时间戳 → before（保守排除，不猜）", () => {
+    expect(classifySince("2026-11-09T00:00:00.000Z", null, CUT)).toBe("before");
   });
 });

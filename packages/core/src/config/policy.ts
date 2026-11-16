@@ -38,6 +38,21 @@ export interface PolicySettings {
     allow?: string[];
     deny?: string[];
     ask?: string[];
+    /**
+     * M15：`disableBypassPermissionsMode` 也认 `permissions.` 下这个位置（对齐 CC
+     * settings.json 的 `permissions.disableBypassPermissionsMode`）。
+     *
+     * 管理员写哪种位置都得生效——这是**放开约束**的方向：只认顶层时，照 CC 文档把字段
+     * 写进 `permissions.` 下的人会得到「策略看起来配了、实际没生效」的静默失效，
+     * 而这类字段失效的后果是 skip 档照常可用。两处都写时取严（任一处 disable 即 disable）。
+     */
+    disableBypassPermissionsMode?: "disable" | "allow";
+    /**
+     * M15：禁用 auto 模式（`permissions.disableAutoMode`）。
+     * 顶层没有对应字段——CC 只有这个位置，新增顶层等于发明一套自己的配置面。
+     * 归一成 `disabledModes` 里的 "auto"，与通用禁用通道共用同一条判定链。
+     */
+    disableAutoMode?: "disable" | "allow";
   };
   /**
    * 功能级开关。
@@ -77,8 +92,19 @@ export interface PolicySettings {
    * utils/settings/types.ts:67 disableBypassPermissionsMode）。
    * - "disable"：强制禁用 bypass，即使 CLI 传了 --dangerously-skip-permissions 也报错退出/降级；
    * - "allow"（默认/缺省）：不限制。
+   *
+   * M15：`permissions.` 下同名位置也认，两处都写时取严。
    */
   disableBypassPermissionsMode?: "disable" | "allow";
+  /**
+   * M15：禁用 auto 模式。
+   *
+   * 顶层这个位置只对**本地** managed settings 生效，不进 `ALLOWED_REMOTE_KEYS`：
+   * CC 只有 `permissions.disableAutoMode` 一个位置，顶层是 sid 自己的文件写法；
+   * 远程策略的键是与服务端 `extra=forbid` 对齐的闭集，客户端单方面放行没有意义。
+   * 两处都写时取严。
+   */
+  disableAutoMode?: "disable" | "allow";
   /**
    * 锁定定制化来源为「仅管理员可信来源」（对齐 CC strictPluginOnlyCustomization）。
    * true=锁全部面；数组=只锁列出的面（commands/skills/agents/hooks/mcp-servers）。
@@ -329,6 +355,18 @@ export function sanitizeRemotePolicy(raw: unknown): PolicySettings | null {
     if (allow) permissions.allow = allow;
     if (deny) permissions.deny = deny;
     if (ask) permissions.ask = ask;
+    // M15：这两个字段也要过 sanitize。此前只留 allow/deny/ask，远程下发
+    // `permissions.disableBypassPermissionsMode` 会被整块丢掉——管理员以为禁了，
+    // skip 档实际照常可用。只认 "disable"/"allow" 两个值，其它一律丢弃（不猜意图）。
+    if (
+      p.disableBypassPermissionsMode === "disable" ||
+      p.disableBypassPermissionsMode === "allow"
+    ) {
+      permissions.disableBypassPermissionsMode = p.disableBypassPermissionsMode;
+    }
+    if (p.disableAutoMode === "disable" || p.disableAutoMode === "allow") {
+      permissions.disableAutoMode = p.disableAutoMode;
+    }
     if (Object.keys(permissions).length > 0) out.permissions = permissions;
   }
 
@@ -797,7 +835,26 @@ export function applyLoadedPolicy(policy: PolicySettings | null, meta?: PolicyLo
       setPolicyLimits(policy.policyLimits);
     }
     setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
-    setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
+
+    // M15：`permissions.` 下的两个字段与顶层等价，两处都写时**取严**（任一处 disable 即 disable）。
+    // 只认顶层会让照 CC 文档把字段写进 `permissions.` 的人静默失效——而这类字段失效的
+    // 后果是 skip / auto 档照常可用，方向恰好是「更不安全」。
+    const nestedDisableBypass = policy.permissions?.disableBypassPermissionsMode;
+    const disableBypass =
+      policy.disableBypassPermissionsMode === "disable" || nestedDisableBypass === "disable"
+        ? "disable"
+        : (policy.disableBypassPermissionsMode ?? nestedDisableBypass);
+
+    // `disableAutoMode` 归一进通用 `disabledModes`：auto 在那里已有完整判定链
+    // （cyclePermissionMode 跳过、CLI 显式请求时报错、分类器不可用时降级），
+    // 不为它另开第二条通道——两条通道迟早会出现「一个禁了一个没禁」的分叉。
+    const disableAuto =
+      policy.permissions?.disableAutoMode === "disable" || policy.disableAutoMode === "disable";
+    const disabledModes = disableAuto
+      ? Array.from(new Set([...(policy.disabledModes ?? []), "auto"]))
+      : policy.disabledModes;
+
+    setModePolicy(disabledModes, disableBypass);
   }
   // 与 bridge 同理：null 也要拨回，否则上次下发的白名单会留在进程里
   setKnownMarketplacesPolicy(policy?.strictKnownMarketplaces);

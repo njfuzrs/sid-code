@@ -373,6 +373,11 @@ export function logPermissionAllow(
     bashShape?: string;
     envPrefixVars?: string[];
     gitTrust?: string;
+    /**
+     * 这次决策按哪个工具的规则口径判定（monitor 的 command 按 bash 匹配，§5.4.6）。
+     * **只进本地轨迹**，不进遥测 payload。
+     */
+    effectiveTool?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -417,6 +422,7 @@ export function logPermissionAllow(
     ...(opts.bashShape ? { bashShape: opts.bashShape } : {}),
     ...(opts.envPrefixVars?.length ? { envPrefixVars: opts.envPrefixVars } : {}),
     ...(opts.gitTrust ? { gitTrust: opts.gitTrust } : {}),
+    ...(opts.effectiveTool ? { effectiveTool: opts.effectiveTool } : {}),
   });
 }
 
@@ -475,6 +481,11 @@ export function logPermissionDeny(
     bashShape?: string;
     envPrefixVars?: string[];
     gitTrust?: string;
+    /**
+     * 这次决策按哪个工具的规则口径判定（monitor 的 command 按 bash 匹配，§5.4.6）。
+     * **只进本地轨迹**，不进遥测 payload。
+     */
+    effectiveTool?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -516,6 +527,7 @@ export function logPermissionDeny(
     ...(opts.bashShape ? { bashShape: opts.bashShape } : {}),
     ...(opts.envPrefixVars?.length ? { envPrefixVars: opts.envPrefixVars } : {}),
     ...(opts.gitTrust ? { gitTrust: opts.gitTrust } : {}),
+    ...(opts.effectiveTool ? { effectiveTool: opts.effectiveTool } : {}),
   });
 }
 
@@ -741,6 +753,20 @@ export function logMemoryIndexHealth(opts: {
   shadowedCount?: number;
   /** 本次索引是否发生截断（P1-7） */
   truncated?: boolean;
+  /**
+   * 正文里至少引用了一个仓内相对路径的记忆条数（T3 的分母）。
+   *
+   * 只对 project scope 且能确定仓库根时给值：global 记忆不属于任何仓库，
+   * 拿当前 cwd 判会把「讲别的项目」的记忆全判成失效（iam-studio-fe 实测 97% 误报）。
+   */
+  anchorReferencedCount?: number;
+  /**
+   * 引用了路径、且路径**全部不存在**的记忆条数（T3 的分子）。
+   *
+   * 为什么只统计、不进索引行：误报面 71%–97%，把 ⚠ 常驻进 system prompt
+   * 的代价远大于收益。判定口径与影子统计同源（`memory/anchor-health.ts`）。
+   */
+  anchorDeadCount?: number;
 }): void {
   emit(EVENT_NAMES.MEMORY_INDEX_HEALTH, {
     memory_scope: v(opts.scope),
@@ -750,6 +776,10 @@ export function logMemoryIndexHealth(opts: {
     orphan_count: opts.fileCount - opts.indexEntryCount,
     ...(opts.shadowedCount !== undefined ? { shadowed_count: opts.shadowedCount } : {}),
     ...(opts.truncated !== undefined ? { truncated: opts.truncated } : {}),
+    ...(opts.anchorReferencedCount !== undefined
+      ? { anchor_referenced_count: opts.anchorReferencedCount }
+      : {}),
+    ...(opts.anchorDeadCount !== undefined ? { anchor_dead_count: opts.anchorDeadCount } : {}),
   });
 }
 
@@ -902,7 +932,10 @@ export type MemoryGuardKind =
  *
  * 口径：
  * - `seq`：本会话第几个触发抽取的 end_turn（从 1 起），跳过的也占号
- * - `outcome=ran`：真的跑了 fork；`written` = 本次去重后写入的记忆条数，token 取 fork 的 usage
+ * - `outcome=ran`：真的跑了 fork；`written` = 本次**真正落盘**的记忆条数（去重后），token 取 fork 的 usage。
+ *   ⚠️ 口径是「落盘成功」不是「发起了写入」：被闸门拒绝的调用（`tool_result.is_error`）不计。
+ *   这个区别是 §8.5 回滚判据的前提——若把被拒的写入也计进去，P0-2 生效后 `written`
+ *   不会下降，「连续 3 天 p50 = 0」就测不出闸门到底掐死了没有。
  * - `outcome=skipped`：`reason` ∈ interval（节流）/ in_flight（上一次还没跑完）/ main_wrote（主模型本轮已写）
  * - `catch_up=true`：会话收尾时补跑的那次（节流后有积压）
  *
@@ -954,11 +987,20 @@ export function logMemoryGuard(opts: {
   via: string;
   /** 记忆 scope（可得时） */
   scope?: string;
+  /**
+   * 被淘汰条目的类型（`user` / `feedback` / `project` / `reference` / `agent_action`）。
+   *
+   * 只对 `evicted_to_archive` 有意义：没有这个维度就无法回答「被挤走的是不是 user」
+   * —— 而 T1 的整个改造就是为「user 不再被优先淘汰」服务的，缺了它只能观测到
+   * 「淘汰了几条」，观测不到「淘汰了谁」。可空：其它 guard_kind 不带类型。
+   */
+  memoryType?: string;
 }): void {
   emit(EVENT_NAMES.MEMORY_GUARD, {
     guard_kind: v(opts.kind),
     guard_via: v(opts.via),
     ...(opts.scope !== undefined ? { memory_scope: v(opts.scope) } : {}),
+    ...(opts.memoryType !== undefined ? { memory_type: v(opts.memoryType) } : {}),
   });
   // HB-4（B18）：analytics 是外发漏斗、默认可被隐私级别关掉；本地轨迹另留一份，
   // 「记忆拒写发生在哪个会话的哪一步」才能和其它事件对齐。值都是闭集标签。

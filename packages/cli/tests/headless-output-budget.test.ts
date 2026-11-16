@@ -13,6 +13,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
 import { resolveHeadlessSendBudget } from "@sid-code/cli/entrypoints/headless.ts";
 import { DEFAULT_REQUEST_MAX_TOKENS } from "@sid-code/core/llm/output-budget.ts";
 
@@ -62,6 +63,35 @@ describe("headless 请求输出预算（PR-6）", () => {
       expect(budget.contextWindow).toBe(5_000);
       expect(budget.estimatedInputTokens).toBe(4_500);
     }
+  });
+
+  test("拒绝时的四个诊断值必须是结构化字段，且与 result.diagnostics 同名（F7）", () => {
+    const budget = resolveHeadlessSendBudget({ context_window: 5_000 }, 5_000, 4_500);
+    expect(budget.ok).toBe(false);
+    if (budget.ok) return;
+    // 四个值都要是有限数字 —— headless 会原样塞进 ChildResultMessage.diagnostics，
+    // 少一个或塞 NaN，父进程的归因就退回「读文案」。
+    expect(budget.contextWindow).toBe(5_000);
+    expect(budget.estimatedInputTokens).toBe(4_500);
+    expect(Number.isFinite(budget.windowLimitTokens)).toBe(true);
+    expect(Number.isFinite(budget.floorTokens)).toBe(true);
+    // 不等式关系：剩余 < 下限才是拒绝的原因（顺序写反会让「能发」被当成「发不了」）
+    expect(budget.windowLimitTokens).toBeLessThan(budget.floorTokens);
+  });
+
+  test("源码哨兵：窗口不足分支必须把 diagnostics 结构化传给 emitResult（不是只拼文案）", () => {
+    const src = readFileSync(new URL("../src/entrypoints/headless.ts", import.meta.url), "utf8");
+    // emitResult 第三参存在
+    expect(src).toMatch(
+      /const emitResult = \(\s*success: boolean,\s*output: string,\s*diagnostics\?:/,
+    );
+    // 拒绝分支同时传了四个字段
+    expect(src).toMatch(/contextWindow: sendBudget\.contextWindow/);
+    expect(src).toMatch(/estimatedInputTokens: sendBudget\.estimatedInputTokens/);
+    expect(src).toMatch(/windowLimitTokens: sendBudget\.windowLimitTokens/);
+    expect(src).toMatch(/floorTokens: sendBudget\.floorTokens/);
+    // 写进 result 消息（少了这一句，父进程收到的还是纯文本）
+    expect(src).toContain("...(diagnostics ? { diagnostics } : {})");
   });
 
   test("context_window 与 ContextManager 窗口同值：协议字段语义是窗口，不是输出预算", () => {
