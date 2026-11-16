@@ -5,7 +5,6 @@
  * 1. 统一 Agent 聚合 Registry —— registerDynamicAgents / getActiveAgentDefinitions
  *    让自定义/插件 agent 与内置同源，经 sub_agent 的 type 统一访问
  * 2. general-purpose 默认兜底类型 —— 对标 cc 默认 subagent_type
- * 3. Fork 消息构建接入 —— buildForkMessages 与 SubAgentTask.forkMessages 串联
  */
 
 import { describe, test, expect, afterEach } from "bun:test";

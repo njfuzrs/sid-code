@@ -436,6 +436,81 @@ export function normalizeForMatch(str: string): string {
 }
 
 /**
+ * 归一化命中后，把 new_string 里「和 old_string 对得上」的基准字形还原成文件实际用的变体。
+ *
+ * 归一化是为了**匹配**，不是为了改变文件风格。文件里写的是 `“inherit”`，模型用直引号
+ * 写 old_string 时，若把它的 new_string 原样写回，源码里的中文全角标点与弯引号会被
+ * 静默改成半角（`错误：文件过大` + old `错误:` + new `警告:` → `警告:文件过大`，
+ * 而用户要的是 `警告：文件过大`）。这条与 T1 扩表是一体两面：扩表让更多命中成为可能，
+ * 本函数保证命中之后**只换内容、不换字形**。
+ *
+ * 为什么不照 CC 整串替换（claude-code `FileEditTool/utils.ts` 的 preserveQuoteStyle：
+ * 文件里有弯引号就把 new_string 的**所有**直引号换成弯引号）：中文文档里这会误伤模型
+ * 有意写的直引号（典型是它新写进去的代码片段）。这里更保守，只动「模型沿用原字符」的位置：
+ *
+ * 1. 用最长公共前缀 / 后缀对齐 old_string 与 new_string，圈出模型沿用的区段；
+ * 2. 中间段长度不等说明模型做了插入或删除——前后缀仍对齐，但中间字符与原来的位置不再
+ *    一一对应，按位置映射会改错字符。此时**整段不还原**，宁可不还原也不改错；
+ * 3. 每个可映射位置只在 `newChar === oldChar`（模型沿用了这个字符）且文件侧确实是同类
+ *    字形变体时才替换。模型新写的字符一律不动。
+ *
+ * 已知缺口（刻意不做，见 Agent Note）：**只覆盖「文件是变体、模型写基准」这一个方向**。
+ * 反方向（文件是直引号、模型写弯引号）不还原——那是模型主动选择的字形，且在中文源码里
+ * 把 new_string 的弯引号批量转成直引号误伤面更大。
+ *
+ * @param matchSearch 归一化后的 old_string（全部是基准字形）
+ * @param actualOld 文件里实际命中的原文（可能含变体），与 matchSearch 等长同下标
+ * @param replace 模型给的 new_string
+ */
+function preserveFileStyle(matchSearch: string, actualOld: string, replace: string): string {
+  // 文件侧没有字形差异（命中的就是归一化基准形态）→ 没有风格可保
+  if (matchSearch === actualOld) return replace;
+
+  const oldLen = matchSearch.length;
+  const newLen = replace.length;
+  if (oldLen === 0 || newLen === 0) return replace;
+
+  // 下标一律按 UTF-16 code unit 算：normalizeForMatch 的映射表全是 BMP 单码点，
+  // 匹配位置也是 code unit 下标，这里不能改用 [...str] 按码点拆（emoji 会让下标错位）。
+  let prefix = 0;
+  const prefixMax = Math.min(oldLen, newLen);
+  while (prefix < prefixMax && matchSearch[prefix] === replace[prefix]) prefix++;
+
+  let suffix = 0;
+  const suffixMax = prefixMax - prefix; // 前后缀不允许重叠
+  while (suffix < suffixMax && matchSearch[oldLen - 1 - suffix] === replace[newLen - 1 - suffix]) {
+    suffix++;
+  }
+
+  // 中间段等长才有位置级对应；不等长 = 模型做了插入/删除，只处理前后缀
+  const middleAligned = oldLen === newLen;
+
+  const chars = replace.split("");
+  for (let i = 0; i < newLen; i++) {
+    let oldIndex: number;
+    if (i < prefix) {
+      oldIndex = i;
+    } else if (i >= newLen - suffix) {
+      oldIndex = oldLen - (newLen - i);
+    } else if (middleAligned) {
+      oldIndex = i;
+    } else {
+      continue;
+    }
+
+    const oldChar = matchSearch[oldIndex];
+    const fileChar = actualOld[oldIndex];
+    if (oldChar === undefined || fileChar === undefined) continue;
+    if (oldChar === fileChar) continue; // 文件用的就是基准字形，无需还原
+    if (chars[i] !== oldChar) continue; // 模型在这里换了字符，不猜它的意图
+    // 只有归一化后相同（同一字形的不同变体）才还原，防跨类误替换
+    if (normalizeForMatch(oldChar) !== normalizeForMatch(fileChar)) continue;
+    chars[i] = fileChar;
+  }
+  return chars.join("");
+}
+
+/**
  * 字形归一化匹配：在归一化串上定位，再回到原文做替换。
  *
  * 为什么不能只取 `indexOf` 的第一处：不同原文（`x—y` 与 `x-y`）归一化后可能撞车，
@@ -486,7 +561,9 @@ function tryNormalizedMatch(
   }
 
   if (variants.length === 1) {
-    const origExact = tryExactMatch(content, variants[0]!, replace, replaceAll);
+    // 单形态时所有命中的原文一致，按它算一次保留风格后的替换串即可
+    const preserved = preserveFileStyle(matchSearch, variants[0]!, replace);
+    const origExact = tryExactMatch(content, variants[0]!, preserved, replaceAll);
     if (!origExact || origExact.occurrences === 0) return null;
     return {
       ...origExact,
@@ -515,10 +592,12 @@ function tryNormalizedMatch(
   // 多种形态 + replace_all：按位置逐处替换。
   // 不能用 split/join（它只认一种原文形态，而这里恰好有多种），也不能按形态逐个 split
   // （替换进来的新文本可能再被下一轮命中）。
+  // 每处的原文形态不同，保留风格要逐处算：同一份 new_string 在不同字形下会被还原成不同的变体。
   let replaced = "";
   let prev = 0;
   for (const idx of positions) {
-    replaced += content.slice(prev, idx) + replace;
+    const actualOld = content.slice(idx, idx + matchSearch.length);
+    replaced += content.slice(prev, idx) + preserveFileStyle(matchSearch, actualOld, replace);
     prev = idx + matchSearch.length;
   }
   replaced += content.slice(prev);

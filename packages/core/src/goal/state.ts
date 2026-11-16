@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { DEFAULT_GOAL_CONFIG } from "./config.ts";
 
 // ─── 类型定义 ───
 
@@ -40,6 +41,30 @@ export type GoalStatus =
   | "turns_limited" // 轮次上限耗尽
   | "complete"; // 评估者确认完成
 
+/**
+ * G2（2026-11-16）：等待挂起的「连续放行」记账。
+ *
+ * 挂上显式等待源（monitor / `wait_until` / `schedule_wakeup`）后模型会 end_turn 等事件，
+ * 此时 goal 闸门必须放行，而不是把它打回下一轮（判据见 `query/goal-waiting.ts`）。
+ *
+ * 但放行不能无上限：一个永远不会 fire 的等待源 + 反复 end_turn 会让评估器彻底看不到
+ * 这条路径，「连续 N 轮相同 blockerKey」的 blocked 检测也就形同失效。所以按「同一组
+ * 等待源」数连续放行次数，到顶就回到评估器。
+ *
+ * 放 `GoalState` 而不是 `LoopState`：后者是消息内口径、每条用户消息重建，
+ * 计数放那里等于用户每说一句话就把上限清零，「连续」二字就没有意义了。
+ * `GoalState` 随 goal 落盘，跨消息、跨 resume 都保留。
+ */
+export interface GoalWaitPass {
+  /**
+   * 这一组等待源的键：排序后的等待 id 用 `|` 连接；只有待投递通知时为 `"notification"`。
+   * id 集合一变（换了等待对象）就换组、计数从 0 起算——新等待是新的机会。
+   */
+  key: string;
+  /** 同一组等待源已连续放行的次数（正整数） */
+  count: number;
+}
+
 export interface GoalState {
   /** 唯一标识（UUID），每次 /goal set 生成新值 */
   id: string;
@@ -53,14 +78,41 @@ export interface GoalState {
   tokensUsed: number;
   /** 已执行轮次 */
   turnsUsed: number;
-  /** 最大轮次（goal 级别，默认 150） */
+  /** 最大轮次（goal 级别，默认取 DEFAULT_GOAL_CONFIG.defaultMaxTurns） */
   maxTurns: number;
+  /**
+   * 轮次接近上限（≥ GOAL_TURNS_NEAR_LIMIT_RATIO）的软提醒是否已发过。
+   *
+   * 阈值每轮都会被重新判定（loop.ts 的 goal 回注段），没有这个标记就是「只要还在
+   * 80% 以上，每轮都塞一条同样的提醒」—— 与预算告警同源的刷屏问题。
+   *
+   * 挂在 `GoalState` 而不是 `LoopState`：后者每条用户消息重建，而 goal 跨消息累计。
+   * 挂错了同一档轮次会在用户下一条消息里再提示一遍。
+   *
+   * 需要持久化：`/goal resume` 恢复后不应再提醒一次（用户与模型都已经知道进度）；
+   * 反序列化按 `=== true` 判定，旧会话缺这个字段时视为未提醒（那时也确实没提醒过）。
+   */
+  softLimitWarned?: boolean;
+  /**
+   * 预算告警（≥85%）是否已提示过。
+   *
+   * 「硬约束每轮检查」之后，预算进入告警档的每一轮都会重新判定出 `warning`，
+   * 没有这个标记就是每轮往对话里塞一条一模一样的提醒。挂在 `GoalState` 而不是
+   * `LoopState`：后者每条用户消息重建，而 goal 跨消息累计 —— 挂错了同一档预算
+   * 会在第二条消息里再提示一遍（模板与本字段同源，见 good/limits.ts）。
+   */
+  budgetWarningEmitted?: boolean;
   /** 创建时间戳 */
   createdAt: number;
   /** 最后更新时间戳 */
   updatedAt: number;
   /** 评估者最后一次返回的 reason（用于持久化断点信息） */
   lastEvalReason?: string;
+  /**
+   * G2（2026-11-16）：等待挂起的连续放行计数。
+   * `undefined` = 当前没有因等待而放行过 end_turn（也用于等待源全部释放后的清零）。
+   */
+  waitPass?: GoalWaitPass;
   /**
    * 证据日志（Evidence Log）——独立于对话历史的结构化证据链。
    * 每次模型产出关键可验证输出时追加。Compact 不影响此数据。
@@ -86,7 +138,7 @@ export function createGoal(objective: string, options?: CreateGoalOptions): Goal
     tokenBudget: options?.tokenBudget || undefined,
     tokensUsed: 0,
     turnsUsed: 0,
-    maxTurns: options?.maxTurns ?? 150,
+    maxTurns: options?.maxTurns ?? DEFAULT_GOAL_CONFIG.defaultMaxTurns,
     createdAt: now,
     updatedAt: now,
     evidenceLog: [],
@@ -153,10 +205,28 @@ export function deserializeGoalState(json: string): GoalState {
     tokenBudget: parsed.tokenBudget,
     tokensUsed: parsed.tokensUsed ?? 0,
     turnsUsed: parsed.turnsUsed ?? 0,
-    maxTurns: parsed.maxTurns ?? 150,
+    maxTurns: parsed.maxTurns ?? DEFAULT_GOAL_CONFIG.defaultMaxTurns,
+    softLimitWarned: parsed.softLimitWarned === true,
+    budgetWarningEmitted: parsed.budgetWarningEmitted === true,
     createdAt: parsed.createdAt ?? Date.now(),
     updatedAt: parsed.updatedAt ?? Date.now(),
     lastEvalReason: parsed.lastEvalReason,
+    waitPass: normalizeWaitPass(parsed.waitPass),
     evidenceLog: Array.isArray(parsed.evidenceLog) ? parsed.evidenceLog : [],
   };
+}
+
+/**
+ * `waitPass` 的类型防御。
+ *
+ * 旧会话的 JSONL 里没有这个字段（resume 时要当「从未放行过」，不是 NaN 计数）；
+ * 手改坏的 JSON 也不能让 `count` 变成 `NaN` —— `NaN >= 3` 恒为 false，
+ * 那等于把连续放行上限整个禁用掉，而且不会有任何报错。
+ */
+function normalizeWaitPass(raw: unknown): GoalWaitPass | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const { key, count } = raw as { key?: unknown; count?: unknown };
+  if (typeof key !== "string" || key.length === 0) return undefined;
+  if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) return undefined;
+  return { key, count: Math.floor(count) };
 }

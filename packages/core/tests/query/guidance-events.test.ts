@@ -238,7 +238,10 @@ describe("接线", () => {
     const loop = readFileSync(join(import.meta.dir, "../../src/query/loop.ts"), "utf8");
     const p12 = loop.indexOf("reminderParts.push(pressureReminder);");
     expect(loop.indexOf('"ContextPressureReminder", {', p12) - p12).toBeLessThan(300);
-    const p14 = loop.indexOf("reminderParts.push(buildGoalReminder(goal));");
+    // G5（2026-11-16）：调用签名从 `buildGoalReminder(goal)` 扩成 `(goal, { waitingSources })`，
+    // 多行书写后旧的整串字面量不再命中。锚点改成「调用起始」而不是整行字面量——
+    // 这里验的是「push 之后紧跟事件」这条接线关系，不该被参数个数变化打红。
+    const p14 = loop.indexOf("buildGoalReminder(goal,");
     expect(loop.indexOf('"GoalReminderInjected", {', p14) - p14).toBeLessThan(500);
   });
 });

@@ -2079,17 +2079,12 @@ export class TraceCollector {
         // 而「它的工作目录是哪」任何事件都没有 —— 子代理工具调用打在哪个目录无从判定。
         ...(input.isolation ? { isolation: input.isolation } : {}),
         ...(input.agent_cwd ? { agent_cwd: input.agent_cwd } : {}),
-        // T3：委派形态。此前 fork 只有一行日志，「这次委派是隔离还是 fork」
-        // 在轨迹里答不上来，也没法统计 fork 被用了几次（T7 的去留判据依赖它）。
-        // 命名边界：delegation_mode=fork 指 sub_agent 的 fork 参数，
-        // 与 forked-agent.ts 的后台辅助任务（caller: agent:fork）无关。
+        // T3：委派形态（isolated / resume / team）。06H1 T7 删掉 sub_agent 的 fork 参数后，
+        // 带预置历史的只剩 send_message 续接，记为 resume；历史轨迹里的 fork 见 hook/types.ts。
         ...(input.delegation_mode ? { delegation_mode: input.delegation_mode } : {}),
-        // fork 的两个计数只在 fork 时出现：非 fork 写 0 会让「fork 用了几次」多一层噪音
+        // 预置历史条数只在 resume 时出现：其余形态写 0 只是噪音
         ...(typeof input.inherited_messages === "number"
           ? { inherited_messages: input.inherited_messages }
-          : {}),
-        ...(typeof input.parent_messages === "number"
-          ? { parent_messages: input.parent_messages }
           : {}),
       },
     });

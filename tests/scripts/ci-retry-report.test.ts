@@ -22,8 +22,8 @@ describe("parseRetryLines：只认行首结论 + (attempt N≥2)", () => {
       "(fail) always fail (attempt 2) [0.03ms]",
     ].join("\n");
     expect(parseRetryLines(log)).toEqual([
-      { name: "flaky: 第一次失败第二次通过", outcome: "pass", attempt: 2 },
-      { name: "always fail", outcome: "fail", attempt: 2 },
+      { name: "flaky: 第一次失败第二次通过", outcome: "pass", attempt: 2, file: undefined },
+      { name: "always fail", outcome: "fail", attempt: 2, file: undefined },
     ]);
   });
 
@@ -79,8 +79,8 @@ describe("formatReport：给人看的报告", () => {
     expect(text).toContain("本轮有 2 条用例被重试");
     expect(text).toContain("重试后通过：1 条");
     expect(text).toContain("重试后仍失败：1 条");
-    expect(text).toContain("| 被救回来的 | pass | 2 |");
-    expect(text).toContain("| 没救回来的 | fail | 2 |");
+    expect(text).toContain("| (未知文件) | 被救回来的 | pass | 2 |");
+    expect(text).toContain("| (未知文件) | 没救回来的 | fail | 2 |");
   });
 
   // 用例名里出现竖线会破坏 markdown 表格列，必须转义 —— 否则 CI 上看到的是错位的表。
@@ -89,5 +89,65 @@ describe("formatReport：给人看的报告", () => {
     expect(text).toContain("a\\|b 用例");
     // 未转义的裸竖线只应出现在表格分隔里
     expect(text.split("\n").filter((l) => l.startsWith("| a|b"))).toEqual([]);
+  });
+});
+
+/**
+ * 按文件归属 —— 「某个测试文件有没有复发」这条判据必须**现在就能验**。
+ *
+ * 造数据的理由与文件头同源：真实复发是不可控事件（且修好之后可能再也不发生），
+ * 等真实样本等于让判据永远空挂。这里用**本仓真实用例名 + 真实 bun 输出形态**
+ * 造样本，证明「出现 `<文件> 的 (attempt 2)` 即复发」这句话是可执行的。
+ * 边界要记住：它证明的是**判据算得对、看得见**，不等于真实 CI 上没再复发。
+ */
+describe("按文件归属：让「某文件是否复发」可判（造数据）", () => {
+  /** 逐字取自本仓真实输出形态（bun 1.4.2）：文件分组头行 + 用例行。 */
+  const REAL_SHAPE_LOG = [
+    "packages/core/tests/query/max-duration-budget.test.ts:",
+    "(pass) T10b：墙钟总预算（--max-duration-ms） > 到点检查发生在轮次自增之前：不白占一格预算 (attempt 2) [507.80ms]",
+    "",
+    "tests/scripts/other.test.ts:",
+    "(fail) 另一个文件的用例 (attempt 2) [1.20ms]",
+  ].join("\n");
+
+  test("文件头行把后续用例归到同一文件，跨文件不串台", () => {
+    expect(parseRetryLines(REAL_SHAPE_LOG)).toEqual([
+      {
+        name: "T10b：墙钟总预算（--max-duration-ms） > 到点检查发生在轮次自增之前：不白占一格预算",
+        file: "packages/core/tests/query/max-duration-budget.test.ts",
+        outcome: "pass",
+        attempt: 2,
+      },
+      {
+        name: "另一个文件的用例",
+        file: "tests/scripts/other.test.ts",
+        outcome: "fail",
+        attempt: 2,
+      },
+    ]);
+  });
+
+  test("报告里能直接看到文件路径与按文件计数（复发判据本体）", () => {
+    const text = formatReport(parseRetryLines(REAL_SHAPE_LOG));
+    expect(text).toContain("packages/core/tests/query/max-duration-budget.test.ts：1 条");
+    expect(text).toContain("tests/scripts/other.test.ts：1 条");
+    expect(text).toContain(
+      "| packages/core/tests/query/max-duration-budget.test.ts " +
+        "| T10b：墙钟总预算（--max-duration-ms） > 到点检查发生在轮次自增之前：不白占一格预算 " +
+        "| pass | 2 |",
+    );
+  });
+
+  test("日志里没有文件头行时标成 (未知文件)，不静默留白", () => {
+    const hits = parseRetryLines("(pass) 没有文件头的用例 (attempt 2) [1ms]");
+    expect(hits[0]?.file).toBeUndefined();
+    expect(formatReport(hits)).toContain("(未知文件)：1 条");
+  });
+
+  // 反例守卫：用例行不能被当成文件头行，否则文件归属会漂到用例名上。
+  test("用例行不会被误认成文件头行", () => {
+    const hits = parseRetryLines("(pass) 名字结尾像文件但其实是用例 x.test.ts: (attempt 2) [1ms]");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.file).toBeUndefined();
   });
 });

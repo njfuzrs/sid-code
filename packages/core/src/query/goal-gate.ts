@@ -3,21 +3,30 @@
  *
  * Goal Gate 是 queryLoop 中 end_turn 处理链的最后一环。
  * 只有前三道 Gate（Stop Hook → Todo → Hypothesis）全部放行，才轮到 Goal Gate 做最终判定。
+ *
+ * ## 职责边界（2026-11-16 拆分）
+ *
+ * 这里**只做语义评估**：「目标达成了吗、该不该继续」。
+ * 「还能不能继续」——token 记账、预算上限、轮次上限——是确定性事实，已移到
+ * `goal/limits.ts` 的 `checkGoalHardLimits`，由主循环**每轮**调用。
+ *
+ * 之前三者都在本文件，而本文件只在 `isEndTurnLike` 分支被调用，于是模型连续
+ * `tool_use` 空转时 `maxTurns` / `tokenBudget` 一次都没被检查过（2026-11-16 事故）。
+ * 把上限绑在「模型想停」上，等于上限不存在。
  */
 
 import type { GoalState } from "../goal/state.ts";
 import type { GoalEvalResult, EvalConfig } from "../goal/evaluator.ts";
 import type { Message } from "../llm/types.ts";
 import { evaluateGoal, extractEvalContext } from "../goal/evaluator.ts";
-import {
-  checkGoalBudget,
-  buildBudgetLimitMessage,
-  buildBudgetWarningMessage,
-} from "../goal/budget.ts";
-import type { TurnUsage } from "../goal/budget.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
 import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
 import type { GoalConfig } from "../goal/config.ts";
+import {
+  decideWaitSuspend,
+  MAX_CONSECUTIVE_WAIT_PASSES,
+  type GoalWaitingFacts,
+} from "./goal-waiting.ts";
 import { getLogger } from "../debug/logger.ts";
 
 const log = getLogger();
@@ -36,25 +45,20 @@ export interface GoalGateResult {
   /** 评估结果 */
   evalResult?: GoalEvalResult;
   /**
-   * P3-1（2026-09-23）：本次判定时 Goal token 预算已进入 **warning** 档。
+   * G2（2026-11-16）：本轮因「等待挂起」放行。
    *
-   * 供调用方在「即将 continue」时把 `ContinueReason` 记成 `goal_budget_warning`
-   * 而不是笼统的 `goal_gate_retry` —— 这个变体此前**全仓零 `setTransition`**，
-   * 于是「预算告警续跑」按 `LoopTransition.type` 统计恒为 0（告警文案照样进对话，
-   * 所以是可观测缺口，不是功能 bug）。
-   *
-   * ⚠️ 语义是「本轮处于告警档」，**不是**「本轮因告警而续跑」：续跑的决定由下方
-   * 评估阶段做。所以调用方只在 `shouldContinue === true` 时用它换 reason，
-   * 且**替换而非追加**一条事件 —— 一次 continue 必须只对应一条 transition，
-   * 追加会让「按 type 统计续跑次数」的分母凭空多一份（分母口径一变曲线整体平移）。
+   * `shouldContinue=false` 但 goal **仍是 active** —— 语义是「本轮结束，等等待事件
+   * 唤醒下一轮」，调用方**不得**按 completed / impossible / 「终止」处理（那会写终态、
+   * 把 goal 关掉）。与 `blocked` 的区别是：这里模型没卡住，它只是唯一能做的事就是等。
    */
-  budgetWarning?: boolean;
+  waiting?: boolean;
+  /** 等待挂起时命中的等待源 id（进回执与 trace 的 `wait_ids`） */
+  waitIds?: string[];
 }
 
 export interface GoalGateContext {
   goal: GoalState;
   messages: Message[];
-  turnUsage: TurnUsage;
   evalConfig: EvalConfig;
   goalConfig?: GoalConfig;
   blockedDetector: BlockedDetector;
@@ -75,6 +79,68 @@ export interface GoalGateContext {
   absoluteTurn?: number;
   /** 缺口7：第几条用户消息，让 turn 回绕可还原。可选，同 absoluteTurn。 */
   promptSeq?: number;
+  /**
+   * G2（2026-11-16）：等待挂起判据的外部事实，由调用方现算后传入。
+   *
+   * 之所以不让本模块自己去读 registry：`GoalGateContext` 的既有契约就是「事实由调用方
+   * 现算、判定逻辑保持纯」（`blockedDetector`、`traceAppendEvent` 都是这个形状），
+   * 单测因此可以直接构造「有显式等待 / 只有派生任务 / 有待投递通知」三种组合。
+   * 不传 = 无等待态，行为与改动前逐字节一致（极简路径与既有测试不受影响）。
+   */
+  waiting?: GoalWaitingFacts;
+}
+
+/** GoalGateDecision 事件的最小上下文 —— 评估器路径与每轮硬约束路径共用同一份字段口径。 */
+export interface GoalGateDecisionContext {
+  goal: GoalState;
+  traceAppendEvent?: GoalGateContext["traceAppendEvent"];
+  sessionId?: string;
+  absoluteTurn?: number;
+  promptSeq?: number;
+}
+
+/**
+ * 写一条 `GoalGateDecision` trace 事件。
+ *
+ * 抽出成模块级函数（而不是留在 `handleGoalGate` 闭包里）的原因：`goal/limits.ts` 的
+ * 每轮硬约束检查也要落**同一形状**的事件。两条路径各写一份的话字段会分叉，
+ * 而离线统计是按 `reason` 与字段名分桶的——分叉之后「goal 为什么停」再也对不上账。
+ */
+export function emitGoalGateDecision(
+  ctx: GoalGateDecisionContext,
+  reason: string,
+  shouldContinue: boolean,
+  extra?: Record<string, unknown>,
+): void {
+  const { goal, traceAppendEvent, sessionId, absoluteTurn, promptSeq } = ctx;
+  if (!traceAppendEvent || !sessionId) return;
+  try {
+    traceAppendEvent({
+      event: "GoalGateDecision",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data: {
+        goalId: goal.id,
+        // 缺口7：`turn`（goal.turnsUsed）是消息内口径、跨消息回绕，与 hypothesis
+        // 各事件不可直接比较/相减。absoluteTurn（会话累计）补齐后，"这条决策发生在
+        // 会话哪一阶段"才可跨消息还原。两字段都可选——不注入则降级为不落，不阻断。
+        ...(typeof absoluteTurn === "number" ? { turn: absoluteTurn } : { turn: goal.turnsUsed }),
+        ...(typeof absoluteTurn === "number" ? { absoluteTurn } : {}),
+        ...(typeof promptSeq === "number" ? { promptSeq } : {}),
+        shouldContinue,
+        reason,
+        objective: goal.objective.slice(0, 200),
+        status: goal.status,
+        tokensUsed: goal.tokensUsed,
+        tokenBudget: goal.tokenBudget,
+        // P1-3: 记录本次评估器调用消耗的 token（evalResult 可能尚未赋值，延迟读取）
+        evalTokensUsed: (extra as any)?.evalTokensUsed ?? 0,
+        ...extra,
+      },
+    });
+  } catch {
+    /* trace 写入失败不阻断 */
+  }
 }
 
 // ─── 核心逻辑 ───
@@ -93,115 +159,24 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   const {
     goal,
     messages,
-    turnUsage,
     evalConfig,
     goalConfig = DEFAULT_GOAL_CONFIG,
     blockedDetector,
-    traceAppendEvent,
-    sessionId,
-    absoluteTurn,
-    promptSeq,
+    // G2（2026-11-16）：等待挂起判据的外部事实（不传 = 无等待态，旧行为）
+    waiting,
   } = ctx;
   const injectMessages: Array<{ role: "user"; content: Array<{ type: "text"; text: string }> }> =
     [];
   const systemMessages: Array<{ level: "info" | "warning"; text: string }> = [];
 
-  /** 写入 GoalGateDecision trace 事件 */
+  // 字段口径与 `goal/limits.ts` 的每轮硬约束路径共用同一个发射函数（见 emitGoalGateDecision）。
   const emitTraceEvent = (
     reason: string,
     shouldContinue: boolean,
     extra?: Record<string, unknown>,
-  ) => {
-    if (!traceAppendEvent || !sessionId) return;
-    try {
-      traceAppendEvent({
-        event: "GoalGateDecision",
-        session_id: sessionId,
-        timestamp: new Date().toISOString(),
-        data: {
-          goalId: goal.id,
-          // 缺口7：`turn`（goal.turnsUsed）是消息内口径、跨消息回绕，与 hypothesis
-          // 各事件不可直接比较/相减。absoluteTurn（会话累计）补齐后，"这条决策发生在
-          // 会话哪一阶段"才可跨消息还原。两字段都可选——不注入则降级为不落，不阻断。
-          ...(typeof absoluteTurn === "number" ? { turn: absoluteTurn } : { turn: goal.turnsUsed }),
-          ...(typeof absoluteTurn === "number" ? { absoluteTurn } : {}),
-          ...(typeof promptSeq === "number" ? { promptSeq } : {}),
-          shouldContinue,
-          reason,
-          objective: goal.objective.slice(0, 200),
-          status: goal.status,
-          tokensUsed: goal.tokensUsed,
-          tokenBudget: goal.tokenBudget,
-          // P1-3: 记录本次评估器调用消耗的 token（evalResult 可能尚未赋值，延迟读取）
-          evalTokensUsed: (extra as any)?.evalTokensUsed ?? 0,
-          ...extra,
-        },
-      });
-    } catch {
-      /* trace 写入失败不阻断 */
-    }
-  };
+  ) => emitGoalGateDecision(ctx, reason, shouldContinue, extra);
 
-  // 1. 预算检查（在评估之前，省下评估调用费用）
-  //
-  // F1（2026-09-03）：这里**不能**再包 `if (goal.tokenBudget)`。记账是无条件的，
-  // 门控才依赖是否设了预算——包住会让默认配置（defaultTokenBudget=0 → undefined）下
-  // tokensUsed 恒为 0，四处展示报错数，且中途 /goal budget 时上限从 0 重算而失真。
-  // checkGoalBudget 两条分支都会累加，无预算时它必返回 "ok"，故下面两个分支自然不触发。
-  const budgetStatus = checkGoalBudget(goal, turnUsage);
-  // P3-1：本次是否处于预算告警档。下方每个 `shouldContinue: true` 的 return 都要带上它，
-  // 否则调用方拿不到这个事实、`goal_budget_warning` 继续是死变体。
-  let budgetWarning = false;
-  if (goal.tokenBudget) {
-    if (budgetStatus === "exceeded") {
-      goal.status = "budget_limited";
-      log.warn(
-        "GOAL_GATE",
-        `预算耗尽: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, 停止循环`,
-      );
-      injectMessages.push({
-        role: "user",
-        content: [{ type: "text", text: buildBudgetLimitMessage(goal) }],
-      });
-      systemMessages.push({ level: "warning", text: "Goal 预算耗尽，进入收尾模式" });
-      emitTraceEvent("budget_exceeded", false, { budgetRatio: goal.tokensUsed / goal.tokenBudget });
-      return {
-        result: { shouldContinue: false, completed: false, impossible: false },
-        injectMessages,
-        systemMessages,
-      };
-    }
-    if (budgetStatus === "warning") {
-      budgetWarning = true;
-      log.info(
-        "GOAL_GATE",
-        `预算预警: ratio=${Math.round((goal.tokensUsed / goal.tokenBudget) * 100)}%`,
-      );
-      injectMessages.push({
-        role: "user",
-        content: [{ type: "text", text: buildBudgetWarningMessage(goal) }],
-      });
-      systemMessages.push({
-        level: "warning",
-        text: `Goal 预算预警 (${Math.round((goal.tokensUsed / goal.tokenBudget) * 100)}%)`,
-      });
-    }
-  }
-
-  // 2. 轮次检查
-  if (goal.turnsUsed >= goal.maxTurns) {
-    goal.status = "turns_limited";
-    log.warn("GOAL_GATE", `轮次耗尽: turns=${goal.turnsUsed}/${goal.maxTurns}, 停止循环`);
-    systemMessages.push({ level: "warning", text: `Goal 已达最大轮次 (${goal.maxTurns})` });
-    emitTraceEvent("turns_limited", false);
-    return {
-      result: { shouldContinue: false, completed: false, impossible: false },
-      injectMessages,
-      systemMessages,
-    };
-  }
-
-  // 3. 前 N 轮跳过评估（模型刚开始，不可能已完成）
+  // 1. 前 N 轮跳过评估（模型刚开始，不可能已完成）
   if (goal.turnsUsed < evalConfig.minTurnsBeforeEval) {
     log.debug(
       "GOAL_GATE",
@@ -209,7 +184,45 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     );
     emitTraceEvent("eval_skipped", true);
     return {
-      result: { shouldContinue: true, completed: false, impossible: false, budgetWarning },
+      result: { shouldContinue: true, completed: false, impossible: false },
+      injectMessages,
+      systemMessages,
+    };
+  }
+
+  // 3.5 等待挂起（G2，2026-11-16）
+  //
+  // 模型挂上显式等待源（monitor / wait_until / schedule_wakeup）后 end_turn 是在**等**，
+  // 不是「以为做完了」。此时调评估器只会得到「未达成，继续推进」，把模型打回下一轮
+  // 去重复查询状态（P1 守卫要拦的同一件事），还额外烧一次评估调用。
+  //
+  // 位置在前 N 轮跳过评估之后：那是「模型刚开始、本来就不评估」的分支，优先级更高；
+  // 也在预算 / 轮次两个硬上限之后：那两条是终止语义，等待不该豁免它们。
+  const waitSuspend = decideWaitSuspend(goal, waiting);
+  goal.waitPass = waitSuspend.nextWaitPass;
+  if (waitSuspend.release) {
+    log.info(
+      "GOAL_GATE",
+      `等待挂起: wait_ids=${waitSuspend.waitIds.join(",") || "(通知)"}, 连续第 ${waitSuspend.count}/${MAX_CONSECUTIVE_WAIT_PASSES} 次放行`,
+    );
+    systemMessages.push({
+      level: "info",
+      text: `⏸ 目标等待中（${waitSuspend.count}/${MAX_CONSECUTIVE_WAIT_PASSES}）：本轮结束，等待事件到达后自动续跑`,
+    });
+    // trace 字段名按修复方案 §4.2 用 `wait_ids`：离线分析要能按等待源对账
+    // 「这次 end_turn 是为了等谁」，与 `WaitReleased` 的 id 口径一致。
+    emitTraceEvent("waiting", false, {
+      wait_ids: waitSuspend.waitIds,
+      wait_pass_count: waitSuspend.count,
+    });
+    return {
+      result: {
+        shouldContinue: false,
+        completed: false,
+        impossible: false,
+        waiting: true,
+        waitIds: waitSuspend.waitIds,
+      },
       injectMessages,
       systemMessages,
     };
@@ -306,7 +319,6 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
         impossible: false,
         feedback: impossibleReminder,
         evalResult,
-        budgetWarning,
       },
       injectMessages,
       systemMessages,
@@ -387,7 +399,6 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
         impossible: false,
         feedback: blockedReminder,
         evalResult,
-        budgetWarning,
       },
       injectMessages,
       systemMessages,
@@ -424,7 +435,6 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
       impossible: false,
       feedback,
       evalResult,
-      budgetWarning,
     },
     injectMessages,
     systemMessages,
@@ -447,6 +457,9 @@ ${evalResult.progress != null ? `当前进度: ${evalResult.progress}%` : ""}
 - 确保执行的命令输出可见（评估者只能看到对话中的内容）
 - 如果遇到阻塞，尝试不同的方法而不是重复失败的操作
 - 若确认目标无法达成，请明确说明原因
+- 如果下一步取决于外部状态（CI 跑完 / PR 合并 / 部署 / 别人 review），**等待也是推进**：
+  用 monitor、\`bash --wait_until_seconds\` 或 schedule_wakeup 把等待挂上，然后结束本轮即可——
+  等待源回报时会把主循环叫醒。不要为了「显得在推进」在前台反复查询同一个状态。
 </system-reminder>`;
 }
 
@@ -482,7 +495,10 @@ function buildImpossibleReminder(goal: GoalState, evalResult: GoalEvalResult): s
 这只是评估者的判断，可能不准。请你自己决定下一步：
 - 如果确实无法达成，明确向用户说明原因和已尝试过的路径，然后收尾；
 - 如果你判断仍有别的思路没试过，换一种方法继续推进；
-- 不要因为这条提示就机械放弃一个其实还能推进的目标。
+- 不要因为这条提示就机械放弃一个其实还能推进的目标；
+- 如果只是卡在等外部状态（CI / 部署 / 别人 review），那不是「无法达成」——**等待也是推进**：
+  用 monitor、\`bash --wait_until_seconds\` 或 schedule_wakeup 挂上显式等待后结束本轮，
+  等待源回报时会把主循环叫醒，不要继续前台轮询。
 （已达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
 </system-reminder>`;
 }
@@ -502,6 +518,8 @@ function buildBlockedReminder(
 请换一种思路：
 - 回顾前几轮到底卡在哪，不要重复已经失败的同一操作；
 - 尝试从不同角度切入，或用不同工具去验证假设；
+- 如果连续受阻的原因是你一直在等同一个外部状态（CI / 部署 / 别人 review），那不算卡住——**等待也是推进**：
+  挂上显式等待（monitor / \`bash --wait_until_seconds\` / schedule_wakeup）后结束本轮，不要继续轮询；
 - 如果确实无法突破，明确说明卡点和已尝试的路径，再决定是否收尾。
 （这只是提示，不会强制终止；达最大轮次或预算耗尽时会自动停止，用户也可随时介入。）
 </system-reminder>`;
