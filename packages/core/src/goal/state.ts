@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { DEFAULT_GOAL_CONFIG } from "./config.ts";
 
 // ─── 类型定义 ───
 
@@ -53,8 +54,21 @@ export interface GoalState {
   tokensUsed: number;
   /** 已执行轮次 */
   turnsUsed: number;
-  /** 最大轮次（goal 级别，默认 150） */
+  /** 最大轮次（goal 级别，默认取 DEFAULT_GOAL_CONFIG.defaultMaxTurns） */
   maxTurns: number;
+  /**
+   * 轮次接近上限（≥ GOAL_TURNS_NEAR_LIMIT_RATIO）的软提醒是否已发过。
+   *
+   * 阈值每轮都会被重新判定（loop.ts 的 goal 回注段），没有这个标记就是「只要还在
+   * 80% 以上，每轮都塞一条同样的提醒」—— 与预算告警同源的刷屏问题。
+   *
+   * 挂在 `GoalState` 而不是 `LoopState`：后者每条用户消息重建，而 goal 跨消息累计。
+   * 挂错了同一档轮次会在用户下一条消息里再提示一遍。
+   *
+   * 需要持久化：`/goal resume` 恢复后不应再提醒一次（用户与模型都已经知道进度）；
+   * 反序列化按 `=== true` 判定，旧会话缺这个字段时视为未提醒（那时也确实没提醒过）。
+   */
+  softLimitWarned?: boolean;
   /**
    * 预算告警（≥85%）是否已提示过。
    *
@@ -95,7 +109,7 @@ export function createGoal(objective: string, options?: CreateGoalOptions): Goal
     tokenBudget: options?.tokenBudget || undefined,
     tokensUsed: 0,
     turnsUsed: 0,
-    maxTurns: options?.maxTurns ?? 150,
+    maxTurns: options?.maxTurns ?? DEFAULT_GOAL_CONFIG.defaultMaxTurns,
     createdAt: now,
     updatedAt: now,
     evidenceLog: [],
@@ -162,7 +176,8 @@ export function deserializeGoalState(json: string): GoalState {
     tokenBudget: parsed.tokenBudget,
     tokensUsed: parsed.tokensUsed ?? 0,
     turnsUsed: parsed.turnsUsed ?? 0,
-    maxTurns: parsed.maxTurns ?? 150,
+    maxTurns: parsed.maxTurns ?? DEFAULT_GOAL_CONFIG.defaultMaxTurns,
+    softLimitWarned: parsed.softLimitWarned === true,
     budgetWarningEmitted: parsed.budgetWarningEmitted === true,
     createdAt: parsed.createdAt ?? Date.now(),
     updatedAt: parsed.updatedAt ?? Date.now(),
