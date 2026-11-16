@@ -975,6 +975,16 @@ export interface CheckpointConfig {
   largeFileThresholdLines?: number;
   /** 超大文件阈值（行数，默认 10000，超过此值直接存 full） */
   hugeFileThresholdLines?: number;
+  /**
+   * 单文件快照上限（MB，默认 5，0 = 不限制）。
+   *
+   * 超限文件**不进快照**（内容与 diff 都不存），因此也就无法 `/undo` 回退——
+   * 换来的是索引不被编译产物撑爆。P3 实测：一次 `ls -la` 把 79MB 的
+   * `sid-code` 二进制收进索引，24 个快照后单份 index.json 涨到 42MB，
+   * 每次快照都要整份 stringify 两次并整份写盘（38–88ms、864MB 累计写盘）。
+   * 大文件是这条链路的唯一入口，阈值是根因侧的一道闸。
+   */
+  maxFileSizeMb?: number;
 }
 
 /** 归因配置（commit / PR 尾注，可配可关） */
@@ -1257,6 +1267,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         compressThresholdKb: value.compress_threshold_kb || value.compressThresholdKb,
         largeFileThresholdLines: value.large_file_threshold_lines || value.largeFileThresholdLines,
         hugeFileThresholdLines: value.huge_file_threshold_lines || value.hugeFileThresholdLines,
+        maxFileSizeMb: value.max_file_size_mb ?? value.maxFileSizeMb,
       };
       // 特殊处理 identity：转换字段名（snake_case → camelCase）
     } else if (configKey === "identity" && typeof value === "object" && value !== null) {

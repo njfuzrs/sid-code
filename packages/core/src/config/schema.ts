@@ -765,6 +765,17 @@ export function validateConfig(config: Config): ValidationResult {
       }
     }
 
+    if (cp.maxFileSizeMb !== undefined) {
+      // 0 = 显式关闭上限（与 maxTotalSizeMb 等「必须正数」的语义不同：这里需要一个关闸开关）。
+      if (typeof cp.maxFileSizeMb !== "number" || cp.maxFileSizeMb < 0) {
+        errors.push({
+          path: `${prefix}.maxFileSizeMb`,
+          message: "必须是非负数（0 表示不限制）",
+          value: cp.maxFileSizeMb,
+        });
+      }
+    }
+
     if (cp.compressThresholdKb !== undefined) {
       if (typeof cp.compressThresholdKb !== "number" || cp.compressThresholdKb < 0) {
         errors.push({
