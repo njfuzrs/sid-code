@@ -1237,7 +1237,8 @@ export class PermissionChecker implements Checker {
     // checker 完全看不到——企业用 CLI 注入权限规则的通道是断的。
     //
     // 两条加载链此前不汇合：`--settings` 走 `setFlagSettings()` 进的是
-    // config/settings 合并器的**内存源**（给 loadConfig 用：模型、开关等），
+    // config/settings 合并器的**内存源**（给 `getSettings()` / `getSettingsForSource()` 用；
+    // 注意 `loadConfig()` 构造的 Config 对象**不读**这个源，见 config.ts 的 extraSettings 注释），
     // 而 RuleLoader 只读磁盘上的 user/project/local/policy 文件。这里把内存源那一侧的
     // `permissions` 取出来喂给 RuleLoader，两链合一。
     //
