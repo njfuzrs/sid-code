@@ -129,6 +129,14 @@ export interface LocalShellTaskState extends TaskStateBase {
   interrupted: boolean;
   isBackgrounded: boolean;
   agentId?: string;
+  /**
+   * 内置等待原语（`sid-wait gh-pr <n>`）：harness 进程内执行，没有子进程。
+   *
+   * 单列一个字段而不是让 UI 去猜命令前缀：面板要能一眼区分「真的在等 PR」与
+   * 「一条看起来挂上了、实际什么都没等的普通后台命令」——后者正是 2.4 那 21 条的形态，
+   * 也正是用户需要看见的差别。UI 侧判据不能靠字符串前缀，否则改文案就静默失效。
+   */
+  builtinWait?: boolean;
 }
 
 /** Agent 任务状态 */

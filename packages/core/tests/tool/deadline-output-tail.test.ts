@@ -129,6 +129,42 @@ describe("R8 验收 1：期限到的通知带输出尾部", () => {
   });
 });
 
+describe("终态通知带输出尾部（自然退出，非期限到）", () => {
+  // 为什么需要：退出码 0 也可能是「假成功」——`sid-wait …; echo $?` 以末尾 echo 的 0 收尾，
+  // 通知报「执行成功」，而输出里那行 `command not found` 是模型唯一能看出问题的证据。
+  // 排查文档第七节第 6 项把它列为「比入口拦截更通用的修法」。
+  test("成功退出的后台命令，通知带输出尾部（最后 5 行）", async () => {
+    const result = await tool.execute({
+      command: "printf 'a-1\\na-2\\na-3\\na-4\\na-5\\na-6\\n'",
+      run_in_background: true,
+    });
+    expect(result.output).toContain("task_id");
+
+    let xml = "";
+    await waitFor(() => {
+      xml = notificationText();
+      return xml.includes("<status>completed</status>");
+    });
+    const matched = xml.match(/<output-tail untrusted="true">([\s\S]*?)<\/output-tail>/);
+    expect(matched).not.toBeNull();
+    // 只带最后 5 行，不是全部 6 行
+    expect(matched![1]).toBe("a-2\na-3\na-4\na-5\na-6");
+  });
+
+  test("没有任何输出的命令不带 output-tail 段（通知形状与改动前一致）", async () => {
+    const result = await tool.execute({ command: "true", run_in_background: true });
+    expect(result.output).toContain("task_id");
+
+    let xml = "";
+    await waitFor(() => {
+      xml = notificationText();
+      return xml.includes("<status>completed</status>");
+    });
+    // 空段只会让模型以为输出读丢了：宁可不写，也不写一个空壳
+    expect(xml).not.toContain("<output-tail");
+  });
+});
+
 describe("R8 验收 2：同对象重挂时点破「期限不是问题所在」", () => {
   test("曾有期限到终态 → 新回执写明上一次的最后输出，并指出问题在退出条件", async () => {
     // 第一次：等 PR #779，脚本一直报同一个状态（模型「等法没有退出条件」的形态）

@@ -163,6 +163,9 @@ export class StateBridge extends EventEmitter {
       }
       if (isShellTask(t)) {
         info.command = t.command;
+        // 内置等待（`sid-wait`）与普通后台命令在面板上必须能一眼分开：
+        // 后者「0 秒完成、报执行成功」正是本次排查里最误导人的形态。
+        if (t.builtinWait) info.builtinWait = true;
       }
       if (isMonitorTask(t)) {
         // monitor 是真进程（走 registry），但呈现与 shell 不同：面板要的是
