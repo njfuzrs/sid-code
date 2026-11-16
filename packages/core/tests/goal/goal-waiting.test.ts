@@ -120,15 +120,18 @@ describe("decideWaitSuspend · 放行", () => {
     const d = step(goal, [waitSource({ id: "mon_1" })]);
     expect(d.release).toBe(true);
     expect(d.waitIds).toEqual(["mon_1"]);
-    expect(goal.waitPass).toEqual({ key: "mon_1", count: 1 });
+    // 计数键是等待**类型**，不是实例 id：id 天然唯一，拿它当键会被「每轮换一个新
+    // monitor」绕过（见 goal-waiting.ts 的 waitKinds 注释与下面的防回归用例）。
+    expect(goal.waitPass).toEqual({ key: "monitor", count: 1 });
   });
 
-  test("等待 id 的枚举顺序不影响分组键", () => {
+  test("同一类型的多个实例归为一组：键不随实例数量/顺序变化", () => {
     const goalA = createGoal("完成迁移工作");
     step(goalA, [waitSource({ id: "b" }), waitSource({ id: "a" })]);
     const goalB = createGoal("完成迁移工作");
-    step(goalB, [waitSource({ id: "a" }), waitSource({ id: "b" })]);
+    step(goalB, [waitSource({ id: "a" })]);
     expect(goalA.waitPass!.key).toBe(goalB.waitPass!.key);
+    expect(goalA.waitPass!.key).toBe("monitor");
   });
 });
 
@@ -148,19 +151,36 @@ describe("decideWaitSuspend · 连续放行上限", () => {
     const over = step(goal, waits);
     expect(over.release).toBe(false);
     // 计数保持不动：之后每次 end_turn 都会评估，直到释放或换组。
-    expect(goal.waitPass).toEqual({ key: "mon_1", count: MAX_CONSECUTIVE_WAIT_PASSES });
+    expect(goal.waitPass).toEqual({ key: "monitor", count: MAX_CONSECUTIVE_WAIT_PASSES });
   });
 
-  test("换一组等待源 → 从 0 起算（新等待是新的机会）", () => {
+  test("换等待源类型 → 从 0 起算（换一种等法是新的机会）", () => {
     const goal = createGoal("完成迁移工作");
     const first = [waitSource({ id: "mon_1" })];
     for (let i = 0; i < MAX_CONSECUTIVE_WAIT_PASSES; i++) step(goal, first);
     expect(step(goal, first).release).toBe(false);
 
-    const d = step(goal, [waitSource({ id: "mon_2" })]);
+    // monitor 到顶后改用 wakeup：类型集合变了，给满新的 3 次。
+    const d = step(goal, [
+      waitSource({ id: "wake_1", kind: "wakeup", promise: { kind: "deadline", deadlineAt: 0 } }),
+    ]);
     expect(d.release).toBe(true);
     expect(d.count).toBe(1);
-    expect(goal.waitPass).toEqual({ key: "mon_2", count: 1 });
+    expect(goal.waitPass).toEqual({ key: "wakeup", count: 1 });
+  });
+
+  test("换实例但类型不变 → 不重置：每轮重挂新 monitor 绕不过上限", () => {
+    // 2026-11-16 复核发现的旁路：等待 id 由工具生成、天然唯一，用 id 当计数键时
+    // 模型每轮重挂一个新 monitor 就重置为 0（实测连续 10 个新 id → 10 次全放行）。
+    // 这条用例是本轮修复的防回归：期望值来自「上限必须真的封顶」这个契约，
+    // 不是从修复后的实现反推。
+    const goal = createGoal("完成迁移工作");
+    const releases: boolean[] = [];
+    for (let i = 1; i <= MAX_CONSECUTIVE_WAIT_PASSES + 2; i++) {
+      releases.push(step(goal, [waitSource({ id: `mon_${i}` })]).release);
+    }
+    expect(releases).toEqual([true, true, true, false, false]);
+    expect(goal.waitPass).toEqual({ key: "monitor", count: MAX_CONSECUTIVE_WAIT_PASSES });
   });
 
   test("等待源全部释放 → 清零，下次重新给满次数", () => {

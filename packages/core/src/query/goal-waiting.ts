@@ -19,8 +19,14 @@
  *
  * 只放行不回收，会开出一条绕过评估的旁路：挂一个永远不会 fire 的等待源（或一个用户
  * 早就删掉的 monitor）+ 反复 end_turn，评估器一次都不会被调用，「连续 N 轮相同 blockerKey」
- * 的 blocked 检测也就形同失效。所以按「同一组等待源」数连续放行次数，到顶就回到评估器。
- * 换组（等待 id 集合变了）与等待源全部释放都会让计数从 0 起算——新等待是新的机会。
+ * 的 blocked 检测也就形同失效。所以按「同一类等待源」数连续放行次数，到顶就回到评估器。
+ * 换类（等待类型集合变了，如 monitor → wakeup）与等待源全部释放都会让计数从 0 起算
+ * ——换一种等法是新的机会。
+ *
+ * 计数键为什么是**类型**而不是 id（2026-11-16 复核实证）：monitor / 唤醒的 id 由工具
+ * 生成、天然唯一，模型每轮重挂一个新 monitor 就换了一组 id。用 id 当键时上限形同不存在
+ * （实测连续换 10 个 id → 10 次全部放行，`waitPass` 每次都是 `count:1`），正好是本节
+ * 开头要防的那条旁路。
  *
  * 本模块保持纯函数（不读 registry 单例、不写盘），四种组合可以直接单测。
  */
@@ -45,8 +51,19 @@ export interface GoalWaitingFacts {
   hasDeclaredExternalWait: boolean;
   /** 是否有待投递的后台通知（事件已经在队列里，下一轮马上就会开始） */
   hasPendingNotifications: boolean;
-  /** 当前显式外部等待的 id（用于 `wait_ids` 与连续放行计数的键） */
+  /** 当前显式外部等待的 id（用于 `wait_ids` 回执与 trace，不参与计数键） */
   waitIds: string[];
+  /**
+   * 当前显式外部等待的**类型**集合（排序去重后）。
+   *
+   * 连续放行的计数键取类型而不是 id：id 由工具生成、天然唯一，模型每轮重挂一个新
+   * monitor 就换了一组 id，拿 id 当键会让上限被无限绕过（实跑：换 10 个 id → 10 次
+   * 全放行）。换**类型**（monitor → wakeup）才算新的一组等待。
+   *
+   * **必填而不是可选**：缺省会让手写 facts 的调用方静默退化成「通知占位键」，
+   * 把「挂着 monitor」和「只有待投递通知」混成同一组计数，而且没有任何报错。
+   */
+  waitKinds: string[];
 }
 
 /** `collectGoalWaitingFacts` 的「无等待」缺省值：查询失败时用它，保持旧行为。 */
@@ -54,6 +71,7 @@ export const NO_GOAL_WAITING_FACTS: GoalWaitingFacts = {
   hasDeclaredExternalWait: false,
   hasPendingNotifications: false,
   waitIds: [],
+  waitKinds: [],
 };
 
 /**
@@ -72,6 +90,9 @@ export function collectGoalWaitingFacts(
     hasDeclaredExternalWait: declared.length > 0,
     hasPendingNotifications: pendingNotifications,
     waitIds: declared.map((w) => w.id),
+    // 排序去重：同一类等待挂多个实例（两个 monitor 看同一个 PR）只算一类，
+    // 枚举顺序不影响计数键。
+    waitKinds: [...new Set(declared.map((w) => w.kind))].sort(),
   };
 }
 
@@ -104,10 +125,12 @@ export function decideWaitSuspend(
     return { release: false, waitIds: [], count: 0, nextWaitPass: undefined };
   }
 
-  // 换组即从 0 起算：key 由**排序后**的 id 集合拼成，等待源的枚举顺序不影响判定。
-  // 只有待投递通知时 id 集合为空，用固定占位键（否则空串会让所有通知共享同一个键，
+  // 换组即从 0 起算：key 由**排序去重后**的等待类型集合拼成，等待源的枚举顺序与
+  // 实例数量都不影响判定（换实例不算新机会，换类型才算）。
+  // 只有待投递通知时类型集合为空，用固定占位键（否则空串会让所有通知共享同一个键，
   // 分不清「同一批通知」还是「换了一批」——两者都该算新的一组）。
-  const key = waitIds.length > 0 ? waitIds.join("|") : PENDING_NOTIFICATION_KEY;
+  const waitKinds = facts ? [...new Set(facts.waitKinds ?? [])].sort() : [];
+  const key = waitKinds.length > 0 ? waitKinds.join("|") : PENDING_NOTIFICATION_KEY;
   const prev = goal.waitPass;
   const count = prev && prev.key === key ? prev.count : 0;
 

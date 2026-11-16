@@ -21,6 +21,7 @@ import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
 import type { QueryDeps } from "@sid-code/core/query/types.ts";
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import type { LegacyTool } from "@sid-code/core/tool/types.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { createGoal } from "@sid-code/core/goal/state.ts";
@@ -94,6 +95,10 @@ function makeHarness(opts: {
   goal: GoalState;
   responses: AccumulatedResponse[];
   config?: Partial<Config>;
+  /** 当前权限模式（plan = 计划模式，goal 应暂停计量） */
+  permissionMode?: "default" | "plan";
+  /** 往工具注册表里塞工具（F1 空参数检测需要工具的 required schema） */
+  registerTools?: (registry: ToolRegistry) => void;
 }): Harness {
   const ctxMgr = new ContextManager({ maxTokens: 200000 });
   ctxMgr.setSystemPrompt("test");
@@ -129,6 +134,7 @@ function makeHarness(opts: {
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${respIdx}`,
     getGoalState: () => goal,
+    getCurrentPermissionMode: () => opts.permissionMode ?? "default",
     updateGoalState: (updater: (g: GoalState) => void) => {
       updater(goal);
       syncedStatuses.push(goal.status);
@@ -138,10 +144,13 @@ function makeHarness(opts: {
     },
   };
 
+  const toolRegistry = new ToolRegistry();
+  opts.registerTools?.(toolRegistry);
+
   const loopConfig: QueryLoopConfig = {
     config: makeConfig(opts.config),
     ctxMgr,
-    toolRegistry: new ToolRegistry(),
+    toolRegistry,
     sessionState: new SessionState(`test-goal-limits-${Math.random()}`),
     fallback: new ModelFallback(),
     deps,
@@ -168,6 +177,36 @@ function makeHarness(opts: {
 
 const N_TOOL_ROUNDS = (n: number, toolName = "bash") =>
   Array.from({ length: n }, (_, i) => toolUseResponse(`第${i + 1}轮`, toolName));
+
+/** 空参数的 tool_use（F1 退化形态：input={} 且工具 schema 有 required 字段） */
+function emptyParamToolUse(
+  text: string,
+  usage = { inputTokens: 100, outputTokens: 50 },
+): AccumulatedResponse {
+  return {
+    role: "assistant",
+    content: [
+      { type: "text", text },
+      { type: "tool_use", id: `call-${text}`, name: "bash", input: {} },
+    ] as ContentBlock[],
+    stopReason: "tool_use",
+    usage,
+  };
+}
+
+/** 带 required 的工具（F1 判据需要它才能识别「真退化」而不是「本就无必填参数」） */
+function bashLikeTool(): LegacyTool {
+  return {
+    name: () => "bash",
+    description: () => "run a command",
+    inputSchema: () => ({
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    }),
+    call: async () => ({ output: "ok" }),
+  } as unknown as LegacyTool;
+}
 
 describe("G1 · goal 轮次上限每轮生效", () => {
   test("T-G1-1：maxTurns=5、10 轮 tool_use → 第 5 轮后收尾，不再发第 6 次工作请求", async () => {
@@ -314,8 +353,11 @@ describe("G4 · token 记账不双记", () => {
 
     await h.run();
 
-    // 4 轮 × (100 + 50) = 600。若每轮检查与 handleGoalGate 都记账，这里会 >600
-    expect(goal.tokensUsed).toBe(600);
+    // 4 轮 × (100 + 50) = 600，**外加强制总结轮 150**（T-G4-3 之前的实现不记收尾轮，
+    // 这条断言当时是 600；修了收尾轮漏账后应为 750）。
+    // 「不双记」这条契约仍由它守：若每轮检查与 handleGoalGate 都记账，末轮会被算两次，
+    // 结果会是 900（6 × 150）而不是 750。
+    expect(goal.tokensUsed).toBe(750);
   });
 
   test("T-G4-2：end_turn 轮只记一次（旧路径 + 新路径同时记账会翻倍）", async () => {
@@ -329,6 +371,102 @@ describe("G4 · token 记账不双记", () => {
 
     await h.run();
 
-    expect(goal.tokensUsed).toBe(400);
+    // 那一轮 end_turn 400 + 强制总结轮 150（默认响应）= 550。
+    // 若 end_turn 被两条路径各记一次，这里会是 950（400 + 400 + 150）。
+    expect(goal.tokensUsed).toBe(550);
+  });
+
+  test("T-G4-3：强制总结轮也进账（撞 goal 上限时 900 而不是 750）", async () => {
+    // 2026-11-16 复核发现的漏账：每轮检查只覆盖 while 内的轮次，收尾轮在 while 之外，
+    // 不经过 checkGoalHardLimits。修前实测 maxTurns=5 只记到 750（5×150），
+    // 比值 0.83，达不到方案 §7.5 的 tokensUsed ÷ AfterModel 合计 ∈ [0.95, 1.05]。
+    const goal = createGoal("推进目标", { maxTurns: 5 });
+    const h = makeHarness({ goal, responses: N_TOOL_ROUNDS(10) });
+
+    await h.run();
+
+    expect(h.modelCalls()).toBe(6); // 5 轮工作 + 1 轮强制总结
+    expect(goal.tokensUsed).toBe(900); // 6 × (100 + 50)
+  });
+
+  test("T-G4-4：主循环撞 maxTurns、goal 仍 active → 收尾轮同样进账", async () => {
+    const goal = createGoal("推进目标", { maxTurns: 100 });
+    const h = makeHarness({
+      goal,
+      responses: N_TOOL_ROUNDS(10),
+      config: { maxTurns: 3 } as Partial<Config>,
+    });
+
+    await h.run();
+
+    expect(goal.status).toBe("active");
+    expect(h.modelCalls()).toBe(4); // 3 轮工作 + 1 轮强制总结
+    expect(goal.tokensUsed).toBe(600); // 4 × (100 + 50)
+  });
+});
+
+describe("G1/G3/G4 · plan mode 期间 goal 暂停计量", () => {
+  test("T-PLAN-1：plan mode、goal.maxTurns=3 → 轮次/token 都不记，上限不可能触发", async () => {
+    // 2026-11-16 复核发现的 P1：此前只豁免「判上限」而没豁免「累加轮次」与「记账」，
+    // 三者不一致。实测 plan mode 下 turnsUsed=50 / tokensUsed=0 / status=active
+    // （goal.maxTurns=3 形同不存在），退出 plan mode 后立刻 turns_limited，
+    // 且这些轮的 token 对 tokenBudget 完全隐形。
+    const goal = createGoal("推进目标", { maxTurns: 3 });
+    const h = makeHarness({
+      goal,
+      responses: N_TOOL_ROUNDS(10),
+      permissionMode: "plan",
+    });
+
+    await h.run();
+
+    expect(goal.turnsUsed).toBe(0);
+    expect(goal.tokensUsed).toBe(0);
+    expect(goal.status).toBe("active");
+    expect(h.decisions().filter((x) => x.reason === "turns_limited").length).toBe(0);
+  });
+
+  test("T-PLAN-2：对照 default 模式 → 同一输入按 goal 上限收尾", async () => {
+    // 守住「差异确实来自 plan 判据」，而不是 harness 本身没跑起来
+    const goal = createGoal("推进目标", { maxTurns: 3 });
+    const h = makeHarness({ goal, responses: N_TOOL_ROUNDS(10) });
+
+    await h.run();
+
+    expect(goal.status).toBe("turns_limited");
+    expect(goal.turnsUsed).toBe(3);
+    expect(goal.tokensUsed).toBe(600); // 3 轮工作 + 1 轮总结，各 150
+  });
+});
+
+describe("G4 · F1 空参数重试轮也记账", () => {
+  test("T-F1-1：退化重试轮不丢账（3 次真实调用 = 450，而不是 300）", async () => {
+    // 2026-11-16 复核发现的第三处漏账：F1 分支在每轮硬约束检查（checkGoalHardLimits）
+    // **之前**就 `continue` 了，那一轮真实发生的模型调用不进 goal.tokensUsed。
+    // 期望值来自「tokensUsed 应当等于真实模型调用消耗」这个口径，
+    // 不是从修复后的实现反推：3 次调用 × (100+50) = 450。
+    const goal = createGoal("推进目标", { maxTurns: 20 });
+    const h = makeHarness({
+      goal,
+      registerTools: (r) => r.register(bashLikeTool()),
+      responses: [
+        emptyParamToolUse("退化轮"), // 第 1 轮：空参数 → F1 重试（同一轮的第二次请求）
+        toolUseResponse("恢复轮"), // 第 2 轮：正常 tool_use
+        endTurnResponse("收尾轮"), // 第 3 轮：end_turn
+      ],
+      // 靠主循环 maxTurns 退出：goal.minTurnsBeforeEval=999 会让 end_turn 被 gate
+      // 推回（gate 走「前 N 轮跳过评估」直接 shouldContinue），不设上限会一直跑到 10 轮
+      config: { maxTurns: 3 } as Partial<Config>,
+    });
+
+    await h.run();
+
+    // 先证明 F1 真的触发了，否则这条用例什么都没测到
+    expect(h.systemTexts().some((t) => t.includes("参数为空"))).toBe(true);
+    // 3 轮工作 + 1 轮强制总结
+    expect(goal.turnsUsed).toBe(3);
+    expect(h.modelCalls()).toBe(4);
+    // 4 次真实调用 × 150。若退化重试轮漏账，这里会是 450
+    expect(goal.tokensUsed).toBe(600);
   });
 });
