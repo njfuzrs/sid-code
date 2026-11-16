@@ -30,7 +30,6 @@ import { SubAgentTool } from "@sid-code/core/agent/tool.ts";
 import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
 import { TaskStopTool } from "@sid-code/core/tool/task-stop.ts";
 import { TaskListTool } from "@sid-code/core/tool/task-list.ts";
-import { TaskGetTool } from "@sid-code/core/tool/task-get.ts";
 import { TaskCreateTool } from "@sid-code/core/tool/structured-task-create.ts";
 import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
 import { StructuredTaskGetTool } from "@sid-code/core/tool/structured-task-get.ts";
@@ -62,7 +61,6 @@ function makeExemptToolInstances(): { name: string; exempt: boolean }[] {
     new TaskOutputTool(),
     new TaskStopTool(),
     new TaskListTool(),
-    new TaskGetTool(),
     new TaskCreateTool(),
     new TaskUpdateTool(),
     new StructuredTaskGetTool(),
@@ -123,7 +121,6 @@ describe("循环检测豁免白名单对账审计（P2-3）", () => {
         "sub_agent",
         // 后台任务运行态查询/管理
         "bg_task_list",
-        "bg_task_get",
         "task_output",
         "task_stop",
         // 结构化任务清单维护

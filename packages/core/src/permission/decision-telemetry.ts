@@ -106,6 +106,16 @@ export interface PermissionDecisionEvent {
    */
   toolUseId?: string;
   /**
+   * 这次决策实际按哪个工具的规则口径判定（memo §5.4.6）。
+   *
+   * monitor 的 `command` 走 bash 同一条权限管线：规则名要按 `bash` 匹配
+   * （`Bash(gh pr checks:*)` 才对它生效），但决策来源仍是 `monitor`。两个字段分工：
+   * `tool` 回答「谁发起的」（审计能区分来源），`effectiveTool` 回答「按谁的规则算的」。
+   * 此前只有一个 `tool`，轨迹上分不出「monitor 被 bash 规则放行」与「bash 自己被放行」，
+   * 「这条 allow 是 monitor 继承来的」查不出来。只进本地轨迹。
+   */
+  effectiveTool?: string;
+  /**
    * B20：危险确认是哪道结构性闸门触发的（`guardOf(decision)`，固定枚举）。
    * A2 注入校验器与 A6 展开超限在 `step` 上都是 `2`、`reasonType` 都是 dangerousCommand，
    * 此前在轨迹里不可分，校验器名只在审计 reason 文本里。只取固定标签，不取命令片段。
@@ -326,6 +336,19 @@ export function gitTrustOf(decision: { metadata?: Record<string, unknown> }): st
 }
 
 /**
+ * 取「这次决策按哪个工具的规则口径判定」（`Decision.metadata.effectiveTool`）。
+ *
+ * 由 checker 在 `check()` 出口统一标（monitor 的 command 按 bash 规则匹配，§5.4.6）。
+ * 非命令语义请求没有这个字段——缺失 = 与 `tool` 同口径，不是 "bash"。
+ */
+export function effectiveToolOf(decision: {
+  metadata?: Record<string, unknown>;
+}): string | undefined {
+  const v = decision.metadata?.effectiveTool;
+  return typeof v === "string" ? v : undefined;
+}
+
+/**
  * B12：一次取齐决策上的危险成因与命令形状，供 `logPermissionAllow` / `logPermissionDeny`
  * 的调用点直接 spread。
  *
@@ -342,12 +365,14 @@ export function decisionFactsOf(decision: {
   bashShape?: string;
   envPrefixVars?: string[];
   gitTrust?: string;
+  effectiveTool?: string;
 } {
   return {
     ...dangerOf(decision),
     ...(bashShapeOf(decision) ? { bashShape: bashShapeOf(decision) } : {}),
     ...(envPrefixVarsOf(decision) ? { envPrefixVars: envPrefixVarsOf(decision) } : {}),
     ...(gitTrustOf(decision) ? { gitTrust: gitTrustOf(decision) } : {}),
+    ...(effectiveToolOf(decision) ? { effectiveTool: effectiveToolOf(decision) } : {}),
   };
 }
 

@@ -41,9 +41,15 @@ export interface ModelParamsEntry {
    */
   requiresReasoningContentForToolCalls?: boolean;
   /**
-   * Extended Thinking 模式（Anthropic 协议族专用）。
-   * "adaptive" = Opus 4.7+/Sonnet 4.6；"always-on" = Fable 5/Mythos 5；
-   * undefined = manual（旧模型，用 budget_tokens）。
+   * 思考模式（**协议无关**，与 `model-registry.ts` 同名字段同语义）。
+   *
+   * - `"adaptive"`（Anthropic 专用）：下发 `thinking:{type:"adaptive"}` + `output_config.effort`；
+   * - `"always-on"`：服务端**不接受**关闭思考（Claude 5 系 / GLM-5.3 / Kimi K3 / Grok 4.5+ /
+   *   o 系列），「关」被翻译成该模型档位表里最低的一档（`dialect/thinking-off-floor.ts`）；
+   * - undefined：未声明，按 manual 兜底（旧模型用 `budget_tokens`）。
+   *
+   * ⚠ 2026-11-13 起不再只对 Anthropic 有意义：`always-on` 必须与 `reasoningEffortValues`
+   * 成对登记，否则「关思考」无处可落（见 `model-registry.ts` 该字段注释）。
    */
   thinkingMode?: "adaptive" | "always-on";
   /**

@@ -10,6 +10,18 @@
  * 而 **Bun 的 spawn 只看进程启动时的 PATH**，父测试里改 `process.env.PATH` 不生效
  * （2026-11-14 实测：Bun.spawn 与 Bun.which 都仍解析到原 PATH，只有显式传 env 选项才生效）。
  * 所以把假 rg 目录塞进子进程启动时的 PATH，才能真的替换掉 `rg`。
+ *
+ * 隐含依赖（改这里之前先读）：这些用例能命中假 rg，前提是 `bun test` 跑源码时
+ * IS_DEV_MODE 为 true —— ensure-ripgrep.ts 的 dev 分支直接返回 null，不释放嵌入 rg。
+ * 若该判定方式变化（例如改成按 `--compile` 之外的条件判 dev），超时用例会先探测真实
+ * 嵌入 rg、`cmd` 变成绝对路径而不是 null，用例会红但原因极难定位。届时改用
+ * SID_RIPGREP_PATH 或显式注入 release 路径，别去放宽断言。
+ *
+ * 守护边界（2026-11-15 二次复核实测）：超时用例**直接**守住的是「不永久挂起」
+ * （探测结果真假），不是「信号真的送达子进程」。进程泄漏那一半是**间接**守住的 ——
+ * 把 probeRg 改成「超时后不 kill、直接返回 false」后该用例仍会红（子进程退出码 143
+ * + Bun 的 dangling 进程检测）。若要把这半边也做成直接断言，可让假 rg `trap` SIGTERM
+ * 后写标记文件、断言标记存在。
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";

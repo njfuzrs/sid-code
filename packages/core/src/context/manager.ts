@@ -868,8 +868,11 @@ export class Manager {
    * F4：提交一批过期清理决策（未达批量门槛时什么都不做，本轮前缀不动）。
    *
    * 作用在**发送投影**上判定（遮罩 / 冷清理占位已贴好），决策写进 staleClearState，
-   * 之后每轮由 applyFrozenClearState 重放。释放量按 token 记进 tokenFreedTracker，
-   * 与其余三条本地清理同口径，Footer 与压缩档位都扣得到。
+   * 之后每轮由 applyFrozenClearState 重放，并由 getForkPrefixMessages 贴到 fork 前缀上。
+   *
+   * 释放量记进 tokenFreedTracker，Footer 与压缩档位都扣得到。**口径与其余三条不同**：
+   * 这里用 `estimateTextTokens` 的差值（更接近真实 token），其余三条用 `Math.ceil(chars/4)`
+   * （粗估）。选择前者是因为 K/N 阈值本身就按 token 校准；两条口径不可混算同一个数。
    */
   private commitStaleToolOutputClear(projection: Message[]): void {
     const plan = planStaleToolOutputClear(projection, {
@@ -1410,20 +1413,29 @@ export class Manager {
    * D16：fork（记忆提取 / 会话笔记）发请求用的消息前缀 —— **只读**地复现主循环的发送视图。
    *
    * 为什么不直接给 fork `getMessages()`：主循环发的是 `getCleanedMessages()`（遮罩 / 冷清理 /
-   * 大输出占位），fork 发原始消息时，前缀在第一个被清理的 tool_result 处分叉，之后的历史
+   * 过期清理 / 大输出占位），fork 发原始消息时，前缀在第一个被清理的 tool_result 处分叉，之后的历史
    * 全部不命中缓存 —— 会话越长越容易触发，而越长的会话 fork 首请求越贵。
    *
    * 为什么不能让 fork 调 `getCleanedMessages()`：它有副作用（新增清理对象、记 sentIntact、
    * 覆盖 lastSendSnapshot、记 pendingSendCauses），fork 一调就改了主循环下一轮的发送前缀与校准分母。
    *
-   * 这里只贴**已经发出去过**的三类粘滞占位（maskedState / coldClearState / replacementState，
-   * 都按 tool_use_id 键、一旦发出就不再撤销），再做与发送路径同一份的旧引用折叠。
+   * 这里只贴**已经发出去过**的四类粘滞占位（maskedState / coldClearState / staleClearState /
+   * replacementState，都按 tool_use_id 键、一旦发出就不再撤销），再做与发送路径同一份的旧引用折叠。
    * 不贴「本轮才会新清理」的块：主循环上一次请求里它们还是原文，缓存里存的也是原文。
    * 不含 transient reminder（只在主循环发送副本里，不进历史）—— 那只影响末尾一小段。
+   *
+   * ⚠️ 新增清理通道时**必须**把它的粘滞状态加进下面两处（hasSticky 与取值链）。
+   * F4 的 staleClearState 就漏过一次：它同样是「提交后每轮重放」的粘滞状态，
+   * 漏在外面的后果是 fork 前缀与主循环在第一个过期占位处分叉，D16 要治的缓存不命中又回来了。
+   * 目前四类在写入时由 skipToolUse 互斥（同一 tool_use_id 只会出现在一处），
+   * 取值顺序仅作防御，不依赖它做覆盖。
    */
   getForkPrefixMessages(): Message[] {
     const hasSticky =
-      this.maskedState.size > 0 || this.coldClearState.size > 0 || this.replacementState.size > 0;
+      this.maskedState.size > 0 ||
+      this.coldClearState.size > 0 ||
+      this.staleClearState.size > 0 ||
+      this.replacementState.size > 0;
     /** 主循环只有在「有大输出占位要贴」的那条分支里才做旧引用折叠（无占位时提前返回），这里同条件 */
     let hasReplacement = false;
     const view = !hasSticky
@@ -1434,9 +1446,10 @@ export class Manager {
             if (block.type !== "tool_result") return block;
             const id = block.tool_use_id;
             if (this.replacementState.has(id)) hasReplacement = true;
-            // 与 getCleanedMessages 同序：遮罩 → 冷清理 → 大输出占位（后者覆盖前者）
+            // 四类互斥（提交时 skipToolUse 已保证），顺序仅作防御；与 getCleanedMessages 的覆盖层级对齐
             const next =
               this.replacementState.get(id) ??
+              this.staleClearState.get(id) ??
               this.coldClearState.get(id) ??
               this.maskedState.get(id);
             if (next === undefined || next === block.content) return block;

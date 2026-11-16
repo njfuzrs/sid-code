@@ -9,7 +9,7 @@ Source: 内置工具设计对齐 Claude Code：缺陷、修复与验收方案（
 ## 决定了什么
 
 `packages/core/src/tool/todo-write.ts` 的 `description()` 从 3801 字符收到 922 字符
-（`--dump-tools` 含 schema 的整份定义 8109 → 2114 字节）。常驻层只留三块：
+（`--dump-tools` 的**描述正文** 8,109 → 2,114 字节；整份工具定义约 3,081 字节）。常驻层只留三块：
 何时用 / 何时不用的判据，以及三条核心纪律——任何时刻保持至少一项 in_progress、
 每完成一项立即标 completed、blocked 与 pending 的区别。这三句 todo_gate 依赖模型照做，
 `searchHint` 里也各留了一句，任何呈现层级都裁不掉。
@@ -28,7 +28,8 @@ Source: 内置工具设计对齐 Claude Code：缺陷、修复与验收方案（
 ## 拿什么证明它生效了
 
 - 字节：基线二进制 `/tmp/sid-bin-subagent-base`（同日 `origin/main` 构建）dump 出
-  todo_write 8109 字节；本分支 `make build` 产物 `/tmp/sid-bin-todo-new` 为 2114 字节。
+  todo_write 的**描述正文** 8,109 字节；本分支 `make build` 产物 `/tmp/sid-bin-todo-new`
+  的描述正文为 2,114 字节（整份工具定义约 3,081 字节）。
   描述正文 922 字符，低于方案定的 1500 字符门槛。同一份 dump 里 bash / sub_agent
   字节数不变（4073 / 5369）。
 - 测试：`bun test ./packages/core/tests/tool/todo-write.test.ts ./packages/core/tests/tool/todo-write-blocked.test.ts ./packages/core/tests/tool/todo-write-wakeup-invalidation.test.ts`
