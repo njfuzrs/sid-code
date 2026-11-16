@@ -489,15 +489,19 @@ export class ReadTool implements Tool {
    * read 是纯只读工具,重复读不报错、无引导,模型缺乏"停止重读"的外部信号 → 拉长步数 + 推高 token。
    *
    * 只做**非阻塞提示**,绝不拦截(read 是安全只读操作,拦截会误伤合法的定向复查),对齐记忆
-   * `write-truncation-opt-triple-review` 里"回注通道只提醒不强制"的定调。触发两类提示:
-   *   ① 重复读:同文件近期读 ≥ 阈值次且本次窗口与历史高度重叠 → 提示复用已读内容;
-   *   ② 读太窄:文件行数 < 默认上限却传了小 limit → 提示可一次整读。
+   * `write-truncation-opt-triple-review` 里"回注通道只提醒不强制"的定调。
+   *
+   * 只保留「重复读」一类：同文件近期读 ≥ 阈值次且本次窗口与历史高度重叠 → 提示复用已读内容。
+   * **原先还有第二类「读太窄」（首次读不大的文件却传小 limit → 提示可一次整读），2026-11-16
+   * 按 T5 决策删掉**：aftereffect 口径实测 3259 次提示里照做率只有 0.61%，73.2% 的提示之后
+   * 模型根本没再读该文件（提示打在"只需要这一段"的定向读场景上，属时机错配，不是模型不听话），
+   * 而真正同段重复读只占 5.6% —— 这类场景已由「重复读」提示覆盖。数据见
+   * `.agents/notes/implemented/simplification/2026-11-16-关掉narrow-first读提示.md`。
    * 返回追加到 output 的提示串(可为空)。
    */
   private recordReadAndBuildHint(
     filePath: string,
     win: ReadWindow,
-    hadExplicitLimit: boolean,
     fileTokens: () => number,
   ): string {
     // 「建议一次整读」必须同时看行数和体量：只看行数时，199 行 / 234KB 的生成文件
@@ -541,7 +545,7 @@ export class ReadTool implements Tool {
       end_line: win.endLine,
     };
 
-    // ① 重复窄读:读够多次 + 本次与历史高度重叠(>60%)
+    // 重复窄读:读够多次 + 本次与历史高度重叠(>60%)
     if (readCount >= REPEAT_READ_HINT_THRESHOLD && maxOverlapRatio > 0.6) {
       const fitsInOneRead = win.totalLines <= DEFAULT_MAX_LINES && fitsInOneReadByTokens();
       emitReadHint({ kind: "repeat_narrow", ...hintEventBase, suggest_full_read: fitsInOneRead });
@@ -550,19 +554,6 @@ export class ReadTool implements Tool {
           (fitsInOneRead
             ? `该文件共 ${win.totalLines} 行(未超单次上限 ${DEFAULT_MAX_LINES}),建议一次性整读(不传 offset/limit)或直接复用已读内容,避免重复读推高上下文。`
             : `建议复用已读内容,或用 grep 定位后按需读,避免反复窄读同一区域。`),
-      );
-    } else if (
-      // ② 读太窄:**首次**读一个不大的文件却传了小 limit(只在第 1 次提示,避免每次窄读都唠叨)
-      readCount === 1 &&
-      hadExplicitLimit &&
-      win.totalLines <= DEFAULT_MAX_LINES &&
-      winLen < win.totalLines &&
-      winLen < 200 &&
-      fitsInOneReadByTokens()
-    ) {
-      emitReadHint({ kind: "narrow_first", ...hintEventBase, suggest_full_read: true });
-      hints.push(
-        `该文件共 ${win.totalLines} 行,未超单次读取上限 ${DEFAULT_MAX_LINES}。若需通览,可不传 limit 一次整读,省去多次分段。`,
       );
     }
 
@@ -834,7 +825,6 @@ export class ReadTool implements Tool {
         output += this.recordReadAndBuildHint(
           filePath,
           { startLine: offset, endLine: endIdx, totalLines },
-          params.limit !== undefined,
           () => estimateTextTokens(text),
         );
       } catch {
