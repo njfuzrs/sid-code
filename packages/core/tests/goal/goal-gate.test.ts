@@ -61,7 +61,6 @@ function evalConfig(provider: Provider): EvalConfig {
 function makeCtx(opts: {
   goalOverrides?: Partial<ReturnType<typeof createGoal>>;
   evalResponse?: string;
-  turnUsage?: { inputTokens: number; outputTokens: number; cacheCreationTokens?: number };
   blockedDetector?: BlockedDetector;
   messages?: Message[];
 }): GoalGateContext {
@@ -73,7 +72,6 @@ function makeCtx(opts: {
   return {
     goal,
     messages: opts.messages ?? [],
-    turnUsage: opts.turnUsage ?? { inputTokens: 100, outputTokens: 50 },
     evalConfig: evalConfig(
       mockProvider(opts.evalResponse ?? JSON.stringify({ satisfied: false, reason: "继续" })),
     ),
@@ -85,42 +83,30 @@ function makeCtx(opts: {
 
 // ─── 预算 ───
 
-describe("handleGoalGate · 预算", () => {
-  test("预算耗尽 → shouldContinue=false + 注入收尾 + status=budget_limited", async () => {
-    const ctx = makeCtx({
-      goalOverrides: { tokenBudget: 1000, tokensUsed: 0, turnsUsed: 5 },
-      turnUsage: { inputTokens: 800, outputTokens: 300 }, // 1100 > 1000
-    });
-    const out = await handleGoalGate(ctx);
-    expect(out.result.shouldContinue).toBe(false);
-    expect(out.result.completed).toBe(false);
-    expect(ctx.goal.status).toBe("budget_limited");
-    expect(out.injectMessages.length).toBeGreaterThan(0);
-    expect(out.injectMessages[0]!.content[0]!.text).toContain("预算已耗尽");
-  });
+// ─── 职责边界（2026-11-16 拆分）───
 
-  test("预算预警(85%) → 注入预警但继续评估", async () => {
+describe("handleGoalGate · 职责边界", () => {
+  // 预算与轮次判定已移到 goal/limits.ts 的 checkGoalHardLimits（每轮执行，
+  // 不再只在 end_turn 触发）。这里锁住"没人把它们又塞回 gate"：
+  // 塞回来就会重新变成「模型连续 tool_use 时空转不受上限约束」那个事故形态。
+  test("即使预算已耗尽，gate 本身不再拦截（判定已前移到每轮硬约束检查）", async () => {
     const ctx = makeCtx({
-      goalOverrides: { tokenBudget: 1000, tokensUsed: 0, turnsUsed: 5 },
-      turnUsage: { inputTokens: 700, outputTokens: 200 }, // 900 = 90%
-      evalResponse: JSON.stringify({ satisfied: false, reason: "还在做", progress: 50 }),
+      goalOverrides: { tokenBudget: 1000, tokensUsed: 5000, turnsUsed: 5 },
+      evalResponse: JSON.stringify({ satisfied: false, reason: "还在做" }),
     });
     const out = await handleGoalGate(ctx);
-    // 90% 触发 warning，但未超限 → 继续走到评估，评估未满足 → shouldContinue=true
+    expect(ctx.goal.status).not.toBe("budget_limited");
     expect(out.result.shouldContinue).toBe(true);
-    const warnMsg = out.systemMessages.find((m) => m.text.includes("预警"));
-    expect(warnMsg).toBeDefined();
   });
-});
 
-// ─── 轮次 ───
-
-describe("handleGoalGate · 轮次", () => {
-  test("轮次超限 → shouldContinue=false + status=turns_limited", async () => {
-    const ctx = makeCtx({ goalOverrides: { turnsUsed: 50, maxTurns: 50 } });
+  test("即使轮次已超限，gate 本身不再拦截（判定已前移到每轮硬约束检查）", async () => {
+    const ctx = makeCtx({
+      goalOverrides: { turnsUsed: 50, maxTurns: 50 },
+      evalResponse: JSON.stringify({ satisfied: false, reason: "还在做" }),
+    });
     const out = await handleGoalGate(ctx);
-    expect(out.result.shouldContinue).toBe(false);
-    expect(ctx.goal.status).toBe("turns_limited");
+    expect(ctx.goal.status).not.toBe("turns_limited");
+    expect(out.result.shouldContinue).toBe(true);
   });
 });
 
@@ -316,7 +302,6 @@ describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
             return g;
           })(),
           messages: [],
-          turnUsage: { inputTokens: 100, outputTokens: 50 },
           // 必失败 provider → catch 分支设 blockerKey=__evaluator_unavailable__
           evalConfig: {
             model: "haiku-test",
@@ -355,7 +340,6 @@ describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
         return g;
       })(),
       messages: [],
-      turnUsage: { inputTokens: 100, outputTokens: 50 },
       evalConfig: {
         model: "haiku-test",
         provider: failingProvider(),
@@ -385,7 +369,6 @@ describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
           return g;
         })(),
         messages: [],
-        turnUsage: { inputTokens: 100, outputTokens: 50 },
         evalConfig: {
           model: "haiku-test",
           provider: failingProvider(),
@@ -420,7 +403,6 @@ describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
           return g;
         })(),
         messages: [],
-        turnUsage: { inputTokens: 100, outputTokens: 50 },
         evalConfig: {
           model: "haiku-test",
           provider: failingProvider(),
@@ -630,16 +612,18 @@ describe("handleGoalGate · G2 等待挂起", () => {
     expect(ctx.goal.waitPass?.key).toBe("notification");
   });
 
-  test("硬上限优先：轮次耗尽 + 有等待源 → turns_limited，不放行", async () => {
+  test("硬上限不归 gate 管（#881 已移到每轮检查）：轮次耗尽时仍按等待放行", async () => {
+    // #881（2026-11-16）把轮次/预算检查移到了 `goal/limits.ts` 的 checkGoalHardLimits，
+    // 由 loop 每轮在 gate **之前**调用（`goal-hard-limits-loop.test.ts` 守）。
+    //
+    // 所以本条断言的是**新契约**：gate 只按等待判据走，轮次耗尽的终止语义由 loop 侧负责。
+    // 这同时防住「有人把轮次检查又塞回 gate」——那会让终止语义出现两个出口，
+    // 而 G2 的等待放行恰好会把其中一个出口挡住。
     const { ctx, calls } = makeWaitingCtx({ waiting: MONITOR_WAIT });
     ctx.goal.turnsUsed = ctx.goal.maxTurns;
     const out = await handleGoalGate(ctx);
-    expect(out.result.waiting).toBeUndefined();
-    expect(out.result.shouldContinue).toBe(false);
-    expect(ctx.goal.status).toBe("turns_limited");
-    // 轮次检查在评估器之前，所以一次评估调用都不该发生。
+    expect(out.result.waiting).toBe(true);
+    expect(ctx.goal.waitPass).toEqual({ key: "mon_ci", count: 1 });
     expect(calls()).toBe(0);
-    // 终止路径不该留下等待放行计数。
-    expect(ctx.goal.waitPass).toBeUndefined();
   });
 });
