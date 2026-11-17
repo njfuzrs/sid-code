@@ -23,6 +23,7 @@ import {
   WAIT_POLL_BLOCK_AFTER,
   WAIT_POLL_ESCALATED_EVENT_NAME,
   WAIT_POLL_HINT_AFTER,
+  STATUS_POLL_PROBE_INTERVAL_MS,
   type StatusPollContext,
   type WaitPollEscalation,
 } from "@sid-code/core/task/status-poll-guard.ts";
@@ -208,6 +209,81 @@ describe("P5 两档升级", () => {
     expect(escalation.count).toBe(WAIT_POLL_BLOCK_AFTER + 2);
     // 循环 17 次 → 第 15、16、17 次都拦（超过上限后持续拦，不会只拦一次）
     expect(blocked).toBe(3);
+  });
+
+  test("T-P5-6 两档事件的 payload 都带 wait_ids（与 GoalGateDecision 同口径）", () => {
+    const events: Array<{ name: string; payload: Record<string, unknown> }> = [];
+    setWaitTraceSink((name, payload) => {
+      events.push({ name, payload: payload as Record<string, unknown> });
+    });
+    const escalation = createWaitPollEscalation();
+    // 两个等待源：验证 wait_ids 是「全部在盯的」，不是「第一个」
+    const waits = [
+      monitorWait(),
+      { ...monitorWait(), id: "w9z1", kind: "wakeup" as const, subjects: ["gh:pr:847"] },
+    ];
+    const ctx = makeCtx({ escalation, waits });
+    for (let i = 0; i < WAIT_POLL_BLOCK_AFTER; i++) {
+      const r = checkStatusQueryPoll("bash", { command: CMD }, ctx);
+      if (!r.intercept) recordStatusQueryResult(CMD, `state-${i}`, ctx); // 每轮不同 → P1 不拦
+    }
+    const level1 = events.find(
+      (e) => e.name === WAIT_POLL_ESCALATED_EVENT_NAME && e.payload.level === 1,
+    );
+    const level2 = events.find(
+      (e) => e.name === WAIT_POLL_ESCALATED_EVENT_NAME && e.payload.level === 2,
+    );
+    expect(level1).toBeTruthy();
+    expect(level2).toBeTruthy();
+    // 没有 wait_ids 时离线只能按 subject 聚合，看不出「升级那一刻有几个等待源在盯」
+    expect(level1!.payload.wait_ids).toEqual(["m7k2", "w9z1"]);
+    expect(level2!.payload.wait_ids).toEqual(["m7k2", "w9z1"]);
+  });
+
+  test("T-P5-7 第 5 次被 P1 拦下时提示不丢：hinted 延后到真正送达", () => {
+    // `hinted` 是一次性标记，最容易被白烧的形态是「第 5 次恰好落在 P1 的拦截分支」：
+    // 拦截时 `tool-executor` 只消费 `!intercept` 的 hint，若在那里置位，提示此后永不补发。
+    //
+    // 也不能像方案 §4.10 原文那样「在拦截回执前面加一句前缀」—— 拦截回执必须逐字节恒定，
+    // `P1-intervened-true` 这个 G2 用例靠「连续相同返回值」计数（2026-11-17 实测：
+    // 加前缀 → 该用例红；去掉 → 立刻绿）。所以改成「没送出去就不算送过」。
+    const escalation = createWaitPollEscalation();
+    // 等待源**不覆盖** `gh_pr_checks` → 探测窗口 120s 后能放行（covered 时会一直拦）
+    const ctx = makeCtx({
+      escalation,
+      waits: [{ ...monitorWait(), commandFamilies: ["gh_run_list"] }],
+    });
+    // 先攒到 sameRun=2（第 1 次相同放行、第 2 次相同起拦），P1 就此生效
+    expect(checkStatusQueryPoll("bash", { command: CMD }, ctx).intercept).toBe(false);
+    recordStatusQueryResult(CMD, "same-output", ctx);
+    expect(checkStatusQueryPoll("bash", { command: CMD }, ctx).intercept).toBe(false);
+    recordStatusQueryResult(CMD, "same-output", ctx);
+    expect(escalation.count).toBe(2);
+
+    // 把计数推到「下一次就是第 5 次」，构造第 5 次被 P1 拦下的形态
+    escalation.count = WAIT_POLL_HINT_AFTER - 1;
+    const r = checkStatusQueryPoll("bash", { command: CMD }, ctx);
+    expect(r.intercept).toBe(true);
+    if (!r.intercept) throw new Error("unreachable");
+    // 拦截回执恒定：不含 P5 的任何文案（这条约束由 G2 用例 P1-intervened-true 反向锁着）
+    expect(r.output).not.toContain("[等待期重复查询]");
+    // 关键：这次没送出去，所以不算送过
+    expect(escalation.hinted).toBe(false);
+
+    // 探测窗口到期 → 下一次放行，提示此时才送达（计数用送达时的真实次数，比「第 5 次」更准）
+    const later = { ...ctx, now: () => T0 + STATUS_POLL_PROBE_INTERVAL_MS + 1 };
+    const delivered = checkStatusQueryPoll("bash", { command: CMD }, later);
+    expect(delivered.intercept).toBe(false);
+    if (delivered.intercept) throw new Error("unreachable");
+    expect(delivered.hint).toContain(`第 ${WAIT_POLL_HINT_AFTER + 1} 次`);
+    expect(delivered.hint).toContain(String(WAIT_POLL_BLOCK_AFTER));
+    expect(escalation.hinted).toBe(true);
+
+    // 再放行一次也不重复提示（一次性）
+    const another = { ...ctx, now: () => T0 + 2 * STATUS_POLL_PROBE_INTERVAL_MS + 2 };
+    const again = checkStatusQueryPoll("bash", { command: CMD }, another);
+    expect(again.intercept).toBe(false);
+    if (!again.intercept) expect(again.hint).toBeUndefined();
   });
 });
 

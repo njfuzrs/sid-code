@@ -1,0 +1,702 @@
+[
+  {
+    "at": "2026-11-16T01:13:54.044Z",
+    "command": "cd <repo> && echo \"=== #848 checks 明细 ===\" && gh pr checks 848 2>&1 | head -10",
+    "output": "=== #848 checks 明细 ===\ntest (macos-latest, 1/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127636\t\ntest (macos-latest, 2/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127612\t\ntest (ubuntu-latest, 1/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127618\t\ntest (ubuntu-latest, 2/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127652\t\ntest (ubuntu-latest, 3/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127658\t\nlint\tpass\t30s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127593\t\nwebsite\tpass\t54s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127328\t\n"
+  },
+  {
+    "at": "2026-11-16T01:14:03.306Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n43784740762\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\n"
+  },
+  {
+    "at": "2026-11-16T01:14:10.585Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n43784740762\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\n"
+  },
+  {
+    "at": "2026-11-16T01:14:18.991Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n43784740762\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\n"
+  },
+  {
+    "at": "2026-11-16T01:14:18.991Z",
+    "command": "cd <repo> && echo \"=== #848 检查 ===\" && gh pr checks 848 2>&1 | head -10",
+    "output": "=== #848 检查 ===\ntest (macos-latest, 1/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127636\t\ntest (macos-latest, 2/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127612\t\ntest (ubuntu-latest, 1/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127618\t\ntest (ubuntu-latest, 2/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127652\t\ntest (ubuntu-latest, 3/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127658\t\nlint\tpass\t30s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127593\t\nwebsite\tpass\t54s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127328\t\n"
+  },
+  {
+    "at": "2026-11-16T01:14:29.207Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n43784740762\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\n"
+  },
+  {
+    "at": "2026-11-16T01:14:46.624Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n43784740762\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\n"
+  },
+  {
+    "at": "2026-11-16T01:14:46.624Z",
+    "command": "cd <repo> && echo \"=== #848 checks ===\" && gh pr checks 848 2>&1 | head -10",
+    "output": "=== #848 checks ===\ntest (macos-latest, 1/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127636\t\ntest (macos-latest, 2/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127612\t\ntest (ubuntu-latest, 1/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127618\t\ntest (ubuntu-latest, 2/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127652\t\ntest (ubuntu-latest, 3/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127658\t\nlint\tpass\t30s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127593\t\nwebsite\tpass\t54s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127328\t\n"
+  },
+  {
+    "at": "2026-11-16T01:14:57.289Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName,createdAt --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\\t\\(.createdAt)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\t2026-11-16T01:12:33Z\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\t2026-11-16T01:12:29Z\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\t2026-11-16T01:11:57Z\n43784783380\tin_progress/\tmain\t2026-11-16T01:11:34Z\n43784740762\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\t2026-11-16T01:11:07Z\n"
+  },
+  {
+    "at": "2026-11-16T01:14:57.289Z",
+    "command": "cd <repo> && echo \"=== #848 最新 checks ===\" && gh pr checks 848 2>&1 | head -10",
+    "output": "=== #848 最新 checks ===\ntest (macos-latest, 1/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127636\t\ntest (macos-latest, 2/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127612\t\ntest (ubuntu-latest, 1/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127618\t\ntest (ubuntu-latest, 2/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127652\t\ntest (ubuntu-latest, 3/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127658\t\nlint\tpass\t30s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127593\t\nwebsite\tpass\t54s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127328\t\n"
+  },
+  {
+    "at": "2026-11-16T01:15:07.093Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:15:07.093Z",
+    "command": "cd <repo> && echo \"=== 848 checks ===\" && gh pr checks 848 2>&1 | head -10",
+    "output": "=== 848 checks ===\ntest (macos-latest, 1/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127636\t\ntest (macos-latest, 2/2)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127612\t\ntest (ubuntu-latest, 1/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127618\t\ntest (ubuntu-latest, 2/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127652\t\ntest (ubuntu-latest, 3/3)\tpending\t0\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127658\t\nlint\tpass\t30s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127593\t\nwebsite\tpass\t54s\thttps://github.com/<owner>/sid-code/actions/runs/43784824718/job/133030127328\t\n"
+  },
+  {
+    "at": "2026-11-16T01:15:16.732Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:15:16.732Z",
+    "command": "cd <repo> && echo \"=== 846 / 862 最新检查（应全绿）===\" && gh pr checks 846 2>&1 | grep -c pass; gh pr checks 862 2>&1 | grep -c pass",
+    "output": "=== 846 / 862 最新检查（应全绿）===\n8\n8\n"
+  },
+  {
+    "at": "2026-11-16T01:15:29.982Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName,createdAt --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\\t\\(.createdAt)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\t2026-11-16T01:12:33Z\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\t2026-11-16T01:12:29Z\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\t2026-11-16T01:11:57Z\n43784783380\tin_progress/\tmain\t2026-11-16T01:11:34Z\n"
+  },
+  {
+    "at": "2026-11-16T01:15:29.982Z",
+    "command": "cd <repo> && echo \"=== #848 job 详情 ===\" && gh run view 43784824718 --json status,conclusion,jobs --jq '{s:.status,c:.conclusion,jobs:[.jobs[]|{n:.name,s:.status,c:.conclusion}]}' 2>&1 | head -10",
+    "output": "=== #848 job 详情 ===\n{\"c\":\"\",\"jobs\":[{\"c\":\"success\",\"n\":\"website\",\"s\":\"completed\"},{\"c\":\"success\",\"n\":\"lint\",\"s\":\"completed\"},{\"c\":\"\",\"n\":\"test (macos-latest, 2/2)\",\"s\":\"in_progress\"},{\"c\":\"\",\"n\":\"test (ubuntu-latest, 1/3)\",\"s\":\"in_progress\"},{\"c\":\"\",\"n\":\"test (macos-latest, 1/2)\",\"s\":\"in_progress\"},{\"c\":\"success\",\"n\":\"test (ubuntu-latest, 2/3)\",\"s\":\"completed\"},{\"c\":\"\",\"n\":\"test (ubuntu-latest, 3/3)\",\"s\":\"in_progress\"}],\"s\":\"in_progress\"}\n"
+  },
+  {
+    "at": "2026-11-16T01:15:40.102Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:15:40.102Z",
+    "command": "cd <repo> && echo \"=== #848 job 进度 ===\" && gh run view 43784824718 --json status,conclusion,jobs --jq '{s:.status,c:.conclusion,jobs:[.jobs[]|\"\\(.conclusion // .status)\\t\\(.name)\"]}' 2>&1 | head -12",
+    "output": "=== #848 job 进度 ===\n{\"c\":\"\",\"jobs\":[\"success\\twebsite\",\"success\\tlint\",\"\\ttest (macos-latest, 2/2)\",\"\\ttest (ubuntu-latest, 1/3)\",\"\\ttest (macos-latest, 1/2)\",\"success\\ttest (ubuntu-latest, 2/3)\",\"\\ttest (ubuntu-latest, 3/3)\"],\"s\":\"in_progress\"}\n"
+  },
+  {
+    "at": "2026-11-16T01:15:50.728Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"\\(.number):\\(.mergeStateStatus):auto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR ===\n846:BEHIND:auto=Y\n848:BLOCKED:auto=Y\n852:BLOCKED:auto=Y\n862:BEHIND:auto=Y\n867:BLOCKED:auto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:15:50.728Z",
+    "command": "cd <repo> && echo \"=== #848 job 进度 ===\" && gh run view 43784824718 --json status,conclusion,jobs --jq '{s:.status,c:.conclusion,jobs:[.jobs[]|\"\\(.conclusion // .status)\\t\\(.name)\"]}' 2>&1 | head -12",
+    "output": "=== #848 job 进度 ===\n{\"c\":\"\",\"jobs\":[\"success\\twebsite\",\"success\\tlint\",\"\\ttest (macos-latest, 2/2)\",\"\\ttest (ubuntu-latest, 1/3)\",\"\\ttest (macos-latest, 1/2)\",\"success\\ttest (ubuntu-latest, 2/3)\",\"\\ttest (ubuntu-latest, 3/3)\"],\"s\":\"in_progress\"}\n\n\n[等待中] 结果与上次相同。监控 m5ucxv8yc（sid-code PR 合并队列），最晚 09:41:08 前会回报；它不盯这个对象，状态变化不会自动送达，不要反复查询。"
+  },
+  {
+    "at": "2026-11-16T01:15:59.618Z",
+    "command": "cd <repo> && echo \"=== 剩余 PR 与 auto-merge ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo && echo \"=== CI 在飞 ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)\\t\\(.headBranch)\"'",
+    "output": "=== 剩余 PR 与 auto-merge ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n\n=== CI 在飞 ===\n43784888091\tqueued\tfix/ruleowner-worktree-segment\n43784881301\tqueued\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:16:11.388Z",
+    "command": "cd <repo> && echo \"=== 5 个 PR 状态 ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "=== 5 个 PR 状态 ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:16:18.980Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:16:25\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== 在飞 CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:16:28.364Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== #848 job 进度 ===\" && gh run view 43784824718 --json status,conclusion,jobs --jq '{s:.status,c:.conclusion,jobs:[.jobs[]|\"\\(.conclusion // .status)\\t\\(.name)\"]}' && echo \"=== #852/#867 run 状态 ===\" && gh run view 43784881301 --json status,jobs --jq '\"852: \\(.status) \" + ([.jobs[]|select(.status!=\"completed\")|.name] | join(\",\"))' && gh run view 43784888091 --json status,jobs --jq '\"867: \\(.status) \" + ([.jobs[]|select(.status!=\"completed\")|.name] | join(\",\"))'",
+    "output": "09:16:33\n=== #848 job 进度 ===\n{\"c\":\"\",\"jobs\":[\"success\\twebsite\",\"success\\tlint\",\"\\ttest (macos-latest, 2/2)\",\"\\ttest (ubuntu-latest, 1/3)\",\"\\ttest (macos-latest, 1/2)\",\"success\\ttest (ubuntu-latest, 2/3)\",\"success\\ttest (ubuntu-latest, 3/3)\"],\"s\":\"in_progress\"}\n=== #852/#867 run 状态 ===\n852: queued test (ubuntu-latest, 1/3),test (macos-latest, 2/2),test (macos-latest, 1/2)\n867: queued test (ubuntu-latest, 1/3),test (macos-latest, 2/2),test (ubuntu-latest, 3/3),test (macos-latest, 1/2)\n"
+  },
+  {
+    "at": "2026-11-16T01:16:40.287Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:16:45\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:16:48.320Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:16:51\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:16:54.615Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:16:59\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:02.353Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:06\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:08.967Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:12\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tqueued/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:15.561Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:19\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:23.048Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 5 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:26\n=== 5 个 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:29.598Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:33\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:36.720Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:40\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:43.190Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:47\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:50.468Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:17:54\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:17:58.100Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:02\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:05.218Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:09\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:12.108Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:16\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:19.360Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:23\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:26.304Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:29\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:32.883Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:37\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:40.187Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | \"\\(.databaseId)\\t\\(.workflowName)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:43\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tCI\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tCI\tin_progress/\tfix/tool-selection-audit-crosstime\n43784874344\tPR auto update\tcompleted/success\tmain\n43784824718\tCI\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tCI\tin_progress/\tmain\n43784783364\tPR auto update\tcompleted/success\tmain\n43784740762\tCI\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\n43767852327\tPR auto update\tcompleted/success\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:46.762Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:50\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:18:53.660Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:18:58\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:01.148Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:05\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:08.735Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:12\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:16.006Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:19\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:22.782Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:26\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:30.059Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:33\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:36.978Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 8 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | \"\\(.databaseId)\\t\\(.workflowName)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:40\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tCI\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tCI\tin_progress/\tfix/tool-selection-audit-crosstime\n43784874344\tPR auto update\tcompleted/success\tmain\n43784824718\tCI\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tCI\tin_progress/\tmain\n43784783364\tPR auto update\tcompleted/success\tmain\n43784740762\tCI\tcompleted/cancelled\tfix/memory-drift-t2-to-t4\n43767852327\tPR auto update\tcompleted/success\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:43.165Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:48\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:51.743Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:19:55\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:19:58.380Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:01\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:04.780Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:08\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:11.350Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:14\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:16.968Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:21\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:24.252Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:29\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:31.971Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:35\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:38.526Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:41\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:44.451Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:49\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:52.709Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:20:57\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:20:59.948Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:03\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:07.230Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:10\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:13.505Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:17\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:20.261Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:23\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:26.910Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:31\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tqueued/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:34.585Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:37\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:40.613Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:44\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:46.992Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:50\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:53.124Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:21:56\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:21:59.279Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:22:02\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:22:05.691Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:22:09\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:22:12.238Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:22:16\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:22:18.752Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:22:22\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tin_progress/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:22:24.931Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:22:28\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tBLOCKED\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tqueued/\tfix/memory-drift-t2-to-t4\n43784783380\tcompleted/failure\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:22:32.429Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:22:36\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#848\tCLEAN\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n43784824718\tcompleted/success\tfix/memory-drift-t2-to-t4\n"
+  },
+  {
+    "at": "2026-11-16T01:22:39.858Z",
+    "command": "cd <repo> && sleep 8 && date '+%H:%M:%S' && echo \"=== PR 状态 ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 最近合并 ===\" && gh pr list --state merged --limit 3 --json number,mergedAt,title --jq '.[] | \"#\\(.number)\\t\\(.mergedAt)\\t\\(.title[0:45])\"'",
+    "output": "09:22:51\n=== PR 状态 ===\n#846\tUNKNOWN\tauto=Y\n#852\tUNKNOWN\tauto=Y\n#862\tUNKNOWN\tauto=Y\n#867\tUNKNOWN\tauto=Y\n=== 最近合并 ===\n#869\t2026-11-16T01:11:31Z\ttest(smoke): 补齐 bash 只读方案的 G2 验收缺口并修官网两处失真\n#868\t2026-11-15T20:00:57Z\ttest(agent): 隔离子代理用例不再依赖跑测试的目录\n#866\t2026-11-15T19:07:36Z\ttest(tui): compact 折叠补 PTY 端到端验收并校准文档口径\n\n[等待引导] 你已经挂了等待源，前台 sleep 8 只会阻塞本轮：唤醒和后台通知都只在会话空闲时送达，本轮阻塞期间它们全部在排队。要等外部状态，用后台 bash + wait_until_seconds（条件满足就退出的循环）或 monitor，然后结束本轮；不要留在本轮 sleep 里等。"
+  },
+  {
+    "at": "2026-11-16T01:22:53.821Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 合并记录（最近 2）===\" && gh pr list --state merged --limit 2 --json number,mergedAt --jq '.[] | \"#\\(.number)\\t\\(.mergedAt)\"'",
+    "output": "09:22:57\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBEHIND\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 合并记录（最近 2）===\n#869\t2026-11-16T01:11:31Z\n#868\t2026-11-15T20:00:57Z\n"
+  },
+  {
+    "at": "2026-11-16T01:23:00.354Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:23:05\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBEHIND\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785924708\tqueued/\tmain\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n43784881301\tin_progress/\tfix/tool-selection-audit-crosstime\n"
+  },
+  {
+    "at": "2026-11-16T01:23:00.354Z",
+    "command": "cd <repo> && echo \"=== 最近合并 3 个 ===\" && gh pr list --state merged --limit 3 --json number,mergedAt,title --jq '.[] | \"#\\(.number)\\t\\(.mergedAt)\\t\\(.title[0:40])\"'",
+    "output": "=== 最近合并 3 个 ===\n#869\t2026-11-16T01:11:31Z\ttest(smoke): 补齐 bash 只读方案的 G2 验收缺口并修官网两处\n#868\t2026-11-15T20:00:57Z\ttest(agent): 隔离子代理用例不再依赖跑测试的目录\n#866\t2026-11-15T19:07:36Z\ttest(tui): compact 折叠补 PTY 端到端验收并校准文档口径\n"
+  },
+  {
+    "at": "2026-11-16T01:23:09.309Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:23:12\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tpending/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n43784888091\tin_progress/\tfix/ruleowner-worktree-segment\n"
+  },
+  {
+    "at": "2026-11-16T01:23:15.881Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:23:19\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 在飞 CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:23:22.919Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 4 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:23:28\n=== 剩余 4 个 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 在飞 CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:23:22.919Z",
+    "command": "cd <repo> && echo \"=== auto-update 最近决策 ===\" && gh run view $(gh run list --workflow=pr-auto-update.yml --limit 1 --json databaseId --jq '.[0].databaseId') --log 2>&1 | grep -Ei 'update-branch|等待|空闲|本轮放弃' | tail -3",
+    "output": "=== auto-update 最近决策 ===\n"
+  },
+  {
+    "at": "2026-11-16T01:23:34.691Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:23:38\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 在飞 CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:23:41.300Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 4 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:23:45\n=== 剩余 4 个 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 在飞 CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:23:48.031Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 4 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 在飞 CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:23:52\n=== 剩余 4 个 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 在飞 CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:23:48.031Z",
+    "command": "cd <repo> && echo \"=== 今日合并统计 ===\" && gh pr list --state merged --limit 20 --json number,mergedAt --jq '[.[] | select(.mergedAt > \"2026-11-15T16:00:00Z\")] | length' && echo \"=== 最近 3 个合并 ===\" && gh pr list --state merged --limit 3 --json number,mergedAt --jq '.[] | \"#\\(.number)\\t\\(.mergedAt)\"'",
+    "output": "=== 今日合并统计 ===\n18\n=== 最近 3 个合并 ===\n#869\t2026-11-16T01:11:31Z\n#868\t2026-11-15T20:00:57Z\n#866\t2026-11-15T19:07:36Z\n"
+  },
+  {
+    "at": "2026-11-16T01:23:57.574Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 4 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:01\n=== 剩余 4 个 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:03.831Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:07\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:10.324Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:13\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:17.353Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:21\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:23.867Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:28\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:31.574Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:35\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:38.620Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:42\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:45.508Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:48\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:51.591Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:24:56\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:24:58.895Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:02\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:05.464Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:08\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:11.565Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:15\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:17.870Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:21\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:24.633Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:28\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:30.812Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 4 个 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:34\n=== 剩余 4 个 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:30.812Z",
+    "command": "cd <repo> && echo \"=== 今日已合并 PR 列表 ===\" && gh pr list --state merged --limit 25 --json number,mergedAt --jq '[.[] | select(.mergedAt > \"2026-11-15T16:00:00Z\")] | \"总计: \\(length) 个\" , (.[] | \"#\\(.number)\\t\\(.mergedAt)\")'",
+    "output": "=== 今日已合并 PR 列表 ===\n总计: 19 个\n#869\t2026-11-16T01:11:31Z\n#868\t2026-11-15T20:00:57Z\n#866\t2026-11-15T19:07:36Z\n#865\t2026-11-15T18:56:12Z\n#864\t2026-11-15T18:45:32Z\n#863\t2026-11-15T17:21:43Z\n#861\t2026-11-15T19:19:52Z\n#860\t2026-11-15T19:35:41Z\n#859\t2026-11-15T18:34:41Z\n#858\t2026-11-15T19:48:40Z\n#857\t2026-11-15T18:07:29Z\n#856\t2026-11-15T16:59:34Z\n#855\t2026-11-15T18:23:22Z\n#854\t2026-11-15T16:27:58Z\n#851\t2026-11-15T17:39:27Z\n#849\t2026-11-15T17:56:49Z\n#848\t2026-11-16T01:22:49Z\n#847\t2026-11-15T16:12:16Z\n#845\t2026-11-15T16:01:32Z\n"
+  },
+  {
+    "at": "2026-11-16T01:25:38.733Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:42\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:45.598Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:50\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:25:53.356Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:25:57\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:00.359Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:26:03\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:06.613Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:26:10\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:13.825Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:26:17\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:20.619Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:26:24\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:27.257Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:26:31\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:34.743Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:26:38\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:41.386Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 今日合并总数 ===\" && gh pr list --state merged --limit 30 --json number,mergedAt --jq '[.[] | select(.mergedAt > \"2026-11-15T15:00:00Z\")] | length'",
+    "output": "09:26:45\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 今日合并总数 ===\n21\n"
+  },
+  {
+    "at": "2026-11-16T01:26:47.453Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:26:51\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:26:55.059Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 今日合并总数 ===\" && gh pr list --state merged --limit 40 --json number,mergedAt --jq '[.[] | select(.mergedAt > \"2026-11-15T15:00:00Z\")] | length'",
+    "output": "09:26:59\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 今日合并总数 ===\n21\n"
+  },
+  {
+    "at": "2026-11-16T01:27:01.660Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:27:05\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:27:07.973Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:27:12\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:27:14.889Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:27:18\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:27:21.225Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 今日合并总数 ===\" && gh pr list --state merged --limit 40 --json number,mergedAt --jq '[.[] | select(.mergedAt > \"2026-11-15T15:00:00Z\")] | length'",
+    "output": "09:27:25\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 今日合并总数 ===\n21\n"
+  },
+  {
+    "at": "2026-11-16T01:27:27.385Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:27:32\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:27:35.567Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:27:39\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:27:43.547Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== 今日合并总数 ===\" && gh pr list --state merged --limit 40 --json number,mergedAt --jq '[.[] | select(.mergedAt > \"2026-11-15T15:00:00Z\")] | length'",
+    "output": "09:27:46\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== 今日合并总数 ===\n21\n"
+  },
+  {
+    "at": "2026-11-16T01:27:50.119Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:27:53\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:27:57.141Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:00\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:03.408Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:07\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:09.777Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:13\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:16.597Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:20\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:23.015Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:26\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:29.659Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:32\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:35.940Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:39\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:42.857Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:46\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:49.392Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:53\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tqueued/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:28:56.050Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:28:59\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tin_progress/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:29:02.619Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:29:06\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tin_progress/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:29:10.130Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:29:14\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#852\tBLOCKED\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBEHIND\tauto=Y\n=== CI ===\n43785961415\tin_progress/\tfix/tool-selection-audit-crosstime\n43785924708\tin_progress/\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:59:05.250Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "09:59:17\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n43787607572\tcompleted/failure\tfix/ruleowner-worktree-segment\n43787560431\tcompleted/success\tmain\n"
+  },
+  {
+    "at": "2026-11-16T01:59:22.390Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== #867 失败检查 ===\" && gh pr checks 867 2>&1 | head -10",
+    "output": "10:00:30\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== #867 失败检查 ===\nall-checks-passed\tfail\t3s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133041739759\t\ntest (ubuntu-latest, 2/3)\tfail\t3m6s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133038655802\t\nlint\tpass\t42s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133038655407\t\ntest (macos-latest, 1/2)\tpass\t10m18s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133038655913\t\ntest (macos-latest, 2/2)\tpass\t5m50s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133038655888\t\ntest (ubuntu-latest, 1/3)\tpass\t6m20s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133038655638\t\ntest (ubuntu-latest, 3/3)\tpass\t3m48s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133038655696\t\nwebsite\tpass\t56s\thttps://github.com/<owner>/sid-code/actions/runs/43787607572/job/133038655703\t\n"
+  },
+  {
+    "at": "2026-11-16T01:59:22.390Z",
+    "command": "cd <repo> && echo \"=== #867 失败日志 ===\" && gh run view 43787607572 --log-failed 2>&1 | grep -Ei '\\(fail\\)|error:|expect\\(' | head -15",
+    "output": "=== #867 失败日志 ===\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:40:28.1956702Z ^[[36;1m  echo \"::error::仓内缺少 $src（runner=$RUNNER_OS/$RUNNER_ARCH，version=$version）\"^[[0m\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:40:28.1957506Z ^[[36;1m  echo \"::error::补齐方式：bun run scripts/fetch-ripgrep.ts --all 后 git add packages/core/vendor/ripgrep/${version}/\"^[[0m\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:41:48.8432746Z (pass) origin 判定：本地缺陷 vs 网络失败 > 本地 TypeError: Cannot read properties of undefined → 2 次后放弃，reason=local_fault [1.37ms]\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:41:48.8459710Z (pass) origin 判定：本地缺陷 vs 网络失败 > 反例：TypeError: fetch failed → origin=network，进 transient 重试，不是 local_fault [2.68ms]\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:42:23.7144954Z 42 |       expect(fired).toBeGreaterThanOrEqual(1);\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:42:23.7145666Z error: expect(received).toBeGreaterThanOrEqual(expected)\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:42:23.7179397Z (fail) SkillChangeDetector > SKILL.md 变更触发防抖重载 [549.35ms]\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:43:26.2968474Z (fail) SkillChangeDetector > SKILL.md 变更触发防抖重载 [549.35ms]\ntest (ubuntu-latest, 2/3)\tUNKNOWN STEP\t2026-11-16T01:43:26.2969464Z  5 snapshots, 21761 expect() calls\nall-checks-passed\tVerdict\t2026-11-16T01:50:43.1366160Z ^[[36;1m  echo \"::error::上游 job 结果不全是 success/skipped（失败 / 取消 / 未被 runner 领取等），拒绝放行\"^[[0m\n"
+  },
+  {
+    "at": "2026-11-16T02:00:50.269Z",
+    "command": "cd <repo> && date '+%H:%M:%S' && echo \"=== 剩余 PR ===\" && gh pr list --state open --limit 20 --json number,mergeStateStatus,autoMergeRequest --jq '.[] | \"#\\(.number)\\t\\(.mergeStateStatus)\\tauto=\\(if .autoMergeRequest then \"Y\" else \"N\" end)\"' | sort -n && echo \"=== CI ===\" && gh run list --limit 6 --json databaseId,status,conclusion,headBranch,workflowName --jq '.[] | select(.workflowName==\"CI\") | \"\\(.databaseId)\\t\\(.status)/\\(.conclusion // \"-\")\\t\\(.headBranch)\"'",
+    "output": "命令已取消并终止（用户取消）。\n部分输出:\n10:00:55\n=== 剩余 PR ===\n#846\tBEHIND\tauto=Y\n#862\tBEHIND\tauto=Y\n#867\tBLOCKED\tauto=Y\n=== CI ===\n"
+  }
+]
