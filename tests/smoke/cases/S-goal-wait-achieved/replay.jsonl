@@ -1,0 +1,4 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"monitor","input":{"description":"模拟 CI","command":"sleep 5"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"CI 在跑，我挂着等待，等它结束再继续。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"text","text":"（续跑轮）收到通知，继续收尾。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":4,"response":{"content":[{"type":"text","text":"{\"satisfied\": true, \"reason\": \"迁移工作已完成\", \"progress\": 100, \"impossible\": false}"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
