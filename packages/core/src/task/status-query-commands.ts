@@ -566,6 +566,14 @@ const HARMLESS_COMMANDS = new Set([
  * 但 `date -s 2020-01-01` / `date --set=…` 是**改系统时钟**的写操作。
  * R4 要求「末尾是无害段时跳过」之后，`gh pr view 1; date -s …` 这种组合会走进
  * 「前一段是查询、后一段无害」的路径 —— 若不排除 `-s`，一条改时钟的命令会被拦下来。
+ *
+ * ⚠️ **与 `normalizeText` 的时钟抹除是一对，改一边必须改另一边。**
+ * 放行 `date` 是因为轮询时用它打时间戳（`sleep 30; date '+%H:%M:%S'; gh pr view …`）；
+ * 而它产生的时间戳正文会让同一状态的两次输出签名永远不相等 —— 那半边由
+ * `normalizeText` 里的 `ISO_CLOCK_RE` / `HMS_CLOCK_RE` / `HM_CLOCK_RE` 抹掉。
+ * 只删「放行」会让 `date; gh pr view` 这种最常用的轮询写法整体不被识别为状态查询；
+ * 只删「抹除」会让它每轮都被判成「状态变了」，P1 一次都拦不住。
+ * 两处都不是可独立删除的实现细节（P2，2026-11-17 审计时补记）。
  */
 function isHarmlessSegment(seg: SimpleSegment): boolean {
   if (!seg.command) return false;
@@ -1233,10 +1241,14 @@ const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
 const ISO_CLOCK_RE =
   /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
 const HMS_CLOCK_RE = /\b\d{1,2}:\d{2}:\d{2}\b/g;
-/** 行首或 `[` 之后的裸时分（保留前导字符：`[09:16] open=3` 里的 `[` 属于原输出） */
+/** 行首或 `[` 之后的裸时分（保留前导字符：`[09:16] open=3` 里的 `[` 属于原输出）。
+ *
+ * 「整行只有一个裸时分」（`date +%H:%M` 的输出形态）也走这一条：那种形态的行首必然是它，
+ * `^` 分支已经覆盖。曾经另立过一条 `^[ \t]*\d{1,2}:\d{2}[ \t]*$` 的整行正则，
+ * 但它排在 `replace` 链的后面、**永不命中**（前面这条已经把行首那个时分数改写成了
+ * `<clock>`，后面的整行正则再也匹配不到数字）——是一条死正则，2026-11-17 删掉。
+ */
 const HM_CLOCK_RE = /(^|\[)[ \t]*\d{1,2}:\d{2}\b/gm;
-/** 整行只有一个裸时分（`date +%H:%M` 的输出形态） */
-const HM_CLOCK_LINE_RE = /^[ \t]*\d{1,2}:\d{2}[ \t]*$/gm;
 
 /**
  * 通用归一化：去 ANSI、抹时间戳、抹耗时 token、折叠空白。T-P1-9 的「只差耗时列」靠这一条。
@@ -1250,12 +1262,11 @@ function normalizeText(text: string): string {
   return (
     text
       .replace(ANSI_RE, "")
-      // 时间戳必须排在耗时之前：`09:16:25` 里的 `16:25` 不会被耗时正则吃掉，
-      // 但它会挡住后面「整行只有一个时分」的判定（行里已经不止一个 token）。
+      // 时间戳必须排在耗时之前：`09:16:25` 里的 `16:25` 不会被耗时正则吃掉
+      //（`HMS_CLOCK_RE` 先一步把它整段抹掉，耗时正则看不到它）。
       .replace(ISO_CLOCK_RE, "<clock>")
       .replace(HMS_CLOCK_RE, "<clock>")
       .replace(HM_CLOCK_RE, "$1<clock>")
-      .replace(HM_CLOCK_LINE_RE, "<clock>")
       // 组合时长（`13m43s` / `1h2m3s`）要整体抹掉：下面那条单段正则对 `13m43s` 只能抹掉
       // 后一半（`13m` 后面紧跟 `4`，`\b` 不成立），两种不同时长就会归一化成不同签名。
       // 这正是 `gh run list` 的 ELAPSED 列形态，不抹干净等于「每轮都算状态变了」。
