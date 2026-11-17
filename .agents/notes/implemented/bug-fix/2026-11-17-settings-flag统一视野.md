@@ -63,7 +63,11 @@ flag 的 hooks 在 config 层被 `delete` 掉，只走 `_hookLayers`，否则 `a
   A2 用例从 `lock-defect` 改 `guard`，`HookExecuted` 0 → 1、`hook.log` 从 absent 改为
   `"[hook] edit\n"`；`mutations` 改为「删掉 flag 层」模拟回退。
 - **G2 冒烟**：`bun run smoke` **41 例 41 通过**（含改后的 A2）。
-- **变异自证**：`bun run smoke:mutate` —— 待补运行结果（脚本要求工作区干净，故在提交后跑）。
+- **变异自证**：`bun run smoke:mutate A2-settings-flag-no-hook` → `[KILLED]`：
+  「事件 HookExecuted {} 期望 1 条，实际 0 条」，1 条变异 1 killed / 0 未杀死。
+  （全量 `smoke:mutate` 在本机跑满 600s 未结束被中止，故按用例过滤单跑；中止时它留在
+  `packages/core/src/daemon/daemon.ts` 的变异残留已用 `git show HEAD:<path>` 还原，
+  该文件不属于本次改动。）
 - **类型检查**：`bun run typecheck:gate` 当前 62 处 / 基线 62 处，**无新增**。
 - **静态门禁**：`bun run lint` 0 warning 0 error、`format:check` 通过、`lint:boundary` 通过。
 - **参考页**：`docs:gen-reference` 更新 `website/ref/cli.md`；`tests/website/gen-reference.test.ts`
