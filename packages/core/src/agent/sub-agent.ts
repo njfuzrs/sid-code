@@ -9,6 +9,7 @@ import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { RequestContext } from "../llm/request-context.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
+import { extractFinalTextWithContinuation } from "../query/max-tokens-recovery.ts";
 import { SidechainWriter } from "../session/sidechain.ts";
 import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -2836,24 +2837,13 @@ export class SubAgent {
    *  增强：跳过纯 thinking/planning 文本（第三方模型 reasoning 混在 text block 中，
    *  CC 靠 thinking type 过滤，sid-code 需启发式判断）。 */
   private extractFinalText(
-    messages: Array<{ role: string; content: ContentBlock[] }>,
+    messages: Array<{ role: string; content: ContentBlock[]; _meta?: Record<string, unknown> }>,
     fallback: string,
   ): string {
-    // 倒序遍历所有消息
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg?.role !== "assistant") continue;
-      const texts = (msg.content as ContentBlock[])
-        .filter((b) => b.type === "text")
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .join("\n")
-        .trim();
-      if (!texts) continue;
-      // 跳过纯 thinking/planning 文本（无实质结论）
-      if (this.isLikelyThinking(texts)) continue;
-      return texts;
-    }
-    return fallback;
+    // X2：回溯拼接续写链的逻辑抽到 `query/max-tokens-recovery.ts` 的纯函数里。
+    // 为什么抽出去：它是 private 方法时测试够不着，而「漏掉回溯 → 父代理只拿到
+    // 最后一段」正是这个缺陷最难发现的形态（报告静默变短、没有任何报错）。
+    return extractFinalTextWithContinuation(messages, fallback, (t) => this.isLikelyThinking(t));
   }
 
   /** 启发式判断文本是否为纯 thinking/planning（无结构化结论内容）。

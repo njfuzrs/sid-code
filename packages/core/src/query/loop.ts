@@ -386,6 +386,11 @@ import type { QueryLoopYield, QueryDeps, LoopState } from "./types.ts";
 import { createInitialLoopState } from "./types.ts";
 import { setTransition } from "./transition.ts";
 import { classifyStopReason } from "./stop-reason-policy.ts";
+import {
+  buildMaxTokensContinuationNotice,
+  buildMaxTokensHandoffNotice,
+  resolveMaxTokensEscalationTarget,
+} from "./max-tokens-recovery.ts";
 import { settleOrphanToolUses } from "./terminal-finalize.ts";
 import { emitGateExhausted, type ExhaustibleGate } from "./gate-exhaustion.ts";
 import { MAX_STOP_HOOK_RETRIES } from "./stop-hooks.ts";
@@ -6937,15 +6942,9 @@ async function* queryLoopBody(
               level: "info",
               text: `连续续写产出递减，已停止自动续写，交由模型决定下一步`,
             };
-            const handoffNotice =
-              `<system-reminder>\n` +
-              `连续自动续写多次后每次产出都很少，已停止自动续写。请你自己决定下一步：\n` +
-              `1. 如果内容已基本完成，直接收尾并说明结论，不要为了"继续"而继续。\n` +
-              `2. 如果确实还有大量内容要写，改用分段策略：单次工具调用（如 write 的 content）` +
-              `不要超过输出上限，先写一部分落盘，再用 edit / bash 追加剩余部分。\n` +
-              `3. 如果卡在某处，明确说出卡点，或改调其他工具去推进。\n` +
-              `请勿向用户提及本提醒。\n` +
-              `</system-reminder>`;
+            // 文案与子代理循环共用同一构造器（query/max-tokens-recovery.ts）：
+            // 两处各写一份字面量必然漂移，而「让手后怎么办」的指引恰恰是模型行为的关键输入。
+            const handoffNotice = buildMaxTokensHandoffNotice();
             ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: handoffNotice }] });
             try {
               deps.sessionStore?.appendMessage({
@@ -6990,8 +6989,7 @@ async function* queryLoopBody(
         // 400，交给 Stage 2 续写更安全（与旧行为一致）。
         const modelMax = resolveMaxOutputTokensForModel(config.model, config.availableModels);
         const windowCeiling = contextMax - currentTokens - OUTPUT_BUDGET_SAFETY_BUFFER;
-        const escalateTarget =
-          modelMax !== undefined && modelMax > 0 ? Math.min(modelMax, windowCeiling) : undefined;
+        const escalateTarget = resolveMaxTokensEscalationTarget({ modelMax, windowCeiling });
         const currentCeiling = state.maxOutputTokensOverride ?? config.maxTokens;
         if (
           escalateTarget !== undefined &&
@@ -7021,15 +7019,9 @@ async function* queryLoopBody(
         // 甚至（当截断发生在工具调用参数中途时）反复重发同一个超大调用。对齐 claude-code
         // 的 [Response clipped] 提示。走 user 消息通道，随历史流入下一轮请求。
         {
-          const clipNotice =
-            `<system-reminder>\n` +
-            `你的上一次响应因达到输出长度上限（max_tokens）被截断，尚未完成。请直接从被截断处继续——` +
-            `不要道歉，不要重新开场，不要重复已经输出的内容。` +
-            `如果被截断时正在写代码或文本中途，直接从断点处接续。\n` +
-            `如果你正在写入大文件或长内容，请改用分段策略：单次工具调用的参数（如 write 的 content）` +
-            `不要超过输出上限，先写一部分，再用 edit / bash 追加剩余部分。\n` +
-            `（自动续写 ${state.maxTokensContinuationCount} 次）\n` +
-            `</system-reminder>`;
+          // 文案与子代理循环共用同一构造器（query/max-tokens-recovery.ts），
+          // 两处各写一份字面量必然漂移。
+          const clipNotice = buildMaxTokensContinuationNotice(state.maxTokensContinuationCount);
           ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: clipNotice }] });
           try {
             deps.sessionStore?.appendMessage({
