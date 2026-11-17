@@ -61,28 +61,16 @@ export class RestoreCommand implements LocalCommandModule {
       lines.push(`  ... 还有 ${affectedFiles.size - 10} 个文件`);
     }
 
-    // P3：超过单文件上限的文件**从未进快照**（checkpoint 不保护它们）。
-    // 不点明的话，用户会把「已恢复」理解成「所有改动都回退了」，而实际上这些大文件
+    // P3/P4：没进快照的目标**从未被保护**（checkpoint 不保护它们），必须分类点明。
+    // 不点明的话，用户会把「已恢复」理解成「所有改动都回退了」，而实际上这些目标
     // 停在回滚后的状态——静默的不完整保护比没有保护更危险。
     // 范围取 targetIndex 起（含目标快照）：目标快照自身跳过的文件，同样在恢复范围之外。
-    const unprotected = new Map<string, number>();
+    // 三类原因（超限 / 非普通文件 / 无法判定类型）文案分开，交给纯函数统一渲染。
+    const skippedEntries: UnprotectedEntry[] = [];
     for (const s of allSnapshots.slice(targetIndex)) {
-      for (const f of cpMgr.getSnapshotDetail(s.id)?.skippedFiles ?? []) {
-        unprotected.set(f.filePath, f.bytes);
-      }
+      skippedEntries.push(...(cpMgr.getSnapshotDetail(s.id)?.skippedFiles ?? []));
     }
-    if (unprotected.size > 0) {
-      lines.push("");
-      lines.push(
-        `⚠️ 另有 ${unprotected.size} 个文件超过单文件上限，从未进快照，本次恢复不会改动它们:`,
-      );
-      for (const [file, bytes] of Array.from(unprotected).slice(0, 5)) {
-        lines.push(`  ${file} (${(bytes / 1024 / 1024).toFixed(1)}MB)`);
-      }
-      if (unprotected.size > 5) {
-        lines.push(`  ... 还有 ${unprotected.size - 5} 个`);
-      }
-    }
+    lines.push(...formatUnprotectedLines(skippedEntries));
 
     lines.push("");
     lines.push("⚠️ 此操作将丢失这些快照之后的所有变更！");
@@ -122,4 +110,64 @@ export class RestoreCommand implements LocalCommandModule {
       },
     };
   }
+}
+
+/** 一个「从未进快照」的目标（`Snapshot.skippedFiles` 的元素）。 */
+export interface UnprotectedEntry {
+  filePath: string;
+  bytes: number;
+  reason?: "non-regular" | "unreadable";
+}
+
+/**
+ * 把「没进快照的目标」渲染成确认面板里的几行（P3/P4）。
+ *
+ * 抽成纯函数是为了让文案能被单测直接锁住：`bytes` 对非普通文件与不可读路径恒为 0，
+ * 三类原因混成一句「超过单文件上限 (0.0MB)」就是撒谎——把设备/目录说成超大文件，
+ * 把非法路径说成设备文件，都属同一类误导。`reason` 缺省即 `too-large`（老分片没有该字段）。
+ */
+export function formatUnprotectedLines(entries: UnprotectedEntry[]): string[] {
+  const MAX_PREVIEW = 5;
+  const tooLarge: UnprotectedEntry[] = [];
+  const nonRegular: UnprotectedEntry[] = [];
+  const unreadable: UnprotectedEntry[] = [];
+  const seen = new Set<string>();
+  for (const e of entries) {
+    if (seen.has(e.filePath)) continue; // 同一路径可能出现在多个快照里
+    seen.add(e.filePath);
+    if (e.reason === "non-regular") nonRegular.push(e);
+    else if (e.reason === "unreadable") unreadable.push(e);
+    else tooLarge.push(e);
+  }
+  if (tooLarge.length === 0 && nonRegular.length === 0 && unreadable.length === 0) return [];
+
+  const lines: string[] = [""];
+  if (tooLarge.length > 0) {
+    lines.push(
+      `⚠️ 另有 ${tooLarge.length} 个文件超过单文件上限，从未进快照，本次恢复不会改动它们:`,
+    );
+    for (const e of tooLarge.slice(0, MAX_PREVIEW)) {
+      lines.push(`  ${e.filePath} (${(e.bytes / 1024 / 1024).toFixed(1)}MB)`);
+    }
+    if (tooLarge.length > MAX_PREVIEW) lines.push(`  ... 还有 ${tooLarge.length - MAX_PREVIEW} 个`);
+  }
+  if (nonRegular.length > 0) {
+    lines.push(
+      `⚠️ 另有 ${nonRegular.length} 个非普通文件（目录/设备/软链等）不是可回退目标，从未进快照，本次恢复不会改动它们:`,
+    );
+    for (const e of nonRegular.slice(0, MAX_PREVIEW)) lines.push(`  ${e.filePath}`);
+    if (nonRegular.length > MAX_PREVIEW) {
+      lines.push(`  ... 还有 ${nonRegular.length - MAX_PREVIEW} 个`);
+    }
+  }
+  if (unreadable.length > 0) {
+    lines.push(
+      `⚠️ 另有 ${unreadable.length} 个路径无法判定类型（父目录是普通文件/无权访问等），从未进快照，本次恢复不会改动它们:`,
+    );
+    for (const e of unreadable.slice(0, MAX_PREVIEW)) lines.push(`  ${e.filePath}`);
+    if (unreadable.length > MAX_PREVIEW) {
+      lines.push(`  ... 还有 ${unreadable.length - MAX_PREVIEW} 个`);
+    }
+  }
+  return lines;
 }
