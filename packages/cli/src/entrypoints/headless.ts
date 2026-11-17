@@ -184,6 +184,10 @@ async function runAgentLoop(
     // 传 session_id → 创建即启用工具输出遮罩（对标 cc：headless 是评估/CI/批量入口，
     // 长任务跑批时最需要 masking 压 input token，此前裸发完全没有）。
     sessionId: init.session_id,
+    // PR3（C1）：spawn 子进程同样是子代理负载，关闭过期清理通道。三处子代理构造点
+    // 必须保持一致 —— 漏掉这一处，spawn 模式（模型档位映射到小窗口时默认走这里）
+    // 仍会重读循环，而且不会报错。
+    staleToolOutputClear: false,
   });
 
   ctxMgr.setSystemPrompt(init.system_prompt);
