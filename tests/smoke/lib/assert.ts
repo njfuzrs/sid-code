@@ -43,9 +43,26 @@ export function parseRawRequests(jsonl: string): unknown[] {
   return out;
 }
 
+/**
+ * 从事件里取一个字段：先按整键查（`data` 优先，再顶层），再按 `a.b` 点号路径查。
+ *
+ * 点号路径是 2026-11-17 补的：`TurnComplete.goal_limit_exceeded` / `GoalGateDecision.wait_ids`
+ * 这类**嵌套 payload** 用整键只能拿到对象引用，而 `where` 的值是按 `===` 比的，
+ * 于是断言恒不命中——写的人会以为字段没落，实际是断言表达不了。
+ * 先查整键是刻意的：`data` 里可能有字面量含点的键，既有用例不能因此改变行为。
+ */
 function fieldOf(e: TraceEvent, key: string): unknown {
   if (e.data && key in e.data) return e.data[key];
-  return e[key];
+  if (key in e) return e[key];
+  const dot = key.indexOf(".");
+  if (dot <= 0) return undefined;
+  const head = key.slice(0, dot);
+  let cur: unknown = e.data && head in e.data ? e.data[head] : e[head];
+  for (const seg of key.slice(dot + 1).split(".")) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[seg];
+  }
+  return cur;
 }
 
 export function matchesWhere(e: TraceEvent, where: Record<string, unknown> = {}): boolean {

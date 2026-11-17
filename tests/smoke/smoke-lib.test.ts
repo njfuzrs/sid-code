@@ -105,6 +105,43 @@ describe("checkEventExpect", () => {
       checkEventExpect(events, { event: "PostToolUse", where: { is_error: true } }),
     ).not.toBeNull();
   });
+
+  test("嵌套 payload 用点号路径断言（goal_limit_exceeded.source）", () => {
+    const withNested = parseEvents(
+      [
+        JSON.stringify({
+          event: "TurnComplete",
+          data: { goal_limit_exceeded: { source: "turns" }, stop_reason: "error" },
+        }),
+        JSON.stringify({
+          event: "TurnComplete",
+          data: { goal_limit_exceeded: { source: "budget" }, stop_reason: "error" },
+        }),
+      ].join("\n"),
+    );
+    expect(
+      checkEventExpect(withNested, {
+        event: "TurnComplete",
+        where: { "goal_limit_exceeded.source": "turns" },
+        count: 1,
+      }),
+    ).toBeNull();
+    // 路径写错时要报「实际 0 条」，不能静默通过
+    expect(
+      checkEventExpect(withNested, {
+        event: "TurnComplete",
+        where: { "goal_limit_exceeded.sourc": "turns" },
+        count: 1,
+      }),
+    ).toContain("实际 0 条");
+  });
+
+  test("整键优先于点号拆分：data 里字面量含点的键不被路径解析抢走", () => {
+    const literal = parseEvents(
+      JSON.stringify({ event: "X", data: { "a.b": "literal", a: { b: "nested" } } }),
+    );
+    expect(checkEventExpect(literal, { event: "X", where: { "a.b": "literal" } })).toBeNull();
+  });
 });
 
 describe("parseRawRequests", () => {
