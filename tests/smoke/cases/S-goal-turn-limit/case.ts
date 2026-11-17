@@ -42,6 +42,12 @@ const def: SmokeCase = {
     events: [
       // 归因恰好一条，且口径是 turns_limited（不是 budget 族）
       { event: "GoalGateDecision", where: { reason: "turns_limited" }, count: 1 },
+      // 方案 §7.3 要求 `TurnComplete` 上也带归因（`goal_limit_exceeded.source`），
+      // 供离线统计直接按事件分桶；此前只有单测锁字段，真实二进制落盘没人验过。
+      { event: "TurnComplete", where: { "goal_limit_exceeded.source": "turns" }, count: 1 },
+      // 总模型调用数 = 2 轮工作 + 1 轮强制总结。锁住「第 3 轮工作请求没有发出去」：
+      // 多一次就说明拦在了工具执行之后而不是请求之前。
+      { event: "BeforeModel", count: 3 },
     ],
     files: [
       // 前两轮的工具照常执行
