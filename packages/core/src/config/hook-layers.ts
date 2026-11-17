@@ -15,11 +15,11 @@
 
 import { existsSync, readFileSync } from "fs";
 import { getSettingsFilePath, listManagedSettingsDropIns } from "./settings/constants.ts";
-import { getEnabledSettingSources } from "./settings/settings.ts";
+import { getEnabledSettingSources, getSettingsForSource } from "./settings/settings.ts";
 import { isUntrustedSettingsFile } from "./settings/security.ts";
 
 /** 与 hook/types.ts 的 ConfigSource 取值一致（这里不 import 枚举，避免配置层拖入 hook 子系统） */
-export type HookLayerSource = "user" | "project" | "local" | "managed";
+export type HookLayerSource = "flag" | "user" | "project" | "local" | "managed";
 
 export interface HookLayer {
   source: HookLayerSource;
@@ -33,23 +33,33 @@ export interface HookLayer {
   skippedByTrust?: boolean;
 }
 
+/**
+ * 把任意一份 hooks 段归一成「事件名 → 数组」，空对象视为没有。
+ *
+ * 抽出来是因为 flagSettings（`--settings`）来自内存对象、没有文件，但同样要支持
+ * 极旧的数组写法（与 normalizeConfigKeys 同口径按 event 分组）。
+ */
+function normalizeRawHooks(hooks: unknown): Record<string, unknown> | null {
+  let value = hooks;
+  if (Array.isArray(value)) {
+    const grouped: Record<string, unknown[]> = {};
+    for (const h of value) {
+      const ev = (h && typeof h === "object" && (h as { event?: string }).event) || "pre_tool_use";
+      (grouped[ev] ??= []).push(h);
+    }
+    value = grouped;
+  }
+  if (!value || typeof value !== "object") return null;
+  return Object.keys(value as Record<string, unknown>).length > 0
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function readRawHooks(path: string): Record<string, unknown> | null {
   if (!existsSync(path)) return null;
   try {
     const raw = JSON.parse(readFileSync(path, "utf-8"));
-    let hooks = raw && typeof raw === "object" ? raw.hooks : undefined;
-    // 极旧的数组写法 `hooks: [{event, command}]`：与 normalizeConfigKeys 同口径按 event 分组
-    if (Array.isArray(hooks)) {
-      const grouped: Record<string, unknown[]> = {};
-      for (const h of hooks) {
-        const ev =
-          (h && typeof h === "object" && (h as { event?: string }).event) || "pre_tool_use";
-        (grouped[ev] ??= []).push(h);
-      }
-      hooks = grouped;
-    }
-    if (!hooks || typeof hooks !== "object") return null;
-    return Object.keys(hooks).length > 0 ? (hooks as Record<string, unknown>) : null;
+    return normalizeRawHooks(raw && typeof raw === "object" ? raw.hooks : undefined);
   } catch {
     // JSON 本身坏掉由 settings 链报错，这里不重复
     return null;
@@ -90,6 +100,24 @@ export function collectHookLayers(workspacePath: string = process.cwd()): HookLa
       hooks,
       untrusted: isUntrustedSettingsFile(settingSource, file),
     });
+  }
+
+  // flagSettings（`--settings`）是用户本次命令显式给的内存源：不读磁盘、不过信任门，
+  // 但必须与磁盘三层同口径参与合并。不补这一层，「`--settings` 里的 hook 不生效」就还在 ——
+  // 这是同一根因的第三次：hooks 只读用户级（HC1 补齐磁盘三源）→ `--settings` 只进
+  // getSettings 视野（本次补齐 Config 与 hooks，见 2026-11-16 二次核查）。
+  //
+  // 放在 local 之后：与 SETTING_SOURCES 的相对顺序一致（... local → flag → policy）。
+  // hooks 是按事件追加，顺序即执行次序，所以这一层的相对位置不能随手挪。
+  //
+  // 直接取内存对象、不做 env 插值：`${CLAUDE_PROJECT_DIR}` 必须留给 hook 子进程展开，
+  // 与上面各层读原始 JSON 的理由相同（见文件头注释）。
+  const flagSettings = getSettingsForSource("flagSettings").settings as {
+    hooks?: unknown;
+  } | null;
+  const flagHooks = normalizeRawHooks(flagSettings?.hooks);
+  if (flagHooks) {
+    layers.push({ source: "flag", file: "<--settings>", hooks: flagHooks, untrusted: false });
   }
   return layers;
 }

@@ -1317,16 +1317,16 @@ export async function main(): Promise<void> {
 
     // P1-5 / P1-6：在 loadConfig 之前注入 settings 源过滤与 --settings 覆盖源。
     //
-    // ⚠️ 生效范围只到 **settings 视野**：之后任何 `getSettings()` /
-    // `getSettingsForSource("flagSettings")` 都能看到它。但 `loadConfigFile` **不读 flagSettings**
-    // （它只读磁盘 `~/.sid-code/settings.json` + project/local 行为白名单），所以
-    // `loadConfig()` 构造的 Config 对象上的字段（model / theme / goal / maxTurns 等）
-    // **不受 --settings 影响**。
+    // 生效范围（2026-11-17 起统一）：三条链都吃它 ——
+    //   ① `getSettings()` / `getSettingsForSource("flagSettings")`；
+    //   ② `loadConfig()` 构造的 Config（model / theme / goal / maxTurns 等，
+    //      见 loadConfigFile 的 flag 叠加）；
+    //   ③ hooks（见 hook-layers.ts 的 flag 层）。
     //
-    // 这句注释改写于 2026-11-16：修前写的是「使后续 loadConfigFile → getSettings 合并时即生效」，
-    // 点名了一个恰恰不吃 flagSettings 的函数，是最容易误导排查的一句 —— 核查者据此把
-    // 「--settings 对 goal 不生效」误判成「goal 配置未接线」，多花了一轮返工。
-    // 行为锁在 packages/core/tests/config/settings-flag-scope.test.ts。
+    // 这条注释 2026-11-16 写过「只到 settings 视野，不到 Config」，那是当时的真实行为；
+    // 2026-11-17 落实方案 A 后行为变了，注释必须跟着改 —— 留着旧措辞会让人以为
+    // `--settings` 仍只对 permissions 生效。行为锁在
+    // packages/core/tests/config/settings-flag-scope.test.ts。
     {
       const { setFlagSettings, setEnabledSettingSources } =
         await import("@sid-code/core/config/settings/index.ts");

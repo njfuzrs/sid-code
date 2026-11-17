@@ -55,6 +55,8 @@ const SOURCE_LABELS: Record<string, string> = {
   [ConfigSource.Global]: "全局级",
   [ConfigSource.Runtime]: "运行时",
   [ConfigSource.Plugin]: "插件",
+  // `--settings` 注入的 hooks：无文件，来源是命令行
+  [ConfigSource.Flag]: "命令行 --settings",
 };
 
 function sourceLabel(source: ConfigSource): string {
