@@ -179,6 +179,59 @@ export function extractScriptPaths(command: string): string[] {
 }
 
 /**
+ * 从一段子命令里认出 `cd <dir>` 的目标目录；不是 cd、或目录值要到运行时才知道时返回 null。
+ *
+ * 「运行时才知道」的形态一律不猜：`cd -`（回上一个目录）、`cd "$DIR"`、`cd \`dirname
+ * …\``——猜出来的目录恰好有同名脚本时，读到的是**另一个文件**，而本函数存在的意义
+ * 正是避免这件事（抽不到只是退化，抽错会让两个不相干的等待互相去重）。
+ */
+function cdTargetOf(segment: string): string | null {
+  const argv = splitShellWords(segment);
+  if (argv[0] !== "cd") return null;
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "-" || arg.includes("$") || arg.includes("`")) return null;
+    if (arg.startsWith("-")) continue; // -P / -L / -e 等选项，目标目录在它后面
+    return arg;
+  }
+  return null;
+}
+
+/**
+ * 命令里每个脚本路径**在该位置对应的基准目录**（B1，2026-11-17）。
+ *
+ * 为什么需要它：真实等待脚本几乎都是 `cd <worktree> && bash w.sh` 形态，
+ * 而 {@link scriptPathOf} 只认路径、不知道它前面有 cd。用启动目录去读 `w.sh`
+ * 时，读不到只是退化，**读到启动目录下的同名文件才是真缺陷**——抽出的 subjects
+ * 指向另一个对象，R2 据此把两个不相干的等待判成重复（§4.5 的 B1/B2）。
+ *
+ * 逐段跟踪而不是只看命令开头：`bash a.sh && cd /x && bash b.sh` 里两个脚本的
+ * 基准目录不同，只看开头会把 b.sh 也按 a.sh 的目录解析。跟踪语义与
+ * `normalizeWaitCommand` 剥 `cd` 前缀的判据同源（同一把尺子认同一种前缀）。
+ *
+ * 不处理子 shell 包裹（`(cd X && bash w.sh)`）：`splitShellSubcommands` 不切括号，
+ * 那种形态本来也抽不到脚本（首 token 是 `(cd`），不属于本函数能改善的范围。
+ */
+function scriptPathsWithBaseDirs(
+  command: string,
+  cwd: string,
+): Array<{ path: string; baseDir: string }> {
+  const out: Array<{ path: string; baseDir: string }> = [];
+  let baseDir = cwd;
+  for (const segment of splitShellSubcommands(command)) {
+    const cdTarget = cdTargetOf(segment);
+    if (cdTarget !== null) {
+      // 相对路径的 cd 相对**当前**目录解析（`cd a && cd b` 的真实语义是 a/b）
+      baseDir = isAbsolute(cdTarget) ? cdTarget : resolvePath(baseDir, cdTarget);
+      continue;
+    }
+    const path = scriptPathOf(segment);
+    if (path) out.push({ path, baseDir });
+  }
+  return out;
+}
+
+/**
  * 把命令调用到的脚本文件正文读出来（P3，2026-11-16 从 bash.ts 抽到此处）。
  *
  * 为什么必须读文件：`bash /tmp/wait-pr-779.sh` 的命令行上一个字都没有，对象写在文件里
@@ -191,12 +244,15 @@ export function extractScriptPaths(command: string): string[] {
  *
  * 四条保守边界（都是为了「抽不到就为空」这个方向）：读不到 / 不是普通文件 / 超过
  * {@link MAX_SCRIPT_BODY_BYTES} / 只认命令里字面出现的路径（不跟随 `source`、不递归）。
+ *
+ * 基准目录按**每段脚本各自的 cd 前缀**解析（见 {@link scriptPathsWithBaseDirs}）：
+ * `cd <worktree> && bash w.sh` 里的 `w.sh` 相对 worktree，而不是进程启动目录。
  */
 export function readWaitScriptBodies(command: string, cwd: string): string[] {
   const bodies: string[] = [];
-  for (const raw of extractScriptPaths(command)) {
+  for (const { path: raw, baseDir } of scriptPathsWithBaseDirs(command, cwd)) {
     try {
-      const abs = isAbsolute(raw) ? raw : resolvePath(cwd, raw);
+      const abs = isAbsolute(raw) ? raw : resolvePath(baseDir, raw);
       const stat = statSync(abs);
       if (!stat.isFile() || stat.size > MAX_SCRIPT_BODY_BYTES) continue;
       bodies.push(readFileSync(abs, "utf8"));

@@ -18,8 +18,10 @@ import {
   deriveWorktree,
   deriveRepoName,
   deriveRequests,
+  deriveGoal,
 } from "@sid-code/cli/ui/hooks/useStatusLineData.ts";
 import { theme } from "@sid-code/cli/ui/semantic-colors.ts";
+import { GOAL_MARK, PAUSED_MARK, WARNING_MARK } from "@sid-code/cli/ui/constants/figures.ts";
 
 describe("LY1 — shortenPath", () => {
   test("home 前缀替换为 ~", () => {
@@ -293,5 +295,42 @@ describe("tps 列 — deriveTps（会话累计输出吞吐）", () => {
 
   test("字形与数值之间无空格", () => {
     expect(deriveTps(41)!.text.startsWith("⇢41")).toBe(true);
+  });
+});
+
+describe("A4 — deriveGoal 的终态可见性", () => {
+  // 2026-11-17：`turns_limited` / `budget_limited` 此前与 `complete` 一起落到 null，
+  // 目标在状态栏上凭空消失。终态需要用户决策（放宽上限 / 清除目标），必须可见。
+  const def = "#010101" as const;
+
+  test("轮次耗尽 → 显示终态与具体轮次，warning 色", () => {
+    const r = deriveGoal({ turnsUsed: 3, maxTurns: 3, status: "turns_limited" }, def)!;
+    expect(r.text).toContain(WARNING_MARK);
+    expect(r.text).toContain("目标已终止");
+    expect(r.text).toContain("3/3");
+    expect(r.color).toBe(theme.status.warning);
+  });
+
+  test("预算耗尽 → 显示终态并说明是预算，warning 色", () => {
+    const r = deriveGoal({ turnsUsed: 5, maxTurns: 10, status: "budget_limited" }, def)!;
+    expect(r.text).toContain(WARNING_MARK);
+    expect(r.text).toContain("Token 预算");
+    expect(r.color).toBe(theme.status.warning);
+  });
+
+  test("active / paused 的既有显示不被终态分支改掉", () => {
+    expect(deriveGoal({ turnsUsed: 1, maxTurns: 10, status: "active" }, def)).toEqual({
+      text: `${GOAL_MARK} 目标 1/10 轮`,
+      color: def,
+    });
+    expect(deriveGoal({ turnsUsed: 1, maxTurns: 10, status: "paused" }, def)).toEqual({
+      text: `${PAUSED_MARK} 目标已暂停 1/10 轮`,
+      color: theme.status.warning,
+    });
+  });
+
+  test("complete / impossible 仍不显示（终态分支不扩大显示面）", () => {
+    expect(deriveGoal({ turnsUsed: 3, maxTurns: 3, status: "complete" }, def)).toBeNull();
+    expect(deriveGoal({ turnsUsed: 3, maxTurns: 3, status: "impossible" }, def)).toBeNull();
   });
 });
