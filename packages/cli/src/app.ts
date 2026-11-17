@@ -1772,6 +1772,9 @@ export class App {
       const hasUserLayer = layers?.some((l) => l.source === "user") ?? false;
       const sourceOf: Record<string, ConfigSource> = {
         managed: ConfigSource.Managed,
+        // `--settings` 的 hooks 层：`_hookLayers` 里 source 是 "flag"，必须映射到 Flag，
+        // 否则 `sourceOf[l.source]!` 会拿到 undefined（非空断言把它掩盖成静默错误）。
+        flag: ConfigSource.Flag,
         user: ConfigSource.User,
         project: ConfigSource.Project,
         local: ConfigSource.Local,
