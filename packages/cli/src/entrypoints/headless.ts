@@ -38,7 +38,19 @@ import { raceTurnHardTimeout, tapStreamActivity } from "@sid-code/core/agent/tur
 import {
   resolveRequestBudget,
   resolveRequestOutputBudget,
+  OUTPUT_BUDGET_SAFETY_BUFFER,
 } from "@sid-code/core/llm/output-budget.ts";
+// X2：撞输出上限的两段恢复。策略与进程内子代理**共用同一份实现**——
+// spawn 路径是韧性最差的一条（没有 TUI、没有父进程兜底），漏掉它等于漏掉一半症状。
+import {
+  MaxTokensRecoveryState,
+  SUBAGENT_ESCALATED_MAX_TOKENS,
+} from "@sid-code/core/query/max-tokens-recovery.ts";
+import { isTruncationStopReason } from "@sid-code/core/query/stop-reason-policy.ts";
+import {
+  MAX_TOKENS_CONTINUATION_ORIGIN,
+  buildInternalMessage,
+} from "@sid-code/core/context/internal-message.ts";
 
 // ============================================================
 // 主线
@@ -212,6 +224,15 @@ async function runAgentLoop(
   let turns = 0;
   let lastTextOutput = "";
   let toolUseCount = 0;
+  // X2：撞输出上限的两段恢复状态（升档只一次、续写有界）。
+  const maxTokensRecovery = new MaxTokensRecoveryState();
+  // 升档后的输出预算（undefined = 用本轮 resolveHeadlessSendBudget 的结果）
+  let sendMaxTokensOverride: number | undefined;
+  // 被截断的那些段。最终回传父进程时要与最后一段拼成完整报告 ——
+  // 只回传最后一段是用户能看到的最直接症状（「报告只剩半句」）。
+  const truncatedSegments: string[] = [];
+  /** 回传父进程的完整文本：已截断的段 + 最后一段 */
+  const finalText = (): string => truncatedSegments.join("") + lastTextOutput;
 
   // 计费口径修复：result 显式回传子代理实际 model/provider（来自 init），
   // 父进程归集时按此计价，不再依赖兜底；spawn 与进程内模式口径一致。
@@ -278,6 +299,11 @@ async function runAgentLoop(
         return;
       }
 
+      // X2：升档后的预算优先（undefined 时用本轮重算的值）。
+      // 窗口余量每轮都会重算，但升档值不重算 —— 它是「模型上限 / 软顶 / 当时窗口」
+      // 三者的最小值，每轮重算只会让它随输入增长而缩回，等于没升。
+      const effectiveMaxTokens = sendMaxTokensOverride ?? sendBudget.maxTokens;
+
       // B2（D4）：走唯一漏斗，不再直连。
       //
       // 无头子进程是韧性最差的一条路径：它没有 TUI、没有父进程的重试兜底，
@@ -296,7 +322,7 @@ async function runAgentLoop(
             // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
             messages: ctxMgr.getCleanedMessages(),
             system: ctxMgr.getSystemPrompt(),
-            maxTokens: sendBudget.maxTokens,
+            maxTokens: effectiveMaxTokens,
             tools: toolDefs,
             // H8：headless（spawn 出的独立进程子代理）入口无独立 effort 旋钮，默认关思考，
             // 与进程内子代理/fork 收口口径一致（ParentInitMessage 不携带 effort）。
@@ -371,8 +397,9 @@ async function runAgentLoop(
       // end_turn，发现 5）会让这里带着未执行的工具直接收工。
       const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
       if (isEndTurnLikeStopReason(response.stopReason) && !hasPendingToolUse) {
-        // 正常结束
-        emitResult(true, lastTextOutput);
+        // 正常结束。X2：发生过多段续写时回传拼接后的完整报告，
+        // 否则父进程只拿到最后一段（用户能看到的直接症状）。
+        emitResult(true, finalText());
         return;
       }
 
@@ -457,13 +484,66 @@ async function runAgentLoop(
         continue;
       }
 
+      // ─── X2：max_tokens 两段恢复（升档 → 续写）───
+      //
+      // 此前这条路径直接落到下面的「未知 stop_reason → 退出」：父进程只收到半句话，
+      // 且被标成 success —— 它无从知道子代理少了半份报告。spawn 是韧性最差的一条
+      // 路径（没有 TUI、没有父进程兜底），漏掉它等于漏掉一半症状。
+      //
+      // 与进程内子代理共用同一个 `MaxTokensRecoveryState`：升档只做一次（软顶
+      // SUBAGENT_ESCALATED_MAX_TOKENS），升到顶仍截断就注入续写提示，
+      // 递减收益时先让手、再停止。
+      if (isTruncationStopReason(response.stopReason) && !hasPendingToolUse) {
+        // 记住这一段：续写完成后要与后续段拼成完整报告回传父进程。
+        // 只回传最后一段是用户能看到的最直接症状（「报告只剩半句」）。
+        if (lastTextOutput) truncatedSegments.push(lastTextOutput);
+
+        const decision = maxTokensRecovery.decide({
+          outputTokens: response.usage.outputTokens,
+          currentMaxTokens: effectiveMaxTokens,
+          modelMax: init.max_output_tokens,
+          // 窗口余量与进程内子代理同口径。注意不能用 sendBudget.windowLimitTokens ——
+          // 那个字段只在 !ok 分支的诊断类型上，ok 分支没有它。
+          windowCeiling:
+            ctxMgr.getMaxTokens() -
+            ctxMgr.estimateTokens(init.tool_defs.length) -
+            OUTPUT_BUDGET_SAFETY_BUFFER,
+          softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
+        });
+
+        if (decision.action === "escalate") {
+          sendMaxTokensOverride = decision.maxTokens;
+          logError(
+            `[headless] 输出截断，提升 maxTokens 上限：${decision.from} → ${decision.maxTokens}`,
+          );
+          continue;
+        }
+        if (decision.action === "stop") {
+          logError(
+            `[headless] 续写递减收益二次命中（已续写 ${decision.continuationCount} 次），停止续写`,
+          );
+          // 最后一段已在上面 push，不要再拼一次
+          emitResult(true, truncatedSegments.join(""));
+          return;
+        }
+        ctxMgr.addMessage(
+          buildInternalMessage(MAX_TOKENS_CONTINUATION_ORIGIN, "user", decision.notice),
+        );
+        logError(
+          decision.action === "handoff"
+            ? `[headless] 连续续写产出递减，已让手交由模型决定下一步`
+            : `[headless] 输出达到 token 上限，注入续写提示 (第 ${decision.continuationCount} 次)`,
+        );
+        continue;
+      }
+
       // 未知 stop_reason → 退出
-      emitResult(true, lastTextOutput);
+      emitResult(true, finalText());
       return;
     }
 
     // 达到最大轮次
-    emitResult(true, lastTextOutput || `已达到最大轮次 (${maxTurns})`);
+    emitResult(true, finalText() || `已达到最大轮次 (${maxTurns})`);
   } finally {
     /* PR-B：无定时器需要清理 */
   }

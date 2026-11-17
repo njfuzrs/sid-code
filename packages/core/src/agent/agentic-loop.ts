@@ -49,7 +49,24 @@ import {
   summarizeToolUseParams,
 } from "../query/empty-param.ts";
 import { buildPendingToolResults, finalizeMessagesForSend } from "./message-invariants.ts";
-import { classifyStopReason, type StopAction } from "../query/stop-reason-policy.ts";
+import {
+  classifyStopReason,
+  isTruncationStopReason,
+  type StopAction,
+} from "../query/stop-reason-policy.ts";
+// X2：撞输出上限后的两段恢复（升档 → 续写）。策略与文案与主循环共用同一份实现，
+// 不在子循环另写一套——两份平行实现必然漂移，而这里漂移的代价是「报告只剩半句」。
+import {
+  MaxTokensRecoveryState,
+  SUBAGENT_ESCALATED_MAX_TOKENS,
+  runRecoverableTurn,
+} from "../query/max-tokens-recovery.ts";
+import {
+  MAX_TOKENS_CONTINUATION_ORIGIN,
+  buildInternalMessage,
+} from "../context/internal-message.ts";
+import { OUTPUT_BUDGET_SAFETY_BUFFER } from "../llm/output-budget.ts";
+import { resolveMaxOutputTokensForModel } from "../config/config.ts";
 import { getSubagentLoopTraceSink } from "./loop-trace-sink.ts";
 // B5-1：撞 context window 上限时的压缩恢复。与主循环 query/loop.ts 用同一份实现——
 // 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
@@ -274,6 +291,10 @@ function readSubAgentTodos(tools: ToolRegistry): TodoItem[] | null {
  */
 export const SUBAGENT_DEFAULT_MAX_TOKENS = 4096;
 
+// 升档软顶 `SUBAGENT_ESCALATED_MAX_TOKENS` 定义在 query/max-tokens-recovery.ts：
+// spawn 子进程（cli/entrypoints/headless.ts）也要用它，放在本文件会让子进程
+// 为了一个数字加载整个工具执行 / 流处理依赖图。理由详见该常量的注释。
+
 /** Agent 循环结果 */
 export interface AgentLoopResult {
   success: boolean;
@@ -457,6 +478,15 @@ async function runAgentLoopInner(
   // B5-1：`model_context_window_exceeded` 的压缩续写次数。有界（见该分支注释）——
   // 压缩没压动就不再续写，否则会在"压不动 → 再撞上限"之间空转到 maxTurns 耗尽。
   let ctxWindowRecoveryCount = 0;
+  // X2：撞输出上限（max_tokens）的两段恢复状态，主流与强制总结轮**共用同一个实例**。
+  //
+  // 为什么共用：总结轮是本轮次的延续（模型刚被截断过），若给它一个全新的状态机，
+  // 「升档只做一次」「续写次数有界」这两个上界都会被重置——一个已经烧了 8 次续写的
+  // 子代理会在总结轮再烧 8 次。共用后上界是整条子代理生命周期的上界。
+  const maxTokensRecovery = new MaxTokensRecoveryState();
+  // 升档后的 maxTokens（undefined = 用默认预算 SUBAGENT_DEFAULT_MAX_TOKENS）。
+  // 只在**真的撞了上限**之后才被赋值一次，见 MaxTokensRecoveryState.decide()。
+  let maxOutputTokensOverride: number | undefined;
   // D2 / P0-3：空参数 F1 重试计数。与主循环 `state.emptyParamRetryCount` 同口径——跨轮累计，
   // 正常 end_turn 收工时清零。弱模型持续吐 input={} 时必须有上限，否则会空转到 maxTurns。
   let emptyParamRetryCount = 0;
@@ -806,9 +836,12 @@ async function runAgentLoopInner(
       system: ctxMgr.getSystemPrompt(),
       // B5-6：依据见 SUBAGENT_DEFAULT_MAX_TOKENS 注释（预算选择，非物理上限；
       // 4096 是注册表全部模型的最小上限，故不会触发 max_tokens out of range）。
-      maxTokens: SUBAGENT_DEFAULT_MAX_TOKENS,
+      maxTokens: maxOutputTokensOverride ?? SUBAGENT_DEFAULT_MAX_TOKENS,
       tools: toolDefs,
       ...config.sendParamsExtra,
+      // X2：升档值是 min(模型上限, 窗口余量, 软顶)，比调用方静态传入的 sendParamsExtra
+      // 更"新"也更保守，必须压过它 —— 否则升档会被静默撤掉，回到 4096 继续截断。
+      ...(maxOutputTokensOverride !== undefined ? { maxTokens: maxOutputTokensOverride } : {}),
     };
 
     // T13.1：子代理 LLM 调用 StreamPhase 事件（fetch_sent）
@@ -1419,9 +1452,19 @@ async function runAgentLoopInner(
       continue;
     }
 
-    // max_tokens 续写
+    // ─── X2：max_tokens 两段恢复（升档 → 续写）───
+    //
+    // 此前的实现只有一句 `continue`：不升档、不注入续写提示。后果是子代理被 4096 的
+    // 输出预算硬截断后，模型对「为什么被打断、从哪里续」完全无感知 —— 下一轮经常
+    // 重头再来或直接收尾，父代理最终拿到的报告只剩半句，且无从知道它少了什么。
+    // 而主循环早就有完整的两段恢复（query/loop.ts 的 Stage 1 / Stage 2），这里漂移了整段。
+    //
+    // 现在与主循环共用 `MaxTokensRecoveryState`：
+    //   ① 升档（只一次，带软顶 SUBAGENT_ESCALATED_MAX_TOKENS）—— 不改变对话语义、
+    //      不多出任何消息，多数情况一步解决；
+    //   ② 升到顶仍然截断 → 注入续写提示（带 origin 标记，供 extractFinalText 回溯拼接）；
+    //   ③ 递减收益 → 先让手、再停止（与主循环同一口径，无人值守下不会无限续写）。
     if (stopAction.kind === "recover" && stopAction.how === "max_tokens") {
-      log.info("AGENT_LOOP", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
       config.onTurnEnd?.({
         turn: turns,
         textOutput: lastTextOutput,
@@ -1430,6 +1473,59 @@ async function runAgentLoopInner(
         tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
         toolUseCount,
       });
+
+      const decision = maxTokensRecovery.decide({
+        outputTokens: response.usage.outputTokens,
+        currentMaxTokens: maxOutputTokensOverride ?? SUBAGENT_DEFAULT_MAX_TOKENS,
+        modelMax: resolveMaxOutputTokensForModel(model),
+        // 窗口余量与主循环同口径：物理上限（如 384k）在窗口只剩一点时不能直接发，
+        // 否则把「一次截断」换成「一次必然 400」。
+        windowCeiling:
+          ctxMgr.getMaxTokens() -
+          ctxMgr.estimateTokens(toolDefs?.length ?? 0) -
+          OUTPUT_BUDGET_SAFETY_BUFFER,
+        softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
+      });
+
+      if (decision.action === "escalate") {
+        maxOutputTokensOverride = decision.maxTokens;
+        log.info(
+          "AGENT_LOOP",
+          `输出截断，提升 maxTokens 上限：${decision.from} → ${decision.maxTokens} (轮次 ${turns})`,
+        );
+        continue;
+      }
+
+      if (decision.action === "stop") {
+        log.warn(
+          "AGENT_LOOP",
+          `max_tokens 续写递减收益二次命中（让手后仍未收敛，已续写 ${decision.continuationCount} 次），停止续写 (轮次 ${turns})`,
+        );
+        retryStats.stopAction = "max_tokens_exhausted";
+        return {
+          success: true,
+          turns,
+          totalUsage,
+          toolUseCount,
+          lastTextOutput,
+          messages: ctxMgr.getMessages(),
+        };
+      }
+
+      // continue / handoff：注入提示后重发。
+      //
+      // 必须带 origin —— ① TUI 不把这条自动提醒当成用户输入渲染；
+      // ② extractFinalText 靠它识别续写边界，把被打断的若干段按顺序拼回整份报告。
+      // 不注入则模型对「被打断、从哪续」无感知，续写往往重头再来或直接收尾。
+      ctxMgr.addMessage(
+        buildInternalMessage(MAX_TOKENS_CONTINUATION_ORIGIN, "user", decision.notice),
+      );
+      log.info(
+        "AGENT_LOOP",
+        decision.action === "handoff"
+          ? `连续续写产出递减，已让手交由模型决定下一步 (轮次 ${turns})`
+          : `输出达到 token 上限，注入续写提示 (第 ${decision.continuationCount} 次, 轮次 ${turns})`,
+      );
       continue;
     }
 
@@ -1618,16 +1714,17 @@ async function runAgentLoopInner(
       // 这一轮此前是纯直连：一次 429 就让整个子代理白跑——前面 maxTurns 轮的工具
       // 调用与 token 全部作废，只因收尾那一次请求没有重试。它恰好是最不该失败的一轮
       // （所有产出都靠它落地成结构化结论），却是唯一完全没有韧性的一轮。
-      const openSummaryStream = (callSignal: AbortSignal) =>
+      const openSummaryStream = (callSignal: AbortSignal, maxTokensForAttempt: number) =>
         streamWithResilience(
           provider,
           {
             model,
             messages: ctxMgr.getCleanedMessages(),
             system: ctxMgr.getSystemPrompt(),
-            // B5-6：与主流同一常量。总结轮产出比主流更短（只是收尾陈述），
-            // 用同一个值是保守但安全的选择；分成两个常量只会多一个需要解释的数字。
-            maxTokens: SUBAGENT_DEFAULT_MAX_TOKENS,
+            // X2：总结轮同样吃升档值（主流升档过就用升档后的上限，否则用默认预算）。
+            // 总结轮产出通常比主流短，但它恰恰是最不该断在半句的一轮 ——
+            // 前面 maxTurns 轮的全部产出都靠这一轮落地成结论。
+            maxTokens: maxTokensForAttempt,
             // 不传 tools，禁止模型继续调工具
             ...config.sendParamsExtra,
           },
@@ -1674,49 +1771,88 @@ async function runAgentLoopInner(
           },
         );
 
-      const summaryRace = await callWithTurnHardTimeout(
-        (callSignal, touch) =>
-          processStream(tapStreamActivity(openSummaryStream(callSignal), touch), {
-            signal: callSignal,
-          }),
-        summaryStreamIndex,
-      );
-      // 总结轮兜底耗尽：降级到 extractFinalText 的启发式（与下方 catch 同口径）。
-      if (summaryRace.exhausted) throw new Error(summaryRace.errorMessage);
-      const summaryResponse = summaryRace.value;
-      accumulateUsage(totalUsage, summaryResponse.usage);
-      emitStreamPhase(
-        summaryStreamIndex,
-        "completed",
-        { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime },
-        observerAgentId,
-      );
-
-      // 提取总结文本
-      const summaryTexts = summaryResponse.content.filter((b) => b.type === "text");
-      currentTurnText = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
-      if (summaryTexts.length > 0) {
-        lastTextOutput = currentTurnText;
-      }
-
-      // ─── P3-3：总结轮响应必须剥离 tool_use（与主循环 loop.ts 同一做法）───
+      // X2：总结轮同样走两段恢复（升档 → 续写）。
       //
-      // 本轮**没有下发 tools**（上方 streamWithResilience 未传 tools），但响应里仍可能
-      // 出现 tool_use：mock 忽略 tools 参数、模型异常、网关回放旧内容都会。它在此轮
-      // 无法执行（既不走 executeTools，也已经在上面那道发送前兜底之后），入历史就是
-      // 一个**新造的**孤儿 —— 这次 400 发生在下一次发送（子代理返回的 messages 被
-      // 父级复用时）。刚在上面补完孤儿、转头自己造一个，是最容易漏的那种对称缺口。
-      const summaryContent = summaryResponse.content.filter((b) => b.type !== "tool_use");
-      if (summaryContent.length < summaryResponse.content.length) {
-        log.warn(
-          "AGENT_LOOP",
-          `P3-3：强制总结轮响应含 ${summaryResponse.content.length - summaryContent.length} 个 tool_use（本轮未传 tools，无法执行），已剥离以防孤儿 → 400`,
-        );
-      }
-      // 全被剥光时不要塞一条空 content 的 assistant —— 空 content 数组同样是协议非法。
-      if (summaryContent.length > 0) {
-        ctxMgr.addMessage({ role: "assistant", content: summaryContent });
-      }
+      // 这一轮是「前面 maxTurns 轮的产出落地成结论」的唯一机会，它撞 max_tokens 断在
+      // 半句是最不该发生的一种残缺 —— 而此前它是一次性请求，撞了就断，无任何恢复。
+      // 与主流共用 `maxTokensRecovery` 实例：升档只做一次、续写次数共用同一个上界，
+      // 否则一个已经续写 8 次的子代理会在收尾这轮再烧 8 次。
+      //
+      // 每段响应都必须入史（`commitAssistant`）：`extractFinalText` 要靠续写提示的
+      // origin 标记把这些段按顺序拼回整份结论。
+      let summaryAccumulated = "";
+      let summaryFirstSegment = true;
+      await runRecoverableTurn({
+        state: maxTokensRecovery,
+        initialMaxTokens: maxOutputTokensOverride ?? SUBAGENT_DEFAULT_MAX_TOKENS,
+        modelMax: resolveMaxOutputTokensForModel(model),
+        windowCeiling:
+          ctxMgr.getMaxTokens() - ctxMgr.estimateTokens() - OUTPUT_BUDGET_SAFETY_BUFFER,
+        softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
+        isAborted: () => signal.aborted,
+        send: async (maxTokensForAttempt) => {
+          // 升档后同步给外层变量，让「这个子代理当前生效的上限」全局一致
+          maxOutputTokensOverride = maxTokensForAttempt;
+          const summaryRace = await callWithTurnHardTimeout(
+            (callSignal, touch) =>
+              processStream(
+                tapStreamActivity(openSummaryStream(callSignal, maxTokensForAttempt), touch),
+                { signal: callSignal },
+              ),
+            summaryStreamIndex,
+          );
+          // 总结轮兜底耗尽：降级到 extractFinalText 的启发式（与下方 catch 同口径）。
+          if (summaryRace.exhausted) throw new Error(summaryRace.errorMessage);
+          const resp = summaryRace.value;
+          accumulateUsage(totalUsage, resp.usage);
+          emitStreamPhase(
+            summaryStreamIndex,
+            "completed",
+            { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime },
+            observerAgentId,
+          );
+          return {
+            response: resp,
+            outputTokens: resp.usage.outputTokens,
+            truncated: isTruncationStopReason(resp.stopReason),
+          };
+        },
+        commitAssistant: (resp) => {
+          // 提取总结文本：第一段**替换** lastTextOutput（总结轮是最终结论，覆盖主流内容），
+          // 后续续写段**追加**（同一份结论被截断后的自然延续）。
+          const summaryTexts = resp.content.filter((b) => b.type === "text");
+          if (summaryTexts.length > 0) {
+            const segment = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+            summaryAccumulated = summaryFirstSegment ? segment : summaryAccumulated + segment;
+            summaryFirstSegment = false;
+            currentTurnText = segment;
+            lastTextOutput = summaryAccumulated;
+          }
+
+          // ─── P3-3：总结轮响应必须剥离 tool_use（与主循环 loop.ts 同一做法）───
+          //
+          // 本轮**没有下发 tools**（上方 streamWithResilience 未传 tools），但响应里仍可能
+          // 出现 tool_use：mock 忽略 tools 参数、模型异常、网关回放旧内容都会。它在此轮
+          // 无法执行（既不走 executeTools，也已经在上面那道发送前兜底之后），入历史就是
+          // 一个**新造的**孤儿 —— 这次 400 发生在下一次发送（子代理返回的 messages 被
+          // 父级复用时）。刚在上面补完孤儿、转头自己造一个，是最容易漏的那种对称缺口。
+          const summaryContent = resp.content.filter((b) => b.type !== "tool_use");
+          if (summaryContent.length < resp.content.length) {
+            log.warn(
+              "AGENT_LOOP",
+              `P3-3：强制总结轮响应含 ${resp.content.length - summaryContent.length} 个 tool_use（本轮未传 tools，无法执行），已剥离以防孤儿 → 400`,
+            );
+          }
+          // 全被剥光时不要塞一条空 content 的 assistant —— 空 content 数组同样是协议非法。
+          if (summaryContent.length > 0) {
+            ctxMgr.addMessage({ role: "assistant", content: summaryContent });
+          }
+        },
+        onNotice: (notice) => {
+          // 与主流同一个 origin：extractFinalText 据此识别总结轮的续写边界
+          ctxMgr.addMessage(buildInternalMessage(MAX_TOKENS_CONTINUATION_ORIGIN, "user", notice));
+        },
+      });
       config.onTurnEnd?.({
         turn: turns + 1,
         textOutput: lastTextOutput,

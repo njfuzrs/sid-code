@@ -34,6 +34,17 @@ import type { Message, ContentBlock } from "../llm/types.ts";
 import { REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
 
 /**
+ * 撞输出上限后注入的续写提示（`query/max-tokens-recovery.ts` 构造、两个循环共用）。
+ *
+ * 为什么常量定义在这里而不是策略模块里：本文件是内部来源的**单一事实源**，而策略模块
+ * 经 `reactive-compact.ts` 依赖 `context/manager.ts`——在那里定义、再让本文件反向 import，
+ * 会形成 context ↔ query 的循环依赖。常量放这里，方向单向（策略模块 import 本文件）。
+ *
+ * 它同时是 `SubAgent.extractFinalText` 识别「续写边界」的依据：靠结构化字段，不靠文案匹配。
+ */
+export const MAX_TOKENS_CONTINUATION_ORIGIN = "max-tokens-continuation" as const;
+
+/**
  * 内部消息来源白名单（单一事实源）—— **整条隐藏**语义。
  *
  * 带这些 origin 的消息在 TUI/历史层整条隐藏（见 ui/history-adapter.ts 的 isHiddenFromDisplay）。
@@ -53,6 +64,12 @@ export const INTERNAL_ORIGINS = [
   REATTACH_ORIGIN,
   /** S1 L2：短文本承诺未兑现时主循环注入的续跑提示（query/promise-nudge.ts） */
   "promise-nudge",
+  /**
+   * 撞输出上限后注入的续写提示（query/max-tokens-recovery.ts 构造，主循环 / 子代理循环 /
+   * 强制总结轮 / spawn 子进程共用）。整条隐藏：它是 "非用户输入" 的自动提醒。
+   * 同时是 `SubAgent.extractFinalText` 识别续写边界的结构化依据。
+   */
+  MAX_TOKENS_CONTINUATION_ORIGIN,
 ] as const;
 
 /**

@@ -282,7 +282,9 @@ describe("P3-3 · 子代理强制总结轮：响应里的 tool_use 必须剥离"
     // 才会 400 —— 集成用例覆盖不到的角落用形态断言兜住。
     const summaryIdx = AGENTIC_LOOP_SRC.indexOf("达到最大轮次 ${maxTurns}，请求强制总结");
     expect(summaryIdx).toBeGreaterThan(-1);
-    const summaryBlock = AGENTIC_LOOP_SRC.slice(summaryIdx - 2500, summaryIdx + 6000);
+    // X2 之后总结轮改为 runRecoverableTurn（升档 + 续写 + 每段经 commitAssistant 入史），
+    // 块长从约 6k 增到约 8k，切片窗口相应放宽到 +12000。锚点与三条断言的意图都不变。
+    const summaryBlock = AGENTIC_LOOP_SRC.slice(summaryIdx - 2500, summaryIdx + 12000);
     expect(summaryBlock, "总结轮发送前必须调 finalizeMessagesForSend").toContain(
       "finalizeMessagesForSend(ctxMgr.getMessages())",
     );
@@ -315,10 +317,15 @@ describe("P3-6 → 2026-10-17 · 子代理 processStream 不再自带超时层",
     const callSites = [...AGENTIC_LOOP_SRC.matchAll(/=>\s*processStream\(/g)].map((m) => m.index!);
     expect(callSites.length, "子代理应有两处 processStream 调用（主流 + 总结轮）").toBe(2);
     for (const i of callSites) {
-      const call = AGENTIC_LOOP_SRC.slice(i, AGENTIC_LOOP_SRC.indexOf("}),", i) + 2).replace(
-        /\s+/g,
-        " ",
-      );
+      // X2 之后总结轮的调用改成多行：
+      //   processStream(
+      //     tapStreamActivity(openSummaryStream(callSignal, maxTokensForAttempt), touch),
+      //     { signal: callSignal },
+      //   )
+      // 原先靠 `}),` 定位调用结束会匹配不到（对象字面量与右括号之间多了换行和逗号），
+      // 于是 slice 出空串、断言假红。改用固定窗口：一次 processStream 调用的实参
+      // 不会超过 400 字符（超时阈值已整层删除，正是本用例要锁的事）。
+      const call = AGENTIC_LOOP_SRC.slice(i, i + 400).replace(/\s+/g, " ");
       expect(call).toContain("tapStreamActivity(");
       expect(call).toMatch(/\{ signal: callSignal,? \}/);
       expect(call).not.toMatch(/TimeoutMs/);
