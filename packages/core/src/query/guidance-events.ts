@@ -15,6 +15,10 @@
  * 与 PermissionDecision 的 guard 字段同一条口径。
  */
 
+// 子代理身份走 hook 作用域 ALS（与 PreToolUse.agent_id 同值）。
+// 该模块按设计只 import 类型，引用它不会把业务模块拖进 query 的依赖图。
+import { currentHookAgentScope } from "../agent/hook-agent-context.ts";
+
 // ─────────────────────────── 事件名 ───────────────────────────
 
 /** T8：write / edit 因省略占位符被拒（`// ... existing code` 一类） */
@@ -86,6 +90,12 @@ export function emitOmissionRejected(data: {
 /**
  * C1/C2。`tool_use_ids` 是被清掉的那些调用，后效指标「清理后 N 轮内同签名重跑」靠它回到
  * PreToolUse 取签名。`stage` 区分管线哪一步（占位文案不同，重跑诱因也不同）。
+ *
+ * `agent_id`：子代理作用域内带上（与 PreToolUse / ReadHint 同一个 ALS 取值），主循环不带。
+ * 没有它，四个会话里 30 / 22 / 20 / 13 条 `stale_clear` 在轨迹上看起来全是主会话干的，
+ * 「子代理侧的清理降下来没有」只能靠时间对齐猜。三个 stage 共用本函数，改一处全覆盖。
+ * ⚠️ 这一段要放在 `emit` 之前：`emit` 是纯转发，别在这里加身份判断，否则其余事件
+ * （OmissionRejected 等）的字段形态会被一起改掉。
  */
 export function emitToolResultCleared(data: {
   stage: "tool_result_budget" | "microcompact" | "stale_clear";
@@ -94,7 +104,8 @@ export function emitToolResultCleared(data: {
   tool_use_ids: string[];
 }): void {
   if (data.cleared <= 0) return;
-  emit(TOOL_RESULT_CLEARED_EVENT_NAME, data);
+  const agentId = currentHookAgentScope()?.agent.agent_id;
+  emit(TOOL_RESULT_CLEARED_EVENT_NAME, agentId ? { ...data, agent_id: agentId } : data);
 }
 
 /** B18。`kinds` 是 detectSensitiveData 的类型名（闭集），不含命中片段 */
