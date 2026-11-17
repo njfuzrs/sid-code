@@ -475,6 +475,10 @@ export function checkStatusQueryPoll(
           count: escalation.count,
           subject: matched.subject,
           kind: matched.kind,
+          // `wait_ids` 与 PR-A 的 `GoalGateDecision`（`goal-gate.ts` 的 `reason:"waiting"`）同口径：
+          // 离线对账时两处都要能按等待源聚合，缺一边就只剩 subject（P1 的对象签名），
+          // 而「这次升级时到底有几个等待源在盯」是判断「该不该硬拦」的关键上下文。
+          wait_ids: ctx.listWaits().map((w) => w.id),
         });
       }
       return {
@@ -490,23 +494,47 @@ export function checkStatusQueryPoll(
         }),
       };
     }
+    // 达到第 5 次：只**准备**提示，不置 `hinted`、也不落事件。
+    //
+    // 为什么不在这一步置位：`hinted` 是一次性标记，一旦置位就再也不提示。
+    // 而这一次最终走哪条分支要到下面才决定 —— 若落在 P1 的拦截分支，
+    // 提示**送不到模型**（拦截时只返回回执，`hint` 字段不被 `tool-executor` 消费），
+    // `hinted` 就白烧了，模型此后永远收不到「再查 10 次会被硬拦」。
+    //
+    // 为什么不能像方案 §4.10 原文那样「在回执前面加一句前缀」：
+    // 拦截回执必须**逐字节恒定**。`P1-intervened-true` 这个 G2 用例（以及
+    // `query/unchanged-observation.ts` 的整条判据）靠「连续相同返回值」计数，
+    // 第 5 次回执一旦多出前缀，序列 O,O,R,R,R 就变成 O,O,R,R,R'，
+    // 第 5 次的 run 停在 2，`UnchangedObservationRun.intervened` 永远不置 true
+    //（2026-11-17 实测：加前缀 → 该用例红；去掉 → 立刻绿）。
+    // 所以改成「这次没送出去就不算送过，下一次放行时再送」——
+    // 文案里的计数用送达时的真实次数，比「第 5 次」还准。
     if (escalation.count >= WAIT_POLL_HINT_AFTER && !escalation.hinted) {
-      escalation.hinted = true;
       escalationHint = formatWaitPollHint(matched.subject, escalation.count);
-      recordWaitTraceEvent(WAIT_POLL_ESCALATED_EVENT_NAME, {
-        level: 1,
-        count: escalation.count,
-        subject: matched.subject,
-        kind: matched.kind,
-      });
     }
   }
 
   // P5 的提示要挂在**每一个放行分支**上：它决定的是「这一次是否已经到了第 5 次」，
   // 与 P1 走哪个分支无关。只挂在 `!entry` 分支上会让「结果每轮都变」的查询
   //（恰恰是空转的主形态）永远收不到提示 —— T-P5-1 就是照这个形态写的。
-  const pass = (): StatusPollCheck =>
-    escalationHint ? { intercept: false, hint: escalationHint } : { intercept: false };
+  const pass = (): StatusPollCheck => {
+    if (!escalationHint) return { intercept: false };
+    // 只有**真正送达**才置 `hinted` 并落事件：
+    // - 拦截分支拿不到 hint（`tool-executor.ts` 只消费 `!intercept` 时的 hint），
+    //   在那里置位等于把一次性提示白烧掉；
+    // - 事件也留到送达时落，否则第 5、6、7… 次每次重算 hint 都会重复落一条。
+    if (escalation) {
+      escalation.hinted = true;
+      recordWaitTraceEvent(WAIT_POLL_ESCALATED_EVENT_NAME, {
+        level: 1,
+        count: escalation.count,
+        subject: matched.subject,
+        kind: matched.kind,
+        wait_ids: ctx.listWaits().map((w) => w.id),
+      });
+    }
+    return { intercept: false, hint: escalationHint };
+  };
 
   const entry = ctx.memo.entries.get(matched.signature);
   if (!entry) return pass();
@@ -539,16 +567,25 @@ export function checkStatusQueryPoll(
   // 判据写成 `<` 而不是 `<=`：`<=` 会让拦截晚一轮，与 T-P1-3 的「第 3 次查询不执行」差一位。
   if (entry.sameRun < STATUS_POLL_BLOCK_AFTER_SAME) return pass();
 
+  // 拦截回执**逐字节恒定**，不叠加 P5 的任何文案。
+  //
+  // 方案 §4.10 第 4 条原本要求「若 P1 已给出回执，P5 的提示改成一句前缀」。实现时发现
+  // 这条路走不通：`P1-intervened-true` 这个 G2 用例（以及 `query/unchanged-observation.ts`
+  // 的整条判据）靠「连续相同的工具返回值」计数，第 5 次回执一旦多出前缀，
+  // 序列 O,O,R,R,R 就变成 O,O,R,R,R'，第 5 次的 run 停在 2，
+  // `UnchangedObservationRun.intervened` 永远不置 true —— 那是比「提示晚一轮」更大的损失。
+  // 所以改成「这一次没送出去就不算送过」：hinted 不置位，下一次放行时再送（见上面的 pass()）。
+  const receipt = buildReceipt({
+    kind: matched.kind,
+    subject: matched.subject,
+    entry,
+    waits: ctx.listWaits(),
+  });
   return {
     intercept: true,
     subject: matched.subject,
     kind: matched.kind,
-    output: buildReceipt({
-      kind: matched.kind,
-      subject: matched.subject,
-      entry,
-      waits: ctx.listWaits(),
-    }),
+    output: receipt,
   };
 }
 
