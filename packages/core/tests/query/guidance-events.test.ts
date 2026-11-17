@@ -33,6 +33,7 @@ import {
 } from "@sid-code/core/tool/url-provenance.ts";
 import { applyToolResultBudget } from "@sid-code/core/query/compact/tool-result-budget.ts";
 import { microcompactMessages } from "@sid-code/core/query/compact/microcompact.ts";
+import { runWithHookAgent } from "@sid-code/core/agent/hook-agent-context.ts";
 import { logMemoryGuard } from "@sid-code/core/analytics/events.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
 
@@ -145,6 +146,38 @@ describe("ToolResultCleared（C1/C2）", () => {
     expect(hits[0]!.data.stage).toBe("microcompact");
     expect((hits[0]!.data.tool_use_ids as string[]).length).toBe(r.compactedCount);
     expect(hits[0]!.data.cleared).toBe(r.compactedCount);
+  });
+
+  // O1：没有 agent_id 时，子代理侧的清理在轨迹上看起来和主会话干的没有区别，
+  // 「子代理的过期清理降下来没有」只能靠时间对齐猜。身份走 hook 作用域 ALS，
+  // 与 PreToolUse.agent_id / ReadHint.agent_id 同一个取值口径。
+  test("子代理作用域内触发时带 agent_id（O1）", () => {
+    const msgs = [...toolPair("s1", "x".repeat(200_000)), ...toolPair("s2", "small")];
+    runWithHookAgent({ agent: { agent_id: "sub-abc", agent_type: "explore" } }, () => {
+      applyToolResultBudget(msgs, { preserveRecentCount: 0 });
+    });
+    const hits = events.filter((e) => e.event === TOOL_RESULT_CLEARED_EVENT_NAME);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.data.agent_id).toBe("sub-abc");
+  });
+
+  test("主循环（作用域外）触发时不带 agent_id 字段，保持改动前形态", () => {
+    const msgs = [...toolPair("m1", "x".repeat(200_000)), ...toolPair("m2", "small")];
+    applyToolResultBudget(msgs, { preserveRecentCount: 0 });
+    const hits = events.filter((e) => e.event === TOOL_RESULT_CLEARED_EVENT_NAME);
+    expect(hits).toHaveLength(1);
+    expect("agent_id" in hits[0]!.data).toBe(false);
+  });
+
+  test("三个 stage 共用一处实现：microcompact 在作用域内同样带 agent_id", () => {
+    const msgs: Message[] = [];
+    for (let i = 0; i < 12; i++) msgs.push(...toolPair(`mc${i}`, `out-${i}-` + "y".repeat(5_000)));
+    runWithHookAgent({ agent: { agent_id: "sub-mc", agent_type: "explore" } }, () => {
+      microcompactMessages(msgs);
+    });
+    const hits = events.filter((e) => e.event === TOOL_RESULT_CLEARED_EVENT_NAME);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.data).toMatchObject({ stage: "microcompact", agent_id: "sub-mc" });
   });
 });
 
