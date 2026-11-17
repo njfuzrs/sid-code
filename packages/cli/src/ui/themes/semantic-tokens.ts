@@ -30,9 +30,6 @@ export interface SemanticColors {
     diff: {
       added: Color;
       removed: Color;
-      /** 词级 diff 中「变化词」的强调底色（比整行底色更深） */
-      addedEmphasis: Color;
-      removedEmphasis: Color;
     };
   };
   border: {
@@ -73,8 +70,6 @@ export const darkSemanticColors: SemanticColors = {
       // 「哪行增/删」一眼可辨；文字(status.success/error) on 底色仍 ≥5:1。
       added: "#215c33",
       removed: "#63202f",
-      addedEmphasis: "#357a4b",
-      removedEmphasis: "#8a2f42",
     },
   },
   border: {
@@ -115,8 +110,6 @@ export const daltonizedDarkSemanticColors: SemanticColors = {
     diff: {
       added: "#003A5C",
       removed: "#4A3000",
-      addedEmphasis: "#005580",
-      removedEmphasis: "#6B4400",
     },
   },
   border: {
@@ -153,8 +146,6 @@ export const daltonizedLightSemanticColors: SemanticColors = {
     diff: {
       added: "#CCE5FF",
       removed: "#FFE0CC",
-      addedEmphasis: "#99CCFF",
-      removedEmphasis: "#FFCC99",
     },
   },
   border: {
@@ -193,8 +184,6 @@ export const githubDarkSemanticColors: SemanticColors = {
       // 2026-07: 加深加浓，行底色 vs 基底 #24292e 由 ~1.2 提到 add ~1.8 / del ~1.3。
       added: "#1c5a2e",
       removed: "#6e2129",
-      addedEmphasis: "#2f7d47",
-      removedEmphasis: "#8a2f3a",
     },
   },
   border: {
@@ -233,8 +222,6 @@ export const githubLightSemanticColors: SemanticColors = {
       // 2026-07: 白底原 add/del 底色接近纯白（~1.05:1），加深让整行可辨。
       added: "#b7ebc7",
       removed: "#f7c2c8",
-      addedEmphasis: "#8dd6a3",
-      removedEmphasis: "#ef9aa3",
     },
   },
   border: {
@@ -274,8 +261,6 @@ export const lightSemanticColors: SemanticColors = {
       // 2026-07: 浅底 add/del 底色原偏淡（~1.1:1），加深让整行可辨。
       added: "#b5e6c2",
       removed: "#f4c2ca",
-      addedEmphasis: "#8bcfa0",
-      removedEmphasis: "#e89aa6",
     },
   },
   border: {

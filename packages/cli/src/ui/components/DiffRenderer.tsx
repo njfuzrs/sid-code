@@ -3,7 +3,7 @@ import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { RawAnsi } from "../render-port/components.ts";
 import crypto from "node:crypto";
-import { diffWordsWithSpace, type StructuredPatchHunk } from "diff";
+import { type StructuredPatchHunk } from "diff";
 import { colorizeCode, colorizeLine } from "./CodeColorizer.js";
 import { theme as semanticTheme } from "../semantic-colors.js";
 import { buildDiffAnsiLines, type DiffAnsiColors } from "./diffAnsiLines.js";
@@ -22,56 +22,6 @@ export interface DiffLine {
   oldLine?: number;
   newLine?: number;
   content: string;
-}
-
-/**
- * 对配对的 del/add 行做词级 diff，返回强调了「变化词」的 React 片段。
- *
- * - which='del'：渲染删除行，强调「本行独有（被删掉）」的词段。
- * - which='add'：渲染新增行，强调「本行独有（新加入）」的词段。
- * 公共词段用常规前景色，变化词段只用强调底色区分。
- *
- * ⚠️ 变化词刻意**不加粗**（曾经加，2026-11-13 去掉）。两个原因叠加：
- * 1. CJK 没有词边界，`diffWordsWithSpace` 会退化成按字切分，一行中文里散落
- *    个别加粗单字；中文字体普遍没有真 bold，终端用合成粗体顶替 → 笔画加宽、
- *    字形变糊，观感像「字号变了」。
- * 2. 配对行与未配对行走不同管线（配对行走本函数、未配对行走 colorizeLine），
- *    两行差异大时几乎整行被判成变化 → 同一块 diff 里「这一行整行加粗、紧邻的
- *    行不加粗」，粗细参差。字重统一交给「强调底色 + 行首 +/- 符号 + 状态色」
- *    三个通道，不再用 bold。
- */
-function renderWordDiff(
-  oldContent: string,
-  newContent: string,
-  which: "del" | "add",
-): React.ReactNode {
-  const parts = diffWordsWithSpace(oldContent, newContent);
-  const nodes: React.ReactNode[] = [];
-  let k = 0;
-  for (const part of parts) {
-    // del 行只渲染「公共 + 删除」段，add 行只渲染「公共 + 新增」段。
-    if (which === "del" && part.added) continue;
-    if (which === "add" && part.removed) continue;
-    const changed = which === "del" ? part.removed : part.added;
-    if (changed) {
-      nodes.push(
-        <Text
-          key={`wd-${k++}`}
-          color={which === "del" ? semanticTheme.status.error : semanticTheme.status.success}
-          backgroundColor={
-            which === "del"
-              ? semanticTheme.background.diff.removedEmphasis
-              : semanticTheme.background.diff.addedEmphasis
-          }
-        >
-          {part.value}
-        </Text>,
-      );
-    } else {
-      nodes.push(<Text key={`wd-${k++}`}>{part.value}</Text>);
-    }
-  }
-  return <>{nodes}</>;
 }
 
 /**
@@ -173,35 +123,6 @@ export function hunksToDiffLines(hunks: StructuredPatchHunk[]): DiffLine[] {
   return result;
 }
 
-/**
- * 词级 diff 配对：把连续的 del 块与紧随其后的 add 块按行序一一配对。
- * 返回 index → 对侧行原始内容（未做 baseIndentation 裁剪）的映射。
- * 仅一一对应的位置配对；多出的行无对侧，调用方应回退整行高亮。
- * 抽成纯函数便于单测。
- */
-export function computeWordDiffPairs(
-  lines: { type: DiffLine["type"]; content: string }[],
-): Map<number, string> {
-  const pairMap = new Map<number, string>();
-  for (let i = 0; i < lines.length;) {
-    if (lines[i].type !== "del") {
-      i++;
-      continue;
-    }
-    let delEnd = i;
-    while (delEnd < lines.length && lines[delEnd].type === "del") delEnd++;
-    let addEnd = delEnd;
-    while (addEnd < lines.length && lines[addEnd].type === "add") addEnd++;
-    const pairCount = Math.min(delEnd - i, addEnd - delEnd);
-    for (let p = 0; p < pairCount; p++) {
-      pairMap.set(i + p, lines[delEnd + p].content);
-      pairMap.set(delEnd + p, lines[i + p].content);
-    }
-    i = addEnd > i ? addEnd : i + 1;
-  }
-  return pairMap;
-}
-
 /** 连续未变更上下文超过此行数则折叠 */
 const CONTEXT_COLLAPSE_THRESHOLD = 10;
 /** 折叠时首尾各保留的上下文行数 */
@@ -212,7 +133,7 @@ export interface DiffRenderPlanItem {
   kind: "line" | "collapsed";
   /** kind==='line' 时的原始行 */
   line?: { type: DiffLine["type"]; content: string };
-  /** kind==='line' 时该行在 displayableLines 中的原始下标(供 pairMap 查询) */
+  /** kind==='line' 时该行在 displayableLines 中的原始下标(供回查源行) */
   origIndex?: number;
   /** kind==='collapsed' 时被折叠隐藏的行数 */
   hiddenCount?: number;
@@ -464,16 +385,7 @@ const renderDiffContent = (
   let lastLineNumber: number | null = null;
   const MAX_CONTEXT_LINES_WITHOUT_GAP = 5;
 
-  // 词级 diff 配对：用裁剪后的内容计算，pairMap 的对侧内容已是裁剪后的，
-  // 可直接传给 renderWordDiff。
-  const pairMap = computeWordDiffPairs(
-    displayableLines.map((l) => ({
-      type: l.type,
-      content: l.content.substring(baseIndentation),
-    })),
-  );
-
-  // DF2:对超长未变更上下文做折叠。plan 保留每行的原始下标(origIndex)以查 pairMap。
+  // DF2:对超长未变更上下文做折叠。plan 保留每行的原始下标(origIndex)以便回查源行。
   const fullPlan = planDiffWithContextCollapse(
     displayableLines.map((l) => ({ type: l.type, content: l.content })),
   );
@@ -500,13 +412,10 @@ const renderDiffContent = (
       delFg: semanticTheme.status.error as Color,
       addBg: bg.added as Color,
       delBg: bg.removed as Color,
-      addEmphasisBg: bg.addedEmphasis as Color,
-      delEmphasisBg: bg.removedEmphasis as Color,
     };
     const ansiLines = buildDiffAnsiLines({
       plan: renderPlan,
       displayableLines,
-      pairMap,
       baseIndentation,
       gutterWidth,
       terminalWidth,
@@ -601,6 +510,10 @@ const renderDiffContent = (
         : srcLine.type === "del"
           ? semanticTheme.background.diff.removed
           : undefined;
+    // add/del 行整行同一状态前景色(与行首 +/- 符号同色),不再做词级区分。
+    // 此分支只处理 add/del(见下方 JSX 的 context 判断),不存在第三种取值。
+    const lineFg =
+      srcLine.type === "add" ? semanticTheme.status.success : semanticTheme.status.error;
     acc.push(
       <Box key={lineKey} flexDirection="row">
         <Box
@@ -621,22 +534,11 @@ const renderDiffContent = (
           // 底色挂在 flexGrow 的 Box 上而不是 Text 上:Text 的底色只覆盖到最后一个字符,
           // Box 的底色由 renderBackground 按计算宽度整块铺满,行尾才能与 terminalWidth 对齐
           // (RawAnsi 路径用补空格达到同样效果,见 diffAnsiLines.ts)。
+          // 整行单一底色 + 单一状态前景色:不做词级强调(2026-11-17 去掉——`diffWordsWithSpace`
+          // 对 CJK 按字切分,同一行会散落个别被换成更深底色的碎片,观感像「背景叠了两层」)。
           <Box flexGrow={1} backgroundColor={backgroundColor}>
-            <Text backgroundColor={backgroundColor} wrap="wrap">
-              <Text
-                color={
-                  srcLine.type === "add" ? semanticTheme.status.success : semanticTheme.status.error
-                }
-              >
-                {prefixSymbol}
-              </Text>{" "}
-              {pairMap.has(index)
-                ? renderWordDiff(
-                    srcLine.type === "del" ? displayContent : pairMap.get(index)!,
-                    srcLine.type === "del" ? pairMap.get(index)! : displayContent,
-                    srcLine.type as "del" | "add",
-                  )
-                : colorizeLine(displayContent, language)}
+            <Text color={lineFg} backgroundColor={backgroundColor} wrap="wrap">
+              {`${prefixSymbol} ${displayContent}`}
             </Text>
           </Box>
         )}
