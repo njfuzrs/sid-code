@@ -26,7 +26,7 @@
 import type { PermissionResult, Tool, ToolResult, ToolUseContext } from "./types.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
-import { getCwd } from "../bootstrap/state.ts";
+import { getCwd, getProjectRoot } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   MAX_MONITOR_TIMEOUT_MS,
@@ -45,6 +45,8 @@ import {
   formatSidWaitMisuseReceipt,
   runSidWaitGhPr,
   createSidWaitClient,
+  // R11：查哪个仓库必须在 spawn 之前定下来，且基线不是会话 cwd（它会随 `cd` 漂移）
+  resolveSidWaitRepo,
   formatSidWaitResultSummary,
   formatManualLoopHint,
   isMonitorTask,
@@ -340,6 +342,18 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     // 每行输出仍然走 monitor 的事件通道（状态变化 / 检查失败 / 终态），模型侧语义不变：
     // 「每行一条事件」的承诺照旧成立，只是产生行的不再是 shell 脚本。
     const sidWait = parseSidWaitCommand(command);
+    // R11（2026-11-17）：查哪个仓库**在 spawn 之前**定下来，且基线取 getProjectRoot()
+    // （会话启动目录）而不是 getCwd()——后者会随会话里任何一次 `cd` 漂移，旧实现把它
+    // 交给 gh 解析 `{owner}/{repo}` 占位符，于是在 docs-research 目录下等 sid-code 的
+    // PR 会拿正确的 PR 号换来真 404。解析不出直接回执可行动错误，不启动注定失败的任务。
+    const sidWaitResolution = sidWait
+      ? resolveSidWaitRepo({ repo: sidWait.repo, baseDir: getProjectRoot() })
+      : null;
+    if (sidWaitResolution && !sidWaitResolution.ok) {
+      return { data: sidWaitResolution.error, isError: true };
+    }
+    const sidWaitRepo =
+      sidWaitResolution && sidWaitResolution.ok ? sidWaitResolution.repo : undefined;
 
     const taskState = sidWait
       ? spawnBuiltinMonitorTask({
@@ -356,9 +370,10 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
           run: async ({ emit, signal }) => {
             const result = await runSidWaitGhPr({
               pr: sidWait.pr,
-              client: createSidWaitClient({ cwd: getCwd() }),
+              client: createSidWaitClient({ repo: sidWaitRepo, cwd: getProjectRoot() }),
               emit,
               intervalMs: sidWait.intervalMs,
+              repo: sidWaitRepo,
               signal,
             });
             return {

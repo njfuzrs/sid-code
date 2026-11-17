@@ -1963,6 +1963,20 @@ export class BashTool implements Tool {
     // `wait_until_seconds` 的后台命令只是普通任务（静默 60s 被判「不会回报」），
     // 而等 PR 恰好长时间没有输出——给它默认期限，别让它退化成「期限到才知道」。
     const sidWait = task.parseSidWaitCommand(params.command);
+    // R11（2026-11-17）：**查哪个仓库必须在 spawn 之前定下来，且基线不是会话 cwd**。
+    // 会话 cwd（getCwd）会随任何一次 `cd` 漂移；旧实现把它交给 gh 去解析 `{owner}/{repo}`
+    // 占位符，于是在 docs-research 目录下等 sid-code 的 PR 会拿正确的 PR 号换来一个真 404
+    // （而 PR 号与 token 都正常），排查方向被引向「PR 有问题 / 没权限」。
+    // 基线取 getProjectRoot()：它是会话启动目录，不会漂。解析不出就直接给可行动回执，
+    // 不启动一个注定失败、还要去 output_file 里翻原因的任务。
+    const sidWaitResolution = sidWait
+      ? task.resolveSidWaitRepo({ repo: sidWait.repo, baseDir: getProjectRoot() })
+      : null;
+    if (sidWaitResolution && !sidWaitResolution.ok) {
+      return { output: sidWaitResolution.error, isError: true };
+    }
+    const sidWaitRepo =
+      sidWaitResolution && sidWaitResolution.ok ? sidWaitResolution.repo : undefined;
     const effectiveWaitSeconds =
       params.wait_until_seconds ?? (sidWait ? task.DEFAULT_SID_WAIT_DEADLINE_S : undefined);
     // R9：toolUseId 一并透传，WaitAdmission 事件据此把准入判定与那次 tool_use 对上号。
@@ -1997,9 +2011,10 @@ export class BashTool implements Tool {
           run: async ({ emit, signal: runSignal }) => {
             const result = await task.runSidWaitGhPr({
               pr: sidWait.pr,
-              client: task.createSidWaitClient({ cwd }),
+              client: task.createSidWaitClient({ repo: sidWaitRepo, cwd: getProjectRoot() }),
               emit,
               intervalMs: sidWait.intervalMs,
+              repo: sidWaitRepo,
               signal: runSignal,
             });
             return {
