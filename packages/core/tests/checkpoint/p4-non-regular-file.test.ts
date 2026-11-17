@@ -331,4 +331,127 @@ describe("P4：非普通文件不进快照 + /undo 死循环", () => {
     expect(r2!.snapshotId).toBe("s1");
     expect(readFileSync(a, "utf-8")).toBe("a1");
   });
+
+  // ─────────────────────────────────────────────────────────────
+  // 5. `unreadable`：连 lstat 都失败的路径（父段是普通文件 ⇒ ENOTDIR）
+  //
+  // 这类路径**不是**「不存在」，也**不是**「非普通文件」，而是「类型无法判定」。
+  // P4 初版没兜 `lstatSync` 的异常，后果有两条（均已实测）：
+  //   ① `createSnapshot` 外层 catch 后 `return ""` ⇒ **整批**丢失（同批真文件也不进快照），
+  //      而修复前 `Bun.file(p).exists()` 对这类路径只返回 false、按新建文件入列、不丢批；
+  //   ② `undo()` / `restore*()` 的循环体没有外层 catch ⇒ 整个 `/undo` 抛错、快照不消耗
+  //      ⇒ 与本类目要修的死循环同一种形态（撞上之后更早的快照也撤不到）。
+  //
+  // 样本自造：`<testDir>/blocker.bin/sub/note.md`——中间段是一个普通文件，任何平台都会
+  // 让 lstat 报 ENOTDIR。不依赖「本机 ~/.sid-code 里恰好有 11 条这种路径」这种样本运气。
+  // ─────────────────────────────────────────────────────────────
+
+  /** 造一个 ENOTDIR 形态的路径：中间段是普通文件。 */
+  function makeUnreadablePath(): string {
+    const blocker = join(testDir, "blocker.bin");
+    writeFileSync(blocker, "not a dir");
+    return join(blocker, "sub", "note.md");
+  }
+
+  test("止新：类型无法判定的路径不入快照（reason: unreadable），同批真文件不丢", async () => {
+    const m = newManager();
+    await m.init();
+    const real = join(testDir, "real.txt");
+    writeFileSync(real, "hello");
+    const bad = makeUnreadablePath();
+
+    const id = await m.createSnapshot([bad, real], "bash", "cat >> blocker.bin/sub/note.md");
+
+    // 修复前 lstatSync 抛 ENOTDIR → 外层 catch → 返回 ""、快照数为 0（真文件一起丢）
+    expect(id).not.toBe("");
+    const detail = m.getSnapshotDetail(id)!;
+    expect(detail.files.map((f) => f.filePath)).toEqual([real]);
+    expect(detail.skippedFiles).toEqual([{ filePath: bad, bytes: 0, reason: "unreadable" }]);
+  });
+
+  test("兼容：undo 遇 ENOTDIR 历史条目不抛错，同批真文件照常回滚", async () => {
+    const real = join(testDir, "real.txt");
+    writeFileSync(real, "after");
+    const bad = makeUnreadablePath();
+    writeLegacyShard([
+      {
+        id: "s1",
+        files: [
+          { filePath: bad, existedBefore: false },
+          { filePath: real, existedBefore: true, content: "before" },
+        ],
+      },
+    ]);
+
+    const m = newManager();
+    await m.init();
+    // 修复前：异常穿过 undo 循环 → 整个 /undo 抛错、快照不消耗 → 不可自愈
+    const r = await m.undo();
+    expect(r).not.toBeNull();
+    expect(r!.files.map((f) => f.filePath)).toEqual([real]);
+    expect(readFileSync(real, "utf-8")).toBe("before");
+    expect(m.listSnapshots()).toEqual([]);
+  });
+
+  test("兼容：restoreToSnapshot 遇 ENOTDIR 条目不抛错、不记 failedFiles", async () => {
+    const real = join(testDir, "real.txt");
+    writeFileSync(real, "after");
+    const bad = makeUnreadablePath();
+    writeLegacyShard([
+      { id: "s1", files: [{ filePath: real, existedBefore: true, content: "before" }] },
+      { id: "s2", files: [{ filePath: bad, existedBefore: false }] },
+    ]);
+
+    const m = newManager();
+    await m.init();
+    const r = await m.restoreToSnapshot("s1");
+    expect(r).not.toBeNull();
+    expect(r!.failedFiles).toEqual([]);
+    // real 就在目标快照 s1 里（s1 存的是「产生它之前」的内容，即目标状态本身），
+    // restore 到 s1 的区间是 s1 之后 ⇒ 不该动它；动的只有 s2 里的坏条目（被跳过）
+    expect(readFileSync(real, "utf-8")).toBe("after");
+    expect(m.listSnapshots().map((s) => s.id)).toEqual(["s1"]);
+  });
+
+  test("兼容：restoreBeforeSnapshot（/rewind 入口）遇 ENOTDIR 条目不抛错", async () => {
+    const bad = makeUnreadablePath();
+    writeLegacyShard([{ id: "s1", files: [{ filePath: bad, existedBefore: false }] }]);
+
+    const m = newManager();
+    await m.init();
+    // 该方法回滚区间含目标快照自己，所以坏条目一定会被走到（restoreToSnapshot 则可能避开）
+    const r = await m.restoreBeforeSnapshot("s1");
+    expect(r).not.toBeNull();
+    expect(r!.failedFiles).toEqual([]);
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // 6. `undoFile` 的兼容分支（P4 初版改了行为但漏了测试）
+  //
+  // `/undo <path>` 必须把「不是可回滚目标」的条目从快照里**摘掉**，否则该条目永久残留：
+  // 用户每次 `/undo <该路径>` 都失败，且它永远占着配额。
+  // ─────────────────────────────────────────────────────────────
+
+  test("兼容：undoFile 对目录条目摘掉并删除空快照（分片同步 unlink）", async () => {
+    const dir = join(testDir, "legacy-dir");
+    mkdirSync(dir);
+    writeLegacyShard([{ id: "s1", files: [{ filePath: dir, existedBefore: false }] }]);
+
+    const m = newManager();
+    await m.init();
+    expect(await m.undoFile(dir)).toBeNull();
+    expect(m.listSnapshots()).toEqual([]);
+    // 分片必须真的删掉：只从内存摘掉的话，下次 init 会把它从盘上读回来（条目复活）
+    expect(existsSync(join(ckptDir, "snapshots", "s1.json"))).toBe(false);
+  });
+
+  test("兼容：undoFile 对 ENOTDIR 路径不抛错，同样摘掉条目", async () => {
+    const bad = makeUnreadablePath();
+    writeLegacyShard([{ id: "s1", files: [{ filePath: bad, existedBefore: false }] }]);
+
+    const m = newManager();
+    await m.init();
+    expect(await m.undoFile(bad)).toBeNull();
+    expect(m.listSnapshots()).toEqual([]);
+  });
 });

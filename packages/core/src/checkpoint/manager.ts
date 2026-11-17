@@ -47,14 +47,19 @@ export interface Snapshot {
    * 落盘保留这份清单是为了让命令层能如实告知用户「哪些文件没被快照」，
    * 而不是让用户以为所有改动都能回退（静默的不完整保护比没有更危险）。
    *
-   * P4：`reason` 区分两类跳过原因——缺省（即字段不存在）表示 `too-large`（超过单文件上限），
-   * `non-regular` 表示目录 / 设备 / FIFO / socket / 软链（本来就不该进快照）。
-   * 展示层据此选文案：把设备文件说成「超过单文件上限」是另一种撒谎。
+   * P4：`reason` 区分跳过原因——缺省（即字段不存在）表示 `too-large`（超过单文件上限），
+   * `non-regular` 表示目录 / 设备 / FIFO / socket / 软链（本来就不该进快照），
+   * `unreadable` 表示连 `lstat` 都失败（路径中某段是普通文件 / 无权遍历 / 过长）。
+   * 展示层据此选文案：把设备文件或非法路径说成「超过单文件上限」是另一种撒谎。
    * 缺省即 too-large 而不是写显式值，是为了让**已落盘的老分片**（那时只有这一种原因）
    * 不需要任何迁移就仍然语义正确。
-   * 非普通文件的 `bytes` 恒为 0——「字节数」对它们没有意义。
+   * 非普通文件与不可读路径的 `bytes` 恒为 0——「字节数」对它们没有意义。
    */
-  skippedFiles?: Array<{ filePath: string; bytes: number; reason?: "non-regular" }>;
+  skippedFiles?: Array<{
+    filePath: string;
+    bytes: number;
+    reason?: "non-regular" | "unreadable";
+  }>;
 }
 
 /** 快照中的单个文件 */
@@ -120,11 +125,33 @@ function decodeTextOrNull(bytes: Uint8Array): string | null {
  *
  * 判据刻意不依赖 errno（EPERM / EISDIR / ENOTEMPTY）：三个平台的错误码不一致，
  * 靠 `catch` 分支会漏，必须在动手删除之前用类型判断。
+ *
+ * 为什么 `unreadable` 必须是独立一态、而不是并进 `non-regular` 或降级成 `absent`：
+ *
+ * 1. `lstatSync` 的 `throwIfNoEntry: false` **只**把 ENOENT 变成 `undefined`，其余错误照样抛。
+ *    实测（darwin / bun 1.4.2）：`/dev/null/foo`（父段是普通文件）抛 ENOTDIR。P4 初版没兜住，
+ *    异常会穿过 `undo()` / `restore*()` 的循环体（那里没有外层 catch），`/undo` 抛错且快照
+ *    不消耗——与本类目要修的死循环同一种形态，只是触发面更窄；在 `createSnapshot` 里更糟，
+ *    外层 catch 会 `return ""` 丢**整批**（同批真文件也不进快照），而修复前
+ *    `Bun.file(p).exists()` 对这类路径只返回 false、按新建文件入列，不丢批。
+ *    本机历史数据实测有 11 条这种路径（`sid-code/sid-code/...`，父段是编译产物二进制）。
+ * 2. 降级成 `absent` 会把它按「新建文件」入快照，回退时 `unlinkSync` 该路径——将来它真
+ *    变成普通文件就会被误删。
+ * 3. 并进 `non-regular` 只是日志与展示会撒谎（「这是个设备文件」），但行为一致。
+ *    为了不让 `skippedFiles.reason` 少一档，这里单独返回，展示层据此说人话。
  */
-function classifyPathForSnapshot(filePath: string): "absent" | "regular" | "non-regular" {
-  const st = lstatSync(filePath, { throwIfNoEntry: false });
-  if (!st) return "absent";
-  return st.isFile() ? "regular" : "non-regular";
+function classifyPathForSnapshot(
+  filePath: string,
+): "absent" | "regular" | "non-regular" | "unreadable" {
+  try {
+    const st = lstatSync(filePath, { throwIfNoEntry: false });
+    if (!st) return "absent";
+    return st.isFile() ? "regular" : "non-regular";
+  } catch {
+    // ENOTDIR（路径中某段是普通文件）/ EACCES（无权遍历父目录）/ ENAMETOOLONG 等：
+    // 连 stat 都拿不到。不是可回滚目标，也不能当「不存在」。
+    return "unreadable";
+  }
 }
 
 /** N13：两份快照内容是否相同（形态不同即视为不同，触发写 full）。 */
@@ -571,8 +598,11 @@ export class CheckpointManager {
         // （设备 EPERM、非空目录 EPERM/EISDIR），而当时的 N5 判据只看「results 为空」
         // 就把这种失败当成了「没回滚成功」，于是快照被保留、`/undo` 永久卡在同一个快照上。
         // 目录/设备本来就不该是「可回滚目标」——跳过比假装保护诚实。
-        if (pathKind === "non-regular") {
-          skippedFiles.push({ filePath, bytes: 0, reason: "non-regular" });
+        //
+        // `unreadable`（连 lstat 都失败，如父段是普通文件）走同一分支：同样不进快照，
+        // 但 `reason` 分开落盘，避免日志/展示把它说成「这是个设备文件」。
+        if (pathKind === "non-regular" || pathKind === "unreadable") {
+          skippedFiles.push({ filePath, bytes: 0, reason: pathKind });
           continue;
         }
 
@@ -634,10 +664,13 @@ export class CheckpointManager {
       }
 
       // P3/P4：跳过的目标必须在日志里点明——否则用户以为 `/undo` 能救，实际救不回来。
-      // 两类原因分开说：把目录/设备说成「超过单文件上限」是另一种撒谎。
+      // 三类原因分开说：把目录/设备说成「超过单文件上限」、把非法路径说成「这是个设备文件」
+      // 都是另一种撒谎。`too-large` 的判据必须是 `reason === undefined`——写成
+      // `!== "non-regular"` 会把新增的 `unreadable` 算进超限组（同一个撒谎换个说法）。
       if (skippedFiles.length > 0) {
-        const tooLarge = skippedFiles.filter((s) => s.reason !== "non-regular");
+        const tooLarge = skippedFiles.filter((s) => s.reason === undefined);
         const nonRegular = skippedFiles.filter((s) => s.reason === "non-regular");
+        const unreadable = skippedFiles.filter((s) => s.reason === "unreadable");
         if (tooLarge.length > 0) {
           const preview = tooLarge
             .slice(0, 3)
@@ -656,6 +689,16 @@ export class CheckpointManager {
           log.info(
             "CHECKPOINT",
             `跳过 ${nonRegular.length} 个非普通文件（目录/设备/软链等），未进快照（无法 /undo 回退）: ${preview}${nonRegular.length > 3 ? " …" : ""}`,
+          );
+        }
+        if (unreadable.length > 0) {
+          const preview = unreadable
+            .slice(0, 3)
+            .map((s) => s.filePath)
+            .join(", ");
+          log.info(
+            "CHECKPOINT",
+            `跳过 ${unreadable.length} 个无法判定类型的路径（父目录是普通文件/无权访问等），未进快照（无法 /undo 回退）: ${preview}${unreadable.length > 3 ? " …" : ""}`,
           );
         }
       }
@@ -749,10 +792,10 @@ export class CheckpointManager {
           // 过去那个失败被 N5 的「results 为空」判据吃掉，导致 `/undo` 永久卡住。
           // 这类目标本来就不是「可回滚目标」，跳过它既不算成功也不算失败。
           const pathKind = classifyPathForSnapshot(file.filePath);
-          if (pathKind === "non-regular") {
+          if (pathKind === "non-regular" || pathKind === "unreadable") {
             log.debug(
               "CHECKPOINT",
-              `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${file.filePath}`,
+              `跳过${pathKind === "non-regular" ? "非普通文件" : "无法判定类型的路径"}（历史快照里的坏条目，不是可回滚目标）: ${file.filePath}`,
             );
             continue;
           }
@@ -846,10 +889,10 @@ export class CheckpointManager {
           // 直接判定为「不是可回滚目标」并把它从快照里摘掉，否则 `/undo <该路径>`
           // 每次都失败、该条目永久残留在快照里。
           const pathKind = classifyPathForSnapshot(filePath);
-          if (pathKind === "non-regular") {
+          if (pathKind === "non-regular" || pathKind === "unreadable") {
             log.warn(
               "CHECKPOINT",
-              `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${filePath}`,
+              `跳过${pathKind === "non-regular" ? "非普通文件" : "无法判定类型的路径"}（历史快照里的坏条目，不是可回滚目标）: ${filePath}`,
             );
             snapshot.files = snapshot.files.filter((f) => f.filePath !== filePath);
             if (snapshot.files.length === 0) {
@@ -952,10 +995,10 @@ export class CheckpointManager {
           // 过去那个 unlink 失败会被记成「回滚失败」，让整次 /restore 都显示失败——
           // 而它从来就不是可回滚目标，不该污染失败清单。跳过它，不记成功也不记失败。
           const pathKind = classifyPathForSnapshot(file.filePath);
-          if (pathKind === "non-regular") {
+          if (pathKind === "non-regular" || pathKind === "unreadable") {
             log.debug(
               "CHECKPOINT",
-              `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${file.filePath}`,
+              `跳过${pathKind === "non-regular" ? "非普通文件" : "无法判定类型的路径"}（历史快照里的坏条目，不是可回滚目标）: ${file.filePath}`,
             );
             continue;
           }
@@ -1104,10 +1147,10 @@ export class CheckpointManager {
         // 历史快照里的目录/设备删不掉，把它记成「回滚失败」会让整次 /rewind 都显示失败，
         // 而它从来就不是可回滚目标。
         const pathKind = classifyPathForSnapshot(filePath);
-        if (pathKind === "non-regular") {
+        if (pathKind === "non-regular" || pathKind === "unreadable") {
           log.debug(
             "CHECKPOINT",
-            `跳过非普通文件（历史快照里的坏条目，不是可回滚目标）: ${filePath}`,
+            `跳过${pathKind === "non-regular" ? "非普通文件" : "无法判定类型的路径"}（历史快照里的坏条目，不是可回滚目标）: ${filePath}`,
           );
           continue;
         }
