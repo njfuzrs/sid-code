@@ -321,6 +321,20 @@ export interface ManagerOptions {
   /** 项目临时目录（用于工具输出落盘） */
   tempDir?: string;
   /**
+   * 过期清理通道（F4：`stale-tool-output.ts`）的开关，默认 `true`。
+   *
+   * 只给**子代理**传 `false`：这条通道的 K=8 / N=20k 两个门槛从未在子代理负载上校准过，
+   * 而子代理是纯只读负载（拿不到 edit/write 的活跃文件豁免），一开就是「正在研读的核心文件
+   * 被批量清成占位 → 模型重读 → 再被清」的循环。关掉它等于回到 2026-11-12 之前的已知良好
+   * 配置：同模型 explore 上下文峰值最大 16.1%，离窗口还远；窗口兜底由遮罩 / 冷清理 /
+   * 大输出清理 / 压缩四条通道承担。详见 `.agents/notes/implemented/bug-fix/` 下 PR3 的 Note。
+   *
+   * ⚠️ 主循环（`app.ts` 构造处）**不要**传 `false`：2026-11-12 的清理决定对主会话仍然有效，
+   * 主会话侧的调整走单独的 A/B（PR6）。漏传任何一处子代理构造点，就是「一半路径生效」，
+   * 而且不会报错 —— 有接线测试守着（`packages/core/tests/context/stale-clear-subagent-off.test.ts`）。
+   */
+  staleToolOutputClear?: boolean;
+  /**
    * 会话 ID。传入即在构造时启用工具输出遮罩（observation masking）——
    * 对标 claude-code「压缩能力内嵌在共享循环、创建即生效」的架构：masking 不再依赖
    * 事后手动调用 setSessionId，任何创建 ContextManager 的路径（主循环/子代理/headless）
@@ -499,6 +513,12 @@ export class Manager {
    * 前缀只在提交那一轮被改写一次。见 `context/stale-tool-output.ts` 的批量门槛说明。
    */
   private staleClearState = new Map<string, string>();
+  /**
+   * F4 过期清理通道的开关（见 `ManagerOptions.staleToolOutputClear`）。
+   * 默认 `true`：主循环保持 2026-11-12 的决定；只有子代理构造点传 `false`
+   * ——子代理负载从未进过 K/N 的校准集，且是纯只读负载（拿不到活跃文件豁免）。
+   */
+  private staleToolOutputClear: boolean;
 
   /**
    * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
@@ -529,6 +549,8 @@ export class Manager {
     // P3-2 / F8：完成缓冲区的输出预留分量数据源（本次请求的输出预算，非模型物理上限）。
     this.requestOutputBudget = opts.requestOutputBudget;
     this.tempDir = opts.tempDir;
+    // F4 过期清理通道：缺省开启（主循环依赖这个默认值）。子代理构造点显式传 false。
+    this.staleToolOutputClear = opts.staleToolOutputClear ?? true;
     // 创建即启用 masking（对标 cc）：构造时若已知 sessionId，直接建 maskingService，
     // 不必等外部记得调 setSessionId。setSessionId 仍保留（App 侧在 sessionId 晚于
     // ctxMgr 创建时补设），两条路径走同一初始化逻辑。
@@ -875,6 +897,9 @@ export class Manager {
    * （粗估）。选择前者是因为 K/N 阈值本身就按 token 校准；两条口径不可混算同一个数。
    */
   private commitStaleToolOutputClear(projection: Message[]): void {
+    // 开关在**最开头**短路，而不是把门槛调到无穷大：子代理负载上这条通道本就不该运行，
+    // 短路连 planStaleToolOutputClear 的候选扫描都不做（那是每轮一次的全量遍历）。
+    if (!this.staleToolOutputClear) return;
     const plan = planStaleToolOutputClear(projection, {
       skipToolUse: (id) =>
         this.staleClearState.has(id) ||

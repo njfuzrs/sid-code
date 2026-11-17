@@ -1995,6 +1995,11 @@ export class SubAgent {
         // （大量 read/grep/bash），用独立 id 让 masking 落盘目录与主会话隔离，
         // 避免临时文件互相覆盖。缺 parentSessionId 时退化为仅 taskId。
         sessionId: this.deriveSubAgentSessionId(taskId),
+        // PR3（C1）：关闭过期清理通道。子代理是纯只读负载，拿不到 edit/write 的活跃文件
+        // 豁免，K=8/N=20k 两个门槛也从未在子代理负载上校准过 —— 开着会形成「正在研读的
+        // 核心文件被清成占位 → 重读 → 再被清」的循环，报告里出现「证据已过期清理」。
+        // 遮罩 / 冷清理 / 大输出清理 / 压缩四条通道照常兜底（11-12 之前的配置）。
+        staleToolOutputClear: false,
       });
 
       // P3-2：刻意**不**调 setPlanContentProvider（主代理在 app.ts 构造处接了）。
@@ -2481,6 +2486,8 @@ export class SubAgent {
         maxTokens: this.resolveSubAgentWindow(task),
         // 自定义子代理无 taskId，用 task.type 派生独立 masking 会话目录。
         sessionId: this.deriveSubAgentSessionId(task.type),
+        // PR3（C1）：同上，自定义子代理路径同样关闭过期清理通道（漏一处就是一半路径生效）。
+        staleToolOutputClear: false,
       });
       // P3-2：同上，刻意不接 setPlanContentProvider（理由见 executeInner 里 ContextManager 构造处）。
 
