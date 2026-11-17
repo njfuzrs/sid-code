@@ -205,6 +205,28 @@ function resumeGoal(ctx: CommandContext): LocalCommandResult {
     return { type: "text", value: `目标已完成: "${goal.objective.slice(0, 60)}"` };
   }
 
+  // 终态守卫：resume 是「从暂停继续」，不是「免费续命」。
+  //
+  // 轮次/预算耗尽后把 status 改回 active，下一轮 end_turn 立刻再撞同一个上限
+  // （`goal/limits.ts` 的两条硬约束只看 `turnsUsed` / `tokensUsed`，不因为 status
+  // 变过就重置），用户拿到的是一次假成功：命令回「已恢复」，目标当场又终止。
+  //
+  // 判据用「约束是否仍然成立」而不是只看 status：用户先 `/goal turns 200` 放宽上限后，
+  // status 仍是 turns_limited，此时 resume 应当放行——放宽约束才是真正的出路，
+  // 守卫不该把这条路一起挡掉。
+  if (goal.status === "turns_limited" && goal.turnsUsed >= goal.maxTurns) {
+    return {
+      type: "text",
+      value: `目标已因轮次耗尽而终止（${goal.turnsUsed}/${goal.maxTurns} 轮），无法恢复。\n请先用 \`/goal turns <更大值>\` 放宽上限再 \`/goal resume\`，或用 \`/goal clear\` 清除目标重新开始。`,
+    };
+  }
+  if (goal.status === "budget_limited" && goal.tokenBudget && goal.tokensUsed >= goal.tokenBudget) {
+    return {
+      type: "text",
+      value: `目标已因 Token 预算耗尽而终止（已用 ${goal.tokensUsed.toLocaleString()} / ${goal.tokenBudget.toLocaleString()}），无法恢复。\n请先用 \`/goal budget <更大值>\` 放宽预算再 \`/goal resume\`，或用 \`/goal clear\` 清除目标重新开始。`,
+    };
+  }
+
   // 恢复目标
   goal.status = "active";
   ctx.updateGoalState?.((g: GoalState) => {

@@ -33,6 +33,7 @@ import {
   PAUSED_MARK,
   RETRY_MARK,
   ERROR_MARK,
+  WARNING_MARK,
   CACHE_MARK,
   TPS_MARK,
 } from "../constants/figures.ts";
@@ -398,13 +399,24 @@ export function deriveThinking(
  * - 接近上限（≥ GOAL_TURNS_NEAR_LIMIT_RATIO，当前 80%）转黄预警,提示快到轮次上限;paused 用 ⏸ 前缀 + 黄色。
  *   阈值与 core 侧「接近上限软提醒」共用同一个常量 —— 两处各写一个 0.8 时，任何
  *   一边调整都会静默漂移（状态栏黄了但模型没被提醒，或反过来）。
+ * - **轮次 / 预算耗尽的终态也要显示**（2026-11-17）：此前 `turns_limited` /
+ *   `budget_limited` 落到 `null`，等于目标从屏幕上凭空消失——用户既不知道它还在，
+ *   也不知道它已终止，只剩 `/goal status` 一条路径能查到（`/goal resume` 又静默无效，
+ *   见同批修复的 A-1）。终态是需要用户决策的状态，必须可见，且要能区分是哪种上限，
+ *   否则用户不知道该调 `/goal turns` 还是 `/goal budget`。
  */
-function deriveGoal(
+export function deriveGoal(
   goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null,
   defaultColor: Color,
 ): { text: string; color: Color } | null {
   if (!goalDisplay) return null;
   const { turnsUsed, maxTurns, status } = goalDisplay;
+  // 终态：警告字形 + 说明是哪条上限。颜色走 status.warning（与 paused 同一语义档），
+  // 不新造状态色——L1 只有 error/success/warning 三档。
+  if (status === "turns_limited" || status === "budget_limited") {
+    const cause = status === "turns_limited" ? `轮次 ${turnsUsed}/${maxTurns}` : "Token 预算";
+    return { text: `${WARNING_MARK} 目标已终止（${cause}）`, color: theme.status.warning };
+  }
   if (status !== "active" && status !== "paused") return null;
   const nearLimit = maxTurns > 0 && turnsUsed / maxTurns >= GOAL_TURNS_NEAR_LIMIT_RATIO;
   const text =
