@@ -22,7 +22,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import {
   MAX_SCRIPT_BODY_BYTES,
@@ -32,6 +33,7 @@ import {
   extractScriptPaths,
   hashScriptBodies,
   normalizeWaitCommand,
+  readWaitScriptBodies,
 } from "../../src/task/wait-subjects.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "wait-scripts");
@@ -206,5 +208,80 @@ describe("R2 脚本正文哈希", () => {
     const a = hashScriptBodies(["pr=779\ngh pr checks 779\n"]);
     expect(a).toBe(hashScriptBodies(["pr=779\ngh pr checks 779\n"]));
     expect(a).not.toBe(hashScriptBodies(["pr=779\ngh pr checks 779 --watch\n"]));
+  });
+});
+
+describe("B1 — 脚本正文按各自 cd 前缀解析基准目录", () => {
+  /**
+   * 缺陷形态（20261117）：真实等待命令是 `cd <worktree> && bash w.sh`，而
+   * `readWaitScriptBodies` 用**进程启动目录**去解析 `w.sh`。读不到只是退化，
+   * **读到启动目录下的同名脚本才是真缺陷** —— 抽出的 subjects 指向另一个对象，
+   * R2 会把两个不相干的等待判成重复。
+   *
+   * 所以这里的夹具刻意在启动目录也放一份同名 `wait.sh`（正文指向 PR 111），
+   * 修复前读到的就是它。只测「cd 目录下存在、启动目录下不存在」的话，
+   * 修复前后都是「读不到」，用例恒绿，测不出任何东西。
+   */
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wait-subjects-b1-")));
+  const startDir = join(root, "start");
+  const repoDir = join(root, "repo");
+  const nestedDir = join(repoDir, "sub");
+  mkdirSync(startDir, { recursive: true });
+  mkdirSync(nestedDir, { recursive: true });
+  writeFileSync(join(startDir, "wait.sh"), "gh pr checks 111\n");
+  writeFileSync(join(repoDir, "wait.sh"), "gh pr checks 222\n");
+  writeFileSync(join(nestedDir, "wait.sh"), "gh pr checks 333\n");
+  writeFileSync(join(startDir, "a.sh"), "gh pr checks 444\n");
+  writeFileSync(join(repoDir, "b.sh"), "gh pr checks 555\n");
+
+  test("cd <绝对路径> && bash wait.sh → 读 cd 后的目录，不是启动目录", () => {
+    const bodies = readWaitScriptBodies(`cd ${repoDir} && bash wait.sh`, startDir);
+    expect(bodies).toEqual(["gh pr checks 222\n"]);
+    // 直接锁住缺陷后果：抽到的对象必须是 222，绝不能是启动目录里的 111。
+    expect(
+      collectWaitSubjects({ command: `cd ${repoDir} && bash wait.sh`, scriptBodies: bodies }),
+    ).toEqual(["gh:pr:222"]);
+  });
+
+  test("cd <相对路径> → 相对启动目录解析", () => {
+    expect(readWaitScriptBodies("cd ../repo && bash wait.sh", startDir)).toEqual([
+      "gh pr checks 222\n",
+    ]);
+  });
+
+  test("多级 cd 链 → 逐段累积（cd a && cd b 的真实语义是 a/b）", () => {
+    const bodies = readWaitScriptBodies(`cd ${repoDir} && cd sub && bash wait.sh`, startDir);
+    expect(bodies).toEqual(["gh pr checks 333\n"]);
+  });
+
+  test("无 cd 前缀 → 既有行为不变（相对启动目录）", () => {
+    expect(readWaitScriptBodies("bash wait.sh", startDir)).toEqual(["gh pr checks 111\n"]);
+  });
+
+  test("同一命令里两段脚本各有自己的基准目录", () => {
+    // 只看「命令开头的 cd」会把 b.sh 也按 startDir 解析（b.sh 只在 repoDir 下）。
+    // 逐段跟踪才对。
+    const bodies = readWaitScriptBodies(`bash a.sh && cd ${repoDir} && bash b.sh`, startDir);
+    expect(bodies).toEqual(["gh pr checks 444\n", "gh pr checks 555\n"]);
+  });
+
+  test("cd 目标是变量 / cd - → 解析不出目录，退回调用方给的 cwd（不猜）", () => {
+    // 文档 §4.5 B-1 的口径：「解析不出目录时不猜，退回调用方给的 cwd」。
+    // 这里刻意断言**退回**而不是「为空」：不猜的标准是「不臆造一个目录去读」，
+    // 而不是把整个脚本展开关掉（关掉会让没有 cd 前缀的同类命令一起退化）。
+    // 所以 `cd "$DIR" && bash wait.sh` 与 `bash wait.sh` 结果一致。
+    expect(readWaitScriptBodies('cd "$DIR" && bash wait.sh', startDir)).toEqual([
+      "gh pr checks 111\n",
+    ]);
+    expect(readWaitScriptBodies("cd - && bash wait.sh", startDir)).toEqual(["gh pr checks 111\n"]);
+    // 前提是这两条确实没被当成 cd 目录去解析：若 `$DIR` 被当成字面目录，
+    // 结果会是空（startDir/$DIR/wait.sh 不存在），那就成了「猜错」而不是「退回」。
+    expect(readWaitScriptBodies('cd "$DIR" && bash wait.sh', startDir)).toEqual(
+      readWaitScriptBodies("bash wait.sh", startDir),
+    );
+  });
+
+  test("cd 到不存在的目录 → 为空（命令本来也不会执行到那一步）", () => {
+    expect(readWaitScriptBodies("cd /nonexistent-b1-probe && bash wait.sh", startDir)).toEqual([]);
   });
 });

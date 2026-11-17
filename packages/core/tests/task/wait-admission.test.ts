@@ -10,9 +10,10 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { hashScriptBodies, readWaitScriptBodies } from "../../src/task/wait-subjects.ts";
 import {
   WAIT_ADMISSION_EVENT_NAME,
   __resetWaitRegistryForTest,
@@ -141,6 +142,42 @@ describe("R2 准入真值表", () => {
       scriptHash: "bbbb2222",
     });
     expect(decision.action).toBe("replace");
+  });
+
+  test("B1 两个 cd 目录下的同名脚本正文不同 → replace（不是 duplicate）", () => {
+    // 缺陷形态（20261117）：`cd /a && bash w.sh` 与 `cd /b && bash w.sh` 归一化后都是
+    // `bash w.sh`；脚本正文按启动目录解析时，读到错误正文（或读不到 → scriptHash 为
+    // undefined → `scriptSame` 恒 true），判成 duplicate，新的等法永远挂不上。
+    //
+    // 这里跑的是完整链路（命令 → cd 感知读正文 → 正文哈希 → 准入判定），而不是手填
+    // 两个哈希：手填只能证明判定逻辑，证明不了「读正文这一步真的按 cd 目录走了」。
+    const dirA = join(tmpHome, "a");
+    const dirB = join(tmpHome, "b");
+    mkdirSync(dirA, { recursive: true });
+    mkdirSync(dirB, { recursive: true });
+    writeFileSync(join(dirA, "w.sh"), "gh pr view 42 --json state\n");
+    writeFileSync(join(dirB, "w.sh"), "gh pr view 42 --json state,mergeStateStatus\n");
+
+    // cwd 传一个不存在的路径：基准目录只能来自命令里的 `cd`，证明不了就不是修复后的行为。
+    const hashA = hashScriptBodies(readWaitScriptBodies(`cd ${dirA} && bash w.sh`, "/nonexistent"));
+    const hashB = hashScriptBodies(readWaitScriptBodies(`cd ${dirB} && bash w.sh`, "/nonexistent"));
+    expect(hashA).toBeDefined();
+    expect(hashB).toBeDefined();
+    expect(hashA).not.toBe(hashB);
+
+    addShellWait("s1", {
+      subjects: ["gh:pr:42"],
+      command: `cd ${dirA} && bash w.sh`,
+      scriptHash: hashA,
+    });
+    const decision = decideWaitAdmission({
+      kind: "shell",
+      subjects: ["gh:pr:42"],
+      command: `cd ${dirB} && bash w.sh`,
+      scriptHash: hashB,
+    });
+    expect(decision.action).toBe("replace");
+    expect(decision.existing.map((w) => w.id)).toEqual(["s1"]);
   });
 
   test("同 subject 同命令同脚本 → duplicate", () => {
