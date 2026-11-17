@@ -502,18 +502,14 @@ export interface Config {
    * 额外的 settings 源（--settings <file-or-json>）：文件路径或内联 JSON 字符串。
    * 运行时字段，不落盘。
    *
-   * ⚠️ **作用范围只到 settings 视野，不到 Config 对象。** 它被注入 `flagSettings` 内存源，
-   * 由 `getSettings()` / `getSettingsForSource("flagSettings")` 消费，在 `SETTING_SOURCES`
-   * 合并链里高于 local、**低于 policySettings**。
+   * ⚠️ **作用范围（2026-11-17 起统一）**：它被注入 `flagSettings` 内存源，在
+   * `SETTING_SOURCES` 合并链里高于 local、**低于 policySettings**，三条链都吃它：
+   * `getSettings()` / `getSettingsForSource("flagSettings")`、`loadConfig()` 构造的 Config
+   * （见 `loadConfigFile` 里的 flag 叠加）、以及 hooks（见 `hook-layers.ts` 的 flag 层）。
    *
-   * `loadConfig()` 构造的 Config **完全不吃这个源**：`loadConfigFile()` 只读磁盘的
-   * `~/.sid-code/settings.json` + project/local 行为白名单 overlay，全程不取 flagSettings。
-   * 所以 `--settings '{"model":...}'` / `'{"theme":...}'` / `'{"goal":...}'` 这类只走 Config
-   * 的字段**静默无效**——要覆盖它们，写进 `~/.sid-code/settings.json` 或对应环境变量。
-   *
-   * 这条注释改写过一次：修前写的是「优先级高于常规 user/project/local 三源，作为最后一层覆盖」，
-   * 读者会理解成「对 Config 也生效」。2026-11-16 的核查正是被它误导，把「--settings 不生效」
-   * 误判成「goal 配置未接线」，从而多花了一轮排查。行为锁在
+   * 修前只有第一条成立：Config 与 hooks 都静默无视 `--settings`。同一根因被报过三次
+   * （hooks 只读用户级 → HC1 补齐磁盘三源 → 本次补齐 Config/hooks），2026-11-16 的核查
+   * 还据此把「--settings 不生效」误判成「goal 配置未接线」。行为锁在
    * `packages/core/tests/config/settings-flag-scope.test.ts`。
    */
   extraSettings?: string;
@@ -1458,6 +1454,17 @@ async function loadConfigFile(): Promise<{
       settings: getSettingsForSource("policySettings").settings,
       trust: "full",
     },
+    // `--settings` 显式传入：优先级高于任何磁盘源、低于企业 policy，与 SETTING_SOURCES 同序
+    // （user → project → local → flag → policy）。trust 用 `full` —— 它是用户在命令行显式给的
+    // （内联 JSON 或用户指定的文件路径），与用户级 settings.json 同级，不属于「随仓库 clone
+    // 下来自动生效」的那类来源（后者才是 RESTRICTED_MODES 要防的）。
+    // 唯一保留的不可绕过处：企业 policy 排在它前面，所以 skip 档仍由管理员说了算。
+    {
+      origin: "flag",
+      label: "--settings 显式指定",
+      settings: getSettingsForSource("flagSettings").settings,
+      trust: "full",
+    },
     {
       origin: "local",
       label: localTracked ? "被 git 追踪的 settings.local.json" : "settings.local.json（未追踪）",
@@ -1478,7 +1485,27 @@ async function loadConfigFile(): Promise<{
     },
   ]);
 
-  const merged = mergeConfig(userConfig, overlay);
+  // flagSettings（--settings）是用户本次命令显式给的覆盖：优先级高于所有磁盘源，
+  // 与 SETTING_SOURCES 同序（user → project → local → flag → policy）。
+  //
+  // 这里**全字段放行**（含 model / baseURL / provider / env / availableModels），
+  // 与 project/local 的白名单不同 —— 威胁模型不一样：白名单防的是「随仓库 clone 下来的
+  // 配置把请求路由到攻击者端点」；flag 是用户在命令行显式给的（内联 JSON 或用户指定的
+  // 文件路径），等同用户自己的配置。policy 不在字段合并里参与，它只压制 permissionMode
+  // （见下面的 startMode），这是本次唯一保留的「不可被 --settings 绕过」的口子。
+  //
+  // hooks 不进 Config：hooks 走 collectHookLayers 的分层链路（每层保留原始 JSON，
+  // 让 ${CLAUDE_PROJECT_DIR} 留给 hook 子进程展开）。若在这里也叠上去，app.ts 的
+  // `!hasUserLayer && config.hooks` 兜底会在「没有 user 层」时把 flag 的 hooks 再注册一遍。
+  const flagRaw = getSettingsForSource("flagSettings").settings as Record<string, unknown> | null;
+  let flagConfig: Partial<Config> = {};
+  if (flagRaw) {
+    const { resolveEnvVars } = await import("./env-interpolation.ts");
+    flagConfig = normalizeConfigKeys(resolveEnvVars(flagRaw));
+    delete (flagConfig as { hooks?: unknown }).hooks;
+  }
+
+  const merged = mergeConfig(mergeConfig(userConfig, overlay), flagConfig);
   // 解析结果显式盖在最上面：`userConfig` 里的顶层 `permissionMode` 可能是被更高优先级
   // 来源压过的旧值（或一个该被归一的别名），不覆盖会两套数据并存。
   // `builtin` 表示四个来源都没声明——此时保留 userConfig，避免把默认值写成「显式配置」。

@@ -141,6 +141,13 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
 /** 配置来源（优先级从高到低） */
 export enum ConfigSource {
   Runtime = "runtime",
+  /**
+   * `--settings` 显式传入的 hooks（内存源，无文件）。
+   *
+   * 优先级高于所有磁盘来源、低于企业 Managed —— 与 SETTING_SOURCES 的
+   * `user → project → local → flag → policy` 同序。不受 `--setting-sources` 过滤。
+   */
+  Flag = "flag",
   /** 仓库内 `.sid-code/settings.json`——随 git clone 而来，过信任门 */
   Project = "project",
   /**

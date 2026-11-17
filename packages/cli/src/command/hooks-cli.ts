@@ -21,6 +21,8 @@ import type { HookRegistryEntry } from "@sid-code/core/hook/registry.ts";
 
 const SOURCE_OF: Record<string, ConfigSource> = {
   managed: ConfigSource.Managed,
+  // `--settings` 注入的 hooks 层（内存源，无文件）；漏了这条 `hooks list` 会显示成 undefined
+  flag: ConfigSource.Flag,
   user: ConfigSource.User,
   project: ConfigSource.Project,
   local: ConfigSource.Local,

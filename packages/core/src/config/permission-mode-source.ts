@@ -18,8 +18,14 @@
 
 import { PERMISSION_MODES } from "./schema.ts";
 
-/** 解析结果来自哪一层；没有任何来源声明时为 `builtin`（config 默认值 default）。 */
-export type StartModeOrigin = "policy" | "local" | "project" | "user" | "builtin";
+/**
+ * 解析结果来自哪一层；没有任何来源声明时为 `builtin`（config 默认值 default）。
+ *
+ * `flag` = `--settings` 显式传入（内存源，见 `SETTING_SOURCES`）：它比任何磁盘源都高，
+ * 但低于企业 policy —— 与 settings 合并链同一顺序，否则「policy 压制 --settings」
+ * 这条在权限档位上会破一个口子。
+ */
+export type StartModeOrigin = "policy" | "flag" | "local" | "project" | "user" | "builtin";
 
 export interface StartModeDiagnostic {
   /** info 只用于「别名被改写」这类无需处置的提示，warning 表示用户配置没有按预期生效。 */

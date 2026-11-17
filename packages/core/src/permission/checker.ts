@@ -1237,10 +1237,13 @@ export class PermissionChecker implements Checker {
     // checker 完全看不到——企业用 CLI 注入权限规则的通道是断的。
     //
     // 两条加载链此前不汇合：`--settings` 走 `setFlagSettings()` 进的是
-    // config/settings 合并器的**内存源**（给 `getSettings()` / `getSettingsForSource()` 用；
-    // 注意 `loadConfig()` 构造的 Config 对象**不读**这个源，见 config.ts 的 extraSettings 注释），
+    // config/settings 合并器的**内存源**（给 `getSettings()` / `getSettingsForSource()` 用），
     // 而 RuleLoader 只读磁盘上的 user/project/local/policy 文件。这里把内存源那一侧的
     // `permissions` 取出来喂给 RuleLoader，两链合一。
+    //
+    // 2026-11-17 更新：Config 侧与 hooks 侧也已接入同一个源（见 config.ts 的
+    // loadConfigFile 与 hook-layers.ts 的 flag 层），`--settings` 现在是统一视野；
+    // 本段注释里「Config 不读这个源」的旧说法已随那次改动删除。
     //
     // 用动态 import 而非顶层 import：settings.ts → permission/sensitive.ts 已有依赖，
     // checker.ts 顶层再 import settings.ts 会成环（loadPolicyFile 里 `await import("fs")`
