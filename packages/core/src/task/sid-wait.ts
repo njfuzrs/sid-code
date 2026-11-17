@@ -27,7 +27,8 @@
  * 不需要从命令里猜——R1 抽 subject、R2 判重复、R6 判替换、P1 判覆盖全都用同一个签名。
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 /** 默认轮询间隔：PR 的 CI 状态不会秒级变化，30s 兼顾延迟与请求量 */
 export const DEFAULT_SID_WAIT_INTERVAL_MS = 30_000;
@@ -69,7 +70,13 @@ export const SID_WAIT_EXIT = {
   CLOSED: 3,
   /** mergeable_state == dirty（有冲突） */
   CONFLICT: 4,
-  /** REST 连续失败超过阈值，或被 GitHub 以 4xx 确定性拒绝（PR 不存在 / 无权限） */
+  /**
+   * REST 连续失败超过阈值，或被确定性拒绝。
+   *
+   * 4xx **不只是**「PR 不存在 / 无权限」：**查错仓库**同样是 404，而它看起来最像前者
+   * （见 `resolveSidWaitRepo` 与 2026-11-17 的缺陷）。另外「解析不出仓库」这类
+   * 前置失败也归到这里——它们重试没有意义。所以这个码的文案必须带上**实际查了哪个仓库**。
+   */
   REST_FAILED: 5,
   /**
    * 等待被取消（kill / 期限到）。
@@ -87,8 +94,17 @@ export type SidWaitExitCode = (typeof SID_WAIT_EXIT)[keyof typeof SID_WAIT_EXIT]
 /** 检查失败的结论集合：GitHub check run 的 conclusion 里，这四种代表「这条检查不行了」 */
 const FAILED_CONCLUSIONS = new Set(["failure", "cancelled", "timed_out", "action_required"]);
 
-/** `sid-wait gh-pr <n> [--interval <seconds>]`，整条命令必须是这一个原语 */
-const SID_WAIT_GH_PR_PATTERN = /^sid-wait\s+gh-pr\s+(\d{1,9})(?:\s+--interval(?:=|\s+)(\d{1,5}))?$/;
+/**
+ * `sid-wait gh-pr <n>` 的固定头部：整条命令必须是这一个原语。
+ *
+ * 参数解析从「一条正则」改成分词（2026-11-17 引入 `--repo`）：两个可选参数要能任意顺序
+ * 出现，写成一条正则会膨胀成 4 个分支且难读。`detectSidWaitMisuse` 直接复用
+ * `parseSidWaitCommand` 的结果判「是不是合法原语」，两把尺子因此天然一致。
+ */
+const SID_WAIT_GH_PR_HEAD = /^sid-wait\s+gh-pr(?:\s|$)/;
+
+/** `owner/repo`。GitHub 的 owner 与 repo 只允许这些字符；收到别的就按「不是原语」处理 */
+const SID_WAIT_REPO_SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /**
  * 前置 `cd <dir> &&`：模型常把等待写成 `cd /repo && sid-wait gh-pr 779`。
@@ -111,10 +127,68 @@ function normalizeSidWaitBody(command: string): string {
 export interface SidWaitGhPrSpec {
   kind: "gh-pr";
   pr: number;
+  /**
+   * `--repo <owner>/<repo>` 显式指定的仓库。
+   *
+   * 未给时由 `resolveSidWaitRepo` 按**会话启动目录**的 github remote 解析，
+   * **不看会随 `cd` 漂移的会话 cwd**——2026-11-17 的缺陷正是在 docs-research 目录下
+   * 等 sid-code 的 PR，gh 把占位符解析成 docs-research，于是拿正确的 PR 号换了一个 404。
+   */
+  repo?: string;
   /** 轮询间隔（毫秒）；`--interval` 的秒数已钳制到 [MIN, MAX] */
   intervalMs: number;
   /** 调用方是否显式给了 `--interval`（回执据此决定要不要提「默认 30s」） */
   intervalConfigured: boolean;
+}
+
+/**
+ * 解析 `<n> [--repo <owner>/<repo>] [--interval <秒>]`（两个 flag 顺序任意、各最多一次）。
+ *
+ * 任何未识别的 token（`;`、`2>&1`、`|`、多余参数、重复 flag）都返回 null —— 这保证
+ * 「近似形态」不会因为多认了一个参数而变成合法原语，进而落回 shell 127 / 假成功。
+ */
+function parseSidWaitArgs(
+  tokens: readonly string[],
+): { pr: number; repo?: string; intervalSeconds?: number } | null {
+  let pr: number | undefined;
+  let repo: string | undefined;
+  let intervalSeconds: number | undefined;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (pr === undefined) {
+      if (!/^\d{1,9}$/.test(token)) return null;
+      pr = Number(token);
+      continue;
+    }
+    // `--repo=x` / `--interval=60` 与 `--repo x` / `--interval 60` 两种写法都认：
+    // 模型两种都会写，只认一种会让另一种退化成「误用」，白白多一轮纠正。
+    const eq = token.indexOf("=");
+    const hasInlineValue = token.startsWith("--") && eq > 2;
+    const flag = hasInlineValue ? token.slice(0, eq) : token;
+    const takeValue = (): string | undefined => {
+      if (hasInlineValue) return token.slice(eq + 1);
+      if (i + 1 >= tokens.length) return undefined;
+      i += 1;
+      return tokens[i];
+    };
+    if (flag === "--repo") {
+      if (repo !== undefined) return null;
+      const value = takeValue();
+      if (value === undefined || !SID_WAIT_REPO_SLUG.test(value)) return null;
+      repo = value;
+      continue;
+    }
+    if (flag === "--interval") {
+      if (intervalSeconds !== undefined) return null;
+      const value = takeValue();
+      if (value === undefined || !/^\d{1,5}$/.test(value)) return null;
+      intervalSeconds = Number(value);
+      continue;
+    }
+    return null;
+  }
+  if (pr === undefined || pr <= 0) return null;
+  return { pr, repo, intervalSeconds };
 }
 
 /**
@@ -125,20 +199,23 @@ export interface SidWaitGhPrSpec {
 export function parseSidWaitCommand(command: string): SidWaitGhPrSpec | null {
   if (typeof command !== "string" || command.length === 0) return null;
   const normalized = normalizeSidWaitBody(command);
-  const match = SID_WAIT_GH_PR_PATTERN.exec(normalized);
-  if (!match) return null;
-  const pr = Number(match[1]);
-  if (!Number.isInteger(pr) || pr <= 0) return null;
-  const seconds = match[2] === undefined ? undefined : Number(match[2]);
+  if (!SID_WAIT_GH_PR_HEAD.test(normalized)) return null;
+  // 头部固定两个 token（`sid-wait` `gh-pr`），其余交给参数解析
+  const parsed = parseSidWaitArgs(normalized.split(" ").slice(2));
+  if (!parsed) return null;
   const clampedSeconds =
-    seconds === undefined
+    parsed.intervalSeconds === undefined
       ? undefined
-      : Math.min(MAX_SID_WAIT_INTERVAL_S, Math.max(MIN_SID_WAIT_INTERVAL_S, seconds));
+      : Math.min(
+          MAX_SID_WAIT_INTERVAL_S,
+          Math.max(MIN_SID_WAIT_INTERVAL_S, parsed.intervalSeconds),
+        );
   return {
     kind: "gh-pr",
-    pr,
+    pr: parsed.pr,
+    repo: parsed.repo,
     intervalMs: clampedSeconds === undefined ? DEFAULT_SID_WAIT_INTERVAL_MS : clampedSeconds * 1000,
-    intervalConfigured: seconds !== undefined,
+    intervalConfigured: parsed.intervalSeconds !== undefined,
   };
 }
 
@@ -156,12 +233,20 @@ const SID_WAIT_HEAD = /^sid-wait(?:\s|$)/;
  */
 const SID_WAIT_PR_HINT = /^sid-wait\s+gh-pr\s+(\d{1,9})(?!\d)/;
 
+/**
+ * 近似形态里捞 `--repo`：回执给出的「正确写法」要把用户**已经写对的**仓库参数带上，
+ * 否则模型会以为它写的那半句丢了，转头重试同一形态。
+ */
+const SID_WAIT_REPO_HINT = /(?:^|\s)--repo(?:=|\s+)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?=\s|$)/;
+
 /** `sid-wait` 的近似形态（以 sid-wait 开头但不是合法原语） */
 export interface SidWaitMisuse {
   /** 归一化后的正文，回执里点出「被拦下的是这一段」 */
   body: string;
   /** 正文里的 PR 号；没有或非法（如 0）时为 null */
   suggestedPr: number | null;
+  /** 正文里已写对的 `--repo <owner>/<repo>`；回执据此保留它 */
+  suggestedRepo: string | null;
 }
 
 /**
@@ -184,9 +269,11 @@ export function detectSidWaitMisuse(command: string): SidWaitMisuse | null {
   if (parseSidWaitCommand(command) !== null) return null;
   const hinted = SID_WAIT_PR_HINT.exec(body);
   const hintedPr = hinted ? Number(hinted[1]) : 0;
+  const hintedRepo = SID_WAIT_REPO_HINT.exec(body);
   return {
     body,
     suggestedPr: Number.isInteger(hintedPr) && hintedPr > 0 ? hintedPr : null,
+    suggestedRepo: hintedRepo ? hintedRepo[1]! : null,
   };
 }
 
@@ -202,14 +289,21 @@ export function formatSidWaitMisuseReceipt(
   misuse: SidWaitMisuse,
   entry: "bash" | "monitor" = "bash",
 ): string {
-  const correct =
+  const correctPr =
     misuse.suggestedPr === null ? "sid-wait gh-pr <n>" : `sid-wait gh-pr ${misuse.suggestedPr}`;
+  // 保留用户已经写对的 `--repo`：回执给的是「把这条命令改成什么样」，少一个参数
+  // 等于让人再从零换算一次，而那正是这条回执要省掉的一轮。
+  const correct =
+    misuse.suggestedRepo === null ? correctPr : `${correctPr} --repo ${misuse.suggestedRepo}`;
   const howToFix =
     entry === "bash"
       ? `请把 command 改成单独的 \`${correct}\`，并带 run_in_background=true。`
       : `请把 command 写成单独的 \`${correct}\`（monitor 的 command 就是完整脚本）。`;
   return (
-    `sid-wait 必须单独成为整条命令（可带 \`cd <dir> &&\` 前缀或 \`--interval <秒>\`）：` +
+    // 参数提示里刻意点破「`cd <dir> &&` 不改变查哪个仓库」：它是模型最常写的形态，
+    // 而对仓库解析完全无效（cd 只被剥掉用于匹配，不会被执行）。不点破就等于继续教伪解。
+    `sid-wait 必须单独成为整条命令（可用参数：\`--repo <owner>/<repo>\`、\`--interval <秒>\`；` +
+    `要等别的仓库的 PR 必须带 \`--repo\`——\`cd <dir> &&\` 前缀不会改变它查哪个仓库）：` +
     `不要拼 \`; echo $?\`、\`2>&1\`、管道、重定向——拼接后它不再是内置等待原语，` +
     `后台还会被末尾命令的退出码报成「执行成功」（看起来像等完了，实际一次都没查）。` +
     `退出码由工具结果直接报告，不需要自己 echo。` +
@@ -269,6 +363,21 @@ export interface SidWaitGhPrResult {
   headSha: string | null;
   /** `rest-fatal` 时 GitHub 返回的 HTTP 状态码（404 / 403 等），summary 据此说清原因 */
   httpStatus?: number;
+  /**
+   * `rest-fatal` 且**不是** HTTP 拒绝时的可行动原因（如「解析不出仓库，请用 --repo」）。
+   *
+   * 这类失败没有状态码，和 404 是两回事：404 可能是 PR 号错 / 无权限 / **查错仓库**，
+   * 而这里连「查哪个仓库」都没定下来，重试毫无意义。
+   */
+  fatalDetail?: string;
+  /**
+   * 本次实际查询的仓库 `<owner>/<repo>`。
+   *
+   * 必须带在 rest-fatal / rest-failed 的结论里：这个缺陷最贵的形态是「查错仓库」，
+   * 而旧文案只说「PR 号不存在 / 无权限」，把排查方向指反了。带上仓库名，用户一眼
+   * 就能看出「我没在等这个仓库」。
+   */
+  repo?: string;
   /** `rest-failed` 时实际累计到的连续失败次数（调用方可传非默认阈值） */
   attempts?: number;
 }
@@ -278,6 +387,8 @@ export interface SidWaitGhPrOptions {
   client: GhRestClient;
   /** 每行输出（不含换行）。bash 入口写 `.output`，monitor 入口每行投递一条事件 */
   emit: (line: string) => void;
+  /** 实际查询的仓库，仅用于把「查了哪个仓库」写进失败结论（不参与请求构造） */
+  repo?: string;
   intervalMs?: number;
   maxConsecutiveFailures?: number;
   /** 取消信号：被 kill 时立即停止轮询，不再打 REST */
@@ -378,7 +489,8 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
     endpoint: string,
     err: unknown,
   ): Promise<SidWaitGhPrResult | null> => {
-    // 4xx 是确定性拒绝：PR 号打错、token 对该仓库无读权限、仓库不存在。
+    // 4xx 是确定性拒绝：PR 号打错、token 对该仓库无读权限、仓库不存在，
+    // **以及最常见的「查错了仓库」**（cwd 落在别的仓库时 gh 会把占位符填成那个仓库）。
     // 重试改变不了结果，只会让「PR 不存在」这件事拖到 3 次退避之后（默认 60s+120s）
     // 才报出来——那正是本原语要消灭的「等很久才知道」。立即终态。
     // 5xx / 超时 / DNS 抖动仍然退避重试。
@@ -391,6 +503,21 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
         failedChecks: [],
         headSha: lastHead,
         httpStatus,
+        repo: opts.repo,
+      };
+    }
+    // 确定性失败（解析不出仓库 / `--repo` 非法）：同样改变不了结果。没有这一条时
+    // 它们会被当成网络抖动退避 3 次，用户要等三分钟才看到「请用 --repo」。
+    if (isSidWaitFatalError(err)) {
+      const detail = describeError(err);
+      emit(`REST_FATAL ${endpoint} ${detail}`);
+      return {
+        exitCode: SID_WAIT_EXIT.REST_FAILED,
+        reason: "rest-fatal",
+        failedChecks: [],
+        headSha: lastHead,
+        fatalDetail: detail,
+        repo: opts.repo,
       };
     }
     failures += 1;
@@ -402,6 +529,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
         failedChecks: [],
         headSha: lastHead,
         attempts: failures,
+        repo: opts.repo,
       };
     }
     const backoffMs = Math.min(intervalMs * 2 ** failures, SID_WAIT_MAX_BACKOFF_MS);
@@ -524,16 +652,171 @@ export function formatSidWaitResultSummary(result: SidWaitGhPrResult, pr: number
       return `等待结束：PR #${pr} 有检查失败——${shown}${more}（${shortSha(result.headSha)}）`;
     }
     case "rest-failed":
-      return `等待结束：查询 PR #${pr} 的 gh REST 连续失败 ${
+      return `等待结束：查询${result.repo ? `仓库 ${result.repo} 的 ` : ""}PR #${pr} 的 gh REST 连续失败 ${
         result.attempts ?? SID_WAIT_MAX_CONSECUTIVE_FAILURES
       } 次，无法判断状态`;
-    case "rest-fatal":
-      return `等待结束：查询 PR #${pr} 被 GitHub 拒绝（HTTP ${
+    case "rest-fatal": {
+      // 前置失败（连仓库都没定下来）自带可行动文案，直接原文透出——再包一层只会稀释
+      // 「请用 --repo」这句话。
+      if (result.fatalDetail) return `等待结束：${result.fatalDetail}`;
+      // 第一句必须点出**实际查了哪个仓库**：这个缺陷最贵的形态是「查错仓库」，
+      // 而旧文案只说「PR 号不存在 / 无权限」，把排查方向指反了（PR 号与 token 都正常）。
+      const where = result.repo ? `仓库 ${result.repo} 的 PR #${pr}` : `PR #${pr}`;
+      const repoHint = result.repo
+        ? `。若这不是你要等的仓库，用 \`sid-wait gh-pr ${pr} --repo <owner>/<repo>\` 显式指定`
+        : `。若当前目录不在目标仓库，用 \`--repo <owner>/<repo>\` 显式指定要等哪个仓库`;
+      return `等待结束：查询${where} 被 GitHub 拒绝（HTTP ${
         result.httpStatus ?? "4xx"
-      }）——这不是暂时的网络问题，先确认 PR 号存在、当前 token 对该仓库有读权限`;
+      }）——这不是暂时的网络问题，先确认 PR 号存在、当前 token 对该仓库有读权限${repoHint}`;
+    }
     case "aborted":
       return `等待结束：PR #${pr} 的等待已被停止`;
   }
+}
+
+// ── 仓库解析：查哪个仓库由入口显式决定，不由 cwd 决定 ──
+
+/**
+ * 解析结果的两种形态。
+ *
+ * 失败时 `error` 必须是**可行动文案**：它会被原样写进回执，用户看到的第一句话
+ * 就要能直接照做——所以每条都带 `--repo <owner>/<repo>`，且说清是「目录不存在」
+ * 还是「不是 git 仓库」还是「没有 github remote」，不要笼统地说「解析失败」。
+ */
+export type SidWaitRepoResolution =
+  | { ok: true; repo: string; source: "explicit" | "remote" }
+  | { ok: false; error: string };
+
+/**
+ * github.com 的 remote URL 三种常见形态。
+ *
+ * 为什么按 **host** 筛而不是无条件取 `origin`：本机真实仓库的 `origin` 完全可能是
+ * gitee（docs-research 就是），而 gh 自己的挑选规则对用户是黑盒。只有显式筛
+ * github.com 才可预期——2026-11-17 的 404 正是「gh 按 cwd 挑仓库」挑错了对象。
+ */
+const GITHUB_REMOTE_URLS = [
+  /^https?:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i,
+  /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i,
+  /^ssh:\/\/git@github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i,
+];
+
+/** 从 `git remote -v` 的输出里挑第一条 github.com remote，返回 `<owner>/<repo>` */
+export function parseGithubRemote(remoteVerbose: string): string | null {
+  for (const line of remoteVerbose.split("\n")) {
+    // 每行形如 `origin\tgit@github.com:o/r.git (fetch)`，第二列才是 URL
+    const url = line.trim().split(/\s+/)[1];
+    if (!url) continue;
+    for (const pattern of GITHUB_REMOTE_URLS) {
+      const match = pattern.exec(url);
+      if (match) return `${match[1]}/${match[2]}`;
+    }
+  }
+  return null;
+}
+
+export interface ResolveSidWaitRepoOptions {
+  /** `--repo` 显式值；给出时不再解析任何 remote */
+  repo?: string;
+  /**
+   * 解析起点：**会话启动目录**（`getProjectRoot()`），不是会随 `cd` 漂移的 `getCwd()`。
+   *
+   * 这个区别是整个修复的关键：`sid-wait` 这条命令自带的 `cd <dir> &&` 前缀只被剥掉
+   * 用于匹配、不会执行，所以「先 cd 再 sid-wait」才是改解析起点的唯一方式；而会话
+   * 此前真实执行过的 `cd` 恰恰会把 `getCwd()` 带到别的仓库里去。
+   */
+  baseDir?: string;
+  /** 测试注入：执行 git 命令。默认 `spawnSync("git", args)` */
+  runGit?: (args: string[]) => { stdout: string; status: number | null; error?: Error };
+}
+
+function defaultRunGit(args: string[]): { stdout: string; status: number | null; error?: Error } {
+  const result = spawnSync("git", args, { encoding: "utf8", timeout: 10_000 });
+  return { stdout: result.stdout ?? "", status: result.status, error: result.error };
+}
+
+/**
+ * 决定「查哪个仓库」：`--repo` > 按 host 筛 baseDir 的 github remote > 可行动错误。
+ *
+ * **绝不回退到会话 cwd**：`getCwd()` 是本缺陷的根因（在 docs-research 目录下等
+ * sid-code 的 PR，gh 把占位符解析成 docs-research → 真 404，而 PR 号与 token 都正常）。
+ */
+export function resolveSidWaitRepo(options: ResolveSidWaitRepoOptions = {}): SidWaitRepoResolution {
+  const explicit = options.repo?.trim();
+  if (explicit) {
+    if (!SID_WAIT_REPO_SLUG.test(explicit)) {
+      return {
+        ok: false,
+        error: `\`--repo ${explicit}\` 不是 <owner>/<repo> 形态。请用 \`--repo <owner>/<repo>\` 指定要等哪个仓库的 PR。`,
+      };
+    }
+    return { ok: true, repo: explicit, source: "explicit" };
+  }
+
+  const baseDir = options.baseDir ?? process.cwd();
+  // 目录不存在要让 git 之外先判掉：否则 `git -C` 的报错是「cannot change to ...」，
+  // 读起来像 git 坏了，而真相是路径写错了（旧实现的第三种误导形态是 spawn ENOENT）。
+  if (!existsSync(baseDir)) {
+    return {
+      ok: false,
+      error: `无法确定要查询哪个仓库：目录 \`${baseDir}\` 不存在。请用 \`--repo <owner>/<repo>\` 显式指定。`,
+    };
+  }
+
+  const runGit = options.runGit ?? defaultRunGit;
+  const result = runGit(["-C", baseDir, "remote", "-v"]);
+  if (result.error) {
+    return {
+      ok: false,
+      error: `无法确定要查询哪个仓库：执行 git 失败（${result.error.message}）。请用 \`--repo <owner>/<repo>\` 显式指定。`,
+    };
+  }
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: `无法确定要查询哪个仓库：目录 \`${baseDir}\` 不是 git 仓库。请用 \`--repo <owner>/<repo>\` 显式指定。`,
+    };
+  }
+
+  const repo = parseGithubRemote(result.stdout);
+  if (repo === null) {
+    const remotes = [
+      ...new Set(
+        result.stdout
+          .split("\n")
+          .map((line) => line.trim().split(/\s+/)[0])
+          .filter((name): name is string => Boolean(name)),
+      ),
+    ];
+    const remoteNote =
+      remotes.length > 0 ? `现有 remote：${remotes.join("、")}` : "该仓库没有任何 remote";
+    return {
+      ok: false,
+      error:
+        `无法确定要查询哪个仓库：目录 \`${baseDir}\` 的 remote 里没有 github.com 仓库` +
+        `（${remoteNote}）。请用 \`--repo <owner>/<repo>\` 显式指定。`,
+    };
+  }
+  return { ok: true, repo, source: "remote" };
+}
+
+/**
+ * 确定性失败（解析不出仓库、`--repo` 非法……）：重试改变不了结果，`runSidWaitGhPr`
+ * 见到它立刻终态，**不进 2^n 退避**。
+ *
+ * 没有这一条时，这类失败会被当成网络抖动连续重试 3 次（默认 60s + 120s），用户要等
+ * 三分钟才看到「请用 --repo」——正好退化成这个原语要消灭的「等很久才知道」。
+ */
+export class SidWaitFatalError extends Error {
+  readonly fatal = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SidWaitFatalError";
+  }
+}
+
+function isSidWaitFatalError(err: unknown): err is SidWaitFatalError {
+  return typeof err === "object" && err !== null && (err as { fatal?: unknown }).fatal === true;
 }
 
 // ── gh CLI 实现（生产用）──
@@ -541,7 +824,19 @@ export function formatSidWaitResultSummary(result: SidWaitGhPrResult, pr: number
 export interface GhCliRestClientOptions {
   /** gh 可执行文件；默认 `gh`（测试可指向假的） */
   ghBin?: string;
-  /** `gh api` 的工作目录：决定 `{owner}/{repo}` 占位符解析到哪个仓库 */
+  /**
+   * 显式仓库 `<owner>/<repo>`。**生产入口一律给出**（来自 `--repo` 或
+   * `resolveSidWaitRepo` 的结果）；给出后 endpoint 是完整路径，
+   * `{owner}/{repo}` 占位符完全不再使用。
+   */
+  repo?: string;
+  /**
+   * 未给 `repo` 时的解析起点，同时兼作 `gh` 子进程的 cwd。
+   *
+   * **传会话启动目录（`getProjectRoot()`），不要传会话 cwd（`getCwd()`）**——
+   * 后者会随 `cd` 漂移，正是 2026-11-17「在 docs-research 目录下等 sid-code 的 PR
+   * 却报 404」的根因。
+   */
   cwd?: string;
   /** 单次 gh 调用超时；默认 20s。gh 挂住时轮询不能跟着挂 */
   timeoutMs?: number;
@@ -582,13 +877,21 @@ function toCheckRunsSnapshot(raw: unknown): GhCheckRunsSnapshot {
 /**
  * 生产实现：`gh api` 打 REST。
  *
- * 用 `{owner}/{repo}` 占位符而不是自己解析 remote：gh 会按 cwd 的仓库自动填，
- * fork / worktree / 多 remote 的语义与模型手敲 `gh` 完全一致，不必在这里重造一套。
+ * **endpoint 用完整路径 `repos/<owner>/<repo>/...`，不用 `{owner}/{repo}` 占位符。**
+ * 占位符由 gh 按 cwd 的 git 仓库解析，而 cwd 会随会话里任何一次 `cd` 漂移 —— 2026-11-17
+ * 的缺陷就是这么发生的：在 docs-research 目录下等 sid-code 的 PR，gh 把占位符填成
+ * docs-research，拿正确的 PR 号换回一个真 404。仓库改为在**发起请求之前**由
+ * `resolveSidWaitRepo` 定死，解析不出就立刻失败，绝不猜。
+ *
  * `filter=latest` 让同一 commit 上重跑的检查只返回最新一次，避免旧 run 的 failure 冒充当前状态。
  */
 export function createGhCliRestClient(options: GhCliRestClientOptions = {}): GhRestClient {
   const bin = options.ghBin ?? "gh";
   const timeoutMs = options.timeoutMs ?? 20_000;
+
+  // 前置解析：解析不出就在**发起任何请求之前**失败，而不是拿 cwd 的仓库去换一个 404。
+  // 这一步也保证「不存在的目录」不会以 spawn ENOENT 的形式冒出来（那种报错看不出真相）。
+  const resolution = resolveSidWaitRepo({ repo: options.repo, baseDir: options.cwd });
 
   const runApi = (endpoint: string): Promise<unknown> =>
     new Promise((resolve, reject) => {
@@ -635,14 +938,20 @@ export function createGhCliRestClient(options: GhCliRestClientOptions = {}): GhR
       });
     });
 
+  /** 解析失败时两个方法都走这里：抛确定性错误，`runSidWaitGhPr` 会立刻终态而不是退避重试 */
+  const requireRepo = (): string => {
+    if (!resolution.ok) throw new SidWaitFatalError(resolution.error);
+    return resolution.repo;
+  };
+
   return {
     async getPull(pr: number): Promise<GhPullSnapshot> {
-      return toPullSnapshot(await runApi(`repos/{owner}/{repo}/pulls/${pr}`), pr);
+      return toPullSnapshot(await runApi(`repos/${requireRepo()}/pulls/${pr}`), pr);
     },
     async getCheckRuns(_pr: number, sha: string): Promise<GhCheckRunsSnapshot> {
       const ref = encodeURIComponent(sha);
       return toCheckRunsSnapshot(
-        await runApi(`repos/{owner}/{repo}/commits/${ref}/check-runs?per_page=100&filter=latest`),
+        await runApi(`repos/${requireRepo()}/commits/${ref}/check-runs?per_page=100&filter=latest`),
       );
     },
   };

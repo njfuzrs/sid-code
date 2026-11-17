@@ -182,6 +182,10 @@ export {
   type GhCheckRun,
   type GhCheckRunsSnapshot,
   type GhCliRestClientOptions,
+  // R11：查哪个仓库由入口显式决定（`--repo` > 会话启动目录的 github remote），
+  // 不由会随 `cd` 漂移的会话 cwd 决定。
+  type SidWaitRepoResolution,
+  type ResolveSidWaitRepoOptions,
   SID_WAIT_EXIT,
   DEFAULT_SID_WAIT_INTERVAL_MS,
   DEFAULT_SID_WAIT_DEADLINE_S,
@@ -202,6 +206,10 @@ export {
   createGhCliRestClient,
   createSidWaitClient,
   setSidWaitClientFactoryForTest,
+  // R11：仓库解析与确定性失败类型。入口在 spawn 之前调它，解析不出直接给可行动回执。
+  resolveSidWaitRepo,
+  parseGithubRemote,
+  SidWaitFatalError,
 } from "./sid-wait.ts";
 
 // R8：`wait_until_seconds` 期限到的统一收口（读输出尾部 → kill → 记事实）。

@@ -24,7 +24,9 @@ import {
   __resetManualLoopHintForTest,
   type GhRestClient,
   type GhPullSnapshot,
+  type GhCliRestClientOptions,
 } from "../../src/task/sid-wait.ts";
+import { getProjectRoot } from "../../src/bootstrap/state.ts";
 import { __resetWaitRegistryForTest, listWaits } from "../../src/task/wait-registry.ts";
 import { clearAllTasks, getAllTasks, getTask } from "../../src/task/registry.ts";
 import { __resetBackgroundAwaitForTest } from "../../src/task/background-await.ts";
@@ -40,6 +42,8 @@ let tmpHome = "";
 let pullCursor = 0;
 let pullQueue: GhPullSnapshot[] = [];
 let checkCalls = 0;
+/** 入口最后一次交给 client 工厂的选项（R11：仓库与解析基线就从这里断言） */
+let lastClientOptions: GhCliRestClientOptions | null = null;
 
 function openPull(): GhPullSnapshot {
   return { state: "open", merged: false, headSha: HEAD, mergeableState: "blocked" };
@@ -54,17 +58,21 @@ function installClient(pulls: GhPullSnapshot[]): void {
   pullQueue = pulls;
   pullCursor = 0;
   checkCalls = 0;
-  setSidWaitClientFactoryForTest((): GhRestClient => ({
-    async getPull() {
-      const item = pullQueue[Math.min(pullCursor, pullQueue.length - 1)]!;
-      pullCursor += 1;
-      return item;
-    },
-    async getCheckRuns() {
-      checkCalls += 1;
-      return { checkRuns: [] };
-    },
-  }));
+  lastClientOptions = null;
+  setSidWaitClientFactoryForTest((options: GhCliRestClientOptions): GhRestClient => {
+    lastClientOptions = options;
+    return {
+      async getPull() {
+        const item = pullQueue[Math.min(pullCursor, pullQueue.length - 1)]!;
+        pullCursor += 1;
+        return item;
+      },
+      async getCheckRuns() {
+        checkCalls += 1;
+        return { checkRuns: [] };
+      },
+    };
+  });
 }
 
 /** 让内置任务的微任务跑完（第一次查询是同步链，不需要真的等 30s） */
@@ -384,5 +392,45 @@ describe("A2 `sid-wait` 近似形态：入口在 spawn 之前拒绝", () => {
     expect(result.isError).toBeFalsy();
     expect(result.output).toContain("sid-wait gh-pr 779");
     expect(getAllTasks()).toHaveLength(0);
+  });
+});
+
+/**
+ * R11（2026-11-17 缺陷的入口侧回归）：**仓库与解析基线都必须在 spawn 之前由入口定下来**。
+ *
+ * 缺陷现场是「会话 cwd 漂到 docs-research 之后等 sid-code 的 PR → 真 404」。修复的两半：
+ * ① `--repo` 从命令透传到 client；② 解析基线用 `getProjectRoot()`（会话启动目录，不漂）
+ * 而不是 `getCwd()`（会随任何一次 `cd` 漂移）。
+ * 这两条只能在这一层断言 —— 单测能覆盖解析函数本身，但覆盖不到「入口到底传了什么」。
+ */
+describe("R11 入口：仓库与解析基线在 spawn 之前定下来", () => {
+  test("bash 入口把 --repo 与 getProjectRoot() 传给 client", async () => {
+    installClient([openPull()]);
+    const tool = new BashTool();
+    const result = await tool.execute({
+      command: "sid-wait gh-pr 779 --repo njfuzrs/sid-code",
+      run_in_background: true,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(lastClientOptions?.repo).toBe("njfuzrs/sid-code");
+    // 基线必须是会话启动目录：传 getCwd() 就等于把缺陷原样放回去
+    expect(lastClientOptions?.cwd).toBe(getProjectRoot());
+    const parsed = JSON.parse(result.output) as { task_id: string };
+    killShellTask(parsed.task_id);
+  });
+
+  test("monitor 入口同样透传 --repo 与 getProjectRoot()", async () => {
+    installClient([openPull()]);
+    const tool = new MonitorTool();
+    const result = await tool.call({
+      description: "PR #779 CI",
+      command: "sid-wait gh-pr 779 --repo njfuzrs/sid-code",
+      timeout_ms: 60_000,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(lastClientOptions?.repo).toBe("njfuzrs/sid-code");
+    expect(lastClientOptions?.cwd).toBe(getProjectRoot());
+    const task = getAllTasks()[0] as LocalMonitorTaskState | undefined;
+    if (task) killMonitorTask(task.id);
   });
 });

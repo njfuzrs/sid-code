@@ -503,6 +503,9 @@ describe("A2 detectSidWaitMisuse（`sid-wait` 近似形态）", () => {
     expect(detectSidWaitMisuse("sid-wait gh-pr")).toEqual({
       body: "sid-wait gh-pr",
       suggestedPr: null,
+      // R11 给 SidWaitMisuse 加了 suggestedRepo（回执要保留用户已写对的 --repo），
+      // 这条完整对象的期望同步补上该字段——契约变更的必然后果，不是为凑绿改预期。
+      suggestedRepo: null,
     });
     expect(detectSidWaitMisuse("sid-wait gh-pr abc")?.suggestedPr).toBeNull();
     expect(detectSidWaitMisuse("sid-wait gh-pr 0")?.suggestedPr).toBeNull();
