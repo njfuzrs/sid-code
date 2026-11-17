@@ -214,6 +214,10 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     emitTraceEvent("waiting", false, {
       wait_ids: waitSuspend.waitIds,
       wait_pass_count: waitSuspend.count,
+      // C2（2026-11-17）：纯通知场景下 `wait_ids` 是空数组，单看它分不清
+      // 「在等通知」与「字段缺失（旧轨迹 / 调用方没传 facts）」。加一个判别字段，
+      // 离线统计「等待挂起里有多少是纯通知」才有唯一口径。
+      ...(waitSuspend.notificationOnly ? { wait_kind: "notification" } : {}),
     });
     return {
       result: {
@@ -226,6 +230,21 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
       injectMessages,
       systemMessages,
     };
+  }
+
+  // 3.6 等待放行到顶（C1，2026-11-17）
+  //
+  // 到顶这一轮**既没放行、也不会发 `waiting`**，于是 trace 里能看到的最后一件事是
+  // 「连续第 3 次放行」，下一件事直接是评估结论 —— 「goal 为什么突然开始评估了」
+  // 在轨迹里没有答案。补一条与 `waiting` 同字段口径的决策事件，离线才能对上账。
+  //
+  // 不 return：到顶的语义就是「落回评估器」，后面照常走。
+  if (waitSuspend.exhausted) {
+    emitTraceEvent("waiting_exhausted", false, {
+      wait_ids: waitSuspend.waitIds,
+      wait_pass_count: waitSuspend.count,
+      ...(waitSuspend.notificationOnly ? { wait_kind: "notification" } : {}),
+    });
   }
 
   // 4. 调用评估者（模型由 resolveGoalEvaluatorModel 解析，未配置时就是主模型）

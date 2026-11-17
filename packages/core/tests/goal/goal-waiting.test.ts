@@ -200,3 +200,45 @@ describe("decideWaitSuspend · 连续放行上限", () => {
     expect(again.count).toBe(1);
   });
 });
+
+// ─── trace 口径（C1 / C2，2026-11-17） ───
+
+describe("decideWaitSuspend · trace 需要的两个判别位", () => {
+  test("放行且是显式等待 → exhausted=false, notificationOnly=false", () => {
+    const goal = createGoal("完成迁移工作");
+    const d = step(goal, [waitSource({ id: "mon_1" })]);
+    expect(d.release).toBe(true);
+    expect(d.exhausted).toBe(false);
+    expect(d.notificationOnly).toBe(false);
+  });
+
+  test("放行且只有待投递通知 → notificationOnly=true（`wait_ids` 为空时的唯一判别）", () => {
+    const goal = createGoal("完成迁移工作");
+    const d = step(goal, [], true);
+    expect(d.waitIds).toEqual([]);
+    expect(d.notificationOnly).toBe(true);
+  });
+
+  test("到顶 → exhausted=true（否则这一轮在 trace 里完全不存在）", () => {
+    const goal = createGoal("完成迁移工作");
+    const waits = [waitSource({ id: "mon_1" })];
+    for (let i = 0; i < MAX_CONSECUTIVE_WAIT_PASSES; i++) step(goal, waits);
+
+    const over = step(goal, waits);
+    expect(over.release).toBe(false);
+    expect(over.exhausted).toBe(true);
+    // 到顶事件也要能对上是「在等谁」，所以 waitIds / count 必须带出来。
+    expect(over.waitIds).toEqual(["mon_1"]);
+    expect(over.count).toBe(MAX_CONSECUTIVE_WAIT_PASSES);
+  });
+
+  test("无等待（含调用方没给事实）→ 两个判别位都是 false，不会被误记成到顶", () => {
+    const goal = createGoal("完成迁移工作");
+    expect(decideWaitSuspend(goal, undefined).exhausted).toBe(false);
+    expect(decideWaitSuspend(goal, undefined).notificationOnly).toBe(false);
+
+    const released = step(goal, []);
+    expect(released.exhausted).toBe(false);
+    expect(released.notificationOnly).toBe(false);
+  });
+});

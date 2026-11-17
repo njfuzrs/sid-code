@@ -106,6 +106,19 @@ export interface WaitSuspendDecision {
   count: number;
   /** 要写回 `goal.waitPass` 的值；`undefined` = 清零 */
   nextWaitPass?: GoalWaitPass;
+  /**
+   * 连续放行已到顶（C1，2026-11-17）：等待仍然活跃，但次数用尽，本次已落回评估器。
+   *
+   * 为什么要单独给一个字段：到顶此前与「无等待」共用 `release: false`，调用方无从区分，
+   * 于是 `waiting` 事件只在放行时发射 —— 恰好是到顶这一轮没有任何 trace 可查，
+   * 离线对账时看到的是「goal 在等，然后突然开始评估」，中间那一步缺失。
+   */
+  exhausted: boolean;
+  /**
+   * 本次「在等」的只是待投递通知、没有显式外部等待（C2）：trace 用
+   * `wait_kind: "notification"` 区分，否则 `wait_ids` 为空的事件与字段缺失无法对账。
+   */
+  notificationOnly: boolean;
 }
 
 /**
@@ -120,9 +133,21 @@ export function decideWaitSuspend(
 ): WaitSuspendDecision {
   const waitIds = facts ? [...facts.waitIds].sort() : [];
   const active = !!facts && (facts.hasDeclaredExternalWait || facts.hasPendingNotifications);
+  // 「只是在等通知」：有在等的东西，但没有任何显式外部等待。与 `waitIds.length === 0`
+  // 等价，但从 `facts` 直接读更贴近定义（`waitIds` 是排序后的投影）。
+  // 显式写 `!!facts` 而不是复用 `active`：后者不构成类型窄化，`facts` 在这里仍是可选的。
+  const notificationOnly =
+    !!facts && facts.hasPendingNotifications && !facts.hasDeclaredExternalWait;
   if (!active) {
     // 等待源全部释放（或调用方没给事实）：清零，下一次挂新等待重新给满次数。
-    return { release: false, waitIds: [], count: 0, nextWaitPass: undefined };
+    return {
+      release: false,
+      waitIds: [],
+      count: 0,
+      nextWaitPass: undefined,
+      exhausted: false,
+      notificationOnly: false,
+    };
   }
 
   // 换组即从 0 起算：key 由**排序去重后**的等待类型集合拼成，等待源的枚举顺序与
@@ -137,7 +162,17 @@ export function decideWaitSuspend(
   if (count >= MAX_CONSECUTIVE_WAIT_PASSES) {
     // 到顶：不再放行，落回评估器。计数保持不动——之后每次 end_turn 都会评估，
     // 直到等待源释放（清零）或换组。这样「挂个等待就永远不评估」这条旁路不成立。
-    return { release: false, waitIds, count, nextWaitPass: prev };
+    //
+    // `exhausted: true` 不是给判定用的，是给 trace 用的（C1）：这一轮既没放行、
+    // 也就不会发 `waiting`，不补一条事件就只能看到「等待中」突然变成「评估中」。
+    return {
+      release: false,
+      waitIds,
+      count,
+      nextWaitPass: prev,
+      exhausted: true,
+      notificationOnly,
+    };
   }
 
   const nextCount = count + 1;
@@ -146,5 +181,7 @@ export function decideWaitSuspend(
     waitIds,
     count: nextCount,
     nextWaitPass: { key, count: nextCount },
+    exhausted: false,
+    notificationOnly,
   };
 }

@@ -642,4 +642,63 @@ describe("handleGoalGate · G2 等待挂起", () => {
     expect(ctx.goal.waitPass).toEqual({ key: "monitor", count: 1 });
     expect(calls()).toBe(0);
   });
+
+  test("C1 到顶那一轮补一条 waiting_exhausted 事件（否则该轮在 trace 里不存在）", async () => {
+    // 2026-11-17：到顶此前与「无等待」共用 release=false，调用方无从区分，
+    // 于是 `waiting` 只在放行时发射 —— 恰好是到顶这一轮没有任何 trace 可查。
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { ctx, calls } = makeWaitingCtx({ waiting: MONITOR_WAIT });
+    ctx.traceAppendEvent = (e: { event: string; data?: Record<string, unknown> }) => events.push(e);
+    ctx.sessionId = "sess-c1";
+
+    for (let i = 0; i < MAX_CONSECUTIVE_WAIT_PASSES; i++) await handleGoalGate(ctx);
+    // 只看第 4 轮：前面三轮各有一条 `waiting`，混在一起会让「补了事件」这个断言失真
+    // （哪怕到顶轮什么都没发，`events.find` 也能在前面找到 `waiting`）。
+    events.length = 0;
+
+    const over = await handleGoalGate(ctx);
+
+    const exhausted = events.find((e) => e.data?.reason === "waiting_exhausted");
+    expect(exhausted).toBeDefined();
+    // 字段口径与 `waiting` 一致，离线才能按同一组字段对账。
+    expect(exhausted!.data!.wait_ids).toEqual(["mon_ci"]);
+    expect(exhausted!.data!.wait_pass_count).toBe(MAX_CONSECUTIVE_WAIT_PASSES);
+    // 到顶的语义是「落回评估器」：评估必须真的被调用，事件只是记账。
+    expect(over.result.waiting).toBeUndefined();
+    expect(calls()).toBe(1);
+  });
+
+  test("C2 纯通知放行 → waiting 事件带 wait_kind=notification", async () => {
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { ctx } = makeWaitingCtx({
+      waiting: {
+        hasDeclaredExternalWait: false,
+        hasPendingNotifications: true,
+        waitIds: [],
+        waitKinds: [],
+      },
+    });
+    ctx.traceAppendEvent = (e: { event: string; data?: Record<string, unknown> }) => events.push(e);
+    ctx.sessionId = "sess-c2";
+
+    await handleGoalGate(ctx);
+
+    const waiting = events.find((e) => e.data?.reason === "waiting");
+    expect(waiting).toBeDefined();
+    expect(waiting!.data!.wait_ids).toEqual([]);
+    // 空 `wait_ids` 本身分不清「在等通知」与「字段缺失」，必须有判别字段。
+    expect(waiting!.data!.wait_kind).toBe("notification");
+  });
+
+  test("C2 显式等待放行 → 不写 wait_kind（有 wait_ids 就够判别，不制造冗余字段）", async () => {
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { ctx } = makeWaitingCtx({ waiting: MONITOR_WAIT });
+    ctx.traceAppendEvent = (e: { event: string; data?: Record<string, unknown> }) => events.push(e);
+    ctx.sessionId = "sess-c2b";
+
+    await handleGoalGate(ctx);
+
+    const waiting = events.find((e) => e.data?.reason === "waiting");
+    expect(waiting!.data!.wait_kind).toBeUndefined();
+  });
 });
