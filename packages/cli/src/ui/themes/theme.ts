@@ -216,10 +216,6 @@ export class Theme {
           diff: {
             added: this.colors.DiffAdded,
             removed: this.colors.DiffRemoved,
-            // 词级 diff 强调底色：在整行底色基础上向对应 accent 色加深，
-            // 无独立配色时由插值派生，保证任意主题都有可用的强调色。
-            addedEmphasis: interpolateColor(this.colors.DiffAdded, this.colors.AccentGreen, 0.35),
-            removedEmphasis: interpolateColor(this.colors.DiffRemoved, this.colors.AccentRed, 0.35),
           },
         },
         border: {

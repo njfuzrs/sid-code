@@ -46,7 +46,7 @@ describe("planDiffWithContextCollapse 上下文折叠", () => {
     expect(collapsed[0].hiddenCount).toBe(14);
   });
 
-  test("origIndex 保留原始下标(供 pairMap 查询)", () => {
+  test("origIndex 保留原始下标(供回查源行)", () => {
     const lines: L[] = [
       { type: "del", content: "-d" }, // index 0
       { type: "add", content: "+a" }, // index 1

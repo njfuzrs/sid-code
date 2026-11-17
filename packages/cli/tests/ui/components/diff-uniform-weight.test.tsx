@@ -1,13 +1,14 @@
 /**
- * 回归：diff 区域字重全区域统一——任何一段都不加粗。
+ * 回归：diff 区域视觉统一——任何一段都不加粗，且整行只有一种底色。
  *
- * 旧实现给「词级变化词」和行首 `+`/`-` 符号都加了 bold（`\x1b[1m`）。两个观感问题：
- * 1. CJK 没有词边界，`diffWordsWithSpace` 退化成按字切分 → 一行中文里散落个别加粗单字；
- *    中文字体普遍没有真 bold，终端用合成粗体顶替，笔画加宽、字形变糊，像「字号变了」。
- * 2. 配对行走 renderWordDiff、未配对行走 colorizeLine。两行内容差异越大，被判成变化
- *    的段越多 → 同一块 diff 里「这一行整行加粗、紧邻的行不加粗」，粗细参差。
+ * 两个观感问题同源，都是「用词级强调去区分变化词」造成的：
+ * 1. 旧实现给变化词和行首 `+`/`-` 都加了 bold（`\x1b[1m`）：CJK 没有词边界，
+ *    `diffWordsWithSpace` 退化成按字切分 → 一行中文里散落个别加粗单字；中文字体
+ *    普遍没有真 bold，终端用合成粗体顶替，笔画加宽、字形变糊，像「字号变了」。
+ * 2. 去掉 bold 后仍留着 emphasis 底色 → 一行中文里散落个别碎片被换成更深的底色，
+ *    观感就是「同一块 diff 有的字深、有的字浅，像背景叠了两层」。
  *
- * 现在强调只靠「emphasis 底色 + 状态色 + 行首 +/- 符号」，bold 全部去掉。
+ * 现在整行单一底色 + 单一状态前景色，词级强调连同 emphasis 底色一起去掉。
  * 本用例走 React 路径（小 diff）锁住回归；RawAnsi 快路径（>80 行）的同款断言在
  * `tests/ui/diff-ansi-lines.test.ts`。
  */
@@ -32,7 +33,12 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-describe("diff 区域字重统一（任何一段都不加粗）", () => {
+/** 一行里出现过的所有背景色转义(去重)。一行只允许一种底色。 */
+function bgKinds(line: string): Set<string> {
+  return new Set(line.match(/\x1b\[48[;0-9]*m/g) ?? []);
+}
+
+describe("diff 区域视觉统一（不加粗、一行一种底色）", () => {
   // del 是代码、add 是中文注释:词级 diff 会把几乎整行判成变化,旧实现下这一行整行加粗
   const pairedDiff = [
     "@@ -1,2 +1,2 @@",
@@ -50,21 +56,25 @@ describe("diff 区域字重统一（任何一段都不加粗）", () => {
     expect(frame).not.toContain("\x1b[1m");
   });
 
-  test("变化词仍靠 emphasis 底色区分（去 bold 不等于去掉强调）", () => {
+  test("整行只有一种底色（不做词级强调）", () => {
     const { lastFrame } = render(
       <DiffRenderer diffContent={pairedDiff} filename="a.ts" terminalWidth={100} />,
       { columns: 100 },
     );
     const frame = lastFrame() ?? "";
-    // 行级底色 + 词级 emphasis 底色都还在(背景色转义存在)
-    expect(frame).toMatch(/\x1b\[48[;0-9]*m/);
+    // 旧实现里变化词会再叠一层 emphasis 底色,同一行出现两种背景色 → 观感「有的字深、
+    // 有的字浅」。上下文行没有底色,所以判据是「至多一种」而不是「恰好一种」。
+    for (const line of frame.split("\n")) {
+      if (line.trim().length === 0) continue;
+      expect(bgKinds(line).size).toBeLessThanOrEqual(1);
+    }
     // 可见文本未被破坏
     const plain = stripAnsi(frame);
     expect(plain).toContain("const wireEffort = thinkingWire.dropEffort ? undefined;");
     expect(plain).toContain("「关思考落到最低档」");
   });
 
-  test("纯中文配对行:不再出现「个别汉字被加粗」", () => {
+  test("纯中文配对行:不再出现「个别汉字被加粗」,底色也只有一种", () => {
     const diff = [
       "@@ -10,1 +10,1 @@",
       "-const 定义 = 一个中文标识符;",
@@ -76,6 +86,11 @@ describe("diff 区域字重统一（任何一段都不加粗）", () => {
         columns: 80,
       },
     );
-    expect(lastFrame() ?? "").not.toContain("\x1b[1m");
+    const frame = lastFrame() ?? "";
+    expect(frame).not.toContain("\x1b[1m");
+    for (const line of frame.split("\n")) {
+      if (line.trim().length === 0) continue;
+      expect(bgKinds(line).size).toBeLessThanOrEqual(1);
+    }
   });
 });

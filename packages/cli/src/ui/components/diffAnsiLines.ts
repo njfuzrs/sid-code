@@ -8,16 +8,16 @@
  * 视觉与 React 路径保持一致:
  * - 右对齐行号槽(宽度 = 最大行号位数 + 1)
  * - 行首 +/- 符号着色(颜色 + 字形两个通道,不靠加粗)
- * - add/del 整行底色;词级强调段只用 emphasis 底色
- * - context 行无底色
+ * - add/del 整行单一底色 + 整行单一状态前景色;context 行无底色
  * - 折叠占位行「… N 行未变更上下文已折叠」
  *
- * **字重全区域统一,任何一段都不加粗**:理由见 DiffRenderer.renderWordDiff 的注释
- * (CJK 词级切分 + 合成粗体 + 配对/非配对两套管线共同导致的粗细参差)。
+ * **一行只有一种底色、一种文字色**:既不加粗,也不做词级强调(曾经有 emphasis 底色,
+ * 2026-11-17 去掉——它在中文行里按字切分,同一行出现两块深浅不同的底色,
+ * 观感像「背景叠了两层」)。判据与论证见
+ * `.agents/notes/implemented/bug-fix/2026-11-17-diff-single-background.md`。
  * 纯函数(不依赖 React),便于单测。颜色经引擎 colorize/applyTextStyles 生成 ANSI。
  */
 
-import { diffWordsWithSpace } from "diff";
 import { applyColor, colorize, applyTextStyles } from "../render-port/text.ts";
 import { stringWidth } from "../render-port/text.ts";
 import { ELLIPSIS } from "../constants/collapse.ts";
@@ -28,18 +28,14 @@ import type { DiffLine, DiffRenderPlanItem } from "./DiffRenderer.js";
 export interface DiffAnsiColors {
   /** 行号/次要文本色 */
   secondary: Color;
-  /** 新增前景(+/词级) */
+  /** 新增前景(整行文字 + `+` 符号) */
   addFg: Color;
-  /** 删除前景(-/词级) */
+  /** 删除前景(整行文字 + `-` 符号) */
   delFg: Color;
-  /** 新增整行底色 */
+  /** 新增整行底色(全行唯一底色) */
   addBg: Color;
-  /** 删除整行底色 */
+  /** 删除整行底色(全行唯一底色) */
   delBg: Color;
-  /** 新增词级强调底色 */
-  addEmphasisBg: Color;
-  /** 删除词级强调底色 */
-  delEmphasisBg: Color;
 }
 
 /** 右对齐补足到指定宽度(按显示宽度计) */
@@ -50,12 +46,15 @@ function padStart(s: string, width: number): string {
 }
 
 /**
- * 渲染一行的「内容段」(不含行号槽),返回 { ansi, plainWidth }。
- * which 为 add/del 时做词级强调;context / 无对侧时整段同色。
+ * 渲染一行的「内容段」(不含行号槽),返回 { ansi, plain }。
+ *
+ * add/del 行整段用同一状态前景色;context 行原样(无底色、无附加前景)。
+ * **不做词级强调**:它曾经用 emphasis 底色,而 `diffWordsWithSpace` 对 CJK 没有词边界、
+ * 退化成按字切分,于是一行中文里散落个别碎片段被换成更深的底色——观感就是
+ * 「同一块 diff 有的字深、有的字浅,像背景叠了两层」。
  */
 function renderContentSegment(
   displayContent: string,
-  pairContent: string | undefined,
   which: "del" | "add" | "context",
   colors: DiffAnsiColors,
 ): { ansi: string; plain: string } {
@@ -63,32 +62,7 @@ function renderContentSegment(
     return { ansi: displayContent, plain: displayContent };
   }
   const fg = which === "del" ? colors.delFg : colors.addFg;
-  const emphBg = which === "del" ? colors.delEmphasisBg : colors.addEmphasisBg;
-
-  if (pairContent === undefined) {
-    // 无对侧配对:整行同前景色(不强调)
-    return { ansi: applyColor(displayContent, fg), plain: displayContent };
-  }
-
-  // 词级 diff:del 行强调被删词,add 行强调新增词
-  const oldContent = which === "del" ? displayContent : pairContent;
-  const newContent = which === "del" ? pairContent : displayContent;
-  const parts = diffWordsWithSpace(oldContent, newContent);
-  let ansi = "";
-  let plain = "";
-  for (const part of parts) {
-    if (which === "del" && part.added) continue;
-    if (which === "add" && part.removed) continue;
-    const changed = which === "del" ? part.removed : part.added;
-    if (changed) {
-      // emphasis 底色 + 前景色。**不加粗**:字重全区域统一,理由见 DiffRenderer.renderWordDiff
-      ansi += colorize(applyColor(part.value, fg), emphBg, "background");
-    } else {
-      ansi += applyColor(part.value, fg);
-    }
-    plain += part.value;
-  }
-  return { ansi, plain };
+  return { ansi: applyColor(displayContent, fg), plain: displayContent };
 }
 
 export interface BuildDiffAnsiLinesOptions {
@@ -96,8 +70,6 @@ export interface BuildDiffAnsiLinesOptions {
   plan: DiffRenderPlanItem[];
   /** 原始可显示行(供查 oldLine/newLine 行号) */
   displayableLines: DiffLine[];
-  /** 词级配对:index → 对侧裁剪后内容 */
-  pairMap: Map<number, string>;
   /** 公共前导缩进裁剪量 */
   baseIndentation: number;
   /** 行号槽内容宽度(最大行号位数) */
@@ -111,8 +83,7 @@ export interface BuildDiffAnsiLinesOptions {
  * 把折叠计划渲染为 ANSI 字符串行数组。每个元素恰好一终端行,已含全部 ANSI 转义。
  */
 export function buildDiffAnsiLines(opts: BuildDiffAnsiLinesOptions): string[] {
-  const { plan, displayableLines, pairMap, baseIndentation, gutterWidth, terminalWidth, colors } =
-    opts;
+  const { plan, displayableLines, baseIndentation, gutterWidth, terminalWidth, colors } = opts;
   // 行号槽 = gutterWidth + 1 个右侧空格(与 React 路径 width={gutterWidth+1}+paddingRight 对齐)
   const gutterCols = gutterWidth + 1;
   const out: string[] = [];
@@ -156,7 +127,7 @@ export function buildDiffAnsiLines(opts: BuildDiffAnsiLinesOptions): string[] {
     }
 
     const displayContent = srcLine.content.substring(baseIndentation);
-    const seg = renderContentSegment(displayContent, pairMap.get(index), which, colors);
+    const seg = renderContentSegment(displayContent, which, colors);
 
     // 行号槽:右对齐数字 + 1 空格,次要色
     const gutter = applyColor(padStart(gutterNumStr, gutterWidth) + " ", colors.secondary);
@@ -174,7 +145,7 @@ export function buildDiffAnsiLines(opts: BuildDiffAnsiLinesOptions): string[] {
     const fillW = Math.max(0, terminalWidth - usedW);
 
     // 整行(含行号槽)拼装;add/del 行对整体上底色,与 React 路径(gutter Box + 内容 Text 同色底)一致。
-    // chalk 背景包裹会在内层词级强调底色的 close 序列处自动重开外层底色,嵌套安全。
+    // 全行只有这一层底色:内容段内部不再有第二层背景(词级强调已于 2026-11-17 去掉)。
     let line = gutter + prefixAnsi + seg.ansi + " ".repeat(fillW);
     if (rowBg) {
       line = colorize(line, rowBg, "background");
