@@ -55,11 +55,7 @@ export interface Snapshot {
    * 不需要任何迁移就仍然语义正确。
    * 非普通文件与不可读路径的 `bytes` 恒为 0——「字节数」对它们没有意义。
    */
-  skippedFiles?: Array<{
-    filePath: string;
-    bytes: number;
-    reason?: "non-regular" | "unreadable";
-  }>;
+  skippedFiles?: SkippedFile[];
 }
 
 /** 快照中的单个文件 */
@@ -140,6 +136,14 @@ function decodeTextOrNull(bytes: Uint8Array): string | null {
  * 3. 并进 `non-regular` 只是日志与展示会撒谎（「这是个设备文件」），但行为一致。
  *    为了不让 `skippedFiles.reason` 少一档，这里单独返回，展示层据此说人话。
  */
+
+/** `Snapshot.skippedFiles` 的元素：没进快照的目标 + 跳过原因。 */
+export type SkippedFile = {
+  filePath: string;
+  bytes: number;
+  reason?: "non-regular" | "unreadable";
+};
+
 function classifyPathForSnapshot(
   filePath: string,
 ): "absent" | "regular" | "non-regular" | "unreadable" {
@@ -152,6 +156,32 @@ function classifyPathForSnapshot(
     // 连 stat 都拿不到。不是可回滚目标，也不能当「不存在」。
     return "unreadable";
   }
+}
+
+/**
+ * 按 `reason` 把跳过项分成三组（日志与展示共用同一套判据）。
+ *
+ * `too-large` 的判据**必须**是 `reason === undefined`。写成 `reason !== "non-regular"`
+ * 会把后加的 `unreadable` 算进超限组——同一个撒谎换个说法（「超过单文件上限 0.0MB」）。
+ * 抽成函数是为了让这条判据能被单测直接锁住：它只写一次，日志与 `/restore` 面板都走它。
+ *
+ * 刻意不用泛型：`<T extends { reason?: ... }>(readonly T[])` 会让只带 `filePath/bytes`
+ * 的字面量被推断成**约束类型**（`{ reason?: ... }`），触发多余属性检查报错。
+ */
+export function groupSkippedFiles(skipped: readonly SkippedFile[]): {
+  tooLarge: SkippedFile[];
+  nonRegular: SkippedFile[];
+  unreadable: SkippedFile[];
+} {
+  const tooLarge: SkippedFile[] = [];
+  const nonRegular: SkippedFile[] = [];
+  const unreadable: SkippedFile[] = [];
+  for (const s of skipped) {
+    if (s.reason === "non-regular") nonRegular.push(s);
+    else if (s.reason === "unreadable") unreadable.push(s);
+    else tooLarge.push(s);
+  }
+  return { tooLarge, nonRegular, unreadable };
 }
 
 /** N13：两份快照内容是否相同（形态不同即视为不同，触发写 full）。 */
@@ -665,12 +695,10 @@ export class CheckpointManager {
 
       // P3/P4：跳过的目标必须在日志里点明——否则用户以为 `/undo` 能救，实际救不回来。
       // 三类原因分开说：把目录/设备说成「超过单文件上限」、把非法路径说成「这是个设备文件」
-      // 都是另一种撒谎。`too-large` 的判据必须是 `reason === undefined`——写成
-      // `!== "non-regular"` 会把新增的 `unreadable` 算进超限组（同一个撒谎换个说法）。
+      // 都是另一种撒谎。分组判据统一走 `groupSkippedFiles`（`too-large` 必须是
+      // `reason === undefined`，写成 `!== "non-regular"` 会把 unreadable 算进超限组）。
       if (skippedFiles.length > 0) {
-        const tooLarge = skippedFiles.filter((s) => s.reason === undefined);
-        const nonRegular = skippedFiles.filter((s) => s.reason === "non-regular");
-        const unreadable = skippedFiles.filter((s) => s.reason === "unreadable");
+        const { tooLarge, nonRegular, unreadable } = groupSkippedFiles(skippedFiles);
         if (tooLarge.length > 0) {
           const preview = tooLarge
             .slice(0, 3)

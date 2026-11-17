@@ -16,7 +16,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";
+import { CheckpointManager, groupSkippedFiles } from "@sid-code/core/checkpoint/manager.ts";
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -453,5 +453,33 @@ describe("P4：非普通文件不进快照 + /undo 死循环", () => {
     await m.init();
     expect(await m.undoFile(bad)).toBeNull();
     expect(m.listSnapshots()).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// 7. 跳过原因的分组判据（日志与 `/restore` 面板共用同一套）
+//
+// 这条判据最容易写错的地方是「too-large 的补集」：`reason !== "non-regular"`
+// 会把后加的 `unreadable` 算进超限组——面板就会把非法路径说成「超过单文件上限 0.0MB」。
+// 单独立一组测试锁死它，而不是靠日志文案（日志难断言、容易变成恒绿）。
+// ─────────────────────────────────────────────────────────────
+
+describe("跳过原因分组判据", () => {
+  test("三类各归其位：unreadable 不被算进 too-large", () => {
+    const g = groupSkippedFiles([
+      { filePath: "/big.bin", bytes: 8 * 1024 * 1024 },
+      { filePath: "/dev/null", bytes: 0, reason: "non-regular" },
+      { filePath: "/bad/x", bytes: 0, reason: "unreadable" },
+    ]);
+    expect(g.tooLarge.map((s) => s.filePath)).toEqual(["/big.bin"]);
+    expect(g.nonRegular.map((s) => s.filePath)).toEqual(["/dev/null"]);
+    expect(g.unreadable.map((s) => s.filePath)).toEqual(["/bad/x"]);
+  });
+
+  test("reason 缺省即 too-large（老分片没有该字段也必须语义正确）", () => {
+    const g = groupSkippedFiles([{ filePath: "/legacy.bin", bytes: 2048 }]);
+    expect(g.tooLarge).toHaveLength(1);
+    expect(g.nonRegular).toHaveLength(0);
+    expect(g.unreadable).toHaveLength(0);
   });
 });

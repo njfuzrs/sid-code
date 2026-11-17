@@ -48,3 +48,15 @@ P4（#898）把 `createSnapshot` 的判据换成 `lstatSync` 之后，留了两�
 - `bun test ./packages/cli/tests/command/restore-unprotected-lines.test.ts` → 6 pass。
 - `bun run affected-tests:run` → **3506 pass / 9 skip / 0 fail**（339 文件）。
 - `make build` → 产物自检全过（git-status 锚点 / 止损阀 / 内置 skill / ripgrep / review skill）。
+
+### 变异自证（4 组，全部变红后自动还原）
+
+| 变异 | 变红条数 | 失败的用例 |
+| --- | --- | --- |
+| M-A `classifyPathForSnapshot` 去掉 try/catch（异常重新抛出） | 5 | `createSnapshot` / `undo` / `restoreToSnapshot` / `restoreBeforeSnapshot` / `undoFile` 五条 unreadable 用例 |
+| M-B `groupSkippedFiles` 的 too-large 判据吃掉 unreadable | 1 | 「三类各归其位：unreadable 不被算进 too-large」 |
+| M-C `formatUnprotectedLines` 退回统一 too-large 渲染 | 4 | 目录/设备、无法判定类型、三类混合、截断提示 |
+| M-D `undoFile` 不摘条目（只返回 null） | 2 | 目录摘条目 + 空快照分片删除、ENOTDIR 摘条目 |
+
+M-B 这条是补做变异时**才发现需要**的：`too-large` 的分组判据原先只存在于 `createSnapshot`
+的日志里（日志难断言、容易恒绿），抽成 `groupSkippedFiles` 之后才有断言能把它变红。
