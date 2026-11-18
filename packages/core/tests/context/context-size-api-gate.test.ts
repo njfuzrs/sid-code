@@ -124,7 +124,16 @@ function findBareEstimateTokensCalls(): { file: string; line: number; text: stri
       const state = { inBlock: false };
       lines.forEach((line, i) => {
         const code = codePartForGate(line, state);
-        if (!/\.estimateTokens\(/.test(code)) return;
+        // 拦三种可绕过形态（旧实现只拦第一种，后面两种全绿）：
+        // 1) `mgr.estimateTokens(0)` / `const f = mgr.estimateTokens`（成员访问）
+        // 2) `mgr["estimateTokens"]`（方括号）
+        // 3) `const { estimateTokens } = mgr`（解构别名）
+        // 不拦裸 `estimateTokens(...)`：`config/token-utils.ts` 有一个同名工具函数，
+        // `config/system-prompt.ts` 合法调用它（附件/提示词估算），拦裸名会误伤。
+        const memberAccess = /\.\s*estimateTokens\b/.test(code);
+        const bracketAccess = /\[\s*["']estimateTokens["']\s*\]/.test(code);
+        const destructuring = /\{[^}]*\bestimateTokens\b[^}]*\}\s*=/.test(code);
+        if (!memberAccess && !bracketAccess && !destructuring) return;
         hits.push({ file: rel, line: i + 1, text: line.trim() });
       });
     }
@@ -161,5 +170,14 @@ describe("A6 归零门禁：生产代码不得再调裸 estimateTokens", () => {
     expect(src).toContain("getHistoryTokens(toolCount: number = 0): number {");
     // 唯一的扣减口
     expect(src).toContain("private localReductionTokens(): number {");
+  });
+
+  test("熔断文案的 totalTokens 与 fixedTokens 同口径（不扣本地释放量）", () => {
+    // `fixedTokens` 走 `estimateFixedOverheadTokens`（不扣 freed），`totalTokens` 必须用
+    // `getHistoryTokens`；用 `getSendTokens` 会让「固定开销主导」判据在释放量大时虚高，
+    // 把「历史里还有可压内容」的会话误报成「压缩无法解决」（见 buildCompactCircuitBreakerText 注释）。
+    const src = readFileSync(join(REPO_ROOT, "packages/core/src/query/loop.ts"), "utf8");
+    expect(src).toContain("totalTokens: ctxMgr.getHistoryTokens(toolRegistry.size()),");
+    expect(src).not.toContain("totalTokens: ctxMgr.getSendTokens(toolRegistry.size()),");
   });
 });

@@ -18,8 +18,8 @@ describe("TokenEstimator", () => {
     test("纯 ASCII 文本：约 0.28 token/char", () => {
       const text = "Hello, this is a test message for token estimation.";
       const tokens = estimator.estimateText(text);
-      // 51 chars * 0.28 = 14.28 → ceil = 15
-      expect(tokens).toBe(11);
+      // 51 chars * 0.28 = 14.28 → ceil = 15（#928：系数从 0.20 统一到 0.28）
+      expect(tokens).toBe(15);
     });
 
     test("纯中文文本：约 0.65 token/char", () => {
@@ -32,9 +32,9 @@ describe("TokenEstimator", () => {
     test("中英文混合文本", () => {
       const text = "Hello 你好 World 世界";
       const tokens = estimator.estimateText(text);
-      // ASCII: "Hello  World " = 13 chars * 0.20 = 2.6
+      // ASCII: "Hello  World " = 13 chars * 0.28 = 3.64
       // CJK: "你好世界" = 4 chars * 0.65 = 2.6
-      // total = 5.2 → ceil = 6
+      // total = 6.24 → ceil = 7
       expect(tokens).toBeGreaterThan(0);
       expect(tokens).toBeLessThan(20);
     });
@@ -42,8 +42,10 @@ describe("TokenEstimator", () => {
     test("超长文本使用快速近似（按抽样语言占比加权）", () => {
       const text = "a".repeat(200_000);
       const tokens = estimator.estimateText(text);
-      // EST-6：全 ASCII → 抽样占比 0 非 ASCII → 0.20/char。200000 * 0.20 = 40000
-      expect(tokens).toBe(40000);
+      // EST-6：全 ASCII → 抽样占比 0 非 ASCII → 0.28/char。200000 * 0.28 = 56000
+      // （抽样路径先算浮点系数再乘，ceil 可能 +1，与纯中文那条同样的容差）
+      expect(tokens).toBeGreaterThanOrEqual(56000);
+      expect(tokens).toBeLessThanOrEqual(56001);
     });
 
     test("超长纯中文文本按非 ASCII 系数估算", () => {
@@ -57,8 +59,8 @@ describe("TokenEstimator", () => {
     test("刚好在阈值内使用精确计算", () => {
       const text = "a".repeat(100_000);
       const tokens = estimator.estimateText(text);
-      // 100000 * 0.20 ≈ 20000，浮点累加微漂移后 ceil → 20001
-      expect(tokens).toBe(20001);
+      // 100000 * 0.28 = 28000（浮点累加微漂移后 ceil 仍为 28000）
+      expect(tokens).toBe(28000);
     });
   });
 

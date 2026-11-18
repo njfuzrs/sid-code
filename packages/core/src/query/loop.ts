@@ -543,7 +543,14 @@ const USER_INPUT_MIN_WINDOW_RATIO = 0.5;
 export function buildCompactCircuitBreakerText(
   failures: number,
   probe: {
+    /** 常驻开销（系统提示词 + 工具定义），走 `estimateFixedOverheadTokens`：**不扣**本地释放量 */
     fixedTokens: number;
+    /**
+     * 「固定开销主导」判据的分母，必须与 `fixedTokens` 同口径（不扣本地释放量）→ 用
+     * `getHistoryTokens`。历史用 `getSendTokens` 的 bug：遮罩/清理释放量大时发送量被压低，
+     * `fixedTokens / totalTokens` 虚高，会把「历史里还有可压内容」的会话误判成
+     * 「对话历史为空也发不出去，压缩无法解决」，用户被引去做注定无效的 /compact。
+     */
     totalTokens: number;
     memoryTokens: number;
     maxTokens: number;
@@ -3279,7 +3286,7 @@ async function* queryLoopBody(
           terminal: true,
           text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
             fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
-            totalTokens: ctxMgr.getSendTokens(toolRegistry.size()),
+            totalTokens: ctxMgr.getHistoryTokens(toolRegistry.size()),
             memoryTokens: ctxMgr.getMemoryTokens(),
             maxTokens: ctxMgr.getMaxTokens(),
             latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
@@ -4247,7 +4254,7 @@ async function* queryLoopBody(
               terminal: true,
               text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
                 fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
-                totalTokens: ctxMgr.getSendTokens(toolRegistry.size()),
+                totalTokens: ctxMgr.getHistoryTokens(toolRegistry.size()),
                 memoryTokens: ctxMgr.getMemoryTokens(),
                 maxTokens: ctxMgr.getMaxTokens(),
                 latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
@@ -7178,7 +7185,7 @@ async function* queryLoopBody(
             terminal: true,
             text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
               fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
-              totalTokens: ctxMgr.getSendTokens(toolRegistry.size()),
+              totalTokens: ctxMgr.getHistoryTokens(toolRegistry.size()),
               memoryTokens: ctxMgr.getMemoryTokens(),
               maxTokens: ctxMgr.getMaxTokens(),
               latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),

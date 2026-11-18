@@ -19,6 +19,7 @@
 import { describe, test, expect } from "bun:test";
 import { Manager } from "@sid-code/core/context/manager.ts";
 import { estimateConversationTokens } from "@sid-code/core/context/token.ts";
+import { PERSISTED_OUTPUT_PREFIX } from "@sid-code/core/context/tool-result-storage.ts";
 import { TOKEN_THRESHOLDS } from "@sid-code/core/context/auto-compact.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
 
@@ -408,5 +409,118 @@ describe("A6 blocking 回归：200K 窗口 / 未扣减 197K / 已释放 50K", ()
     // ③ 反向自证：按未扣减口径算就会误判 —— 这正是改动前发生的事
     const remainingWithoutFree = WINDOW - history;
     expect(remainingWithoutFree).toBeLessThanOrEqual(TOKEN_THRESHOLDS.blocking);
+  });
+});
+
+/**
+ * A3 记账点覆盖缺口（2026-11-18 变异自证实测发现）：
+ * 上面所有用例都先调 `applyColdCacheClear()`，大输出已经被冷清理换成占位，
+ * 于是 `getCleanedMessages()` 的 cleanMap 里根本没有它们 —— 「cleanedMessages 记账单位
+ * 必须与原文/占位差严格相等」这条**从未被真正断言过**（把记账改回 `chars/4` 后全绿）。
+ * 这条用例不调冷清理，直接走大输出清理，并单独断言 cleanedMessages 分量。
+ */
+describe("A3 大输出清理（cleanedMessages）记账单位：中文原文与占位差严格相等", () => {
+  /** 8 条 35K 中文字符的大输出：都 > OUTPUT_THRESHOLD(30000)，保留最近 6 条，前 2 条被替换 */
+  function bigChineseHistory(): Message[] {
+    const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "开始" }] }];
+    for (let i = 0; i < 8; i++) {
+      msgs.push({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `t${i}`, name: "read", input: { file_path: `f${i}.ts` } },
+        ],
+      });
+      msgs.push({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `t${i}`, content: "中文输出".repeat(9_000) }],
+      });
+    }
+    return msgs;
+  }
+
+  test("freed.byStrategy.cleanedMessages > 0，且 freed 总量 === raw(全量) − raw(发送副本)", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    mgr.setMessages(bigChineseHistory());
+
+    const rawFull = mgr.getHistoryTokens(0);
+    const cleaned = mgr.getCleanedMessages();
+    const rawSent = estimateConversationTokens(cleaned, {});
+
+    // 前提：确实发生了大输出清理，否则下面在 0=0 上空洞成立
+    expect(rawSent).toBeLessThan(rawFull);
+
+    const bd = mgr.getTokenBreakdown(0);
+    const cleanedStrategy = bd.freed.byStrategy.find((s) => s.strategy === "cleanedMessages");
+    expect(cleanedStrategy).toBeDefined();
+    expect(cleanedStrategy!.tokens).toBeGreaterThan(0);
+
+    // 这条用例里没有冷清理 / 遮罩 / 过期清理，freed 只可能来自 cleanedMessages。
+    // 把记账单位改回 `Math.ceil(chars / 4)`（中文 4 字符 ≠ 1 token）时这条必红。
+    expect(mgr.getLocalFreedTokens()).toBe(rawFull - rawSent);
+  });
+});
+
+/**
+ * A3 状态重置缺口（2026-11-18 复核发现）：`collapsedRefIds` 是给
+ * `persistedRefCollapse` 去重的集合，但 `resetLocalCompactState()` 清了
+ * `tokenFreedTracker` 却漏清它。压缩/`setMessages` 后旧 id 仍在集合里，
+ * 再次折叠时 `has()` 命中 → 内容真的又瘦了一次但**不记账** → freed 偏小。
+ */
+describe("A3 历史整段替换后 persistedRefCollapse 必须重新记账", () => {
+  /** 25 个持久化引用（> REFERENCE_KEEP_RECENT=20，折叠前 5 个）+ 1 条大输出（让 cleanMap 非空） */
+  function refHistory(): Message[] {
+    const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "开始" }] }];
+    for (let i = 0; i < 25; i++) {
+      msgs.push({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `t${i}`, name: "read", input: { file_path: `f${i}.ts` } },
+        ],
+      });
+      msgs.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: `t${i}`,
+            content:
+              `${PERSISTED_OUTPUT_PREFIX} tool_use_id=t${i} tool=read 字符数=123456 ` +
+              `文件=/tmp/sid-tool-output/t${i}.txt（完整输出已落盘，重新读取请用 read）`,
+          },
+        ],
+      });
+    }
+    // 8 条大输出（> OUTPUT_THRESHOLD=30000、且条数 > KEEP_RECENT_OUTPUTS=6）：
+    // cleanMap 为空时 getCleanedMessages 会提前返回，持久化引用折叠根本不会执行。
+    for (let i = 0; i < 8; i++) {
+      msgs.push({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `big${i}`, name: "bash", input: { command: `cat huge${i}` } },
+        ],
+      });
+      msgs.push({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `big${i}`, content: "输出".repeat(20_000) }],
+      });
+    }
+    return msgs;
+  }
+
+  test("setMessages（resetLocalCompactState）后同一批引用再次折叠，freed 与首次一致", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    mgr.setMessages(refHistory());
+    mgr.getCleanedMessages();
+    const first = mgr.getLocalFreedTokens();
+    expect(first).toBeGreaterThan(0);
+
+    // 整段替换同一份历史：tracker 与 collapsedRefIds 必须一起失效
+    mgr.setMessages(refHistory());
+    expect(mgr.getLocalFreedTokens()).toBe(0);
+
+    mgr.getCleanedMessages();
+    // 旧实现漏清 collapsedRefIds：5 个被折叠过的 id 命中 has() → 不记账，
+    // 第二次 freed 会明显小于 first（这条断言就是那个缺口）。
+    expect(mgr.getLocalFreedTokens()).toBe(first);
   });
 });

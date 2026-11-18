@@ -56,8 +56,20 @@ function resolveFallbackWindow(): number {
   return DEFAULT_FALLBACK_CONTEXT_WINDOW;
 }
 
-/** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
-export const ASCII_TOKENS_PER_CHAR = 0.2;
+/**
+ * ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.28 折中。
+ *
+ * ⚠️ **必须与 `context/token.ts` 的 `ASCII_TOKENS_PER_CHAR` 保持同一值**。
+ * 2026-11-18 的 E1 实测把系数从 0.20 调到 0.28 时只改了 `context/token.ts`
+ *（`/context` 面板与主循环估算），这一份留在 0.20，于是同一个会话里：
+ * - 消息 / 系统提示词按 0.28 估，
+ * - 工具定义经 `TokenEstimator.estimateTools`（本文件）按 0.20 估后注入
+ *   `ContextManager.setToolSchemaTokens`，
+ * 工具 schema 被系统性低估 28.6%（`claude/src/app.ts` 的注入点）。
+ * 两处常量无法互相 import（本文件已依赖 `context/token.ts` 的 `estimateBlockTokens`，
+ * 反向 import 会成环），所以用行为级门禁 `token-estimator-coefficient.test.ts` 锁住两者相等。
+ */
+export const ASCII_TOKENS_PER_CHAR = 0.28;
 /** 非 ASCII 字符（中文等）：取 0.65 tok/char（9.4：偏保守，防长中文对话对 Claude 累积低估） */
 export const NON_ASCII_TOKENS_PER_CHAR = 0.65;
 
