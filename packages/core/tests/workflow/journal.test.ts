@@ -10,7 +10,7 @@
  */
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { Journal, computeFingerprint } from "@sid-code/core/workflow/journal.ts";
+import { Journal, computeFingerprint, summarizePrompt } from "@sid-code/core/workflow/journal.ts";
 import { WorkflowRuntime, type AgentRunner } from "@sid-code/core/workflow/runtime.ts";
 import { runInSandbox } from "@sid-code/core/workflow/sandbox.ts";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
@@ -219,5 +219,48 @@ describe("M5 journal — 与 runtime 集成(resume 端到端)", () => {
     const { value } = await runInSandbox(RENAMED, rt2.buildApi());
     expect(secondRuns).toEqual([]);
     expect(value).toEqual(["R:找入口", "R:跑测试"]);
+  });
+});
+
+/**
+ * /workflows 进度树的可读性数据源。
+ *
+ * 2026-11-18 那次 run 的进度树 8 行全是 `agent#0..7`，用户看不出每个 agent 在干什么——
+ * 因为脚本没传 opts.label，而 prompt 里的任务差异在**末尾**（前面是共享上下文）。
+ */
+describe("M5 journal — promptPreview", () => {
+  test("取最后一段的首行（共享上下文拼在前面，任务差异在末尾）", () => {
+    expect(
+      summarizePrompt("通用纪律：只读仓库，禁止写操作。\n\n单元 U1 — 缓存链路\n细节若干"),
+    ).toBe("单元 U1 — 缓存链路");
+  });
+
+  test("单段 prompt 取首行并压成一行", () => {
+    expect(summarizePrompt("第一行\n第二行")).toBe("第一行");
+  });
+
+  test("超长截断到 80 字符并以省略号结尾", () => {
+    const out = summarizePrompt("x".repeat(200));
+    expect(out.length).toBe(80);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  test("落盘带 promptPreview；默认 label 不写盘，显式 label 保留", async () => {
+    const path = freshJournalPath();
+    const j = new Journal(path);
+    const SRC = `export const meta = { name: 'preview', description: 'd' }
+      await agent('通用约束\\n\\n单元 U9 — 目标单元');
+      await agent('另一单元', { label: '业务标签' });`;
+    const runner: AgentRunner = { run: async (p: string) => `R:${p}` };
+    await runInSandbox(SRC, new WorkflowRuntime({ runner, journal: j }).buildApi());
+
+    const lines = readFileSync(path, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(lines[0].promptPreview).toBe("单元 U9 — 目标单元");
+    // 默认 `agent#N` 无信息量，不落盘——否则面板永远退不到 promptPreview
+    expect(lines[0].label).toBeUndefined();
+    expect(lines[1].label).toBe("业务标签");
   });
 });

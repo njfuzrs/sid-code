@@ -177,6 +177,48 @@ describe("PR3 排版层：数字张冠李戴", () => {
   });
 });
 
+describe("PR3 排版层：B6/B7/B9 明细与复制安全", () => {
+  test("本地已释放行列出每个释放策略与条数（B6：明细必须指到源字段）", () => {
+    // 这是纯渲染断言，用人工 report 造两个策略：走真实 Manager 需要夹具满足冷清理条件，
+    // 那会把「渲染是否正确」和「清理是否触发」两件事耦在一起。
+    const report = buildReport({
+      freed: {
+        tokens: 1234,
+        byStrategy: [
+          { strategy: "coldCacheClear", label: "冷缓存清理", tokens: 1000, count: 2 },
+          { strategy: "masking", label: "遮罩工具输出", tokens: 234, count: 3 },
+        ],
+      },
+    });
+
+    const out = renderContextReport(report, { width: 120, color: false });
+    const line = findLine(out, "本地已释放");
+    for (const s of report.freed.byStrategy) {
+      // 策略名与人话 label 都要在：显示原始 key（如 coldCacheClear）等于没解释
+      expect(line).toContain(`${s.label} ${s.count} 项`);
+    }
+  });
+
+  test("压缩阈值四档逐行列出 label 与触发点数字（B7）", () => {
+    const report = buildReport();
+    const out = renderContextReport(report, { width: 120, color: false });
+    for (const t of report.thresholds) {
+      // 用行首精确匹配：label 之间可能有包含关系（如「紧急截断」/「强制截断」），
+      // 整帧 includes 会命中别的行，测不出「这一档自己的数字对不对」。
+      const line = lines(out).find((l) => l.trimStart().startsWith(t.label));
+      expect(line, `缺少阈值行：${t.label}`).toBeDefined();
+      expect(line!).toContain(fmtInt(t.at));
+    }
+  });
+
+  test("面板文本不含竖线（B9：复制粘贴可直接用，不画左右边框）", () => {
+    const report = buildReport();
+    const out = renderContextReport(report, { width: 120, color: false });
+    expect(out).not.toContain("│");
+    expect(out).not.toContain("|");
+  });
+});
+
 describe("PR3 排版层：颜色与无 ANSI", () => {
   const report = buildReport();
 
@@ -272,15 +314,33 @@ describe("PR3 跨层对账：面板「已用」百分比 === footer 的 contextP
     const mgr = new Manager({ maxTokens: 1_000_000 });
     mgr.setSystemPrompt(SYSTEM_PROMPT);
     mgr.setMessages(messages());
+    // 造出锚点抬升：抬升为 0 时 `subtotal === used`，渲染层把「已用」改读 subtotal
+    // 也会输出同一串数字，下面的跨层断言会**假绿**（与 buildReport 同一前提）。
+    const raw = mgr.estimateTokens(0);
+    mgr.recordActualTokens(Math.round(raw * 1.15), 0);
+    mgr.recordActualTokens(Math.round(raw * 1.5), 0);
+
     // footer 的 contextPercent 取的就是 getContextUsageForDisplay().percentOfWindow
     const footerPercent = mgr.getContextUsageForDisplay(0).percentOfWindow;
+    const footerUsed = mgr.getContextUsageForDisplay(0).used;
 
     const report = buildContextReport(mgr, { model: "m", stockPromptTokens: 12_345 });
     const out = renderContextReport(report, { width: 120, color: false });
 
-    // 结论行里的「（N%）」就是进度条与 footer 同口径的那个数
+    // ① 结论行里的「（N%）」就是进度条与 footer 同口径的那个数
     const conclusion = findLine(out, "结论");
     expect(conclusion).toContain(`（${footerPercent}%）`);
     expect(report.percentOfWindow).toBe(footerPercent);
+
+    // ② 渲染出来的「已用」数字必须 === footer 的 used。
+    //    这一条才是跨层对账：只比 report 字段等于 footer 的话，渲染层把「已用」改读
+    //    subtotal / grossTokens 仍然全绿（§8.2 变异 11 曾在旧断言下假绿）。
+    const usedLine = findLine(out, "已用（= 状态栏）");
+    const shownUsed = Number((usedLine.match(/([\d,]+)\s*$/) ?? [])[1]?.replace(/,/g, ""));
+    expect(shownUsed).toBe(footerUsed);
+
+    // ③ 前提：锚点抬升真的发生，subtotal 与 used 是两个不同的数（否则 ② 分辨不出口径）
+    expect(report.anchorLiftTokens).toBeGreaterThan(0);
+    expect(report.subtotal).not.toBe(report.used);
   });
 });

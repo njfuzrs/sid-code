@@ -246,7 +246,7 @@ export class WorkflowTool implements Tool {
   }
 
   usageGuide(): string {
-    // 动态列出可选 agentType(含 verify),让模型知道 agent({agentType:'...'}) 可选哪些类型。
+    // 动态列出可选 agentType(含 verify),让模型知道第二个参数里的 agentType 可选哪些类型。
     // 从活跃 agent registry 派生(含 built-in + custom + plugin),避免写死漂移
     // (新增任何来源的类型自动出现在指南里)。
     let agentTypesLine = "";
@@ -254,7 +254,7 @@ export class WorkflowTool implements Tool {
       const { getActiveAgentDefinitions } = require("../agent/agent-definition.ts");
       const defs = getActiveAgentDefinitions() as Array<{ agentType: string; description: string }>;
       const list = defs.map((d) => `${d.agentType}(${d.description})`).join("、");
-      agentTypesLine = `\n- agent({agentType}) 可选类型:${list}。对抗校验场景用 agent({agentType:'verify'}) 开对抗式验证子代理(默认怀疑、主动证伪、读码举证)。`;
+      agentTypesLine = `\n- opts 里的 agentType 可选类型:${list}。对抗校验场景传 agent(prompt, {agentType:'verify'}) 开对抗式验证子代理(默认怀疑、主动证伪、读码举证)。`;
     } catch {
       /* 注册表读取失败不影响指南主体 */
     }
@@ -262,7 +262,8 @@ export class WorkflowTool implements Tool {
     return `- 仅当任务需要多 agent 编排(穷尽/对抗/大规模)时用;单点查找用普通工具或单个子代理。
 - 脚本必须以 \`export const meta = { name, description }\` 纯字面量开头。
 - 原语:agent(prompt, opts?) 开子代理;parallel(thunks) 并发屏障;pipeline(items, ...stages) 无屏障逐项;phase(title) 进度组;log(msg) 叙述;args 入参;budget 预算。
-- agent({schema}) 强制结构化输出,返回校验后的对象;agent({model}) 选模型;agent({isolation:'worktree'}) 并行改文件隔离。${agentTypesLine}
+- ⚠️ agent() 的第一个参数必须是**字符串 prompt**,其它都放第二个参数 opts:agent(prompt, {schema}) 强制结构化输出并返回校验后的对象;agent(prompt, {model}) 选模型;agent(prompt, {isolation:'worktree'}) 并行改文件隔离。写成单对象 agent({prompt, schema}) 是错的——整个对象会成为 prompt,子代理只收到 "[object Object]"。${agentTypesLine}
+- 并行多单元时给每个 agent 传 label(如 agent(prompt, {label:'U1 缓存链路'})):进度树默认显示 agent#N,看不出每个 agent 在干什么。
 - 默认 pipeline 而非 parallel:无屏障逐项推进墙钟更短。仅当 stage N 需要全部 stage N-1 结果时才用 parallel 屏障。
 - 迭代:返回的 script_path 可编辑后用 {script_path, resume_from_run_id} 重跑,已完成的 agent 走缓存。`;
   }

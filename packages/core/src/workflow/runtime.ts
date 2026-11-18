@@ -16,7 +16,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Scheduler } from "./scheduler.ts";
 import { getLogger } from "../debug/logger.ts";
-import { Journal, computeFingerprint } from "./journal.ts";
+import { Journal, computeFingerprint, summarizePrompt } from "./journal.ts";
 import type { AgentOpts, Budget, PipelineStage, WorkflowApi } from "./types.ts";
 
 /** 单 run 总 agent 上限(runaway 后备) */
@@ -132,7 +132,41 @@ export class WorkflowAbortedError extends Error {
 }
 
 /**
- * 「整个 run 该停」的闸门类错误：预算耗尽 / runaway 上限 / 中止 / 严格 phase 对账失败。
+ * agent() 的首参不是 prompt 字符串。
+ *
+ * 为什么单列一类并当闸门错误：`agent(prompt, opts?)` 的签名里 prompt 是**字符串**，
+ * 但脚本跑在 node:vm 里（纯 JS，没有 TS 类型检查），把它写成单对象形态
+ * `agent({agentType:'verify', prompt: ..., schema: ...})` 时整个对象会成为 prompt：
+ * 子代理收到的是字符串化后的 `[object Object]`，agentType/schema/label 一并丢失。
+ * 危害是「静默烧钱」——2026-11-18 本仓一次 8 agent 的 run 全部这样白跑 6 分钟，
+ * 每个子代理都回一句「任务内容是 [object Object]」，而运行时零报错。
+ * 所以这里 fail-fast，并且让 parallel/pipeline 穿透（见 isRunFatalError）：
+ * 脚本参数写错是 100% 的编写错误，落 null 只会让剩下的分支继续白烧。
+ */
+export class InvalidAgentPromptError extends TypeError {
+  constructor(prompt: unknown) {
+    const got = prompt === null ? "null" : Array.isArray(prompt) ? "array" : typeof prompt;
+    // 对象里带 prompt 字段几乎一定就是「把两个参数包成了一个对象」这种写法，直接点名。
+    const looksLikeOptsObject =
+      typeof prompt === "object" && prompt !== null && "prompt" in (prompt as object);
+    const hint = looksLikeOptsObject
+      ? "（收到的是带 prompt 字段的对象——正确写法是 agent(promptText, {schema, agentType, label, phase})，不是 agent({prompt, ...})）"
+      : typeof prompt === "object" && prompt !== null && "schema" in (prompt as object)
+        ? "（收到的是带 schema 字段的对象——schema/agentType/label/phase 属于第二个参数 opts）"
+        : "";
+    super(
+      `[workflow] agent() 的第一个参数必须是 prompt 字符串，收到 ${got}。` +
+        `签名是 agent(prompt, opts?)：prompt 是字符串，agentType/schema/model/label/phase 放在第二个参数。` +
+        hint +
+        `若直接传对象，子代理只会收到 "[object Object]"。`,
+    );
+    this.name = "InvalidAgentPromptError";
+  }
+}
+
+/**
+ * 「整个 run 该停」的闸门类错误：预算耗尽 / runaway 上限 / 中止 / 严格 phase 对账失败 /
+ * agent() 参数写错。
  * parallel/pipeline 只把**单项失败**落 null，这几类必须穿透到 execute() 的 catch——
  * 否则闸门触发了却只表现为结果集少几项（缺陷文档 P1-2：绿着坏掉）。
  */
@@ -141,7 +175,8 @@ export function isRunFatalError(err: unknown): boolean {
     err instanceof BudgetExceededError ||
     err instanceof AgentLimitError ||
     err instanceof WorkflowAbortedError ||
-    err instanceof UndeclaredPhaseError
+    err instanceof UndeclaredPhaseError ||
+    err instanceof InvalidAgentPromptError
   );
 }
 
@@ -281,6 +316,9 @@ export class WorkflowRuntime {
   /** agent(prompt, opts?) */
   private agent = async (prompt: string, opts?: AgentOpts): Promise<unknown> => {
     this.checkGates();
+    // 首参类型校验：必须在 callCounter++ 之前——写错的调用不该占掉结构键位置，
+    // 否则 resume 的缓存键会跟着漂移（见 InvalidAgentPromptError 的类注释）。
+    if (typeof prompt !== "string") throw new InvalidAgentPromptError(prompt);
     // runaway 后备闸
     if (this.callCounter >= MAX_AGENTS_PER_RUN) {
       throw new AgentLimitError();
@@ -317,7 +355,17 @@ export class WorkflowRuntime {
       // M5: 只缓存成功结果。runner 的契约是「失败/被 skip → null」，null 一律不写盘，
       // 否则一次 flake 会在 resume 时被永久回放（P0-1）。
       if (result !== null) {
-        this.journal?.record({ callIndex, key, fingerprint, result, label, phase });
+        // label 只记脚本显式传的那个：默认的 `agent#N` 无信息量，写进 journal 会让
+        // /workflows 进度树永远退不到 promptPreview（面板只看得到编号，看不出在干什么）。
+        this.journal?.record({
+          callIndex,
+          key,
+          fingerprint,
+          result,
+          label: opts?.label,
+          phase,
+          promptPreview: summarizePrompt(prompt),
+        });
       }
       this.progress?.onAgentEnd?.(ctx, result !== null);
       return result;
