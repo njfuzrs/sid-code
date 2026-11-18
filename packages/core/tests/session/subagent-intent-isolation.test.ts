@@ -191,11 +191,12 @@ describe("接线防回归（源码断言，W17 同款手法）", () => {
     // 登记：sessionId 用 agentId，parentSessionId 作归属
     expect(src).toContain("sessionId: agentId ?? this.parentSessionId");
     expect(src).not.toContain("sessionId: this.parentSessionId,");
-    // 两个调用点都把 agentId 传进隔离注册表
+    // 两个调用点都把 agentId 传进隔离注册表（PR12 起多一个 readOnlyAgent 选项，
+    // 断言只看前三个参数是否按序传入，不耦合选项的形状）
     expect(src).toMatch(
-      /buildIsolatedToolRegistry\(\s*filteredTools,\s*task\.type,\s*this\.deriveSubAgentSessionId\(taskId\),\s*\)/,
+      /buildIsolatedToolRegistry\(\s*filteredTools,\s*task\.type,\s*this\.deriveSubAgentSessionId\(taskId\),/,
     );
-    expect(src).toContain("buildIsolatedToolRegistry(resolvedTools, task.type, observerAgentId)");
+    expect(src).toMatch(/buildIsolatedToolRegistry\(resolvedTools, task\.type, observerAgentId,/);
     // 退出清理：execute() 与 executeCustom() 各一处
     expect(src).toContain("clearFileIntent(agentId)");
     expect(src).toContain("clearFileIntent(customAgentId)");

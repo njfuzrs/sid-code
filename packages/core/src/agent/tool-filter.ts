@@ -87,8 +87,11 @@ const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set<string>([]);
  * 反漂移断言在 `tests/agent/subagent-todo.test.ts`。
  */
 const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
-  // 只读探索：产出是发现报告，不需要带状态的清单
-  explore: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get"],
+  // 只读探索：产出是发现报告，不需要带状态的清单。
+  // bash 在列：只读检索（git log -S / blame / show / wc）是探索的硬需求，只有 read/grep
+  // 时它只能整文件读。只读性由工具层的机械门禁保证（read-only-bash-guard.ts），
+  // 不靠系统提示——那是建议，不是约束。
+  explore: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list", "task_get"],
   task: [
     "read",
     "write",

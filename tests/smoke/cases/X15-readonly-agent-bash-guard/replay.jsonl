@@ -1,0 +1,5 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"sub_agent","input":{"type":"explore","description":"查最近一次提交","prompt":"看看仓库最近一次提交改了什么"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_2","name":"bash","input":{"command":"echo pwned > pwned.txt","description":"写一个文件（只读代理不该允许）"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_3","name":"bash","input":{"command":"git status --short","description":"看工作区状态"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":4,"response":{"content":[{"type":"text","text":"子代理结论：工作区干净。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":5,"response":{"content":[{"type":"text","text":"主会话汇总：子代理已返回提交信息。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
