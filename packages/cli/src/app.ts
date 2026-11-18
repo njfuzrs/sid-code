@@ -101,6 +101,8 @@ import { getLogger, getMemoryMonitor, getSessionMetrics } from "@sid-code/core/d
 import { QueryEngine } from "@sid-code/core/query/engine.ts";
 // PR7（D3）：子代理预算闸复用主循环这一条判据，不另写一份（两处漂移 = costLimit 半失效）。
 import { checkPreRequestBudgetStop } from "@sid-code/core/query/loop.ts";
+// PR7 重修（D3-2）：在途用量的上报快照类型（子代理每轮 → SessionState 台账）。
+import type { InFlightBudgetSnapshot } from "@sid-code/core/agent/agentic-loop.ts";
 import { resetCacheDetection, clearCacheBreaks } from "@sid-code/core/api/cache-detection.ts";
 import { resetTTLLatch } from "@sid-code/core/api/cache-ttl-latch.ts";
 import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
@@ -2215,15 +2217,34 @@ export class App {
    */
   private wireSubAgentBudgetStop(): void {
     if (!this.quotaManager && !this.budgetTracker) return;
+    // PR7 重修（D3-2）：判据读「已入账 + 在途」，不再只读已入账。
+    //
+    // 原实现读 `getEffectiveTotalCostUSD()`：子代理的成本只由 `usage-sink` 在它**结束之后**
+    // 入账一次，于是运行期间这个数一直是「它开始前」的值，判据永远不触发。
+    // G3 的 C4 实测（方案 §8.11）：$0.015 的预算下子代理跑了 33 轮、花掉 $0.0441
+    // ——预算的 3.0 倍——才自然结束，撞闸的反而是父会话的下一轮。
     const probe = () =>
       checkPreRequestBudgetStop(
         { budgetTracker: this.budgetTracker, quotaManager: this.quotaManager },
-        this.sessionState.getEffectiveTotalCostUSD(),
+        this.sessionState.getBudgetEffectiveCostUSD(),
       );
+    // 与判据成对注入：子代理每轮把累计用量报进来，结束（含异常/中止）时清掉。
+    // 台账由 SessionState 持有而不是闭包里，是为了让**主循环那道闸**也读得到
+    // ——后台子代理烧钱时父代理正好空闲，那道闸原先同样被蒙在鼓里。
+    const reporter = (agentId: string, snapshot: InFlightBudgetSnapshot | null) => {
+      if (snapshot) this.sessionState.setInFlightUsage(agentId, snapshot);
+      else this.sessionState.clearInFlightUsage(agentId);
+    };
     for (const tool of this.toolRegistry.all()) {
-      const maybe = tool as { setPreRequestBudgetStop?: (fn: typeof probe) => void };
+      const maybe = tool as {
+        setPreRequestBudgetStop?: (fn: typeof probe) => void;
+        setInFlightUsageReporter?: (fn: typeof reporter) => void;
+      };
       if (typeof maybe.setPreRequestBudgetStop === "function") {
         maybe.setPreRequestBudgetStop(probe);
+      }
+      if (typeof maybe.setInFlightUsageReporter === "function") {
+        maybe.setInFlightUsageReporter(reporter);
       }
     }
   }

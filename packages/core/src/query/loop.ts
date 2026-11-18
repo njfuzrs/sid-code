@@ -3479,7 +3479,10 @@ async function* queryLoopBody(
       {
         const preStop = checkPreRequestBudgetStop(
           loopConfig,
-          sessionState.getEffectiveTotalCostUSD(),
+          // PR7 重修（D3-2）：读「已入账 + 在途」。后台子代理运行期间父代理可能正好空闲，
+          // 这道闸原先只看已入账 —— 那笔钱要等子代理结束才由 usage-sink 落账，
+          // 于是「子代理在烧钱、父代理这道闸看不见」。两处判据现在读同一个数。
+          sessionState.getBudgetEffectiveCostUSD(),
         );
         if (preStop) {
           log.info("BUDGET", `请求前硬停（${preStop.source}）：${preStop.text}`);

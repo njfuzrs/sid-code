@@ -163,6 +163,19 @@ export interface PreRequestBudgetStop {
   text: string;
 }
 
+/**
+ * PR7 重修（D3-2）：一轮结束时上报给预算判据的**在途**用量快照。
+ *
+ * `usage` 是本次子代理循环到此刻的**累计**值（`totalUsage`，含重试 / 续写烧掉的部分），
+ * 不是单轮增量。传累计值是为了与循环自己维护的那一份同源 —— 上报方与判据方各自累加
+ * 一份，必然在 `discarded` 重试与截断续写这两条路径上错账。
+ */
+export interface InFlightBudgetSnapshot {
+  model: string;
+  provider: string;
+  usage: Usage;
+}
+
 /** Agent 循环配置 */
 export interface AgentLoopConfig {
   /** LLM Provider */
@@ -208,6 +221,19 @@ export interface AgentLoopConfig {
    * 回调抛错时按「放行」处理（fail-open）：预算检查自己坏掉不该杀掉整个子代理任务。
    */
   preRequestBudgetStop?: () => PreRequestBudgetStop | null;
+  /**
+   * PR7 重修（D3-2）：每轮把**累计**用量报给注入方，供预算判据看到在途成本。
+   *
+   * 与 `preRequestBudgetStop` 是一对，但刻意分成两个回调：那个负责**判**（超没超），
+   * 这个负责**喂**（到此刻花了多少）。不合并是因为判据的输入不止「本代理在途」一项
+   * （还有父会话已入账、配额、远程预算），喂数据的一方不该知道判据长什么样。
+   *
+   * 未注入时整段逻辑不存在 —— 注入方（`cli/app.ts`）只在配了预算的会话里装它，
+   * 与 `preRequestBudgetStop` 同一个开关，所以「只对配了预算的用户生效」仍然成立。
+   *
+   * 回调抛错按「不上报」处理（fail-open）：上报失败不该杀掉子代理任务。
+   */
+  onInFlightUsage?: (snapshot: InFlightBudgetSnapshot) => void;
   /** 循环检测器（外部创建，便于生命周期控制） */
   loopDetector: LoopDetector;
   /** 流式文本回调（用于 TUI 实时显示） */
@@ -1054,6 +1080,9 @@ async function runAgentLoopInner(
           if (summaryRace.exhausted) throw new Error(summaryRace.errorMessage);
           const resp = summaryRace.value;
           accumulateUsage(totalUsage, resp.usage);
+          // PR7 重修（D3-2）：总结轮也会真花钱，同样计入在途（这一轮跑完就结束，
+          // 但判据若要归因「最后花了多少」必须包含它）。
+          reportInFlightUsage();
           // M1：总结轮同样是「一次真实请求」，它才是最后一次 —— 进度里的上下文口径
           // 必须跟着走到这里，否则总结期涨上去的上下文在进度上永远看不到。
           try {
@@ -1148,6 +1177,31 @@ async function runAgentLoopInner(
     } catch (err: any) {
       log.warn("AGENT_LOOP", `请求前预算检查抛错，本次放行：${err?.message ?? String(err)}`);
       return null;
+    }
+  };
+
+  /**
+   * PR7 重修（D3-2）：把本次循环的**累计**用量报给预算判据（未注入时是空操作）。
+   *
+   * 为什么必须每轮上报、且必须在 `accumulateUsage` 之后：预算判据读的是
+   * 「父会话已入账 + 本代理在途」，在途这一项只能由这里提供。漏一处的后果见
+   * `SessionState.inFlightUsage` 的注释——C4 实测 $0.015 预算下烧到 $0.0441。
+   *
+   * 包 try/catch：上报方是 cli 层注入的回调（会做一次计价），它坏掉不该杀掉子代理
+   * 任务——与 `probeBudgetStop` 的 fail-open 同一个理由。
+   */
+  const reportInFlightUsage = (): void => {
+    if (!config.onInFlightUsage) return;
+    try {
+      // 传副本而不是 `totalUsage` 本身：调用方若把引用留到下一轮之后（记账、对比），
+      // 读到的会是后续轮次改写过的值。每轮一次浅拷贝，成本可忽略。
+      config.onInFlightUsage({
+        model,
+        provider: provider.name(),
+        usage: { ...totalUsage },
+      });
+    } catch (err: any) {
+      log.debug("AGENT_LOOP", `在途用量上报失败（不影响循环）：${err?.message ?? String(err)}`);
     }
   };
 
@@ -1624,6 +1678,11 @@ async function runAgentLoopInner(
     // 累加本轮 usage（统一走 accumulateUsage，补齐 cacheRead/cacheCreation 字段；
     // response.usage 已是本轮 processStream 累加好的完整 usage）
     accumulateUsage(totalUsage, response.usage);
+
+    // PR7 重修（D3-2）：本轮已真实计费 → 立刻让预算判据看到（下一轮的请求前检查
+    // 读的就是这个数）。放在这里而不是循环末尾：工具执行可能跑很久，
+    // 那段时间里判据应当已经知道这一轮花了多少。
+    reportInFlightUsage();
 
     // P1-6/P1-7：用真实 usage 校准子代理上下文估算器（防 compact 触发过晚 → 溢出）
     try {
