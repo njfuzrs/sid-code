@@ -377,7 +377,11 @@ export function renderContextReport(r: ContextReport, opts: RenderContextReportO
   if (r.lastActualPromptTokens > 0) {
     lines.push(
       `  ${p.secondary(padEndWidth("差额", reconLabelWidth))}  ${padStartWidth(fmtSigned(r.delta), reconTokenWidth)}` +
-        `  ${p.secondary("本轮新增 − 本地释放")}`,
+        // 取数说明：`used` 是发送量口径（扣本地释放），`lastActualPromptTokens` 是
+        // SessionState 的 stock（末次真实 prompt，压缩后仍保留压缩前旧值）。
+        // 两者是两个独立状态机，所以差额里会混入「压缩/清理造成的下降」，
+        // 不能标成「本轮新增 − 本地释放」——那样用户会算出对不上的数。
+        `  ${p.secondary("含压缩/清理下降，非单轮增量")}`,
     );
   }
 
@@ -399,7 +403,9 @@ export function renderContextReport(r: ContextReport, opts: RenderContextReportO
 
   // ── 固定开销来源（A4）：细目 + 残差，加总严格等于母项 ──
   const sources = r.fixedOverhead.sources;
-  const residual = r.fixedOverhead.residual;
+  // 取数层允许残差为负（`Σ sources + residual === 母项` 严格成立，见 fixed-overhead.ts），
+  // 但负数在面板上没有可行动含义：这里按显示口径钳 0，且只在 >0 时画「规则正文与其它」。
+  const residual = Math.max(0, r.fixedOverhead.residual);
   if (sources.length > 0 || residual > 0) {
     lines.push("");
     lines.push(p.accent("固定开销来源") + p.secondary("（「记忆/CLAUDE.md」的细目）"));

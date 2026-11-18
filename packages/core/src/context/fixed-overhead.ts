@@ -41,7 +41,7 @@ export interface FixedOverheadReport {
   /** 单项超过窗口 2% 时的提示（来源 + 处理方法） */
   hints: string[];
   /**
-   * A4：母项（「记忆/CLAUDE.md」分类）减去已列细目之和的残差，恒 ≥ 0。
+   * A4：母项（「记忆/CLAUDE.md」分类）减去已列细目之和的残差。
    *
    * 存在的理由：`sources` 只覆盖「记忆索引各段」与「`@` 导入文件」两类，而母项里还有
    * CLAUDE.md 正文、召回模式下的记忆摘要、会话记忆等没有单独列出的部分。不把这个差额
@@ -49,12 +49,15 @@ export interface FixedOverheadReport {
    * 只能怀疑哪个数字算错了。
    *
    * 口径：母项由调用方传入（`opts.memoryFilesTokens`，已校准），细目也走同一个校准系数，
-   * 所以 `Σ sources + residual === memoryFiles` 严格成立（钳位例外见下）。
+   * 所以 `Σ sources + residual === memoryFiles` **严格成立**（含负值情形）。
    * 未传母项时（旧调用方 / 单测）恒为 0，此时本字段无意义。
    *
-   * 残差为负 = 细目之和超过了母项，说明两边口径又漂了（例如注入端漏记 memory 分量）。
-   * 处置：钳到 0 显示 + 记一条 debug 日志，**不在面板上造一个负数**——负残差对用户
-   * 没有可行动的含义，对开发者则是一条需要排查的信号。
+   * 残差为负 = 细目之和略超母项，多为「细目逐项 round」与「母项 ceil + 最大余数分配」
+   * 的取整差（1~2 token）。**不钳到 0**：一旦钳 0，上面那条加总等式当场不成立，
+   * 用户把细目加总得到 42_000、母项 41_999，而残差行（只在 >0 时画）不显示，
+   * 没有任何一行解释差的 1 token。负值只在内部与断言里存在，渲染层用
+   * `max(0, residual)` 且仅在 >0 时画「规则正文与其它」那一行。
+   * 同时留一条 debug 日志：口径真漂了（例如注入端漏记 memory 分量）时这是信号。
    */
   residual: number;
 }
@@ -224,15 +227,20 @@ export function computeFixedOverheadSources(
   const mother = opts.memoryFilesTokens;
   let residual = 0;
   if (typeof mother === "number" && Number.isFinite(mother) && mother > 0) {
+    // **不钳到 0**：`Σ sources + residual === 母项` 是面板加总的唯一解释。
+    // 细目逐项 `round(raw × factor)`、母项走 `ceil` 再经 `allocateByWeight` 分配，
+    // 两者在取整边界上可能差 1~2 token，此时细目之和会**略大于**母项。
+    // 旧实现把 residual 钳 0，等式当场不成立：用户把细目加总得到 42_000，
+    // 却看到母项 41_999，而「规则正文与其它」那一行不显示（只在 >0 时画），
+    // 没有任何一行解释这 1 token 从哪来。
+    // 负值只在内部与断言里存在；渲染层用 `max(0, residual)` 且仅在 >0 时画行。
     residual = mother - listedTotal;
     if (residual < 0) {
-      // 负残差 = 细目之和超过母项。面板上显示负数对用户没有可行动含义，
-      // 但它是「注入端口径漂移」的真实信号（例如 memory 分量漏记），所以留日志。
       getLogger().debug(
         "CONTEXT",
-        `固定开销残差为负（细目 ${listedTotal} > 母项 ${mother}），已钳到 0；请检查 memory 分量记账`,
+        `固定开销残差为负（细目 ${listedTotal} > 母项 ${mother}，差 ${-residual}）——` +
+          `多为逐项 round 与母项 ceil 的取整差；已保留负值以维持「细目和 + 残差 === 母项」`,
       );
-      residual = 0;
     }
   }
 

@@ -20,6 +20,8 @@ import {
   estimateBlockTokens,
   estimateConversationTokens,
   estimateTextTokens,
+  TOOL_RESULT_STRUCTURAL_TOKENS,
+  TOOL_USE_STRUCTURAL_TOKENS,
 } from "@sid-code/core/context/token.ts";
 import type { ContentBlock, Message } from "@sid-code/core/llm/types.ts";
 
@@ -181,17 +183,34 @@ describe("PR1 访问者契约：Σ 上报量 === 返回值", () => {
   test("system / tools / overhead / 各内容块（含 tool_use +20、tool_result +10）全部被上报", () => {
     const messages = conversation();
     let visited = 0;
+    // 收集「内容块」分量的原始上报值。只断言 `visited === total` 是**恒真**的：
+    // 两边是同一个加数（token.ts:238-239），删掉 TOOL_USE_STRUCTURAL_TOKENS 会让两边
+    // 同时变小、断言照样通过——这正是 A1「结构开销漏算」无人守的原因。
+    // 结构开销必须用「上报分量 vs estimateBlockTokens」的差值单独锁住。
+    const reportedBlocks: { block: ContentBlock; tokens: number }[] = [];
     const total = estimateConversationTokens(messages, {
       systemPrompt: "系统提示词示例".repeat(20),
       toolCount: 6,
-      visit: (_part, tokens) => {
+      visit: (part, tokens) => {
         visited += tokens;
+        if (part.kind === "block") reportedBlocks.push({ block: part.block, tokens });
       },
     });
 
     expect(visited).toBe(total);
     // 反向确认这条夹具真的覆盖到了结构开销（否则「漏掉 +20」类变异测不出来）
     expect(total).toBeGreaterThan(estimateConversationTokens(messages, {}));
+
+    // tool_use：块分量的上报值必须 = 块本体 + 结构开销（+20）。
+    const toolUse = reportedBlocks.find((r) => r.block.type === "tool_use");
+    expect(toolUse).toBeDefined();
+    expect(toolUse!.tokens - estimateBlockTokens(toolUse!.block)).toBe(TOOL_USE_STRUCTURAL_TOKENS);
+    // tool_result 同理（+10）
+    const toolResult = reportedBlocks.find((r) => r.block.type === "tool_result");
+    expect(toolResult).toBeDefined();
+    expect(toolResult!.tokens - estimateBlockTokens(toolResult!.block)).toBe(
+      TOOL_RESULT_STRUCTURAL_TOKENS,
+    );
   });
 
   test("estimateBlockTokens 逐类分项精确（删掉任一分支都会变红）", () => {

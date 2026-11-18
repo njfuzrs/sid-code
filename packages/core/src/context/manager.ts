@@ -975,6 +975,13 @@ export class Manager {
     this.maskedState.clear();
     this.coldClearState.clear();
     this.staleClearState.clear();
+    // 2026-11-18：这个集合与 tokenFreedTracker 是**一对**——它只为给
+    // persistedRefCollapse 去重而存在（见 collapseOldPersistedReferences 注释）。
+    // 上面清了 tracker 却漏了它，后果不是「多记一次」而是**少记**：压缩后保留段里
+    // 那些 id 仍在集合中，再次折叠时 `has()` 命中 → 内容真的又瘦了一次，但
+    // recordCompact 被跳过，于是 `tracker 累计 === raw(全量) − raw(发送副本)` 不成立，
+    // 面板 freed 偏小、用来决策的 used 偏大。两者必须同时失效。
+    this.collapsedRefIds.clear();
     this.lastSendSnapshot = null;
     this.pendingSendCauses.add("compact");
     this.validatedPrefix = [];
