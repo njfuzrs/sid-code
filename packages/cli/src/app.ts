@@ -99,6 +99,8 @@ import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "@sid-code/core/config/prompt-lang.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "@sid-code/core/debug/index.ts";
 import { QueryEngine } from "@sid-code/core/query/engine.ts";
+// PR7（D3）：子代理预算闸复用主循环这一条判据，不另写一份（两处漂移 = costLimit 半失效）。
+import { checkPreRequestBudgetStop } from "@sid-code/core/query/loop.ts";
 import { resetCacheDetection, clearCacheBreaks } from "@sid-code/core/api/cache-detection.ts";
 import { resetTTLLatch } from "@sid-code/core/api/cache-ttl-latch.ts";
 import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
@@ -2099,6 +2101,9 @@ export class App {
     // 子代理执行完毕后按其实际使用的 model/provider 回写主会话 SessionState，
     // 否则子代理烧的 token/费用完全不计入总费用、costLimit 守卫对子代理失效。
     this.wireSubAgentUsageSink();
+    // PR7（D3）：把「请求前预算硬停」接到子代理。只对配了预算的会话生效——
+    // 没有 quota / budget 规则时本方法直接返回，子代理循环里整段检查短路。
+    this.wireSubAgentBudgetStop();
 
     // 根因修复：把 HookSystem 回填到 spawn-agent 类工具。这些工具在 cli.ts 注册时
     // HookSystem 尚未创建（构造时 hookSystem=undefined），导致子代理/workflow 的
@@ -2183,6 +2188,42 @@ export class App {
       }
       if (typeof maybe.setSessionOutputTokensReader === "function") {
         maybe.setSessionOutputTokensReader(sessionOutputTokens);
+      }
+    }
+  }
+
+  /**
+   * PR7（D3）：把「请求前预算硬停」接到子代理（只对配了预算的会话生效）。
+   *
+   * 为什么必须有这一条：`wireSubAgentUsageSink` 只保证子代理烧的钱**记得上账**，
+   * 但「记得上账」不等于「会被拦住」——主循环每轮请求前查一次预算，子代理从前
+   * 一次都不查，于是用户配了 costLimit 只关得住主代理：主代理超限停下，已派出去的
+   * 后台子代理继续按自己的 `maxTurns` 烧到自然结束。这就是 D3。
+   *
+   * 三个刻意的取舍：
+   * ① **未配预算就完全不注入**（`quotaManager` 与 `budgetTracker` 都没有时直接 return）。
+   *    不注入 → 循环里 `probeBudgetStop()` 短路 → 与改造前逐字节等价。这是本 PR
+   *    「只对配了预算的用户生效」的落地方式，也是它敢标 P2 的理由。
+   * ② 判据复用主循环那条 `checkPreRequestBudgetStop`，不在两处各写一份。两处各写
+   *    必然漂移，而漂移的后果是「主循环拦了、子代理照烧」——比没有这道闸更具欺骗性。
+   * ③ 「已花多少」在**调用时现算**（`getEffectiveTotalCostUSD`），不预先取快照：
+   *    后台子代理可能跑几十轮，闭包里存一份启动时的成本等于这道闸永远晚一整轮。
+   *
+   * 已知边界：spawn 模式（子代理跑在子进程里）不受这道闸约束——预算判据依赖的
+   * `QuotaManager` / `SessionState` 都在父进程，跨进程拿不到。spawn 仅在源码态
+   * （`entrypoints/headless.ts` 存在）启用，交付的编译二进制里不可用，故不阻塞本 PR。
+   */
+  private wireSubAgentBudgetStop(): void {
+    if (!this.quotaManager && !this.budgetTracker) return;
+    const probe = () =>
+      checkPreRequestBudgetStop(
+        { budgetTracker: this.budgetTracker, quotaManager: this.quotaManager },
+        this.sessionState.getEffectiveTotalCostUSD(),
+      );
+    for (const tool of this.toolRegistry.all()) {
+      const maybe = tool as { setPreRequestBudgetStop?: (fn: typeof probe) => void };
+      if (typeof maybe.setPreRequestBudgetStop === "function") {
+        maybe.setPreRequestBudgetStop(probe);
       }
     }
   }
