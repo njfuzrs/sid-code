@@ -217,4 +217,21 @@ describe("PR0 BeforeModel 上下文估算四件套", () => {
       expect(key in pairLine.request).toBe(false);
     }
   });
+
+  test("loop 写入的 ctx_estimated_tokens 必须是全量历史口径（getHistoryTokens）", () => {
+    // 契约：预测发送量 = ctx_estimated_tokens − ctx_freed_tokens（方案 §8.3、
+    // hook/types.ts 字段注释）。若这里取的是 getSendTokens()（已扣 freed 的发送量），
+    // 再减一次 freed 就是**双重扣减**，M1 会被系统性放大。
+    //
+    // 为什么这条值得一个源码字面量断言（而不是行为测试）：PR2 把 27 处调用点统一迁到
+    // 「发送量 / 全量历史」两个具名 API 时，把这一处也一起换掉了——它属于「度量」语义，
+    // 该用 getHistoryTokens。这类批量迁移的误伤在 freed 恒为 0 的会话上**完全看不出来**
+    //（减法恒等），直到 2026-11-18 的 E1 端到端验收在有释放量的会话上算出 S1 31.1% /
+    // S2 117.7% 的 M1 才暴露。行为测试要造出「有 freed 且已校准」的完整 loop 轨迹才能
+    // 捕获它，成本远高于直接钉住这一行取值。
+    const src = readFileSync(new URL("../../src/query/loop.ts", import.meta.url), "utf8");
+    const m = src.match(/ctx_estimated_tokens:\s*([^,\n]+)/);
+    expect(m, "loop.ts 里应当有 ctx_estimated_tokens 的载荷写入").not.toBeNull();
+    expect(m![1]!.trim()).toBe("ctxMgr.getHistoryTokens(toolCount)");
+  });
 });
