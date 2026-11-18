@@ -838,9 +838,14 @@ function collectMemorySections(ctx: SystemPromptContext, out: string[]): void {
 /**
  * §12 P0-1 完整版：统计并上报 system prompt 的命名段 token 数。
  *
- * `candidates` 是各记忆类段的原始文本（可能因截断未全部进入 content）。逐段用
- * `content.includes()` 判定是否真的在最终提示词里，只累加在场的段——保证 /context
- * 的「记忆」类别不虚报被截断掉的内容。
+ * `candidates` 是各记忆类段的原始文本（可能因截断未全部进入 content）。逐段在
+ * content 里定位起点，只累加**实际留在最终提示词里的那一段前缀**——保证 /context
+ * 的「记忆」类别既不虚报被丢弃的段，也不虚报被截断段的尾部。
+ *
+ * A5（2026-11-17）：旧实现用首 200 字符判「在场」，命中就加全文估算。截断发生时
+ * （truncateToLimit 只保留附件的前缀 + `[内容已截断]` 标记）于是把已经不存在的尾部
+ * 也算了进去，记忆分类与截断前一样大。它被 `min(memoryTokens, rawSystemPrompt)` 钳住，
+ * 偏差会转移到「系统提示词」分类（让它偏小）。现在改为按公共前缀取实际在场长度。
  */
 function reportSectionTokens(
   ctx: SystemPromptContext,
@@ -851,11 +856,31 @@ function reportSectionTokens(
   let memory = 0;
   for (const text of candidates) {
     if (!text) continue;
-    // 截断后的段可能只剩前缀，用首 200 字符做在场判定（比全文 includes 更耐截断）
+    // 截断后的段可能只剩前缀，用首 200 字符做在场判定（比全文 includes 更耐截断）。
+    // 不足 200 字符的段（截断点落在 probe 之内）会判为不在场，与旧行为一致。
     const probe = text.length > 200 ? text.slice(0, 200) : text;
-    if (content.includes(probe)) memory += estimateTokens(text);
+    const start = content.indexOf(probe);
+    if (start < 0) continue;
+    // 从上一步的起点起，原文与最终 content 的公共前缀长度就是「实际占着上下文」的长度：
+    // 未截断时等于 text.length（结果与改动前逐位相同）；被截断时只到截断点为止。
+    const presentLength = commonPrefixLength(text, content, start);
+    memory += estimateTokens(text.slice(0, presentLength));
   }
   ctx.onSectionTokens({ memory });
+}
+
+/**
+ * 求 `text` 与 `content[start..]` 的最长公共前缀长度。
+ *
+ * 按下标逐个 code unit 比较，不复制 `content.slice(start)` —— content 常有几万字符，
+ * 而本函数只被记忆类段（4 段以内）调用一次，O(段长) 足够。口径与 estimateTokens 的
+ * 逐 charCode 分类一致，切在代理对中间时也只会让那半个字符按非 ASCII 计，不影响结果。
+ */
+function commonPrefixLength(text: string, content: string, start: number): number {
+  const max = Math.min(text.length, content.length - start);
+  let i = 0;
+  while (i < max && text.charCodeAt(i) === content.charCodeAt(start + i)) i++;
+  return i;
 }
 
 /**
