@@ -159,6 +159,13 @@ export interface UsageSnapshot {
   totalAPIDuration: number;
   totalToolDuration: number;
   modelUsage: Record<string, ModelUsageStats>;
+  /**
+   * 会话级「当前上下文」单值（stock 口径，A7 / PR5）。见 {@link SessionState.mainContextStock}。
+   *
+   * 可选：本次改动**之前**落盘的快照没有这个字段，`hydrateUsage` 会回退到
+   * 「当前主模型」那一份 `modelUsage[...].stockPromptTokens`，不回退到跨模型求和。
+   */
+  mainContextStock?: number;
 }
 
 /**
@@ -208,6 +215,21 @@ export class SessionState {
   totalToolDuration: number = 0;
   /** 按模型分开的用量统计 */
   modelUsage: Record<string, ModelUsageStats> = {};
+  /**
+   * 会话级「当前上下文」单值（stock 口径，**归一化 promptTotal**）。
+   *
+   * 这是 footer `↑` / `/cost` 的 `contextNow` 唯一取数源（见 {@link getStockPromptTokens}）。
+   * 只由**主循环的有效调用**写入，规则三条：
+   * - 子代理 usage-sink 显式传 `stock: "none"`：子代理有自己的上下文窗口，它的输入大小
+   *   与主会话无关；何况 sink 传进来的是几十轮的**累计值**，混进来会让 ↑ 从 12.9 万跳到 120 万；
+   * - 作废重试（`discarded`）不写：那次响应根本没进上下文，写了就是个幽灵值；
+   * - `/model` 切换后是**覆盖**：每次主循环调用直接改写这个字段，跨模型不求和
+   *   （求和会把两个上下文的窗口叠成一个数）。
+   *
+   * 各模型自己的 {@link ModelUsageStats.stockPromptTokens} 仍保留为按模型明细，
+   * 但**不参与**本口径的计算。
+   */
+  mainContextStock: number = 0;
   /**
    * D13：逐次入账明细的**有界**环形缓冲（最近 REQUEST_LOG_CAP 条）。
    *
@@ -357,6 +379,23 @@ export class SessionState {
      * `calculateCostBreakdown` 的同名参数（api/cost-tracker.ts）是同一个语义。
      */
     at?: Date,
+    /**
+     * 本次 usage 是否计入**会话级「当前上下文」单值**（{@link mainContextStock}，A7 / PR5）。
+     *
+     * - `"main"`（默认）：主循环的调用。正常轮、作废重试、maxTurns 强制总结轮都发的是
+     *   主会话的上下文，都该写（作废重试由 `discarded` 单独挡住，见下）。
+     * - `"none"`：子代理 usage-sink（`agent/usage-sink.ts`）显式传入。子代理有自己的
+     *   上下文窗口，它的输入大小与主会话「当前上下文有多大」无关；何况 sink 传进来的是
+     *   几十轮的**累计值**，写进去会让 footer ↑ 从 12.9 万跳成 120 万（实测见方案附录 B P6）。
+     *
+     * 为什么不并进 `discarded`：两者语义无关——作废重试是「主会话的一次失败调用」，
+     * 子代理是「另一个窗口的成功调用」。合并会让「子代理的作废重试」这类组合无从表达
+     * （现在它同时满足 stock="none" 与 discarded=true，各管各的）。
+     *
+     * 为什么放在 `at` 之后：`at` 占第 8 位、已有调用点（cost-report 的时段测试）按位传参，
+     * 插在它前面会把 Date 静默当成 stock 值。
+     */
+    stock: "main" | "none" = "main",
   ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 初始化模型统计
@@ -399,9 +438,13 @@ export class SessionState {
     // 作废尝试（discarded）**不覆盖 stock 口径**：它记录的是"当前上下文有多大"，
     // 而作废的那次响应已经不存在于上下文里。覆盖会让状态栏显示一个幽灵值。
     // flow 口径（下面三行累加）照记 —— 钱是真花了。
+    // A7 / PR5：会话级单值 mainContextStock 与 stats.stockPromptTokens 同源同值，
+    // 但只有主循环的有效调用能写它（stock="none" 的子代理 sink 只留按模型明细）。
     if (!discarded) {
       stats.inputTokens = usage.inputTokens;
-      stats.stockPromptTokens = normalizeCacheUsage(usage, prov).promptTotal;
+      const promptTotal = normalizeCacheUsage(usage, prov).promptTotal;
+      stats.stockPromptTokens = promptTotal;
+      if (stock === "main") this.mainContextStock = promptTotal;
     } else {
       // 作废量单独留痕，让"重试白烧了多少"可直接查（否则混进 cumulative 后无从拆解）。
       stats.discardedRequests = (stats.discardedRequests ?? 0) + 1;
@@ -493,6 +536,9 @@ export class SessionState {
     this.totalAPIDuration = 0;
     this.totalToolDuration = 0;
     this.modelUsage = {};
+    // A7：会话级单值必须随 /clear 归零 —— 新会话没有历史上下文，
+    // 留着旧值会让 footer ↑ 显示上一个会话的窗口大小（零值隐藏规则也管不到它）。
+    this.mainContextStock = 0;
     // D13：逐次明细随计数器一起清（/clear 开新会话，旧会话的轮次分析不该残留）。
     this.requestLog = [];
   }
@@ -649,6 +695,9 @@ export class SessionState {
       totalAPIDuration: this.totalAPIDuration,
       totalToolDuration: this.totalToolDuration,
       modelUsage: JSON.parse(JSON.stringify(this.modelUsage)) as Record<string, ModelUsageStats>,
+      // A7：会话级单值必须一起落盘。少了它，resume 后 footer ↑ 只能靠
+      // 「当前主模型那份明细」回推（旧快照路径），而新快照本来就该逐位还原。
+      mainContextStock: this.mainContextStock,
     };
   }
 
@@ -658,9 +707,15 @@ export class SessionState {
    * 直接覆盖当前累计值——resume 时 SessionState 是全新零值实例，覆盖等价于「继续之前的
    * 累计」。回灌后后续 updateUsage 会在此基础上继续累加，Footer 展示连续不断档。
    *
+   * @param currentModel resume 后的主模型名，**只用于旧快照的 stock 回退**（A7 / PR5）。
+   *   快照里没有 `mainContextStock` 时（本次改动之前落盘的），回退到「当前主模型」那一份
+   *   `modelUsage[currentModel].stockPromptTokens`，**不回退到跨模型求和**——求和正是
+   *   本 PR 要修的病：`/model` 切换过的旧会话会在 resume 后把两个上下文叠成一个数。
+   *   不传时保持 0：宁可不显示，也不显示一个叠加出来的错数。
+   *
    * 容错：快照缺字段/类型不符时按零值兜底，绝不因脏快照抛错阻断恢复。
    */
-  hydrateUsage(snapshot: UsageSnapshot | undefined | null): void {
+  hydrateUsage(snapshot: UsageSnapshot | undefined | null, currentModel?: string): void {
     if (!snapshot || typeof snapshot !== "object") return;
     this.totalCostUSD = typeof snapshot.totalCostUSD === "number" ? snapshot.totalCostUSD : 0;
     this.sideCostUSD = typeof snapshot.sideCostUSD === "number" ? snapshot.sideCostUSD : 0;
@@ -729,6 +784,16 @@ export class SessionState {
       }
     }
     this.modelUsage = restored;
+
+    // A7：会话级单值优先取快照字段。旧快照（本次改动之前落盘）没有它 → 回退到
+    // 「当前主模型」那一份明细，**不回退到求和**（求和会把 /model 切换过的两个上下文叠加）。
+    const snapshotStock = snapshot.mainContextStock;
+    if (typeof snapshotStock === "number" && Number.isFinite(snapshotStock) && snapshotStock >= 0) {
+      this.mainContextStock = snapshotStock;
+    } else {
+      const fallback = currentModel ? restored[currentModel]?.stockPromptTokens : undefined;
+      this.mainContextStock = typeof fallback === "number" ? fallback : 0;
+    }
   }
 
   /**
@@ -1078,23 +1143,17 @@ export class SessionState {
   }
 
   /**
-   * 获取末次完整输入 token（stock 口径，**归一化 promptTotal**，各模型 stats.stockPromptTokens 之和）。
+   * 获取「当前上下文有多大」（stock 口径，**会话级单值**，A7 / PR5）。
    *
-   * 每次 API 调用覆盖写入 `normalizeCacheUsage(usage, provider).promptTotal`，即末次完整 prompt 大小：
-   * - **Anthropic**：input_tokens（未命中余量）+ cache_read + cache_creation = 真实末次上下文。
-   * - **OpenAI/DeepSeek**：prompt_tokens（本就含命中）= 完整上下文。
+   * 直接返回 {@link mainContextStock}，**不再跨模型求和**。求和的两个错源：
+   * - 子代理 sink 的累计值混进来（footer ↑ 从 12.9 万跳到 120 万，方案附录 B P6 实测）；
+   * - `/model` 切换后两个模型的末次输入叠成一个数（两个上下文窗口不代表"当前上下文"）。
    *
-   * 两家统一为「末次完整输入」，是**状态栏「输入」展示的正确口径**（反映当前上下文有多大）。
-   * 修复了此前直接用 stats.inputTokens 在 Anthropic 下只显示 cache miss 增量、严重低估上下文的问题。
-   *
-   * 多模型会话场景：各模型 stock 值简单求和，实践中绝大多数会话只有单一模型。
+   * 各模型自己的 `stats.stockPromptTokens` 仍保留为按模型明细（/stats、/cost 拆解用），
+   * 但不再参与本口径。这是**状态栏「输入」与 /cost contextNow 的唯一取数源**。
    */
   getStockPromptTokens(): number {
-    let total = 0;
-    for (const stats of Object.values(this.modelUsage)) {
-      total += stats.stockPromptTokens;
-    }
-    return total;
+    return this.mainContextStock;
   }
 
   /**
