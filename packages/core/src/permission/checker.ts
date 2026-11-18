@@ -53,7 +53,7 @@ import { guardOf } from "./decision-telemetry.ts";
 import { isSafetyConfirmation } from "./safety-confirmation.ts";
 // 只取类型：`import type` 编译期擦除，不会把 ToolClassifier 的运行时代码拉进权限判定模块
 // （classifier 实例仍然只通过 setToolClassifier 注入，见下方字段声明）。
-import type { PathVerdict } from "./tool-classifier.ts";
+import type { PathVerdict, ToolClassifyResult } from "./tool-classifier.ts";
 import { classifyBashShape, collectEnvPrefixVars, resolveCdTargetGitTrust } from "./bash-shape.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
@@ -346,6 +346,43 @@ function shouldSkipFastPath(reason: PermissionDecisionReason | undefined): boole
   if (reason.type === "pathValidation") return true;
   if (reason.type === "safetyCheck") return reason.classifierApprovable === true;
   return false;
+}
+
+/** `classifierReason` 的落盘上限：模型输出长度无上界，一条跑偏的理由不该撑大整条轨迹行 */
+const CLASSIFIER_REASON_MAX_CHARS = 200;
+
+function truncateClassifierReason(reason: string): string {
+  return reason.length > CLASSIFIER_REASON_MAX_CHARS
+    ? `${reason.slice(0, CLASSIFIER_REASON_MAX_CHARS)}…`
+    : reason;
+}
+
+/**
+ * PR0（C1）：auto 档「分类器说话」那一次要留下的结构化事实（耗时 / 风险 / 理由）。
+ *
+ * 此前只有**回退**分支带一个 `autoClassifier` 枚举，于是 auto 档最想回答的三个问题
+ * 全是空白：分类器放行了多少次、放行里有多少是零成本的快速路径、每次判定花了多少毫秒。
+ *
+ * 返回的字段**不含 `autoClassifier` 本身**：放行时它是 `fast-path` / `llm-safe`，
+ * 回退时是 `unsafe` / `unavailable` / `error`，两侧口径不同，由调用点各自决定。
+ *
+ * 两处刻意不落：
+ * - `via=fast-path`：没发请求也就没有 `latencyMs`；落 `classifier_ms: 0` 会把「零成本」
+ *   记成「一次耗时 0ms 的调用」，与真的 0ms 返回混在一起。
+ * - `classifierUnavailable=true`：此时 `risk` 恒为占位值 `medium`，不是模型判的，
+ *   落盘会变成「分类器说风险中等」这种没发生过的事实。
+ */
+function autoClassifyFactsOf(result: ToolClassifyResult): {
+  classifierMs?: number;
+  classifierRisk?: string;
+  classifierReason?: string;
+} {
+  if (result.via === "fast-path") return {};
+  const facts: { classifierMs?: number; classifierRisk?: string; classifierReason?: string } = {};
+  if (result.latencyMs !== undefined) facts.classifierMs = result.latencyMs;
+  if (result.via === "llm" && !result.classifierUnavailable) facts.classifierRisk = result.risk;
+  facts.classifierReason = truncateClassifierReason(result.reason);
+  return facts;
 }
 
 /**
@@ -789,6 +826,13 @@ export class PermissionChecker implements Checker {
    */
   auditConfirmationOutcome(req: PermissionRequest, outcome: ConfirmationOutcome): void {
     const resource = extractFilePath(req) || (req.input as any)?.command || "";
+    // PR0（C2）：把「为什么要问」里的分类器结论带进审计。此前这一行只有
+    // `"reason":"用户批准"`，于是触发会话里「分类器为什么判 unsafe」在审计侧
+    // 完全查不到（轨迹里也只有枚举，理由没落）。
+    // 只取固定枚举与被截断的一句话理由，不落整个 metadata —— 里面可能有其它字段
+    // （如 `denialTrackingTriggered` 布尔位），审计的字段集应当是可枚举的。
+    const autoClassifier = outcome.metadata?.autoClassifier;
+    const classifierReason = outcome.metadata?.classifierReason;
     this.audit(req, {
       timestamp: new Date().toISOString(),
       type: "tool_use",
@@ -799,6 +843,12 @@ export class PermissionChecker implements Checker {
       decisionReason: outcome.decisionReason,
       user_confirmed: outcome.source === "user",
       confirm_source: outcome.source,
+      ...(typeof autoClassifier === "string"
+        ? { auto_classifier: truncateClassifierReason(autoClassifier) }
+        : {}),
+      ...(typeof classifierReason === "string"
+        ? { classifier_reason: truncateClassifierReason(classifierReason) }
+        : {}),
     });
   }
 
@@ -2361,6 +2411,10 @@ export class PermissionChecker implements Checker {
         | "unsafe"
         | "unavailable"
         | "error" = "absent";
+      // PR0（C1）：分类器**说过话**的那一次要留下的耗时 / 风险 / 理由，放行与回退共用一份。
+      // 此前只有回退分支带 `autoClassifier`，放行分支直接 return 且不带 metadata —— 于是
+      // auto 档最想回答的两个问题全是空白：分类器放行了多少次、其中多少是零成本的快速路径。
+      let autoClassifyFacts: ReturnType<typeof autoClassifyFactsOf> = {};
       const toolClassifier = this.getToolClassifier();
       if (toolClassifier?.isAvailable()) {
         try {
@@ -2400,6 +2454,9 @@ export class PermissionChecker implements Checker {
               // M1b：工作区外读写 / 可执行代码路径必须由分类器看上下文，零成本快路径退场
               skipFastPath: shouldSkipFastPath(result.decisionReason),
             });
+            // PR0：先取「分类器说了什么」的事实，放行与回退共用同一份——分两处手写会让
+            // 「fast-path 多带了 classifier_ms / llm-safe 忘了带 risk」这种漂移没有门禁能发现。
+            autoClassifyFacts = autoClassifyFactsOf(classifyResult);
             if (!classifyResult.classifierUnavailable && classifyResult.safe) {
               log.info(
                 "PERMISSION",
@@ -2418,6 +2475,14 @@ export class PermissionChecker implements Checker {
                 allowed: true,
                 decisionReason: { type: "mode", mode: "auto" },
                 step: "auto",
+                // PR0（C1）：**放行也要留痕**。此前这条路径直接 return、不带 metadata，
+                // 于是「auto 档到底自动放行了多少次」在轨迹与审计里都是空白 —— 只能靠
+                // 反推（没弹窗的调用），而反推分不出「分类器批的」与「规则直放的」。
+                // `via` 决定枚举值：`fast-path` = 一分钱没花，`llm-safe` = 花了一次请求买来的结论。
+                metadata: {
+                  autoClassifier: classifyResult.via === "fast-path" ? "fast-path" : "llm-safe",
+                  ...autoClassifyFacts,
+                },
               };
             }
             // 分类器判不安全或不可用：落到下方正常确认流程（needsConfirmation）
@@ -2430,10 +2495,19 @@ export class PermissionChecker implements Checker {
         } catch (err: any) {
           log.warn("PERMISSION", `auto 模式分类器异常(${err.message})，回退人工确认`);
           autoFallback = "error";
+          // PR0：理由用异常消息本身，而不是「分类器异常」这个常量 —— 超时 / 401 /
+          // 模型返回结构变更三种情况的处置完全不同，常量会让它们在盘上长得一样。
+          // 只进本地轨迹（collector 落 classifier_reason，上传前由 LOCAL_ONLY 剥掉）。
+          autoClassifyFacts = {
+            classifierReason: truncateClassifierReason(String(err?.message ?? "分类器异常")),
+          };
         }
       }
       // 分类器不可用或未放行 → 返回 needsConfirmation，让上层三路竞争/用户弹窗处理
-      result = { ...result, metadata: { ...result.metadata, autoClassifier: autoFallback } };
+      result = {
+        ...result,
+        metadata: { ...result.metadata, autoClassifier: autoFallback, ...autoClassifyFacts },
+      };
     }
 
     // dontAsk 模式：ask → deny（绝不弹窗，对齐 Claude Code 语义）

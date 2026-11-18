@@ -357,12 +357,28 @@ export function logPermissionAllow(
      */
     inputSummary?: Record<string, unknown>;
     /**
-     * B19 / B20 / A9：工具调用 id、结构性闸门标签、auto 分类器回退成因。**只进本地轨迹**，
-     * 不进遥测 payload（外发 schema 不变）。口径见 `permission/decision-telemetry.ts`。
+     * B19 / B20 / A9：工具调用 id、结构性闸门标签、auto 分类器结论。口径见
+     * `permission/decision-telemetry.ts`。
+     *
+     * PR0 起 `autoClassifier` 有了**放行**取值（`fast-path` / `llm-safe`）并进遥测外发：
+     * 它是固定枚举、不含用户数据，是「auto 档替人省了多少次弹窗」唯一可外发的分子。
      */
     toolUseId?: string;
     guard?: string;
     autoClassifier?: string;
+    /**
+     * PR0（C2）：分类器这次判定的耗时（毫秒）。数字，**进遥测** ——
+     * 「auto 档比人工弹窗快多少」需要它与放行次数配成一对分子。
+     * 快速路径不带（没发请求），**不填 0**：0 会被读成一次 0ms 的调用。
+     */
+    classifierMs?: number;
+    /** PR0（C2）：分类器给的风险等级（闭集标签）。只进本地轨迹，不进遥测 */
+    classifierRisk?: string;
+    /**
+     * PR0（C2）：分类器给的一句话理由。**只进本地轨迹，不进遥测**：
+     * 它是模型自由生成的文本，长度无上界、可能含路径或命令片段（本文件顶部第 2 条硬约束）。
+     */
+    classifierReason?: string;
     /**
      * B12：危险模式名 / 严重度 / bash 命令形状桶 / env 前缀变量名 / git 仓库归属。
      * **只进本地轨迹**，不进遥测 payload（外发 schema 不变）。口径见
@@ -386,6 +402,12 @@ export function logPermissionAllow(
     needed_prompt: opts.needsPrompt,
     execution_context: v(opts.context),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
+    // PR0（C2）：外发只出「枚举 + 数字」两个安全形状 —— `auto_classifier` 是闭集标签、
+    // `classifier_ms` 是毫秒数，都不含用户数据（隐私约束见本文件顶部第 1/2 条）。
+    // `classifier_reason` **刻意不外发**：它是模型自由生成的文本，长度无上界、
+    // 可能复述命令片段或路径，与 `input_summary` 属同一类，只能留在本地轨迹。
+    ...(opts.autoClassifier ? { auto_classifier: v(opts.autoClassifier) } : {}),
+    ...(opts.classifierMs !== undefined ? { classifier_ms: opts.classifierMs } : {}),
   });
   // B11：同一个出口落进本地轨迹。挂在门面里而非各调用点 —— 见 decision-telemetry.ts 头注释。
   // 不受遥测开关管辖：轨迹是本地数据，不外发。
@@ -416,6 +438,11 @@ export function logPermissionAllow(
     ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
     ...(opts.guard ? { guard: opts.guard } : {}),
     ...(opts.autoClassifier ? { autoClassifier: opts.autoClassifier } : {}),
+    // PR0（C2）：分类器耗时 / 风险 / 理由。三个字段都只写进本地轨迹 ——
+    // 理由见上面对 opts 的注释（前两个外发版已在 emit 里单列）。
+    ...(opts.classifierMs !== undefined ? { classifierMs: opts.classifierMs } : {}),
+    ...(opts.classifierRisk ? { classifierRisk: opts.classifierRisk } : {}),
+    ...(opts.classifierReason ? { classifierReason: opts.classifierReason } : {}),
     // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属（只进本地轨迹）
     ...(opts.dangerPattern ? { dangerPattern: opts.dangerPattern } : {}),
     ...(opts.dangerSeverity ? { dangerSeverity: opts.dangerSeverity } : {}),
@@ -469,12 +496,28 @@ export function logPermissionDeny(
      */
     inputSummary?: Record<string, unknown>;
     /**
-     * B19 / B20 / A9：工具调用 id、结构性闸门标签、auto 分类器回退成因。**只进本地轨迹**，
-     * 不进遥测 payload（外发 schema 不变）。口径见 `permission/decision-telemetry.ts`。
+     * B19 / B20 / A9：工具调用 id、结构性闸门标签、auto 分类器结论。口径见
+     * `permission/decision-telemetry.ts`。
+     *
+     * PR0 起 `autoClassifier` 有了**放行**取值（`fast-path` / `llm-safe`）并进遥测外发：
+     * 它是固定枚举、不含用户数据，是「auto 档替人省了多少次弹窗」唯一可外发的分子。
      */
     toolUseId?: string;
     guard?: string;
     autoClassifier?: string;
+    /**
+     * PR0（C2）：分类器这次判定的耗时（毫秒）。数字，**进遥测** ——
+     * 「auto 档比人工弹窗快多少」需要它与放行次数配成一对分子。
+     * 快速路径不带（没发请求），**不填 0**：0 会被读成一次 0ms 的调用。
+     */
+    classifierMs?: number;
+    /** PR0（C2）：分类器给的风险等级（闭集标签）。只进本地轨迹，不进遥测 */
+    classifierRisk?: string;
+    /**
+     * PR0（C2）：分类器给的一句话理由。**只进本地轨迹，不进遥测**：
+     * 它是模型自由生成的文本，长度无上界、可能含路径或命令片段（本文件顶部第 2 条硬约束）。
+     */
+    classifierReason?: string;
     /** B12：同 logPermissionAllow，只进本地轨迹 */
     dangerPattern?: string;
     dangerSeverity?: string;
@@ -495,6 +538,9 @@ export function logPermissionDeny(
     execution_context: v(opts.context),
     ...(opts.reasonType ? { reason_type: v(opts.reasonType) } : {}),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
+    // PR0（C2）：同 allow，外发只出「枚举 + 数字」，`classifier_reason` 留在本地轨迹。
+    ...(opts.autoClassifier ? { auto_classifier: v(opts.autoClassifier) } : {}),
+    ...(opts.classifierMs !== undefined ? { classifier_ms: opts.classifierMs } : {}),
   });
   // 同 allow：两个条件缺一不可（prompted + source=user），consume 保证一次确认只对应一条决策。
   const confirmVia = opts.needsPrompt && opts.source === "user" ? consumeConfirmVia() : null;
@@ -521,6 +567,11 @@ export function logPermissionDeny(
     ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
     ...(opts.guard ? { guard: opts.guard } : {}),
     ...(opts.autoClassifier ? { autoClassifier: opts.autoClassifier } : {}),
+    // PR0（C2）：分类器耗时 / 风险 / 理由。三个字段都只写进本地轨迹 ——
+    // 理由见上面对 opts 的注释（前两个外发版已在 emit 里单列）。
+    ...(opts.classifierMs !== undefined ? { classifierMs: opts.classifierMs } : {}),
+    ...(opts.classifierRisk ? { classifierRisk: opts.classifierRisk } : {}),
+    ...(opts.classifierReason ? { classifierReason: opts.classifierReason } : {}),
     // B12：危险成因 / bash 形状 / env 前缀变量 / git 归属（只进本地轨迹）
     ...(opts.dangerPattern ? { dangerPattern: opts.dangerPattern } : {}),
     ...(opts.dangerSeverity ? { dangerSeverity: opts.dangerSeverity } : {}),
