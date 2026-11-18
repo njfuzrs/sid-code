@@ -32,6 +32,7 @@ import type {
   ServiceHit,
   SmokeCase,
   StepOutput,
+  TuiStep,
 } from "./types.ts";
 
 export const REPO_ROOT = resolve(import.meta.dir, "../../..");
@@ -207,6 +208,25 @@ const DAEMON_STOP_GRACE_MS = 5_000;
 /** JSC 的 RegExp.source 会把中文转成 \\uXXXX，失败信息里还原成原文 */
 function readableSource(re: RegExp): string {
   return re.source.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+/**
+ * TUI 剧本的 `${CASE_ROOT}` 替换，与回放夹具同一套占位符规则。
+ *
+ * 剧本要往输入框里塞用例仓里的绝对路径（如拖拽路径探针），而用例仓是运行时创建的临时
+ * 目录。`wait` 的字符串形态也要替换：屏幕上回显的就是替换后的路径。RegExp 不替换——
+ * 它的原文由作者控制，替换会改变语义。
+ */
+function substituteTuiSteps(steps: TuiStep[], repo: string): TuiStep[] {
+  return steps.map((step) => {
+    if (step.kind === "type" || step.kind === "raw") {
+      return { ...step, text: substituteCaseRoot(step.text, repo) };
+    }
+    if (step.kind === "wait" && typeof step.screen === "string") {
+      return { ...step, screen: substituteCaseRoot(step.screen, repo) };
+    }
+    return step;
+  });
 }
 
 /** 返回 null 表示步骤本身正常结束（判据交给断言），否则返回失败描述 */
@@ -621,7 +641,7 @@ export async function runCase(
       const r = await driveTui(mainArgv, {
         cwd: repo,
         env: isolatedEnv(home, configDir, replayFile, { TERM: "xterm-256color", ...def.env }),
-        steps: def.tui,
+        steps: substituteTuiSteps(def.tui, repo),
         timeoutMs: def.timeoutMs ?? CASE_TIMEOUT_MS,
       });
       exitCode = r.exitCode;

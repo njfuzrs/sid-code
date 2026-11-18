@@ -1,0 +1,2 @@
+{"index":1,"response":{"content":[{"type":"text","text":"已记录拖拽路径一"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"已记录拖拽路径二"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
