@@ -222,6 +222,22 @@ describe("computeMetrics：分母三条铁律", () => {
     expect(m.m2P5).toBeCloseTo(-9, 6);
     expect(m.errP95).toBeCloseTo(9, 6);
   });
+
+  test("estimated < freed（物理上不可能）单独计数 —— 它是口径漂移，不是估算退步", () => {
+    // 为什么单列这个计数：PR2 曾把 loop 里 ctx_estimated_tokens 的取值从
+    // estimateTokens()（全量历史）换成 getSendTokens()（发送量，已扣 freed），
+    // 于是本脚本的 `estimated − freed` 变成双重扣减。它的现象是 M1 突然翻几倍，
+    // 看起来完全像「估算质量变差」——2026-11-18 的 E1 端到端验收里 S2 就从 5.5%
+    // 虚高到 117.7%。若不显式标出，下一个人会去优化错误的对象。
+    const m = metrics([
+      base({ index: 1, estimated: 100, freed: 0, actual: 100 }),
+      base({ index: 2, estimated: 30, freed: 80, actual: 100 }), // 全量不可能小于释放量
+    ]);
+    expect(m.implausibleEstimates).toBe(1);
+    // 全量历史恒 ≥ 释放量：正常轨迹这一格必须是 0
+    const ok = metrics([base({ index: 1, estimated: 100, freed: 40, actual: 60 })]);
+    expect(ok.implausibleEstimates).toBe(0);
+  });
 });
 
 describe("countCompactionsFromMessages", () => {

@@ -104,6 +104,17 @@ export interface SessionMetrics {
   unpairedAfter: number;
   /** 缺少 PR0 四字段的老轨迹调用数（E0 前置条件核查用） */
   missingEstimateFields: number;
+  /**
+   * `ctx_estimated_tokens < ctx_freed_tokens` 的调用数 —— **物理上不可能**的组合，
+   * 只可能意味着字段语义漂移。
+   *
+   * 历史（2026-11-18 E1 端到端验收）：PR2 把 loop 里 `ctx_estimated_tokens` 的取值
+   * 从 `estimateTokens()`（全量历史）换成了 `getSendTokens()`（发送量，已扣 freed），
+   * 于是本脚本的 `estimated − freed` 变成双重扣减，M1 在 S2 上从 5.5% 虚高到 117.7%。
+   * 这类漂移只在「freed > 0」时显形：E0 全会话 freed 恒 0，减法恒等，完全看不出来。
+   * 所以把这条不可能关系做成机械检测——它红就是口径又漂了，不是数据噪声。
+   */
+  implausibleEstimates: number;
 }
 
 const CONTEXT_OVERFLOW_RE =
@@ -309,6 +320,11 @@ export function computeMetrics(params: {
     unpairedBefore: params.unpairedBefore,
     unpairedAfter: params.unpairedAfter,
     missingEstimateFields: params.missingEstimateFields,
+    // `estimated < freed` 物理上不可能（全量历史减去释放量不会小于释放量本身）：
+    // 出现即说明 ctx_estimated_tokens 又被写成了「已扣 freed 的发送量」，
+    // 此时 `estimated − freed` 是双重扣减，M1/M2 全部失真。必须显式报出来，
+    // 不能让它伪装成「模型估算退步」。
+    implausibleEstimates: inDenominator.filter((c) => c.estimated < c.freed).length,
   };
 }
 
@@ -460,6 +476,19 @@ function printTable(rows: SessionMetrics[]): void {
     for (const r of extra) {
       console.log(
         `  ${r.label}: 未配对 before=${r.unpairedBefore} after=${r.unpairedAfter}，缺 PR0 字段=${r.missingEstimateFields}`,
+      );
+    }
+  }
+  // 口径漂移是**读法错了**，不是模型估算退步。单独、醒目地报，因为它的现象（M1 突然
+  // 翻几倍）看起来完全像「估算质量变差」，最容易被人当成产品退步去优化错误的对象。
+  const implausible = rows.filter((r) => r.implausibleEstimates > 0);
+  if (implausible.length) {
+    console.log("\n⚠️ 口径异常（estimated < freed，物理上不可能）：");
+    for (const r of implausible) {
+      console.log(
+        `  ${r.label}: ${r.implausibleEstimates} 条调用的 ctx_estimated_tokens 小于 ctx_freed_tokens。` +
+          `这表示该轨迹的 ctx_estimated_tokens 已是「已扣释放量的发送量」（PR2 起 loop 的取值），` +
+          `本脚本的 estimated−freed 口径对其不成立，M1/M2 不可用。`,
       );
     }
   }
