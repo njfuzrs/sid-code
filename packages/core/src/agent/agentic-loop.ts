@@ -152,6 +152,17 @@ export interface TurnEndInfo {
 // 配置接口
 // ============================================================
 
+/**
+ * PR7（D3）：请求前预算检查的结果。`null` = 放行。
+ *
+ * `source` 与主循环 `checkPreRequestBudgetStop` 同口径（预算规则 / 配额），
+ * `text` 是可直接进日志与父代理上下文的一句人话（含当前值与上限）。
+ */
+export interface PreRequestBudgetStop {
+  source: "budget_rule" | "quota";
+  text: string;
+}
+
 /** Agent 循环配置 */
 export interface AgentLoopConfig {
   /** LLM Provider */
@@ -180,6 +191,23 @@ export interface AgentLoopConfig {
    * 缺省（undefined）时行为与改造前完全一致：没有父代理来停它。
    */
   stopRequestSignal?: AbortSignal;
+  /**
+   * PR7（D3）：请求前预算硬停检查 —— **只对配了预算的调用方注入**，缺省时整段逻辑不存在。
+   *
+   * 为什么是回调而不是直接传 `quotaManager` / `budgetTracker`：
+   * ① 那两个对象在 `cli` 层创建、归 `SessionState` 入账；core 的循环不该反向依赖它们的
+   *    组装方式（子代理还可能是 `new SubAgent(...)` 直接构造的，连 registry 都没有）。
+   * ② 「已花多少」必须由注入方现算（`SessionState.getEffectiveTotalCostUSD`），
+   *    循环自己拿不到这个数——把取值也一起封进回调，判据来源只有一个。
+   * ③ 判据必须与主循环**同源**（`query/loop.ts` 的 `checkPreRequestBudgetStop`），
+   *    两边各写一套必然漂移：主循环拦、子代理放行，用户配的 costLimit 就是半失效的。
+   *
+   * 返回非 null 时：本轮**不发请求**，跳出去跑一轮不带 tools 的总结，以
+   * `stop_action=budget_exceeded` 结束。**不走 salvage** —— 钱已经花过，该换回一份结论。
+   *
+   * 回调抛错时按「放行」处理（fail-open）：预算检查自己坏掉不该杀掉整个子代理任务。
+   */
+  preRequestBudgetStop?: () => PreRequestBudgetStop | null;
   /** 循环检测器（外部创建，便于生命周期控制） */
   loopDetector: LoopDetector;
   /** 流式文本回调（用于 TUI 实时显示） */
@@ -404,6 +432,21 @@ export const LOOP_EXHAUSTED_FINALIZE_PROMPT =
   "检测到你连续多轮在原地重复（相同的内容或相同的工具调用），继续下去不会有新进展。" +
   "请停止调用工具，直接输出你目前已经确认的事实与结论（要具体：文件路径、结论、未完成的点）。";
 
+/**
+ * 「预算耗尽」出口的收尾提示词（PR7 / D3）。
+ *
+ * 措辞要点：**这不是任务失败，是账停了**。预算超限与「做不出来」是两件事，不能说成
+ * 「你到了限制」——那会让模型开始为失败道歉。用户配了 costLimit 就是明确表态「到此为止」，
+ * 所以要求它把已经花钱买到的东西交回来：结论 / 读到的事实 / 还差什么。
+ *
+ * 与其它收尾提示词一样明令不要调用工具：这一轮再发一次工具调度，就又会多一轮请求，
+ * 把「预算停止」变成「预算停止后继续花」。
+ */
+export const BUDGET_EXCEEDED_FINALIZE_PROMPT =
+  "本次会话的预算额度已用尽，无法再进行任何工具调用或新的探索。请立即用一轮输出总结：" +
+  "已经确认的结论（要具体：文件路径、函数名、行号）、还有哪些部分没有查完、" +
+  "以及后续值得继续的方向。不要再调用任何工具，直接输出结论。";
+
 // 升档软顶 `SUBAGENT_ESCALATED_MAX_TOKENS` 定义在 query/max-tokens-recovery.ts：
 // spawn 子进程（cli/entrypoints/headless.ts）也要用它，放在本文件会让子进程
 // 为了一个数字加载整个工具执行 / 流处理依赖图。理由详见该常量的注释。
@@ -596,6 +639,13 @@ async function runAgentLoopInner(
    * 直接读 signal 会在「收尾轮跑到一半父代理又发了一次停止」这类情形下改变归因。
    */
   let stoppedByParent = false;
+  /**
+   * PR7（D3）：本次循环是否因「请求前预算硬停」而提前退出；非 null 时带着命中原因的文案。
+   *
+   * 与 `stoppedByParent` 同理必须单独记：收尾轮跑完还要用它决定 stop_action，
+   * 而回调本身可能在收尾轮期间又变了一次结果（不该改变已发生的归因）。
+   */
+  let budgetStopHit: PreRequestBudgetStop | null = null;
   // B5-1：`model_context_window_exceeded` 的压缩续写次数。有界（见该分支注释）——
   // 压缩没压动就不再续写，否则会在"压不动 → 再撞上限"之间空转到 maxTurns 耗尽。
   let ctxWindowRecoveryCount = 0;
@@ -1082,6 +1132,25 @@ async function runAgentLoopInner(
     return summaryAccumulated.length > 0;
   };
 
+  /**
+   * PR7（D3）：请求前预算检查（fail-open）。
+   *
+   * 为什么 catch 住并放行：回调的实现方是 cli 层的 `checkPreRequestBudgetStop`，
+   * 它可能因为 `SessionState` 尚未初始化、计费单价表缺失这类边角情况抛错。
+   * 此时「不知道有没有超预算」不等于「肯定超了」——按超预算处理会误杀一个本来
+   * 能跑完的任务，用户还看不懂为什么子代理一句话没干就停了。宁可漏拦一次
+   * （主循环那道闸仍在），不可误杀。
+   */
+  const probeBudgetStop = (): PreRequestBudgetStop | null => {
+    if (!config.preRequestBudgetStop) return null;
+    try {
+      return config.preRequestBudgetStop();
+    } catch (err: any) {
+      log.warn("AGENT_LOOP", `请求前预算检查抛错，本次放行：${err?.message ?? String(err)}`);
+      return null;
+    }
+  };
+
   while (turns < maxTurns) {
     // PR11（X1）：父代理请求停止 → 不再开新轮，直接去收尾轮把已知的说完。
     // 放在 turns++ 之前：这一轮根本没跑，不该占一次轮次预算（否则收尾轮的
@@ -1089,6 +1158,22 @@ async function runAgentLoopInner(
     if (config.stopRequestSignal?.aborted) {
       log.info("AGENT_LOOP", "父代理请求停止：不再开新轮，转入收尾轮");
       stoppedByParent = true;
+      break;
+    }
+    // PR7（D3）：请求前预算硬停 —— 只对注入方配了预算的调用方存在（未注入时
+    // `probeBudgetStop()` 恒返回 null，行为与改造前完全一致）。
+    //
+    // 与上面的父代理停止同理放在 turns++ 之前：这一轮根本没发请求，不该占轮次预算。
+    // 判据不在本文件里写第二份——注入方用的就是主循环那条 `checkPreRequestBudgetStop`，
+    // 否则「主循环拦了、子代理还在花」会让用户配的 costLimit 半失效。
+    const budgetStop = probeBudgetStop();
+    if (budgetStop) {
+      log.info(
+        "AGENT_LOOP",
+        `请求前预算硬停（${budgetStop.source}）：${budgetStop.text}，转入收尾轮`,
+      );
+      budgetStopHit = budgetStop;
+      retryStats.stopAction = "budget_exceeded";
       break;
     }
     turns++;
@@ -2164,14 +2249,21 @@ async function runAgentLoopInner(
   // 同一句「你达到了限制」在这两处的含义完全不同——后者不是失败，模型不该道歉或重试。
   if (!signal.aborted) {
     await runFinalizeTurn({
-      prompt: stoppedByParent ? PARENT_STOP_FINALIZE_PROMPT : MAX_TURNS_FINALIZE_PROMPT,
-      reason: stoppedByParent
-        ? "父代理请求停止，请求强制总结"
-        : `达到最大轮次 ${maxTurns}，请求强制总结`,
+      prompt: budgetStopHit
+        ? BUDGET_EXCEEDED_FINALIZE_PROMPT
+        : stoppedByParent
+          ? PARENT_STOP_FINALIZE_PROMPT
+          : MAX_TURNS_FINALIZE_PROMPT,
+      reason: budgetStopHit
+        ? `请求前预算硬停（${budgetStopHit.source}），请求强制总结`
+        : stoppedByParent
+          ? "父代理请求停止，请求强制总结"
+          : `达到最大轮次 ${maxTurns}，请求强制总结`,
     });
   }
 
   // L2-D：走到这里只有三种来源——未知停止原因 break（已标）、父代理请求停止、while 打满 maxTurns。
+  // PR7 补第四种：请求前预算硬停（循环内已标 `budget_exceeded`）。
   if (!retryStats.stopAction) {
     retryStats.stopAction = signal.aborted
       ? "aborted"

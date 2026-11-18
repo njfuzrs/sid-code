@@ -31,6 +31,7 @@ import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-la
 import { filterToolsForAgent, isAllAgentDisallowedTool } from "./tool-filter.ts";
 import { ruleToToolName } from "../tool/allowed-tools-spec.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
+import type { PreRequestBudgetStop } from "./agentic-loop.ts";
 import { JitContextManager, JIT_CONTEXT_DEFAULT } from "../config/jit-context.ts";
 import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
 import { buildJitEventData, emitJitEvent } from "../trace/jit-telemetry.ts";
@@ -566,6 +567,15 @@ export class SubAgent {
   private hookSystem?: HookSystem;
   /** 权限检查器（dontAsk 语义：危险命令/safetyCheck 拦截，ask→deny） */
   private permissionChecker: Checker | null = null;
+  /**
+   * PR7（D3）：请求前预算硬停检查。只由**配了预算**的调用方注入（app 层在
+   * `quotaManager` / `budgetTracker` 均未创建时根本不调 setter）。
+   *
+   * 为什么存在实例上而不是 `execute()` 的参数上：`SubAgent` 的调用方有
+   * tool.ts / custom.ts / workflow / team 好几条，参数化会让每条都多一个
+   * 透传点、漏一条就是「某条路径上预算闸静默失效」。放实例上由注入方统一接线。
+   */
+  private preRequestBudgetStop?: () => PreRequestBudgetStop | null;
   /** ProviderRegistry 引用（fromRegistry 创建时设置） */
   private registry?: ProviderRegistry;
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
@@ -602,6 +612,15 @@ export class SubAgent {
   /** 设置权限检查器（dontAsk 语义，由外部工厂创建后注入） */
   setPermissionChecker(checker: Checker | null): void {
     this.permissionChecker = checker;
+  }
+
+  /**
+   * PR7（D3）：注入请求前预算检查（由持有 `QuotaManager` / `BudgetTracker` 的一方接线）。
+   *
+   * 传 `undefined` 等价于「没有预算」——整个检查在循环里短路，行为与改造前完全一致。
+   */
+  setPreRequestBudgetStop(fn: (() => PreRequestBudgetStop | null) | undefined): void {
+    this.preRequestBudgetStop = fn;
   }
 
   /**
@@ -741,12 +760,20 @@ export class SubAgent {
     ctxMgr: ContextManager,
   ): Pick<
     Parameters<typeof runAgentLoop>[0],
-    "hookSystem" | "permissionChecker" | "availability" | "discoverJitContext" | "usageAccounting"
+    | "hookSystem"
+    | "permissionChecker"
+    | "availability"
+    | "discoverJitContext"
+    | "usageAccounting"
+    | "preRequestBudgetStop"
   > {
     return {
       // S13（PR-8）：两条路径（内置 / 自定义）都要带上票据，收进工厂才不会漏一条。
       usageAccounting: this.usageAccounting,
       hookSystem: this.hookSystem,
+      // PR7（D3）：未注入（undefined）时循环里的 `probeBudgetStop()` 直接短路，
+      // 行为与改造前完全一致 —— 这就是「只对配了预算的用户生效」的落地方式。
+      preRequestBudgetStop: this.preRequestBudgetStop,
       // B0：permissionChecker 从 AgentLoopConfig 的必填字段——此处必须显式传值
       // （可以是 undefined），漏传在类型层就会报错，不再是静默降级。
       permissionChecker: this.permissionChecker ?? undefined,

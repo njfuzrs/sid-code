@@ -29,6 +29,8 @@ import {
   resolveMaxDepth,
 } from "./depth-context.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
+// PR7（D3）：预算闸的回调形状（只在注入方配了预算时存在）。
+import type { PreRequestBudgetStop } from "./agentic-loop.ts";
 // PR11（D1）：非正常出口的停止原因要写进回程头部，让父代理能判断结论的可信度。
 import { describeStopNotice } from "./stop-notice.ts";
 import { resolveSubAgentTypeParam } from "./sub-agent-input.ts";
@@ -351,6 +353,16 @@ export class SubAgentTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /**
+   * PR7（D3）：注入请求前预算硬停检查（只对配了预算的会话注入，见 `app.ts` 的接线）。
+   *
+   * 不注入时子代理循环里整段预算检查短路 —— 这就是「未配预算时行为不变」。
+   */
+  private preRequestBudgetStop?: () => PreRequestBudgetStop | null;
+  setPreRequestBudgetStop(fn: (() => PreRequestBudgetStop | null) | undefined): void {
+    this.preRequestBudgetStop = fn;
+  }
+
   /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
   readonly needsPermissionChecker = true;
 
@@ -638,6 +650,13 @@ ${typeLines}
         }
       }
       subAgent.setPermissionChecker(checker);
+    }
+
+    // PR7（D3）：预算闸只在注入方配了预算时存在（app 层未配时不调 setter）。
+    // 挂在工厂里而不是 execute()：runSync / runAsync 两条路径共用此工厂，漏一条就是
+    // 「后台子代理不受预算约束」——而验收场景（S-F）恰好就是后台子代理。
+    if (this.preRequestBudgetStop) {
+      subAgent.setPreRequestBudgetStop(this.preRequestBudgetStop);
     }
 
     return subAgent;
