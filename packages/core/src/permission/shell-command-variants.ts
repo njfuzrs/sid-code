@@ -275,11 +275,229 @@ export interface CanonicalCommand {
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+/**
+ * D1：段首可跳过的 shell 关键字——它们自己不占「程序位」，后面紧跟的才是要执行的命令。
+ *
+ * 与 `COMMAND_PREFIX_KEYWORDS`（供 `programPositionIndexes` 判命令替换位置用）刻意分开：
+ * 那个集合的取值直接决定注入层「这处替换的结果会不会被当程序执行」，往里面加词会改变
+ * A3 那半边的判定面；这里只服务危险层的程序位归一化，两边各管各的。
+ */
+const SHELL_PREFIX_KEYWORDS = new Set([
+  "if",
+  "then",
+  "elif",
+  "else",
+  "while",
+  "until",
+  "do",
+  "!",
+  "time",
+  "select",
+  "case",
+]);
+
+/** 段尾的收尾关键字：它们后面没有程序，整段不含可执行命令 */
+const SHELL_CLOSER_KEYWORDS = new Set(["fi", "done", "esac", "}", ")"]);
+
+/** 函数定义头：`f()` / `f(){` / `function f {` 之后才是函数体里的命令 */
+const FUNCTION_HEAD_RE = /^[A-Za-z_][\w-]*\(\)\{?$/;
+
+/**
+ * D1：剥掉「整段被一对分组括号包裹」的外层（`(rm -rf /)` → `rm -rf /`）。
+ *
+ * 只剥**首字符的括号与末字符的括号确实配对**的形态：`$(` / `${` 是命令替换与变量展开，
+ * 不是分组，`x=(a b)` 的 `(` 前紧邻 `=` 是数组赋值，三种都不剥（`(rm` 这种段内孤立
+ * 前括号也不会被当成外层包裹，M1 的拆段由 `expandShellCommand` 的 `collectGroupBodies`
+ * 负责，不靠这里猜）。
+ */
+function stripOuterGroup(sub: string): string {
+  const text = sub.trim();
+  const open = text[0];
+  if (open !== "(" && open !== "{") return sub;
+  const close = open === "(" ? ")" : "}";
+  if (!text.endsWith(close) || text.length < 2) return sub;
+
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\" && !inSingle) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || inDouble) continue;
+    // `${` 与 `$(` 不是分组括号
+    if (ch === "$" && (text[i + 1] === "(" || text[i + 1] === "{")) {
+      i++;
+      continue;
+    }
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      // 首括号在段中间就闭合了（`((x++))` 的算术 / `(a; b) | (c; d)` 的某一侧）：
+      // 不是「整段包裹」，保持原样交给调用方
+      if (depth === 0 && i !== text.length - 1) return sub;
+    }
+  }
+  if (depth !== 0) return sub;
+  return text.slice(1, -1);
+}
+
+/**
+ * D1：把简单命令段归一化成「只留真正要执行的程序 + 参数」。
+ *
+ * 危险命令层按 program 位做 token 判定（`judgeCommand` 要求 `program === "rm"`），
+ * 而 `splitCommandStructure` 为了与 `splitCompoundCommand` 口径一致，不在分组内拆段
+ * （checker 的 `flatCount` 一致性断言依赖这一点）。于是三种形态的 program 都不是真实程序：
+ *
+ * - M1 子 shell 分组：`(rm -rf /)` → `(rm`
+ * - M2 关键字占位：`if true; then rm -rf /` → `if` / `then`
+ * - M3 函数头：`f() { rm -rf /` → `f()`
+ *
+ * 修前这三种在 always-allow 档静默放行（`(rm -rf /etc)` 没有 `--preserve-root` 兜底）。
+ * 归一化只影响「取哪个 token 当程序」，不改变原文——`canonical` 与 stage 的 `text`
+ * 仍是原文，`detectRedirections` / 文本正则不受影响。
+ */
+/**
+ * D1：剥掉段尾「悬空」的分组闭括号（拆段后可能出现的 `rm -rf /)`）。
+ *
+ * 只剥比段内开括号多出来的那些 `)`——`echo $(ls)` 里 `$(` 与 `)` 成对（判为配对），
+ * 不会被剥；`echo "hi)"` 的 `)` 在引号里，不参与统计。这样修 M1 的拆段结果时不会
+ * 顺手破坏命令替换的原文。
+ */
+function stripDanglingGroupClosers(text: string): string {
+  let open = 0;
+  let close = 0;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\" && !inSingle) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || inDouble) continue;
+    if (ch === "$" && text[i + 1] === "(") {
+      open++;
+      i++;
+      continue;
+    }
+    if (ch === "(") open++;
+    else if (ch === ")") close++;
+  }
+  let extra = close - open;
+  if (extra <= 0) return text;
+  let end = text.length;
+  while (end > 0 && extra > 0) {
+    const ch = text[end - 1];
+    if (/\s/.test(ch)) {
+      end--;
+      continue;
+    }
+    if (ch === ")") {
+      end--;
+      extra--;
+      continue;
+    }
+    break;
+  }
+  return text.slice(0, end);
+}
+
+function normalizeSimpleCommandPrefix(sub: string): string {
+  let text = stripDanglingGroupClosers(stripOuterGroup(sub));
+  let tokens = tokenizeWithPositions(text);
+  let i = 0;
+  for (let guard = 0; guard < 16 && i < tokens.length; guard++) {
+    const v = tokens[i].value;
+    if (SHELL_PREFIX_KEYWORDS.has(v)) {
+      i++;
+      continue;
+    }
+    // 函数头 `f()` / `f(){`：跳过它，若后面紧跟 `{` 一并跳过
+    if (FUNCTION_HEAD_RE.test(v)) {
+      i++;
+      if (i < tokens.length && tokens[i].value === "{") i++;
+      continue;
+    }
+    // `function f { … }`：`function` 之后是函数名（不是程序），再之后才是函数体
+    if (v === "function") {
+      i++;
+      if (i < tokens.length) i++;
+      if (i < tokens.length && tokens[i].value === "{") i++;
+      continue;
+    }
+    if (v === "{") {
+      i++;
+      continue;
+    }
+    // `case x in pat)`：`case` 已在关键字集合里跳过一次，这里跳过 `x in pat)` 这一段
+    if (tokens[i - 1]?.value === "case") {
+      let j = i;
+      while (j < tokens.length && tokens[j].value !== "in") j++;
+      if (j < tokens.length) {
+        let k = j + 1;
+        while (k < tokens.length && !tokens[k].value.endsWith(")")) k++;
+        i = k < tokens.length ? k + 1 : tokens.length;
+        continue;
+      }
+      // 没有 `in`：`;;` 把这半段拆开了，这一段不含可执行命令
+      return "";
+    }
+    if (SHELL_CLOSER_KEYWORDS.has(v)) {
+      // 收尾关键字开头：整段没有可执行命令
+      return "";
+    }
+    // case 的分支模式 `pat)`：`;;` 把每个分支拆成独立段，除第一支外其余分支都以它开头
+    // （`case x in a) echo a;; b) rm -rf /etc;; esac` 的第二段是 `b) rm -rf /etc`）。
+    // 段首出现 `xxx)` 这个形态基本只可能来自 case 模式，剥掉它才能看到真实程序位。
+    if (/^[^\s()]+\)$/.test(v)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  if (i === 0) return text;
+  if (i >= tokens.length) return "";
+  // 用剩余文本重建（保留原 token 间距，args 的解析口径不变）
+  const head = tokens[i];
+  text = text.slice(head.start);
+  return text;
+}
+
 export function canonicalizeSimpleCommand(sub: string): CanonicalCommand {
-  const tokens = tokenizeWithPositions(sub);
+  const normalized = normalizeSimpleCommandPrefix(sub);
+  const tokens = tokenizeWithPositions(normalized);
   let i = 0;
   // 1. 前导环境变量赋值
-  while (i < tokens.length && ASSIGNMENT_RE.test(tokens[i].value)) i++;
+  while (i < tokens.length && ASSIGNMENT_RE.test(tokens[i].value)) {
+    // 数组赋值 `x=(a b)`：`( … )` 整段都是赋值，不是命令。不跳过时程序位会落到 `b)`
+    // 这种形态上（既存行为，修 M2 的括号归一化时顺手修正）。
+    if (tokens[i].value.includes("=(")) {
+      i++;
+      while (i < tokens.length && !tokens[i].value.endsWith(")")) i++;
+      if (i < tokens.length) i++;
+      continue;
+    }
+    i++;
+  }
   // 2. 包装命令（可多层：`env FOO=1 nohup timeout 5 curl`）
   for (let guard = 0; guard < 8 && i < tokens.length; guard++) {
     const name = path.basename(tokens[i].value);
@@ -315,7 +533,8 @@ export function canonicalizeSimpleCommand(sub: string): CanonicalCommand {
   const head = tokens[i];
   // 3. 去转义 / 去引号后的程序名，路径形态取 basename（`/usr/bin/curl` → `curl`）
   const program = head.value.includes("/") ? path.basename(head.value) : head.value;
-  const rest = sub.slice(head.end);
+  // 偏移基于归一化后的文本（前缀可能被剥掉），不是原 sub
+  const rest = normalized.slice(head.end);
   const canonicalText = `${program}${rest}`.trim();
   const args = tokens.slice(i + 1).map((t) => t.value);
 
@@ -514,7 +733,9 @@ export interface HeredocOwnership {
  */
 function remoteShellReceivesScript(program: string, args: string[]): boolean {
   if (!REMOTE_SHELL_PROGRAMS.has(program)) return false;
-  if (args.some((a) => isPosixShellProgram(path.basename(a)))) return true;
+  // `ssh host 'bash -s'` 的脚本是一个带引号 token（`bash -s`），basename 认不出来——
+  // 按空白取第一个词再判，否则「点名了 shell 但 shell 带参数」这一形态会漏。
+  if (args.some((a) => isPosixShellProgram(path.basename(a.split(/\s+/)[0] ?? "")))) return true;
   // heredoc 占位符（`<<__SID_HD_0__`）是重定向记号，不是远端要执行的命令名——
   // 不过滤掉它，`ssh h <<EOF` 会被算成「远端执行了两个参数」而漏判。
   const positionals = args.filter((a) => !a.startsWith("-") && !a.includes("<<"));
@@ -568,8 +789,21 @@ export function classifyHeredocOwnership(
         isPosixShellProgram(owner.program) ||
         downstreamShell ||
         remoteShellReceivesScript(owner.program, owner.args);
-      // 危险命令层口径（含 python/perl/ruby 的正文）保持不变，见 HeredocOwnership 注释
-      item.codeForDangerScan = isShellLikeProgram(owner.program) || downstreamShell;
+      // 危险命令层口径：真 shell / 管道下游 shell / 远端 shell 的正文都要递归判定。
+      //
+      // 远端那一条是 C-1（2026-11-18）：`ssh h <<'EOF' ⏎ rm -rf /etc ⏎ EOF` 的正文在
+      // 远端 login shell 里执行，而修前这里只认 `isShellLikeProgram(owner)` —— `ssh` /
+      // `docker` / `kubectl` 都不在其中，正文一条都不判，always-allow 下静默放行
+      // （探针实测 8 种远端形态全部 allowed=true）。注入层早就按
+      // `remoteShellReceivesScript` 扫这份正文了，两层口径在这里对齐。
+      //
+      // 只对齐 heredoc 正文：`ssh host 'rm -rf /etc'` 这种「引号里的脚本参数」不在这里处理——
+      // 把参数当脚本递归展开会让 `ssh host "echo 'rm -rf / is bad'"` 这类数据文本误报
+      // critical 硬拒（无出口），需要单独的「远端参数即代码」判据，见方案附件。
+      item.codeForDangerScan =
+        isShellLikeProgram(owner.program) ||
+        downstreamShell ||
+        remoteShellReceivesScript(owner.program, owner.args);
       item.interpreterStdin =
         !downstreamShell && interpreterReadsCodeFromStdin(owner.program, owner.args);
     }
@@ -618,6 +852,94 @@ export function partitionHeredocForScan(cmd: string): HeredocScanPartition {
 }
 
 /**
+ * D1：提取一段命令里所有「裸分组」的内部文本（`( … )`）。
+ *
+ * 排除三类不是分组的 `(`：`$(` / `$((` 命令替换与算术（命令替换由
+ * `extractSubstitutionBodies` 单独展开，重复展开会改变 `scripts` / `variants` 的口径）、
+ * `x=(a b)` 数组赋值（`(` 前紧邻 `=`）、`((x++))` 算术（`(` 后紧跟 `(`）。
+ *
+ * 为什么需要单独提取：`splitCommandStructure` 为了与 `splitCompoundCommand` 保持同一份
+ * 拆分口径（checker 的 `flatCount === subCommands.length` 一致性断言），在 `parenDepth > 0`
+ * 时一律不拆段。于是 `(echo hi; rm -rf /)` 的整个分组只产出一条 program 为 `(echo` 的命令，
+ * 真实命令 `rm -rf /` 完全没进危险层的 `judgeCommand`（D1 的 M1）。
+ */
+function extractGroupBodies(script: string): string[] {
+  const bodies: string[] = [];
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let substDepth = 0; // $( 内部：不提取，交给 extractSubstitutionBodies
+  let arithDepth = 0; // (( 算术
+  let arrayDepth = 0; // x=( 数组赋值
+  let depth = 0; // 裸 ( 分组
+  let start = -1;
+
+  for (let i = 0; i < script.length; i++) {
+    const ch = script[i];
+    if (ch === "\\" && !inSingle) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble && !inBacktick) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle && !inBacktick) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (ch === "`" && !inSingle && !inDouble) {
+      inBacktick = !inBacktick;
+      continue;
+    }
+    if (inSingle || inDouble || inBacktick) continue;
+
+    if (ch === "$" && script[i + 1] === "(") {
+      substDepth++;
+      i++;
+      continue;
+    }
+    // 替换 / 算术 / 数组内部只做括号配对，不提取
+    if (substDepth > 0 || arithDepth > 0 || arrayDepth > 0) {
+      if (ch === "(") {
+        if (substDepth > 0) substDepth++;
+        else if (arithDepth > 0) arithDepth++;
+        else arrayDepth++;
+      } else if (ch === ")") {
+        if (substDepth > 0) substDepth--;
+        else if (arithDepth > 0) arithDepth--;
+        else arrayDepth--;
+      }
+      continue;
+    }
+    if (ch === "(") {
+      if (script[i - 1] === "=") {
+        arrayDepth = 1;
+        continue;
+      }
+      if (script[i + 1] === "(") {
+        arithDepth = 2;
+        i++;
+        continue;
+      }
+      depth++;
+      if (depth === 1) start = i + 1;
+      continue;
+    }
+    if (ch === ")") {
+      if (depth === 0) continue;
+      depth--;
+      if (depth === 0 && start >= 0) {
+        bodies.push(script.slice(start, i));
+        start = -1;
+      }
+      continue;
+    }
+  }
+  return bodies;
+}
+
+/**
  * 把一条 bash 命令展开成所有「等价执行形态」。只用于拦截类判定，见文件头「口径」一节。
  */
 export function expandShellCommand(cmd: string): ShellCommandExpansion {
@@ -627,6 +949,32 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
   const commands: Array<{ program: string; args: string[]; text: string }> = [];
   const pipelines: Array<Array<{ program: string; args: string[]; text: string }>> = [];
   let truncated = false;
+
+  /**
+   * D1：把分组体里的命令补进 `commands` / `pipelines`（只补危险层判据）。
+   *
+   * 不往 `variants` 里加：`variants` 同时是文本正则（high/medium）的匹配对象与
+   * `detectPrivilegeEscalation` 的输入，往里加拆开的段会改变那一层的判定面；
+   * 而 M1 的缺陷只在「按 program 位判 critical」这一层（`judgeCommand`），
+   * 所以这里的最小修复面就是 commands / pipelines。
+   */
+  const collectGrouped = (text: string, level: number) => {
+    if (level > MAX_DEPTH) return;
+    for (const body of extractGroupBodies(text)) {
+      for (const pipeline of splitCommandStructure(body)) {
+        const parsed: Array<{ program: string; args: string[]; text: string }> = [];
+        for (const stage of pipeline.stages) {
+          const c = canonicalizeSimpleCommand(stage);
+          if (!c.program) continue;
+          const entry = { program: c.program, args: c.args, text: stage };
+          commands.push(entry);
+          parsed.push(entry);
+        }
+        if (parsed.length > 0) pipelines.push(parsed);
+      }
+      collectGrouped(body, level + 1);
+    }
+  };
 
   const visit = (script: string, depth: number) => {
     const trimmed = script.trim();
@@ -664,6 +1012,9 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
       // 这里不能再各判一份——归属判据两处各写一遍必然漂移，A1 就是那么来的。
       pipelines.push(parsed);
     }
+
+    // D1：分组（`( … )`）内部的命令同样要进危险层判据（M1）。
+    collectGrouped(source, 0);
 
     // heredoc 正文的归属：接收者是解释器（`bash <<EOF`）或管道下游是解释器
     // （`cat <<EOF | bash`）时正文是脚本，要递归判危险；接收者是文件时正文是数据，丢弃。
