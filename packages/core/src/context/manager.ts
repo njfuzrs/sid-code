@@ -3,12 +3,18 @@
  * 管理对话消息历史、token 估算、自动压缩、持久化输出管理
  */
 
-import type { Message, TextBlock } from "../llm/types.ts";
+import type { ContentBlock, Message, TextBlock } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
 // P1-5 ②：压缩来源守卫与 TokenFreedTracker 必须有生产消费方（P0-5），
 // 否则测试绿、主循环零调用，就是「防线全在、调用全 0」。
-import { isCompactSourceMessage, TokenFreedTracker, type CompactSource } from "./auto-compact.ts";
+import {
+  isCompactSourceMessage,
+  TokenFreedTracker,
+  TOKEN_THRESHOLDS,
+  type CompactSource,
+} from "./auto-compact.ts";
 import { estimateTextTokens, estimateConversationTokens } from "./token.ts";
+import { allocateByWeight } from "@sid-code/shared/utils/allocate.ts";
 import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
 import {
   persistLargeOutput,
@@ -103,12 +109,56 @@ export interface InvokedSkill {
   invokedAt: number;
 }
 
-/** P0-2：上下文分类 token 拆解结果（供 /context 可视化） */
+/**
+ * P0-2：上下文分类 token 拆解结果（供 /context 可视化）。
+ *
+ * PR1：本类型的核心不变量是 **`total` 与 `getContextUsageForDisplay().used` 逐字相等**，
+ * 两者都由 `sendTokensFrom(estimateTokens(toolCount))` 这一个表达式产出。
+ * 此前分类各自 `round(n × factor)` 再求和，total 与 used 天然差几到几十 token，
+ * 面板与 footer 对不上——用户看到的就是「面板总数 ≠ 状态栏」。
+ */
 export interface ContextTokenBreakdown {
-  /** 各分类 token 明细 */
+  /**
+   * 各分类 token 明细。
+   *
+   * 保证 `Σ categories[].tokens === grossTokens`（未抬升时等于 total）：
+   * 分类值由「未校准占比 + 最大余数法」分配到 `grossTokens` 上，不是各自取整后相加。
+   */
   categories: Array<{ key: string; label: string; tokens: number }>;
-  /** 各分类合计（≈ estimateTokens） */
+  /**
+   * 面板展示的「已用」总量 —— **与 footer 的 `getContextUsageForDisplay().used` 同源**，
+   * 表达式为 `sendTokensFrom(estimateTokens(toolCount))`（= 校准估算抬锚点后扣本地释放量）。
+   *
+   * 不变量（`tests/context/breakdown-same-source.test.ts` 锁住）：
+   * `total === getContextUsageForDisplay().used`，五个状态下都严格相等。
+   */
   total: number;
+  /**
+   * 校准后的「毛估算」= `Σ categories[].tokens`。
+   *
+   * 与 `total` 的关系：`total = max(0, grossTokens + anchorLiftTokens - freed.tokens)`。
+   * 之所以把毛估算单列，是因为「锚点抬升」和「本地释放」是两个方向相反的修正，
+   * 混在一起会让用户看到一个既不是估算值也不是实测值的数，无从解释。
+   */
+  grossTokens: number;
+  /**
+   * 真实 usage 锚点抬升量 = `estimateTokens() - grossTokens`，恒 ≥ 0。
+   *
+   * 来源：上一次请求服务端实测的 input_tokens 高于当前启发式校准估算时，
+   * `estimateTokens` 取真实值作下界（P1-6 锚点）。它是**已知的实测下界**，
+   * 不是估算误差——所以单列一行展示，而不是摊进各分类（分摊会伪造归因）。
+   */
+  anchorLiftTokens: number;
+  /**
+   * 本地已释放量（压缩 / 遮罩 / 清理从发送副本里瘦掉、但全量历史仍在的部分）。
+   * `total` 已经减掉它，UI 若要展示「本地已释放 −N」直接用这个字段，不要自己再算。
+   */
+  freed: {
+    /** 合计（= `getLocalFreedTokens()`） */
+    tokens: number;
+    /** 按策略拆开（`masking` / `staleToolOutput` / `coldCacheClear` / `cleanedMessages`），供细目展示 */
+    byStrategy: Array<{ strategy: string; tokens: number }>;
+  };
   /** 上下文窗口上限 */
   maxTokens: number;
   /**
@@ -121,11 +171,34 @@ export interface ContextTokenBreakdown {
    */
   compactThresholdTokens: number;
   /**
-   * P3-2：有效窗口 = maxTokens - 完成缓冲区（输出预留 + 摘要预留）。
-   * 阈值判定的实际分母；未启用完成缓冲区时等于 maxTokens。
+   * 各档位实际触发的「已用 token 数」（= maxTokens − 对应 remaining），供 UI 画刻度。
+   *
+   * 为什么直接给换算好的已用量而不是 remaining：面板画的是「已用进度条」，
+   * 调用方每次都拿 `maxTokens - remaining` 自己换算，就等于把这条换算规则复制到 UI 里
+   * （历史上正是这样漂移的）。这里一次算清，UI 只做渲染。
    */
-  effectiveWindow: number;
-  /** P3-2：完成缓冲区 token 数（maxTokens - effectiveWindow），供 /context 展示"预留"行 */
+  thresholds: {
+    /** soft（工具输出遮罩）触发点 */
+    maskingAt: number;
+    /** hard（LLM 摘要）触发点 = compactThresholdTokens */
+    compressionAt: number;
+    /** emergency（强制截断）触发点 */
+    emergencyAt: number;
+    /** blocking（主循环强制截断，不调 LLM）触发点 */
+    blockingAt: number;
+  };
+  /** 当前压缩档位（与 footer 变色用的 `getContextUsageForDisplay().level` 同源） */
+  level: CompactionLevel;
+  /** 距 hard 触发点的进度百分比（与 footer 的 `percentOfTrigger` 同源） */
+  percentOfTrigger: number;
+  /**
+   * P3-2：完成缓冲区 token 数（输出预留 + 摘要预留），供 /context 展示「预留」行。
+   *
+   * PR1 删除了同源的 `effectiveWindow` 字段（它恒等于 maxTokens，却让 UI 误以为
+   * 「分母是窗口减缓冲区」——实际缓冲区是通过**抬高剩余门槛**生效的，见
+   * `getCompactionThresholds` 的注释）。`CompactionThresholds.effectiveWindow` 保留，
+   * 因为 `query/compact/index.ts` 与阈值计算仍在读它。
+   */
   completionBuffer: number;
   /** 是否已被真实 usage 校准（未校准时为纯启发式估算） */
   calibrated: boolean;
@@ -137,6 +210,77 @@ export interface ContextTokenBreakdown {
   fixedOverhead?: import("./fixed-overhead.ts").FixedOverheadReport;
 }
 
+/** /context 面板的分类键（闭集，新增块类型时必须在这里加一档，否则 categorizeBlock 编译期报错） */
+type BreakdownCategoryKey =
+  | "systemPrompt"
+  | "toolSchemas"
+  | "mcpToolSchemas"
+  | "agentDefs"
+  | "memoryFiles"
+  | "userText"
+  | "assistantText"
+  | "thinking"
+  | "toolUse"
+  | "toolResult"
+  | "overhead";
+
+/**
+ * 分类的展示名与「为 0 时是否省略」。**数组顺序即 UI 渲染顺序**：
+ * 先「常驻上下文」（系统 / 工具 / 记忆 / 代理），再「会话消息」——对齐 CC analyzeContext。
+ *
+ * 细分类（mcp / agent / memory）由注入端单独记账，未注入时为 0 且不展示，
+ * 此时观感与首版三分类一致，不会凭空造数。
+ */
+const BREAKDOWN_CATEGORIES: ReadonlyArray<{
+  key: BreakdownCategoryKey;
+  label: string;
+  omitIfZero?: boolean;
+}> = [
+  { key: "systemPrompt", label: "系统提示词" },
+  { key: "toolSchemas", label: "工具定义" },
+  { key: "mcpToolSchemas", label: "MCP 工具", omitIfZero: true },
+  { key: "agentDefs", label: "自定义代理", omitIfZero: true },
+  { key: "memoryFiles", label: "记忆/CLAUDE.md", omitIfZero: true },
+  { key: "userText", label: "用户消息" },
+  { key: "assistantText", label: "助手回复" },
+  { key: "thinking", label: "思考链" },
+  { key: "toolUse", label: "工具调用" },
+  { key: "toolResult", label: "工具结果" },
+  { key: "overhead", label: "结构开销" },
+];
+
+/**
+ * 把一个内容块归到 /context 面板的分类（PR1：面板与决策共用的**唯一**归类规则）。
+ *
+ * 为什么是穷尽 `switch` 而不是 if/else 链：`ContentBlock` 是联合类型，新增块类型时
+ * 这里的 `never` 赋值会**编译期**报错。历史缺陷正是「if 链没有 else」——
+ * `estimateBlockTokens` 补了 thinking / redacted_thinking，面板这条链没补，
+ * 于是「决策算得对、面板漏算 28k」，而且测试全绿（没有任何断言覆盖面板的漏算）。
+ *
+ * 三家推理块归入同一档「思考链」：Claude 的 thinking / redacted_thinking、
+ * OpenAI Responses 的 provider_reasoning、DeepSeek 的思考链，对用户是同一件事
+ * （「模型想了什么」），拆成三行只会让人以为其中两个是独立开销。
+ */
+function categorizeBlock(role: Message["role"], block: ContentBlock): BreakdownCategoryKey {
+  switch (block.type) {
+    case "text":
+      return role === "assistant" ? "assistantText" : "userText";
+    case "thinking":
+    case "redacted_thinking":
+    case "provider_reasoning":
+      return "thinking";
+    case "tool_use":
+      return "toolUse";
+    case "tool_result":
+      return "toolResult";
+    default: {
+      // 穷尽性检查：新增 ContentBlock 成员时这里编译期就红，而不是静默归错类。
+      const exhaustive: never = block;
+      throw new Error(`未归类的内容块类型: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
 /**
  * §12 复审：压缩阈值计算结果（单一事实源）。
  *
@@ -144,7 +288,13 @@ export interface ContextTokenBreakdown {
  * 否则「显示的触发点」与「真实的触发点」会漂移（历史 bug：1M 窗口显示 70% 实际 82%）。
  */
 export interface CompactionThresholds {
-  /** 有效窗口（= maxTokens - 完成缓冲区），阈值判定的分母 */
+  /**
+   * 阈值判定的分母。**当前恒等于 maxTokens**——完成缓冲区不是靠「减分母」生效的，
+   * 而是靠抬高 hard/emergency 的**剩余门槛**（见 `getCompactionThresholds` 的注释与
+   * `COMPLETION_BUFFER` 常量）。PR1 已把 `ContextTokenBreakdown.effectiveWindow` 删掉
+   * （它让 UI 误以为分母被减过）；本字段保留是因为 `query/compact/index.ts` 仍在读它，
+   * 且语义上它是「判定用的窗口基准」，与 maxTokens 解耦后仍可能演进。
+   */
   effectiveWindow: number;
   /** 完成缓冲区（输出预留 + 摘要预留） */
   completionBuffer: number;
@@ -1935,7 +2085,7 @@ export class Manager {
   estimateTokens(toolCount: number = 0): number {
     const raw = this.rawEstimateTokens(toolCount);
     if (!this.calibrated) return raw;
-    const calibrated = Math.ceil(raw * this.calibrationFactor);
+    const calibrated = this.calibrate(raw);
     // P1-6 锚定：compact 决策依赖此估算。真实 inputTokens 是已知下界——
     // 上一次 API 实际就发了这么多 prompt，之后只会增不会减（除非中途压缩）。
     // 取「校准估算」与「真实锚点」的较大值，确保不会因启发式低估而把 compact 推迟到溢出。
@@ -1951,7 +2101,43 @@ export class Manager {
   estimateTokensFor(messages: Message[], toolCount: number = 0): number {
     const raw = this.rawEstimateTokensFrom(messages, toolCount);
     if (!this.calibrated) return raw;
+    return this.calibrate(raw);
+  }
+
+  /**
+   * 把「未校准的启发式估算」换算成校准口径（PR1：全类唯一换算入口）。
+   *
+   * 为什么抽出来：此前 `estimateTokens` / `estimateTokensFor` / `getTokenBreakdown`
+   * **各自**写了一遍 `n × factor` 的乘法与取整，取整函数还不一致（round vs ceil）。
+   * 于是「同一个数走到不同出口」会差 1~n 个 token，面板总数与 footer 永远对不上——
+   * 用户看到的是「面板说 92.4k、状态栏说 92.9k」，两处都自称是同一个量。
+   * 现在只有这一处做乘法与取整，其它地方一律调它。
+   *
+   * 取 `ceil` 而不是 `round`：估算值的用途是「别把压缩推迟到溢出」，向上取整是安全方向。
+   */
+  private calibrate(raw: number): number {
+    if (!this.calibrated) return raw;
     return Math.ceil(raw * this.calibrationFactor);
+  }
+
+  /**
+   * 本地压缩 / 遮罩 / 清理累计释放的 token（PR1：全类唯一减项入口）。
+   */
+  private localReductionTokens(): number {
+    return this.tokenFreedTracker.getTotalFreed();
+  }
+
+  /**
+   * 从「估算值」换算成「实际要发给 API 的量」：扣掉本地释放量，且不为负。
+   *
+   * PR1 的单一表达式：`getContextUsageForDisplay().used`、`getTokenBreakdown().total`、
+   * `getCompactionLevel()` 的判定基数**都**必须是它的返回值。此前这三处各写了一遍
+   * `Math.max(0, x - tokenFreedTracker.getTotalFreed())`，看似一样，但只要有人改了其中一处
+   * 的取整或减项（历史真发生过：展示扣了账、决策没扣），面板与 footer 就会静默漂移。
+   * 抽成一个表达式后，「三处同源」由调用关系保证，而不是靠三处自觉保持一致。
+   */
+  private sendTokensFrom(estimated: number): number {
+    return Math.max(0, estimated - this.localReductionTokens());
   }
 
   /**
@@ -2200,10 +2386,7 @@ export class Manager {
     // masking（`manager.ts` 的 applyStickyMasking）、大输出清理（KEEP_RECENT_OUTPUTS）、
     // 冷缓存清理，三者都对 API usage 不可见。不扣的后果是状态栏与 /context 恒按
     // 膨胀历史计价，长会话实测虚高 1.9–2.7 倍（3 个会话：1,162,927→438,012 等）。
-    const used = Math.max(
-      0,
-      this.estimateTokens(toolCount) - this.tokenFreedTracker.getTotalFreed(),
-    );
+    const used = this.sendTokensFrom(this.estimateTokens(toolCount));
     const t = this.getCompactionThresholds();
     const trigger = Math.max(1, t.compactionTriggerUsed); // 防 0 除
     return {
@@ -2267,89 +2450,132 @@ export class Manager {
    * 此时观感与首版三分类一致，不会凭空造数。总量恒等于 estimateTokens 口径（细分只是切分，不新增）。
    */
   getTokenBreakdown(toolCount: number = 0): ContextTokenBreakdown {
-    // ── 工具定义母项：切出 MCP 与子代理定义两个子集 ──
-    // clamp + 顺序扣减：保证各分量非负且和恒等于母项，防止注入端口径漂移让母项变负数。
-    const totalToolSchemas = this.toolSchemaTokens ?? toolCount * 80;
-    let mcpToolSchemas = Math.min(this.mcpToolSchemaTokens, totalToolSchemas);
-    let agentDefs = Math.min(this.agentDefinitionTokens, totalToolSchemas - mcpToolSchemas);
-    let toolSchemas = totalToolSchemas - mcpToolSchemas - agentDefs;
+    // ── 1. 用访问者收集「未校准」的各分类原始值 ──
+    // 与 estimateTokens 走**同一份** estimateConversationTokens：归类规则只有
+    // categorizeBlock 一处，thinking / redacted_thinking / provider_reasoning
+    // 不会再像旧 if 链那样被漏掉（决策算得对、面板少算一整类）。
+    const rawByKey: Record<BreakdownCategoryKey, number> = {
+      systemPrompt: 0,
+      toolSchemas: 0,
+      mcpToolSchemas: 0,
+      agentDefs: 0,
+      memoryFiles: 0,
+      userText: 0,
+      assistantText: 0,
+      thinking: 0,
+      toolUse: 0,
+      toolResult: 0,
+      overhead: 0,
+    };
+    let rawSystem = 0;
+    let rawTools = 0;
 
-    // ── 系统提示词母项：切出记忆/CLAUDE.md 子集 ──
-    const rawSystemPrompt = estimateTextTokens(this.systemPrompt);
-    let memoryFiles = Math.min(this.memoryTokens, rawSystemPrompt);
-    let systemPrompt = rawSystemPrompt - memoryFiles;
-
-    let userText = 0;
-    let assistantText = 0;
-    let toolUse = 0;
-    let toolResult = 0;
-    let overhead = 0;
-
-    for (const msg of this.messages) {
-      overhead += 4;
-      for (const block of msg.content) {
-        if (block.type === "text") {
-          const t = estimateTextTokens(block.text);
-          if (msg.role === "assistant") assistantText += t;
-          else userText += t;
-        } else if (block.type === "tool_use") {
-          toolUse += estimateTextTokens(JSON.stringify(block.input)) + 20;
-        } else if (block.type === "tool_result") {
-          toolResult += estimateTextTokens(block.content) + 10;
+    const rawTotal = estimateConversationTokens(this.messages, {
+      systemPrompt: this.systemPrompt,
+      toolCount,
+      toolSchemaTokens: this.toolSchemaTokens,
+      visit: (part, tokens) => {
+        switch (part.kind) {
+          case "system":
+            rawSystem += tokens;
+            break;
+          case "tools":
+            rawTools += tokens;
+            break;
+          case "overhead":
+            rawByKey.overhead += tokens;
+            break;
+          case "block":
+            rawByKey[categorizeBlock(part.role, part.block)] += tokens;
+            break;
+          default: {
+            // 穷尽性检查：TokenPart 新增成员时编译期报错，
+            // 而不是静默丢一段 token 让分类之和小于总量。
+            const exhaustive: never = part;
+            throw new Error(`未处理的 TokenPart: ${JSON.stringify(exhaustive)}`);
+          }
         }
-      }
-    }
+      },
+    });
 
-    // 展示口径与 getContextUsageForDisplay / getCompactionLevel 同源：扣掉本地已释放量。
-    // tokenFreedTracker 的三类记账来源（coldCacheClear / cleanedMessages / masking）释放的
-    // 都是 tool_result 内容，故从该分类里扣；扣不下就不扣（分类不得为负——宁可 total 略高于
-    // 决策口径，也不在这里造一个自相矛盾的负值分类）。
-    const freed = this.tokenFreedTracker.getTotalFreed();
-    toolResult -= Math.min(freed, toolResult);
+    // ── 2. 母项切分：工具定义切出 MCP / 子代理；系统提示词切出记忆 ──
+    // clamp + 顺序扣减：保证各分量非负且和恒等于母项，防止注入端口径漂移让母项变负数。
+    rawByKey.mcpToolSchemas = Math.min(this.mcpToolSchemaTokens, rawTools);
+    rawByKey.agentDefs = Math.min(this.agentDefinitionTokens, rawTools - rawByKey.mcpToolSchemas);
+    rawByKey.toolSchemas = rawTools - rawByKey.mcpToolSchemas - rawByKey.agentDefs;
+    rawByKey.memoryFiles = Math.min(this.memoryTokens, rawSystem);
+    rawByKey.systemPrompt = rawSystem - rawByKey.memoryFiles;
 
-    // 校准：与 estimateTokens 一致，收到真实 usage 后各分类同比缩放
-    const factor = this.calibrated ? this.calibrationFactor : 1;
-    const scale = (n: number) => Math.round(n * factor);
-    systemPrompt = scale(systemPrompt);
-    memoryFiles = scale(memoryFiles);
-    agentDefs = scale(agentDefs);
-    toolSchemas = scale(toolSchemas);
-    mcpToolSchemas = scale(mcpToolSchemas);
-    userText = scale(userText);
-    assistantText = scale(assistantText);
-    toolUse = scale(toolUse);
-    toolResult = scale(toolResult);
-    overhead = scale(overhead);
-
-    // 分类顺序对齐 CC analyzeContext：先「常驻上下文」（系统/工具/记忆/代理），再「会话消息」。
-    // tokens=0 的细分类不展示（未注入记账时保持首版三分类的干净观感）。
-    const categories = [
-      { key: "systemPrompt", label: "系统提示词", tokens: systemPrompt },
-      { key: "toolSchemas", label: "工具定义", tokens: toolSchemas },
-      { key: "mcpToolSchemas", label: "MCP 工具", tokens: mcpToolSchemas, omitIfZero: true },
-      { key: "agentDefs", label: "自定义代理", tokens: agentDefs, omitIfZero: true },
-      { key: "memoryFiles", label: "记忆/CLAUDE.md", tokens: memoryFiles, omitIfZero: true },
-      { key: "userText", label: "用户消息", tokens: userText },
-      { key: "assistantText", label: "助手回复", tokens: assistantText },
-      { key: "toolUse", label: "工具调用", tokens: toolUse },
-      { key: "toolResult", label: "工具结果", tokens: toolResult },
-      { key: "overhead", label: "结构开销", tokens: overhead },
-    ]
+    // ── 3. 校准 + 最大余数法分配：Σ 分类 === 校准后总量 ──
+    // 总量由 calibrate 一次算出（estimateTokens 的基线用的同一个函数），再按未校准占比
+    // 拆成整数。旧实现是各分类自己 round 后相加，与 footer 的 ceil(raw×factor) 天然差
+    // 几到几十 token——面板和状态栏各说各话，用户无从判断哪个准。
+    const grossTokens = this.calibrate(rawTotal);
+    const allocated = allocateByWeight(
+      BREAKDOWN_CATEGORIES.map((c) => rawByKey[c.key]),
+      grossTokens,
+    );
+    const categories = BREAKDOWN_CATEGORIES.map((c, i) => ({
+      key: c.key,
+      label: c.label,
+      tokens: allocated[i] ?? 0,
+      omitIfZero: c.omitIfZero,
+    }))
       .filter((c) => !(c.omitIfZero && c.tokens <= 0))
       .map(({ key, label, tokens }) => ({ key, label, tokens }));
 
-    const total = categories.reduce((sum, c) => sum + c.tokens, 0);
+    // ── 4. 三个修正量各归各位 ──
+    const estimated = this.estimateTokens(toolCount);
+    // 锚点抬升 = 实测下界高于校准估算的部分（estimateTokens 的 max 分支）。
+    // 它是**已知的实测下界**，不是估算误差，所以单列一行而不是摊进各分类——分摊会伪造归因。
+    const anchorLiftTokens = Math.max(0, estimated - grossTokens);
+    const freedTokens = this.localReductionTokens();
+    // 与 getContextUsageForDisplay().used 是**同一个表达式**（同一个 helper），
+    // 不是「同样的代码抄两遍」——两边都由 sendTokensFrom(estimateTokens()) 产出。
+    const total = this.sendTokensFrom(estimated);
+
     // §12 复审：触发点与 getCompactionLevel 同源（此前用 maxTokens×compactThreshold，1M 窗口差 120K）。
     const t = this.getCompactionThresholds();
+    const trigger = Math.max(1, t.compactionTriggerUsed); // 防 0 除
     return {
       categories,
       total,
+      grossTokens,
+      anchorLiftTokens,
+      freed: { tokens: freedTokens, byStrategy: this.freedByStrategy() },
       maxTokens: this.maxTokens,
       compactThresholdTokens: t.compactionTriggerUsed,
-      effectiveWindow: t.effectiveWindow,
+      // 各档位换算成「已用 token 数」再交给 UI：调用方拿 remaining 自己换算，
+      // 等于把一条换算规则复制到每个渲染处（历史上正是这样做才漂移的）。
+      thresholds: {
+        maskingAt: this.maxTokens - t.maskingRemaining,
+        compressionAt: t.compactionTriggerUsed,
+        emergencyAt: this.maxTokens - t.emergencyRemaining,
+        blockingAt: this.maxTokens - TOKEN_THRESHOLDS.blocking,
+      },
+      level: this.getCompactionLevel(toolCount),
+      percentOfTrigger: Math.round((total / trigger) * 100),
       completionBuffer: t.completionBuffer,
       calibrated: this.calibrated,
     };
+  }
+
+  /**
+   * PR1：把累计释放量按策略拆开（`masking` / `staleToolOutput` / `coldCacheClear` /
+   * `cleanedMessages`），供 /context 细目展示「谁释放的」。
+   *
+   * 合计恒等于 {@link localReductionTokens}：两者都只由 `TokenFreedTracker.recordCompact`
+   * 记账（totalFreed 与 records 在同一个方法里同步增长）。
+   * 按释放量降序——UI 不需要再排；同量时保持首次记账的顺序（Map 插入序，稳定）。
+   */
+  private freedByStrategy(): Array<{ strategy: string; tokens: number }> {
+    const byStrategy = new Map<string, number>();
+    for (const rec of this.tokenFreedTracker.getRecords()) {
+      byStrategy.set(rec.strategy, (byStrategy.get(rec.strategy) ?? 0) + rec.tokensFreed);
+    }
+    return [...byStrategy.entries()]
+      .map(([strategy, tokens]) => ({ strategy, tokens }))
+      .sort((a, b) => b.tokens - a.tokens);
   }
 
   /**
@@ -2375,10 +2601,7 @@ export class Manager {
   getCompactionLevel(toolCount: number = 0): CompactionLevel {
     // P0-5：getCleanedMessages 等本地减量对 API usage 不可见，从 used 里扣掉已记账的释放量，
     // 避免「发送副本已瘦、触发尺子仍按膨胀历史」立刻再进 hard。
-    const used = Math.max(
-      0,
-      this.estimateTokens(toolCount) - this.tokenFreedTracker.getTotalFreed(),
-    );
+    const used = this.sendTokensFrom(this.estimateTokens(toolCount));
     const t = this.getCompactionThresholds();
     const remaining = t.effectiveWindow - used;
 

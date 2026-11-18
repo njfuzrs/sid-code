@@ -447,12 +447,15 @@ describe("增量压缩", () => {
     });
 
     const bd = mgr.getTokenBreakdown(6);
-    // 分类总和应等于 categories 各项之和
+    // PR1：分类合计 = 毛估算（`grossTokens`），不再直接等于 total——
+    // total 还可能被「锚点抬升 / 本地释放」两项修正，分类只负责「扣减前的规模」。
     const sum = bd.categories.reduce((s, c) => s + c.tokens, 0);
-    expect(bd.total).toBe(sum);
-    // 与 estimateTokens 同口径（含工具 schema），允许小幅取整误差
+    expect(sum).toBe(bd.grossTokens);
+    // PR1：与 estimateTokens 严格相等，不设容差。
+    // 旧断言是 `|total - est| ≤ 2`，而容差正是本方案要消灭的东西——
+    // 同源就该逐字相等；差 1 也说明某处多做了一次取整（历史上是 round vs ceil）。
     const est = mgr.estimateTokens(6);
-    expect(Math.abs(bd.total - est)).toBeLessThanOrEqual(2);
+    expect(bd.total).toBe(est);
     // 关键分类都应有值
     const byKey = Object.fromEntries(bd.categories.map((c) => [c.key, c.tokens]));
     expect(byKey.systemPrompt).toBeGreaterThan(0);
