@@ -184,6 +184,33 @@ export interface LocalAgentTaskState extends TaskStateBase {
    * 缺省（父会话 id 缺失 / sidechain 写入失败）时不写，墓碑退回旧文案。
    */
   sidechainFile?: string;
+  /**
+   * 创建这条后台任务的主会话 id —— 超长结论的**持久副本**落盘目录用（X3）。
+   *
+   * 为什么任务状态要记它：`completeAgentTask` 是模块级函数，拿不到 `SubAgentTool` 上的
+   * `parentSessionId`；落盘又要按会话分目录（与同步回程 `buildSyncSubagentSummary` 同一个
+   * 落点 `trajectories/sessions/<id>/tool-outputs/`）。缺省（旧任务 / swarm 等不传的路径）
+   * 退到 "unknown"：副本照样落盘、照样可读，只是不按会话分目录。
+   */
+  parentSessionId?: string;
+  /**
+   * 结论全文的持久副本路径（X3）。
+   *
+   * 光有 `.output` 不够：它按回合驱逐（S3 的修法正确，它是流式工作文件），于是
+   * 「完整内容见 <output-file>」的指针在主循环跑完一两个回合后就成了死链——父代理
+   * 拿着指针去读，读到的只有墓碑。超长结论在 `completeAgentTask` 里另存一份到会话目录，
+   * 这个字段记的就是它，通知与 `task_output` 的「完整内容见 …」指向这里。
+   *
+   * 缺省 = 结论不超长（全文已在窗口里，不需要副本）；持久副本不会被回合驱逐。
+   */
+  resultFile?: string;
+  /**
+   * 已尝试为超长结论落持久副本但**失败**（磁盘满 / 权限）。与 `resultFile` 互斥。
+   *
+   * 为 true 时截断正文必须带「全文落盘失败，以上不是完整内容」，不能退回指向 `.output`
+   * —— 那是一个会过期的指针，比明说不完整更糟（同步回程同口径，见 `buildSyncSubagentSummary`）。
+   */
+  resultPersistFailed?: boolean;
 }
 
 /** Workflow 任务状态（Dynamic Workflows M6:后台运行的编排脚本） */
