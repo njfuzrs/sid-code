@@ -97,6 +97,16 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 标注置信度：对每个关键发现，简短标注确定性（如「已读码确认」「推测，未核实」「未找到，可能不存在」），并显式列出你没能确认的点。不要把推测当事实陈述，让主代理能判断哪些结论需要复核`,
     tools: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get"],
     readOnly: true,
+    // PR5（D1）：explore 默认轮次上限 100。定值来源是 E1 的预登记规则（跑前写死）：
+    // 修复后组全部 explore 的轮次最大值 M=145、长跑（>66 轮）子代理的重复读率 r=42.9% > 35%
+    // → 第三档「暂定 100，不调大，触发 PR9 评估」。长跑仍在空转时把上限调大等于把空转合法化。
+    //
+    // 这是对 2026-10-17「删掉子代理默认 maxTurns」的**修订，不是撤销**：
+    // ① 只给 explore 加（verify/task 的长尾没有证据表明异常）；
+    // ② 调用级 max_turns 可覆盖；
+    // ③ 打满时父代理看得见、能用更大值重派（PR11 的停止归因）；
+    // ④ 剩余轮次降到最后 10% 时会注入一次收尾提示（agentic-loop.ts）。
+    maxTurns: 100,
     // P0-1：explore 是高频只读搜索代理，pin 便宜档省 token（对齐 CC 给 Explore 固定 haiku）。
     modelTier: "cheap",
     source: "built-in",

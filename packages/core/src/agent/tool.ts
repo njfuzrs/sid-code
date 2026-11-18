@@ -66,6 +66,20 @@ const subAgentSchema = lazySchema(() => {
       .string()
       .optional()
       .describe("子代理的工作目录（省略时继承当前目录）。文件类工具会以此为基准。"),
+    // PR5（D1）：调用级轮次上限。重点放在**事后重派**：只读探查（explore）现在有默认上限，
+    // 打满时父代理能从结果里看到「已达轮次上限」（PR11），此时用更大的值重派并把已有
+    // 结论写进 prompt，而不是从零重来。不鼓励事前预判——模型对「这个任务要多少轮」没有判据，
+    // 凭感觉猜一个值只会让正当的深度调研被误截。
+    max_turns: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "子代理最大轮次（省略时按子代理类型的默认值；explore 默认 100，其余类型默认无上限）。" +
+          "只读探查一般不需要传。当子代理报告「已达轮次上限」且结论不完整时，用更大的值重派，" +
+          "并把已有结论写进 prompt 让它接着做。",
+      ),
     // 06H1 T7（2026-11-16）：`fork` 参数已删除。有利场景实验 12 个会话、17 次同步委派，
     // 模型一次都没选 fork（schema 每次都带描述）；真实轨迹 58 条 SubagentStart 也是 0 次。
     // 「接着当前对话深入」的需求由主代理在 prompt 里写清背景承担。论证见 Agent Note
@@ -494,6 +508,8 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      /** PR5（D1）：调用级轮次上限，透传为 SubAgentTask.maxTurns，优先于 Agent 定义默认值。 */
+      max_turns?: number;
       _agentId?: string;
       /** E1：派发本次子代理的 tool_use_id（执行器注入，见 internal-fields.ts） */
       _parentToolUseId?: string;
@@ -753,6 +769,8 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      /** PR5（D1）：调用级轮次上限，缺省时走 Agent 定义的默认值。 */
+      max_turns?: number;
       _parentToolUseId?: string;
     },
     signal?: AbortSignal,
@@ -812,6 +830,7 @@ ${typeLines}
           prompt: params.prompt,
           cwd: isolatedCwd, // B7: 经 withAgentCwd 隔离，并发安全
           model: params.model, // P2-15: 每次调用可覆盖模型
+          maxTurns: params.max_turns, // PR5（D1）：调用级上限先于 Agent 定义默认值
           // 前台子代理不上「后台任务」面板：它的结果已由下方 return 作为 tool_result 返回、
           // 渲染成 `⏺ sub_agent <type>` 工具卡片。再上一次面板 → 同一个子代理在屏幕上出现
           // 两遍（用户报的问题一：工具卡片与面板 `◓ [AG explore]` 完全重合）。
@@ -875,6 +894,8 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      /** PR5（D1）：调用级轮次上限，缺省时走 Agent 定义的默认值。 */
+      max_turns?: number;
       _parentToolUseId?: string;
     },
     signal?: AbortSignal,
@@ -938,6 +959,8 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      /** PR5（D1）：调用级轮次上限，缺省时走 Agent 定义的默认值。 */
+      max_turns?: number;
       _parentToolUseId?: string;
     },
     abortController: AbortController,
@@ -1003,6 +1026,7 @@ ${typeLines}
           description: params.description,
           prompt: params.prompt,
           model: params.model, // P2-15: 每次调用可覆盖模型
+          maxTurns: params.max_turns, // PR5（D1）：调用级上限先于 Agent 定义默认值
           // W1：isolation=worktree 时这里是隔离工作区路径（否则是调用方显式给的 cwd）。
           // 经 withAgentCwd 走 ALS，与前台同一机制。
           cwd: isolatedCwd,
