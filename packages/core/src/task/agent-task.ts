@@ -276,10 +276,17 @@ export async function failAgentTask(
   // 唯一一份完整成果（已改动文件 / 结论 / 工具证据 / 下一步）。写进去之后
   // `task_output` 能读到它，墓碑的尾部也不再是「清理前未留存到输出内容」。
   //
-  // 终态保护前置：任务已被 kill（killed 终态）时不追写——`.output` 归 kill 路径收尾，
-  // 这里再写会让同一个文件出现两份语义不同的结尾。
+  // 终态保护前置：此前这里用 `!isTerminalStatus` 一刀切，把 **killed** 也挡在外面。
+  // 但 killed 是硬杀出口（`task_stop force` / 60 秒超时退化），它自己只在 kill 时
+  // `flushTaskOutput` 了逐轮文本、**从来不写残卷**；一刀切的结果是 salvage 的确定性
+  // 清单（读过的文件 / 最后 5 次调用）收集了却永远落不了盘，父代理读 `.output` 只有
+  // 逐轮文本，方案 §6 PR11 第 5 步在硬杀出口等于没生效。
+  // 真正「已有结尾」的终态是 completed / failed：它们各自写过结果或残卷，再追写会造出
+  // 两份语义不同的结尾。所以只对这两种停写，killed 与运行中（竞态）都要写。
   const existing = getTask(taskId) as LocalAgentTaskState | undefined;
-  if (existing && !isTerminalStatus(existing.status) && error.trim() !== "") {
+  const canAppendSalvage =
+    existing !== undefined && (existing.status === "killed" || !isTerminalStatus(existing.status));
+  if (canAppendSalvage && error.trim() !== "") {
     appendTaskOutput(taskId, `${error}\n`);
   }
   await flushTaskOutput(taskId);
