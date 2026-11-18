@@ -107,29 +107,33 @@ describe("getTokenBreakdown 扣掉本地已释放量（/context 与 Footer 不�
     expect(beforeTotal - afterTotal).toBe(beforeUsed - afterUsed);
   });
 
-  test("释放量从 toolResult 分类里扣（三类记账来源释放的都是 tool_result）", () => {
+  test("释放量单列在 freed 字段，不再从 toolResult 分类里扣（PR1 口径）", () => {
     const mgr = new Manager({ maxTokens: 1_000_000 });
     mgr.setMessages(history(10));
     mgr.applyColdCacheClear();
 
     const b = mgr.getTokenBreakdown();
-    const toolResultCat = b.categories.find((c) => c.key === "toolResult");
-    expect(toolResultCat).toBeDefined();
-    // 分类不得为负（自相矛盾的展示比数字偏大更糟）
-    expect(toolResultCat!.tokens).toBeGreaterThanOrEqual(0);
-    // total 恒等于各分类之和 —— 扣减不能破坏这个不变量
-    expect(b.total).toBe(b.categories.reduce((sum, c) => sum + c.tokens, 0));
+    expect(b.freed.tokens).toBeGreaterThan(0);
+    // PR1：分类是「扣减前」的规模，freed 单列成字段，不从任何分类里减。
+    // 旧实现从 toolResult 里扣，代价是「分类之和 ≠ 毛估算」——UI 只能给一个混算后的数，
+    // 用户看不见「谁释放的、释放了多少」，也没法核对账目。
+    expect(b.categories.reduce((sum, c) => sum + c.tokens, 0)).toBe(b.grossTokens);
+    // 未校准时锚点为 0，total 与分类合计的差恰好是本地释放量
+    expect(b.total).toBe(b.grossTokens - b.freed.tokens);
+    expect(b.categories.every((c) => c.tokens >= 0)).toBe(true);
   });
 
-  test("校准时按 factor 缩放后仍保持 total = 各分类之和（扣减顺序不破坏不变量）", () => {
+  test("校准时恒等式仍成立：total = 毛估算 + 锚点抬升 − 本地释放（钳零）", () => {
     const mgr = new Manager({ maxTokens: 1_000_000 });
     mgr.setMessages(history(10));
-    // 喂一次真实 usage 让 calibrationFactor 生效，覆盖「先扣后缩放」这条路径
+    // 喂一次真实 usage 让 calibrationFactor 生效，覆盖「先校准后扣减」这条路径
     mgr.recordActualTokens(50_000, 10);
     mgr.applyColdCacheClear();
 
     const b = mgr.getTokenBreakdown();
-    expect(b.total).toBe(b.categories.reduce((sum, c) => sum + c.tokens, 0));
+    expect(b.calibrated).toBe(true);
+    expect(b.categories.reduce((sum, c) => sum + c.tokens, 0)).toBe(b.grossTokens);
+    expect(b.total).toBe(Math.max(0, b.grossTokens + b.anchorLiftTokens - b.freed.tokens));
     expect(b.categories.every((c) => c.tokens >= 0)).toBe(true);
   });
 });

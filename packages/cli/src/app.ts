@@ -6650,6 +6650,9 @@ export class App {
           sessionData.metadata[
             "usage_stats"
           ] as import("@sid-code/core/session/state.ts").UsageSnapshot,
+          // A7：旧快照（没有 mainContextStock 字段）的 stock 回退基准 = resume 后的主模型。
+          // 此时 config.model 已由上面的 agent_setting 恢复流程定好，传的是「真正在用」的那个模型。
+          this.config.model,
         );
         // budgetRules 增量记账的基线跟着回灌值走，否则下一轮把全部历史花费当新钱记一遍
         this.budgetTracker?.hydrateSessionBaseline(this.sessionState.getEffectiveTotalCostUSD());

@@ -17,6 +17,7 @@ import type { Color } from "../render-port/types.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { PROGRESS_FILLED, PROGRESS_EMPTY, TREE_BRANCH } from "../constants/figures.ts";
 import type { ContextTokenBreakdown } from "@sid-code/core/context/manager.ts";
+import { allocateByWeight } from "@sid-code/shared/utils/allocate.ts";
 
 interface ContextDialogProps {
   onClose: () => void;
@@ -42,6 +43,9 @@ function categoryColor(key: string): Color {
     memoryFiles: theme.status.success,
     userText: theme.status.success,
     assistantText: theme.text.link,
+    // PR1 新增「思考链」：Claude 的 thinking/redacted_thinking、OpenAI 的 provider_reasoning、
+    // DeepSeek 的思考链归同一档（对用户是同一件事）。沿用既有语义色池，不引入新色相。
+    thinking: theme.text.accent,
     toolUse: theme.status.warning,
     toolResult: theme.ui.comment,
     overhead: theme.text.secondary,
@@ -84,8 +88,16 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
   const usedCells =
     maxTokens > 0 ? Math.min(GRID_WIDTH, Math.round((total / maxTokens) * GRID_WIDTH)) : 0;
 
-  // 各分类在"已用格数"里按占比分配格子（保证总和 = usedCells，用最大余数法避免丢格）。
-  const withCells = allocateCells(categories, usedCells);
+  // 各分类在「已用格数」里按占比分配格子（最大余数法保证总和 === usedCells）。
+  //
+  // PR1：工具结果的格数按**净值**算（扣掉本地已释放量）。否则会出现自相矛盾的画面：
+  // 汇总写着「本地已释放 −28K」，网格里工具结果的色块却一格没少——用户会以为释放没生效。
+  // 网格画的是「实际发出去的那份」，所以权重必须与 total 同口径，而不是毛估算。
+  const gridWeights = categories.map((c) =>
+    c.key === "toolResult" ? Math.max(0, c.tokens - bd.freed.tokens) : c.tokens,
+  );
+  const cells = allocateByWeight(gridWeights, usedCells);
+  const withCells = categories.map((c, i) => ({ key: c.key, cells: cells[i] ?? 0 }));
 
   const usedPct = maxTokens > 0 ? Math.round((total / maxTokens) * 100) : 0;
   const remaining = Math.max(0, maxTokens - total);
@@ -183,6 +195,20 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
             / {fmtNum(maxTokens)} tokens（{usedPct}%）
           </Text>
         </Row>
+        {/* PR1：口径拆分——「已用」是净值，它 = 分类合计 + 实测校正 − 本地释放。
+            两个修正项各占一行，用户才能把账对上；混进分类里等于伪造归因。 */}
+        {bd.anchorLiftTokens > 0 ? (
+          <Row label="实测校正">
+            <Text color={theme.ui.active}>+{fmtNum(bd.anchorLiftTokens)} tokens</Text>
+            <Text color={theme.text.secondary}>（上次请求的实际输入高于估算）</Text>
+          </Row>
+        ) : null}
+        {bd.freed.tokens > 0 ? (
+          <Row label="本地已释放">
+            <Text color={theme.status.success}>−{fmtNum(bd.freed.tokens)} tokens</Text>
+            <Text color={theme.text.secondary}>（已在发送副本中瘦身）</Text>
+          </Row>
+        ) : null}
         {/* P3-2：完成缓冲区单独成行——它占着窗口但不可用于对话，混进"剩余"会让用户高估余量 */}
         {completionBuffer > 0 ? (
           <Row label="完成预留">
@@ -200,48 +226,19 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
             {fmtNum(compactThresholdTokens)} tokens（{compactPct}%）
           </Text>
           <Text color={theme.text.secondary}>
-            {toCompact > 0 ? `，距触发还剩 ~${fmtNum(toCompact)}` : "，已达阈值"}
+            {toCompact > 0
+              ? `，距触发还剩 ~${fmtNum(toCompact)}（已达 ${bd.percentOfTrigger}%）`
+              : "，已达阈值"}
           </Text>
         </Row>
       </Box>
 
       <Box marginTop={1} paddingLeft={2}>
         <Text color={theme.text.secondary}>
-          {calibrated ? "（已按真实用量校准）" : "（启发式估算，未校准）"} Esc 关闭
+          {calibrated ? "（分类为估算值，总量已按真实用量校准）" : "（启发式估算，未校准）"} Esc
+          关闭
         </Text>
       </Box>
     </Box>
   );
 };
-
-/**
- * 把 usedCells 个格子按 token 占比分配给各分类，最大余数法保证总和精确等于 usedCells。
- */
-function allocateCells(
-  categories: Array<{ key: string; tokens: number }>,
-  usedCells: number,
-): Array<{ key: string; cells: number }> {
-  const totalTokens = categories.reduce((s, c) => s + c.tokens, 0);
-  if (totalTokens <= 0 || usedCells <= 0) {
-    return categories.map((c) => ({ key: c.key, cells: 0 }));
-  }
-  const raw = categories.map((c) => ({
-    key: c.key,
-    exact: (c.tokens / totalTokens) * usedCells,
-  }));
-  const floored = raw.map((r) => ({
-    key: r.key,
-    cells: Math.floor(r.exact),
-    frac: r.exact - Math.floor(r.exact),
-  }));
-  let assigned = floored.reduce((s, r) => s + r.cells, 0);
-  // 剩余格子按小数部分从大到小补齐
-  const order = [...floored].sort((a, b) => b.frac - a.frac);
-  let i = 0;
-  while (assigned < usedCells && order.length > 0) {
-    order[i % order.length].cells += 1;
-    assigned += 1;
-    i += 1;
-  }
-  return floored.map((r) => ({ key: r.key, cells: r.cells }));
-}
