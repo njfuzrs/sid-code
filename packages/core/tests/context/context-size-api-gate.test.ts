@@ -57,15 +57,59 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * 该行是否只是注释。
+ * 剥离注释后的「代码部分」，只留真正会被执行的字符。
  *
- * 必须排除注释，否则 `output-budget.ts` 里那句说明性注释
- *（「口径来自 `ctxMgr.estimateTokens()`」）会误报——那是文档，不是调用。
- * 判据是「去掉前导空白后以 `//` / `*` / `/*` 开头」。
+ * 旧判据是「trimStart 后以 `//` / `*` / `/*` 开头就跳过整行」，它有两个盲区：
+ * ① `/* 说明 *\/ ctx.estimateTokens();` —— 行首是块注释开头，整行被跳过，后面的真实调用漏检；
+ * ② `*\/ const x = ctx.estimateTokens();` —— 块注释结束行后面跟代码，同样被跳过。
+ * **门禁的盲区等于没有门禁**：漏检不会报红，只会让人以为「存量已归零」。
+ * 所以改成维护跨行块注释状态、逐行剥离注释，注释之外出现的调用一律算。
+ *
+ * 字符串字面量按引号状态处理：`const u = "https://x"; ctx.estimateTokens();` 里的 `//`
+ * 是字符串内容，不能当行注释把后半行截掉（那是反向的漏检）。
+ *
+ * 导出仅供测试直接断言判据本身（与 `walk` 的「扫到文件数」自证同一用途）。
  */
-function isCommentLine(line: string): boolean {
-  const t = line.trimStart();
-  return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
+export function codePartForGate(line: string, state: { inBlock: boolean }): string {
+  let out = "";
+  let i = 0;
+  let quote: string | null = null;
+  while (i < line.length) {
+    if (state.inBlock) {
+      const end = line.indexOf("*/", i);
+      if (end < 0) return out;
+      state.inBlock = false;
+      i = end + 2;
+      continue;
+    }
+    const ch = line[i]!;
+    if (quote) {
+      out += ch;
+      if (ch === "\\") {
+        out += line[i + 1] ?? "";
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (line.startsWith("//", i)) return out;
+    if (line.startsWith("/*", i)) {
+      state.inBlock = true;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 /** 扫到的真实调用点（文件相对路径 + 行号 + 行内容）。 */
@@ -76,9 +120,11 @@ function findBareEstimateTokensCalls(): { file: string; line: number; text: stri
       const rel = relative(REPO_ROOT, file).replace(/\\/g, "/");
       if (rel === ALLOWED_FILE) continue;
       const lines = readFileSync(file, "utf8").split("\n");
+      // 块注释状态跨行，必须每个文件一个（不能跨文件复用）。
+      const state = { inBlock: false };
       lines.forEach((line, i) => {
-        if (isCommentLine(line)) return;
-        if (!/\.estimateTokens\(/.test(line)) return;
+        const code = codePartForGate(line, state);
+        if (!/\.estimateTokens\(/.test(code)) return;
         hits.push({ file: rel, line: i + 1, text: line.trim() });
       });
     }

@@ -16,7 +16,11 @@
 
 import { describe, test, expect } from "bun:test";
 import { Manager } from "@sid-code/core/context/manager.ts";
-import { estimateBlockTokens, estimateConversationTokens } from "@sid-code/core/context/token.ts";
+import {
+  estimateBlockTokens,
+  estimateConversationTokens,
+  estimateTextTokens,
+} from "@sid-code/core/context/token.ts";
 import type { ContentBlock, Message } from "@sid-code/core/llm/types.ts";
 
 /**
@@ -188,6 +192,30 @@ describe("PR1 访问者契约：Σ 上报量 === 返回值", () => {
     expect(visited).toBe(total);
     // 反向确认这条夹具真的覆盖到了结构开销（否则「漏掉 +20」类变异测不出来）
     expect(total).toBeGreaterThan(estimateConversationTokens(messages, {}));
+  });
+
+  test("estimateBlockTokens 逐类分项精确（删掉任一分支都会变红）", () => {
+    // tool_use：工具名与入参 JSON 都必须计入。夹具刻意用 30+ 字符的长名——
+    // 用 `read` 这种短名，漏算名字只差几个 token，断言看不出来（见 BLOCK_SAMPLES 注释）。
+    expect(estimateBlockTokens(BLOCK_SAMPLES.tool_use)).toBe(
+      estimateTextTokens("read_file_with_a_very_long_tool_name_v2") +
+        estimateTextTokens(
+          JSON.stringify({ file_path: "/tmp/example.ts", offset: 120, limit: 400 }),
+        ),
+    );
+
+    // mediaBlocks：图片 / PDF 的 base64 必须计入（此前整类漏算，是 A1 的原始缺陷之一）。
+    // 单独造块而不改 BLOCK_SAMPLES，避免动到其它用例已经固定的基线数值。
+    const withMedia: ContentBlock = {
+      type: "tool_result",
+      tool_use_id: "toolu_media",
+      content: "见附件",
+      mediaBlocks: [{ kind: "image", mediaType: "image/png", data: "A".repeat(400) }],
+    };
+    const withoutMedia: ContentBlock = { ...withMedia, mediaBlocks: undefined };
+    expect(estimateBlockTokens(withMedia) - estimateBlockTokens(withoutMedia)).toBe(
+      estimateTextTokens("A".repeat(400)),
+    );
   });
 });
 

@@ -126,8 +126,15 @@ export function estimateBlockTokens(block: import("../llm/types.ts").ContentBloc
       // 发现 1：Responses 的 encrypted_content 不会被渲染进新采样（官方说明），按密文长度估
       // 会让每轮累加几 KB base64，1300 轮下把 masking/压缩提前触发。按 0 计，真实开销由 usage 回填。
       return 0;
-    default:
+    default: {
+      // 穷尽检查：`ContentBlock` 新增成员而这里没跟上时，typecheck 直接报错。
+      // 旧实现是静默 `return 0`——新块类型会被无声漏算，而估算偏低会让压缩/遮罩晚触发，
+      // 与 A1「分类必须穷尽」同一条教训（分类侧已有 never，估算侧此前没有）。
+      // 运行时若真来了未知类型（第三方 provider 的非标块），仍按 0 计以保持防御。
+      const exhaustive: never = block;
+      void exhaustive;
       return 0;
+    }
   }
 }
 
