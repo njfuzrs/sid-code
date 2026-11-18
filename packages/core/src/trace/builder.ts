@@ -75,6 +75,19 @@ export interface RequestResponsePair {
     tools?: unknown[];
     new_messages?: unknown[];
     _messages_count?: number;
+    /**
+     * PR0（2026-11-18）：BeforeModel 请求前的上下文估算四件套，与 events.jsonl 的
+     * `BeforeModel.data` **同源同值**。口径见 `hook/types.ts` 的
+     * `BeforeModelInput.llm_request` 同名注释。
+     *
+     * 为什么 raw.jsonl 也要带：events.jsonl 与 raw.jsonl 是两条独立消费路径，
+     * 「估算 vs 真实 input」的对账在 raw 一侧做最省事（真实 usage 就在同一行）。
+     * 只在一侧有会让分析脚本必须先按 index 跨文件 join，而 join 失败时是静默少样本。
+     */
+    ctx_estimated_tokens?: number;
+    ctx_freed_tokens?: number;
+    ctx_anchor_tokens?: number;
+    ctx_calibrated?: boolean;
     /** 原始完整 messages（仅内存使用，不写入 raw.jsonl，供 findToolResult 搜索） */
     raw_messages?: unknown[];
     /**

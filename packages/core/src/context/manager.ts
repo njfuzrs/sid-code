@@ -2009,6 +2009,23 @@ export class Manager {
   }
 
   /**
+   * P0-5：本地压缩 / 遮罩 / 清理累计释放的 token（**未校准**的原始记账口径）。
+   *
+   * 为什么需要这个访问器：`getContextUsageForDisplay` 与 `getCompactionLevel` 都是
+   * `estimateTokens(toolCount) - tokenFreedTracker.getTotalFreed()`，但这个减项此前
+   * 只在 Manager 内部可见。轨迹里只记 `estimateTokens`（含已从发送副本瘦掉、但全量历史
+   * 里还在的那部分），排查「估算 vs 真实 input」时无法把差值拆成「锚点抬升」和
+   * 「本地释放」两个分量——只能靠猜。PR0 的 BeforeModel 字段就是要把这个量搬上轨迹。
+   *
+   * ⚠️ 口径：这里返回的是**未乘校准系数**的原始值（tracker 记账时用的是 chars/4），
+   * 与 `getContextUsageForDisplay` 里减掉的是同一个量。PR2 之后如果 freed 改成乘系数，
+   * 这个 getter 要跟着改，字段语义（「决策里实际减掉的那个量」）不变。
+   */
+  getLocalFreedTokens(): number {
+    return this.tokenFreedTracker.getTotalFreed();
+  }
+
+  /**
    * S6：上一次成功响应的真实输入 token（= 「已被服务端放行」的下界）。
    * 任何压缩都会把它清零 —— 返回 0 时调用方必须跳过学习，0 不是一个观测值。
    */

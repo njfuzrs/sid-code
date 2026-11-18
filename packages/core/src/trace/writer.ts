@@ -93,6 +93,19 @@ export interface RawJsonlEntry {
     new_messages?: unknown[];
     /** 完整 messages 数量（非首行时记录，便于调试） */
     _messages_count?: number;
+    /**
+     * PR0（2026-11-18）：BeforeModel 请求前的上下文估算四件套，与 events.jsonl 的
+     * `BeforeModel.data` **同源同值**（都由 queryLoop 在同一个时刻取值）。
+     *
+     * 为什么 raw.jsonl 也要带：events.jsonl 与 raw.jsonl 是两条独立消费路径，
+     * 「估算 vs 真实 input」的对账在 raw 一侧做最省事（真实 usage 就在同一行）。
+     * 只在一侧有会让分析脚本必须先按 index 跨文件 join，而 join 失败时是静默少样本。
+     * 口径见 `hook/types.ts` 的 `BeforeModelInput.llm_request` 同名注释。
+     */
+    ctx_estimated_tokens?: number;
+    ctx_freed_tokens?: number;
+    ctx_anchor_tokens?: number;
+    ctx_calibrated?: boolean;
   };
   /** 响应侧数据 */
   response: {
