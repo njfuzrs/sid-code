@@ -175,6 +175,20 @@ describe("task_stop 对 monitor 生效（D1）", () => {
           isError: undefined,
         });
 
+        // PR11（X1）：agent 任务默认走**优雅停止**——置停止信号让子代理跑一轮总结，
+        // 任务状态要等它交出总结才落终态（最多 60 秒后退化硬杀）。这里没有真实循环在跑，
+        // 所以状态会一直是 running。它仍然算「被 task_stop 正确处理了」，只是异步收工。
+        if (type === "local_agent") {
+          expect({ type, terminal: isTerminalStatus(getTask(task.id)!.status) }).toEqual({
+            type,
+            terminal: false,
+          });
+          const payload = JSON.parse(result.output) as { status: string; message?: string };
+          expect(payload.status).toBe("running");
+          expect(payload.message).toContain("优雅停止");
+          continue;
+        }
+
         const after = getTask(task.id)!;
         expect({ type, terminal: isTerminalStatus(after.status) }).toEqual({
           type,
