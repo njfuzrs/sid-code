@@ -79,13 +79,22 @@ export interface SessionMetrics {
   model: string | null;
   /** 配对成功的调用总数（含未校准、含作废） */
   paired: number;
-  /** 进 M1/M2 分母的调用数（已校准 + 未作废） */
+  /**
+   * 进 M1/M2 分母的调用数（已校准 + 未作废 + **未重试**）。
+   *
+   * 重试必须排除：`AfterModel.usage` 是跨 attempt 累加的（`accumulateUsage`；
+   * `stream_restart` 刻意不回退 usage，因为作废尝试真实计费）。拿累加值去比
+   * `estimated − freed`，actual 被抬高，M1 的 |err| 与 M2 的 p5 同时失真 ——
+   * 这正是「分母口径一变曲线整体平移」的典型。
+   */
   denominator: number;
   /** 未校准被排除的条数 */
   excludedUncalibrated: number;
-  /** 作废重试被排除的条数 */
+  /** 同一 index 出现多次 BilledRequest（重试）被排除的条数 */
   excludedRetried: number;
-  /** 已校准但发生过重试的条数（分母内，仅提示） */
+  /** `reason:"aborted"` 的收尾补记被排除的条数 */
+  excludedAborted: number;
+  /** 保留字段：重试调用已不进分母，恒为 0（仅为兼容既有输出格式） */
   retriedInDenominator: number;
   /** |err| 的 p95，百分数（0.1234 表示 12.34%） */
   m1P95: number | null;
@@ -296,7 +305,8 @@ export function computeMetrics(params: {
   compactions: number;
 }): SessionMetrics {
   const { calls } = params;
-  const inDenominator = calls.filter((c) => c.calibrated && !c.aborted);
+  // 分母 = 已校准 + 未作废 + 未重试。重试必须排除的理由见 SessionMetrics.denominator。
+  const inDenominator = calls.filter((c) => c.calibrated && !c.aborted && !c.retried);
 
   const errs = inDenominator.map((c) => (c.estimated - c.freed - c.actual) / c.actual);
   const absSorted = errs.map(Math.abs).sort((a, b) => a - b);
@@ -309,7 +319,8 @@ export function computeMetrics(params: {
     paired: calls.length,
     denominator: inDenominator.length,
     excludedUncalibrated: calls.filter((c) => !c.calibrated).length,
-    excludedRetried: calls.filter((c) => c.aborted).length,
+    excludedRetried: calls.filter((c) => c.retried).length,
+    excludedAborted: calls.filter((c) => c.aborted).length,
     retriedInDenominator: inDenominator.filter((c) => c.retried).length,
     m1P95: absSorted.length ? percentile(absSorted, 0.95) * 100 : null,
     m2P5: signedSorted.length ? percentile(signedSorted, 0.05) * 100 : null,
@@ -445,7 +456,7 @@ function printTable(rows: SessionMetrics[]): void {
     "运行",
     "会话",
     "分母",
-    "排除(未校准/作废)",
+    "排除(未校准/重试/作废)",
     "M1 |err|p95",
     "M2 err p5",
     "高估 p95",
@@ -456,7 +467,7 @@ function printTable(rows: SessionMetrics[]): void {
     r.label,
     r.sessionId,
     String(r.denominator),
-    `${r.excludedUncalibrated}/${r.excludedRetried}`,
+    `${r.excludedUncalibrated}/${r.excludedRetried}/${r.excludedAborted}`,
     fmtPct(r.m1P95),
     fmtPct(r.m2P5),
     fmtPct(r.errP95),

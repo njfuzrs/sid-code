@@ -147,16 +147,20 @@ describe("PR3 取数层：A4 固定开销残差", () => {
     expect(report.fixedOverhead.residual).toBe(0);
   });
 
-  test("细目之和超过母项时残差钳到 0，不造负数", () => {
+  test("细目之和超过母项时保留负残差——加总等式仍严格成立", () => {
     // 母项刻意记 1 token，而记忆索引段的估算远大于它 → 模拟口径漂移
     const mgr = new Manager({ maxTokens: 1_000_000 });
     mgr.setSystemPrompt(SYSTEM_PROMPT);
     mgr.setMessages(messages());
     mgr.setMemoryTokens(1);
     const report = buildContextReport(mgr, { model: "test-model" });
+    const memory = report.categories.find((c) => c.key === "memoryFiles")!;
     const listed = report.fixedOverhead.sources.reduce((s, x) => s + x.tokens, 0);
-    expect(listed).toBeGreaterThan(0);
-    expect(report.fixedOverhead.residual).toBe(0);
+    expect(listed).toBeGreaterThan(memory.tokens);
+    // 旧实现把 residual 钳到 0，这条会红（细目 42k + 残差 0 ≠ 母项 1）——
+    // 用户把细目加总后得到的是一个没有任何一行解释的数。
+    expect(listed + report.fixedOverhead.residual).toBe(memory.tokens);
+    expect(report.fixedOverhead.residual).toBeLessThan(0);
   });
 });
 

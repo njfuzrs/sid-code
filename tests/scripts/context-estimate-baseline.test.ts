@@ -198,16 +198,20 @@ describe("computeMetrics：分母三条铁律", () => {
     expect(m.m1P95).toBeCloseTo(0, 6);
   });
 
-  test('aborted（reason:"aborted"）被排除，重试过的仍在分母但单独计数', () => {
+  test("aborted 与重试过的调用都排除出分母（actual 是跨 attempt 累加值），各自单独计数", () => {
     const events = [
       ...call({ index: 1, estimated: 100, calibrated: true, input: 100, aborted: true }),
       ...call({ index: 2, estimated: 100, calibrated: true, input: 100, billedCount: 3 }),
+      ...call({ index: 3, estimated: 100, calibrated: true, input: 100 }),
     ];
     const r = pairCalls(events);
     const m = metrics(r.calls);
+    // 只剩 index 3 是「干净的一次调用」：重试轮的 actual 是两次 attempt 之和，
+    // 拿它比 estimated 会让 M1/M2 同时失真，所以必须排除。
     expect(m.denominator).toBe(1);
     expect(m.excludedRetried).toBe(1);
-    expect(m.retriedInDenominator).toBe(1);
+    expect(m.excludedAborted).toBe(1);
+    expect(m.retriedInDenominator).toBe(0);
   });
 
   test("M1 是 |err| 的 p95，M2 是带符号 err 的 p5（低估为负）", () => {
