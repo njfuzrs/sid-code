@@ -97,6 +97,20 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
     return z.toJSONSchema(enterWorktreeSchema()) as Record<string, unknown>;
   }
 
+  /**
+   * B2：声明「与安全无关」，在 auto 档走分类器 Level 0（零成本跳过 LLM）。
+   *
+   * 三个理由：
+   * - 目标目录固定在工作区内的 `.sid-code/worktrees/`，不越出工作区；
+   * - 动作可以用 `exit_worktree` 撤销（与 `exit_worktree` 的 remove 不同，它不丢改动）；
+   * - 输入只有 name / path / pr / tmux，没有能判断风险的信息——交给分类器只能靠猜。
+   *
+   * `exit_worktree` **刻意不加**：它的 remove 动作会丢弃未提交的改动，属于必须人看的动作。
+   */
+  toAutoClassifierInput(): string {
+    return "";
+  }
+
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
     const params = (input ?? {}) as {

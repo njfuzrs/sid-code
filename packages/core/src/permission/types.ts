@@ -44,6 +44,26 @@ export interface Decision {
   mode?: string;
 }
 
+/**
+ * C2（PR2）：auto 档回退人工时，「分类器为什么没放行」的展示用摘要。
+ *
+ * 来源是 `Decision.metadata` 里 PR0 已落盘的 `autoClassifier` / `classifierReason`，
+ * 加上 `decisionReason` 里的结构检查命中项。**只用于展示，不参与任何判定**——
+ * 改法（放宽/收紧放行）只能改分类器判据，不能改这里。
+ *
+ * 为什么不在 UI 里直接读 metadata：`metadata` 是 `Record<string, unknown>`，
+ * 字段名（`autoClassifier` 的六种取值）与展示文案的映射需要一处收口，
+ * 否则每加一个回退成因就要改一次 UI，而漏改的那处会静默不显示。
+ */
+export interface AutoFallbackNote {
+  /** `Decision.metadata.autoClassifier` 的固定枚举（已排除放行与 absent） */
+  kind: "unsafe" | "unavailable" | "error" | "safety-guard" | "ask-rule" | string;
+  /** 分类器给出的一句话理由（`classifierReason`），可能没有 */
+  reason?: string;
+  /** 结构检查命中项：dangerousCommand.pattern / safetyCheck.reason / destructiveTool.tool */
+  guard?: string;
+}
+
 /** 权限请求 */
 export interface PermissionRequest {
   toolName: string;
@@ -122,6 +142,13 @@ export interface Checker {
   recordUserDenial?(req: PermissionRequest, reason?: string): void;
   /** 重置 denial tracking（可选，/clear 新一轮对话时调用） */
   resetDenialTracking?(): void;
+  /**
+   * PR2（B1）：注入 auto 档分类器可见的「用户授权」账本（可选）。
+   *
+   * 由会话层（App / cli）创建并注入，checker 只读。包装型 checker（swarm escalate 等）
+   * 不实现时，auto 分类器请求不带 `<user_intent>`，退化为旧口径——不会误放行，只会多弹窗。
+   */
+  setUserIntentLedger?(ledger: import("./user-intent.ts").UserIntentLedger | null): void;
   /**
    * 读取 denial tracking 的当前状态（可选，只读）。
    * 无头模式收尾时用它汇总「哪些操作被自动拒绝了」——决策本身不在这里改。

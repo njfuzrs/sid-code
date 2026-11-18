@@ -292,6 +292,11 @@ export interface PermissionRequestInfo {
    * 每条含被阴影规则、覆盖它的规则、严重度(blocked/shadowed)。可选——无阴影时省略。
    */
   shadowedRules?: ShadowedRuleInfo[];
+  /**
+   * C2（PR2）：auto 档回退到人工时，「分类器为什么没放行」的展示摘要。
+   * 非 auto 回退（或 auto 已放行）时省略——确认框不显示这一行。
+   */
+  autoFallback?: import("@sid-code/core/permission/types.ts").AutoFallbackNote;
 }
 
 /** 传给 UI 的阴影规则展示信息（从 permission 层投影，避免 UI 直接依赖权限内部类型） */

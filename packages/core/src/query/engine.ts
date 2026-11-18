@@ -54,6 +54,15 @@ export interface QueryEngineDeps {
   budgetTracker?: BudgetTracker;
   /** B2：会话持久化写入端（增量写入 user/assistant/tool_result 消息）。可选——未注入则不持久化 */
   sessionStore?: import("../session/store.ts").SessionStore;
+  /**
+   * PR2（B1）：auto 档分类器唯一可见的「用户授权」账本，由本引擎独占写入。
+   *
+   * 为什么放在引擎依赖里而不是从 `ctxMgr` 消息历史反推：历史里的 user 角色混着任务通知、
+   * 系统提醒、tool_result、压缩摘要、hook additionalContext —— 它们是 agent 或外部内容
+   * 能影响的通道，混进授权账本等于给 agent 一条自己给自己授权的路。详见
+   * `permission/user-intent.ts` 文件头。可选——未注入时分类器请求不带 `<user_intent>`。
+   */
+  userIntentLedger?: import("../permission/user-intent.ts").UserIntentLedger;
   /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
   skillActivationCoordinator?: import("../skill/activation-coordinator.ts").SkillActivationCoordinator;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
@@ -330,6 +339,20 @@ export class QueryEngine {
         log.info("HOOK", `用户输入被 hook 停止: ${hookResult.finalOutput.getEffectiveReason()}`);
         yield { kind: "hook_blocked", reason: hookResult.finalOutput.getEffectiveReason() };
         return;
+      }
+      // PR2（B1）：用户提示被接受（未被 hook 阻塞）之后，写入 auto 档分类器唯一可见的
+      // 「用户授权」账本。位置刻意放在两道 return 之后：被阻塞的提示不进模型上下文，
+      // 也就没有授权任何事，不该让分类器以为用户说过。
+      //
+      // 收什么由来源决定，三条都不一样：
+      // - 定时任务（scheduled）：整条不收。prompt 可能由 agent 经 cron 工具自己创建，
+      //   把它当「用户授权」等于让 agent 自己给自己授权；
+      // - 斜杠命令（displayCommand）：只收用户键入的那行命令（`/commit`），不收展开后的
+      //   模板正文——模板来自仓库文件，agent 可以改写；
+      // - 其余（TUI 输入 / 无头 -p / bridge）：收原文。
+      const ledger = this.deps.userIntentLedger;
+      if (ledger && !scheduled) {
+        ledger.record(options?.displayCommand ?? userInput);
       }
       // HC17：hook 上下文**不拼进用户原文**，作为独立 <system-reminder> 块挂在用户消息之后
       // （见 hook/context-inject.ts）。原先拼接后再 parseThinkingHint，hook 输出里的

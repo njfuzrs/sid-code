@@ -14,6 +14,7 @@ import type {
 } from "@sid-code/core/llm/types.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { Checker } from "@sid-code/core/permission/types.ts";
+import { UserIntentLedger } from "@sid-code/core/permission/user-intent.ts";
 import {
   isBypassDisabledByPolicy,
   isModeDisabledByPolicy,
@@ -900,6 +901,14 @@ export class App {
   /** 统一命令注册表（见 AppOptions.unifiedRegistry） */
   private unifiedRegistry: import("./command/unified-registry.ts").UnifiedCommandRegistry;
   private permissionChecker: Checker | null;
+  /**
+   * PR2（B1）：auto 档分类器唯一可见的「用户授权」账本，会话级。
+   *
+   * 由本类独占持有：QueryEngine 写（submitMessage 里用户提示被接受后），
+   * PermissionChecker 只读（auto 分支每次 classify 带一份快照）。
+   * `/clear` 时 reset——新会话不该继承旧会话的授权。
+   */
+  private userIntentLedger = new UserIntentLedger();
   private fallback: ModelFallback;
   private thinkingMgr: ThinkingManager;
   private sessionState: SessionState;
@@ -1078,6 +1087,8 @@ export class App {
         desc: string,
         shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[],
         signal?: AbortSignal,
+        /** C2（PR2）：auto 档回退人工时，「分类器为什么没放行」的展示摘要 */
+        autoFallback?: import("@sid-code/core/permission/types.ts").AutoFallbackNote,
       ) => Promise<"yes" | "no" | "always" | "always-persist">)
     | null = null;
   /**
@@ -1183,6 +1194,9 @@ export class App {
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
     this.unifiedRegistry = opts.unifiedRegistry;
     this.permissionChecker = opts.permissionChecker ?? null;
+    // PR2（B1）：把会话级授权账本注入 checker（auto 档分类器只读它）。
+    // 放在构造里而不是 doInit：App 可能多次 doInit，账本按引用传，重复注入无副作用。
+    this.permissionChecker?.setUserIntentLedger?.(this.userIntentLedger);
     this.planManager = opts.planManager ?? null;
     this.fileReadTracker = opts.fileReadTracker ?? null;
     this.skillActivationCoordinator = opts.skillActivationCoordinator;
@@ -1902,6 +1916,9 @@ export class App {
       tokenMeter: this.tokenMeter,
       budgetTracker: this.budgetTracker,
       sessionStore: this.sessionStore ?? undefined,
+      // PR2（B1）：会话级授权账本——engine 是唯一写入点（submitMessage 里用户提示被接受后），
+      // checker 在 auto 分支读快照塞进分类请求。
+      userIntentLedger: this.userIntentLedger,
       skillActivationCoordinator: this.skillActivationCoordinator,
       executeTools: (content) => this.executeTools(content),
       processStream: (stream, onText, onThinking, turnAbortController) =>
@@ -3522,6 +3539,9 @@ export class App {
     // 负收益防线审计发现 1：resetDenialTracking() 此前**只有定义、无任何生产调用方**，
     // /clear 是"新一轮对话"的确切时机，在此归零（与 todo/假设登记表等会话级状态同批重置）。
     this.permissionChecker?.resetDenialTracking?.();
+    // PR2（B1）：/clear 是「新一轮对话」的确切时机，旧会话的授权不继承到新会话
+    // （否则用户 /clear 之后，auto 档分类器仍会把上一个任务的「创建 PR」当成当前授权）。
+    this.userIntentLedger.reset();
     this.clearInactiveBackgroundTasks();
     // P2-1：/clear 清空对话 → 回退点全部失效（对应的消息已不存在），一并清空。
     this.rewindManager?.clear();
@@ -7293,6 +7313,8 @@ export class App {
       desc: string,
       shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[],
       signal?: AbortSignal,
+      /** C2（PR2）：auto 档回退人工时，「分类器为什么没放行」的展示摘要 */
+      autoFallback?: import("@sid-code/core/permission/types.ts").AutoFallbackNote,
     ) => Promise<"yes" | "no" | "always" | "always-persist">,
   ): void {
     this.tuiConfirmCallback = cb;
@@ -7314,6 +7336,11 @@ export class App {
      * 不是「以后这一类都放行」。派生前缀规则会让 hook 特意要求确认的命令被一次点击永久绕过。
      */
     safetyConfirmation?: boolean,
+    /**
+     * C2（PR2）：auto 档回退到人工时，「分类器为什么没放行」的展示摘要。
+     * 只在 TUI 弹窗分支使用（SDK / bridge 由远端的宿主自己展示）。
+     */
+    autoFallback?: import("@sid-code/core/permission/types.ts").AutoFallbackNote,
   ): Promise<boolean> {
     // B25：SDK 双向流——ask 转给宿主（can_use_tool）。
     // 宿主超时 / 断开 / 回 error / 本轮被 interrupt，sendRequest 都会 reject：一律按拒绝闭合，
@@ -7379,6 +7406,8 @@ export class App {
         description,
         shadowedRules,
         signal,
+        // C2（PR2）：auto 档回退人工时，把「分类器为什么没放行」带进弹窗
+        autoFallback,
       );
       if (answer === "always") {
         // B9：会话级「始终允许」不再只记整条命令——复合命令按子命令生成前缀规则
@@ -10894,72 +10923,76 @@ export class App {
     // 设置 TUI 权限确认回调
     // 所有交互式确认经 interactionQueue 串行显示：state 里每类只有一个格子，
     // 并发到达时直接写 state 会让后一个盖掉前一个（前一个的 resolve 永远没人调）。
-    this.setTUIConfirmCallback(async (toolName, toolInput, desc, shadowedRules, signal) => {
-      // B21：请求**产生**时刻（含排队）。必须放在 run 之前取，`queue_ms` 才量得出
-      // 「等了多久才轮到显示」——`duration_ms` 含这段，分不出卡在队列还是卡在弹窗。
-      const requestedAt = Date.now();
-      return this.interactionQueue.run(
-        () =>
-          new Promise<"yes" | "no" | "always" | "always-persist">((resolve) => {
-            // B21：拿到显示权才开始观测。放在这里而不是回调入口：并发请求在排队时
-            // 不该覆盖正在显示的那个的观测单例（interactionQueue 保证串行）。
-            beginPromptObservation(requestedAt);
-            log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
-            // H7：settled 去重 + onAbort 清理，防止「用户作答」与「signal abort」双触发 resolve
-            // 或 abort 后残留监听器泄漏。对齐已修的 askUserQuestion handler（signal.addEventListener("abort")）。
-            let settled = false;
-            const onAbort = () => {
-              if (settled) return;
-              settled = true;
-              log.info("TUI:PERM", `权限对话框被中断（signal abort），按拒绝解除弹窗`);
-              updateState({ permissionRequest: null });
-              resolve("no"); // 中断 = 不放行（保守）：既解除孤儿弹窗，又不误放行未确认的工具
-            };
-            const wrappedResolve = (answer: "yes" | "no" | "always" | "always-persist") => {
-              if (settled) {
-                // B21：按键走到了 resolve，但 app 层已 settled（第 ④ 种故障：
-                // 弹窗显示了、也答了，但结论被静默丢弃）。与「按键被 resolvedRef 吞」
-                // 分属两层，各记一个计数才能定位是哪一层丢了。
-                notePromptResolveDropped();
+    this.setTUIConfirmCallback(
+      async (toolName, toolInput, desc, shadowedRules, signal, autoFallback) => {
+        // B21：请求**产生**时刻（含排队）。必须放在 run 之前取，`queue_ms` 才量得出
+        // 「等了多久才轮到显示」——`duration_ms` 含这段，分不出卡在队列还是卡在弹窗。
+        const requestedAt = Date.now();
+        return this.interactionQueue.run(
+          () =>
+            new Promise<"yes" | "no" | "always" | "always-persist">((resolve) => {
+              // B21：拿到显示权才开始观测。放在这里而不是回调入口：并发请求在排队时
+              // 不该覆盖正在显示的那个的观测单例（interactionQueue 保证串行）。
+              beginPromptObservation(requestedAt);
+              log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
+              // H7：settled 去重 + onAbort 清理，防止「用户作答」与「signal abort」双触发 resolve
+              // 或 abort 后残留监听器泄漏。对齐已修的 askUserQuestion handler（signal.addEventListener("abort")）。
+              let settled = false;
+              const onAbort = () => {
+                if (settled) return;
+                settled = true;
+                log.info("TUI:PERM", `权限对话框被中断（signal abort），按拒绝解除弹窗`);
+                updateState({ permissionRequest: null });
+                resolve("no"); // 中断 = 不放行（保守）：既解除孤儿弹窗，又不误放行未确认的工具
+              };
+              const wrappedResolve = (answer: "yes" | "no" | "always" | "always-persist") => {
+                if (settled) {
+                  // B21：按键走到了 resolve，但 app 层已 settled（第 ④ 种故障：
+                  // 弹窗显示了、也答了，但结论被静默丢弃）。与「按键被 resolvedRef 吞」
+                  // 分属两层，各记一个计数才能定位是哪一层丢了。
+                  notePromptResolveDropped();
+                  return;
+                }
+                settled = true;
+                if (signal) signal.removeEventListener("abort", onAbort);
+                log.info("TUI:PERM", `权限对话框响应: ${answer}`);
+                updateState({ permissionRequest: null });
+                resolve(answer);
+              };
+              // signal 已 abort（弹窗还没显示就被取消）→ 立即按拒绝短路，不显示孤儿弹窗。
+              if (signal?.aborted) {
+                onAbort();
                 return;
               }
-              settled = true;
-              if (signal) signal.removeEventListener("abort", onAbort);
-              log.info("TUI:PERM", `权限对话框响应: ${answer}`);
-              updateState({ permissionRequest: null });
-              resolve(answer);
-            };
-            // signal 已 abort（弹窗还没显示就被取消）→ 立即按拒绝短路，不显示孤儿弹窗。
-            if (signal?.aborted) {
-              onAbort();
-              return;
-            }
-            if (signal) signal.addEventListener("abort", onAbort, { once: true });
-            // HC24：Notification（matcher：permission_prompt，对齐 CC）。仅通知、不等待，不影响弹窗。
-            this.hookSystem
-              ?.fireNotificationEvent(
-                "permission_prompt",
-                `sid-code 需要你确认是否允许使用 ${toolName}`,
-                {
-                  tool_name: toolName,
+              if (signal) signal.addEventListener("abort", onAbort, { once: true });
+              // HC24：Notification（matcher：permission_prompt，对齐 CC）。仅通知、不等待，不影响弹窗。
+              this.hookSystem
+                ?.fireNotificationEvent(
+                  "permission_prompt",
+                  `sid-code 需要你确认是否允许使用 ${toolName}`,
+                  {
+                    tool_name: toolName,
+                  },
+                )
+                .catch((e) => log.error("HOOK", `notification hook 失败: ${e?.message ?? e}`));
+              updateState({
+                permissionRequest: {
+                  toolName,
+                  toolInput,
+                  description: desc,
+                  resolve: wrappedResolve,
+                  shadowedRules,
+                  // C2（PR2）：auto 档没放行时把原因带到弹窗里（非 auto 回退时为 undefined）
+                  autoFallback,
                 },
-              )
-              .catch((e) => log.error("HOOK", `notification hook 失败: ${e?.message ?? e}`));
-            updateState({
-              permissionRequest: {
-                toolName,
-                toolInput,
-                description: desc,
-                resolve: wrappedResolve,
-                shadowedRules,
-              },
-            });
-          }),
-        // 排队期间被中断 = 不放行（与弹窗中被中断同口径）
-        () => "no" as const,
-        signal,
-      );
-    });
+              });
+            }),
+          // 排队期间被中断 = 不放行（与弹窗中被中断同口径）
+          () => "no" as const,
+          signal,
+        );
+      },
+    );
 
     // 设置 TUI Plan Mode 审批回调
     this.setPlanApprovalCallback(async (planFilePath) => {
