@@ -41,8 +41,16 @@ export interface JournalEntry {
   fingerprint: string;
   /** agent() 的返回值(已是 JSON 可序列化:string 或 schema 对象或 null) */
   result: unknown;
-  /** 显示标签(便于人读 journal) */
+  /** 显示标签(便于人读 journal)。只在脚本显式传 opts.label 时记录——默认的 `agent#N` 无信息量，不落盘。 */
   label?: string;
+  /**
+   * prompt 的展示摘要（压成单行、截断）。只供 /workflows 进度树人读，不进指纹。
+   *
+   * 存在的理由：脚本没传 opts.label 时进度树只能显示 `agent#3`，用户看不出这个 agent
+   * 在干什么——2026-11-18 那次 run 里 8 个 agent 全显示成 `agent#N`，面板等于没有信息。
+   * 老 journal 没有该字段，读取方回退到 call#N。
+   */
+  promptPreview?: string;
   /**
    * 该调用所属的 phase 标题（phase() 切换时的值，opts.phase 优先）。
    * 只为 /workflows 进度树分组用，不参与指纹——phase 是展示维度，
@@ -50,6 +58,29 @@ export interface JournalEntry {
    * 老 journal 没有该字段，读取方按「未分组」处理。
    */
   phase?: string;
+}
+
+/** prompt 摘要的最大长度（/workflows 进度树一行能放下） */
+const PROMPT_PREVIEW_MAX = 80;
+
+/**
+ * 把 prompt 压成一行展示摘要（journal 的 promptPreview 字段）。
+ *
+ * 取**最后一段**而不是开头：workflow 脚本常把共享上下文（通用纪律、文档路径、仓库说明）
+ * 拼在前面，各子任务真正不同的部分在末尾。取开头会让所有 agent 显示同一行，等于没信息——
+ * 2026-11-18 那次 run 的脚本正是 `${COMMON}\n\n${u.prompt}` 结构，而进度树里全是 `agent#N`。
+ */
+export function summarizePrompt(prompt: string): string {
+  const paragraphs = prompt
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const tail = paragraphs.length > 0 ? paragraphs[paragraphs.length - 1]! : prompt;
+  const firstLine = tail.split("\n").find((l) => l.trim()) ?? tail;
+  const oneLine = firstLine.replace(/\s+/g, " ").trim();
+  return oneLine.length > PROMPT_PREVIEW_MAX
+    ? oneLine.slice(0, PROMPT_PREVIEW_MAX - 1) + "…"
+    : oneLine;
 }
 
 /** 计算 (prompt, opts) 的稳定指纹。opts 里只取影响结果的字段,顺序无关。 */
