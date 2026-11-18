@@ -308,6 +308,118 @@ describe("executeToolForChild", () => {
 });
 
 // ============================================================
+// PR12 补齐：spawn 路径的只读 bash 门禁
+//
+// 修复前的形态：进程内路径在 `buildIsolatedToolRegistry` 里给 bash 套
+// `wrapBashWithReadOnlyGuard`，而 spawn 路径把**父的原始注册表**直接交给
+// `executeToolForChild` 执行子进程回传的 tool_use —— 只读 agent 在这条路径上
+// 拿到的是未包装实例，写命令照样执行。源码态 `HEADLESS_AVAILABLE=true` 时可达。
+//
+// 为什么断言「内层 execute 一次都不跑」而不只看 is_error：permission 层也会给出
+// is_error，光看错误标志分不清是门禁拦的还是权限拦的。
+// ============================================================
+
+describe("executeToolForChild · 只读门禁（spawn 路径）", () => {
+  // 自备 provider：上一个 describe 的 `provider` 是其块级作用域，这里拿不到。
+  const guardProvider = new SimpleMockProvider();
+
+  /** 记录真实执行次数：门禁拒绝时内层必须一次都不跑 */
+  class SpyBashTool implements Tool {
+    calls: string[] = [];
+    name() {
+      return "bash";
+    }
+    description() {
+      return "spy bash";
+    }
+    inputSchema() {
+      return { type: "object", properties: { command: { type: "string" } } };
+    }
+    // 声明只读：本组用例不注入 permissionChecker，写类工具会被 B0 fail-closed 拦在
+    // 执行之前，那样就分不清是门禁生效还是权限层生效了。
+    readOnly() {
+      return true;
+    }
+    async execute(input: unknown): Promise<ToolResult> {
+      const command = (input as { command?: string })?.command ?? "";
+      this.calls.push(command);
+      return { output: `ran: ${command}` };
+    }
+  }
+
+  function makeBashRegistry() {
+    const bash = new SpyBashTool();
+    const reg = new Registry();
+    reg.register(bash);
+    return { bash, reg };
+  }
+
+  test("readOnlyAgent=true：写命令被门禁拒，且内层 execute 一次都不跑", async () => {
+    const { bash, reg } = makeBashRegistry();
+    const sub = new SubAgent(guardProvider, "test-model", reg);
+    const result = await (sub as any).executeToolForChild(
+      "bash",
+      { command: "rm -rf packages/core/src/a.ts" },
+      reg,
+      undefined,
+      undefined,
+      undefined,
+      true, // readOnlyAgent
+    );
+    expect(result.is_error).toBe(true);
+    expect(bash.calls).toEqual([]);
+  });
+
+  test("readOnlyAgent=true：只读命令放行，内层真的执行", async () => {
+    const { bash, reg } = makeBashRegistry();
+    const sub = new SubAgent(guardProvider, "test-model", reg);
+    const result = await (sub as any).executeToolForChild(
+      "bash",
+      { command: "git status" },
+      reg,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+    expect(result.is_error).toBe(false);
+    expect(bash.calls).toEqual(["git status"]);
+  });
+
+  test("readOnlyAgent=false（默认）：写命令照常执行，不误伤 task 类子代理", async () => {
+    const { bash, reg } = makeBashRegistry();
+    const sub = new SubAgent(guardProvider, "test-model", reg);
+    const result = await (sub as any).executeToolForChild(
+      "bash",
+      { command: "rm -rf packages/core/src/a.ts" },
+      reg,
+    );
+    expect(result.is_error).toBe(false);
+    expect(bash.calls).toEqual(["rm -rf packages/core/src/a.ts"]);
+  });
+
+  test("源码哨兵：两处 spawn 入口都把 agentDefinition 的 readOnly 传下去（防只改一处）", () => {
+    const src = readFileSync(join(import.meta.dir, "../../src/agent/sub-agent.ts"), "utf-8");
+    // 内置路径（executeSpawned）+ 自定义路径（executeSpawnedCustom）各一处。
+    // 只改一处会让另一条入口继续静默失效——这与 `spawnMaxTurns` 那次是同一个坑。
+    // 按函数体切片断言而不是数全文出现次数：进程内自定义路径也有一处同形表达式，
+    // 数次数会把「本来就对的」算进分子，改坏 spawn 时仍然绿。
+    const spawnedStart = src.indexOf("private async executeSpawned(");
+    const customStart = src.indexOf("private async executeSpawnedCustom(");
+    const internalStart = src.indexOf("private async executeSpawnedInternal(");
+    expect(spawnedStart).toBeGreaterThan(-1);
+    expect(customStart).toBeGreaterThan(spawnedStart);
+    expect(internalStart).toBeGreaterThan(customStart);
+    expect(src.slice(spawnedStart, customStart), "内置 spawn 入口没传 readOnly").toContain(
+      "agentDefinition?.readOnly === true",
+    );
+    expect(src.slice(customStart, internalStart), "自定义 spawn 入口没传 readOnly").toContain(
+      "agentDefinition?.readOnly === true",
+    );
+  });
+});
+
+// ============================================================
 // getToolDefs 测试
 // ============================================================
 
