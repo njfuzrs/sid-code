@@ -129,48 +129,49 @@ describe("truncateForCompression", () => {
 
 describe("CompactionLevel", () => {
   // 使用标准窗口模型（200K）测试三层渐进压缩（绝对 buffer 40K/60K/80K）
-  // token 估算规则（EST-6 后）：ASCII 0.20 token/char（含 >100K 字符的抽样快速近似，全 ASCII 仍 0.20）
+  // token 估算规则（EST-6 后）：ASCII 0.28 token/char（含 >100K 字符的抽样快速近似，全 ASCII 仍 0.28）
+  // 构造口径：用 Math.ceil(目标 token / 0.28) 反推字符数，这样测的是档位逻辑，不跟着系数漂。
   // 检查顺序：remaining ≤ 40K → emergency | ≤ 60K → hard | ≤ 80K → soft | > 80K → none
 
   test("none: 剩余 > 80K tokens", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 300K 字符 × 0.20 → 60K tokens，剩余 ~140K
-    mgr.setSystemPrompt("a".repeat(300_000));
+    // 目标 60K tokens，剩余 ~140K
+    mgr.setSystemPrompt("a".repeat(Math.ceil(60_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("none");
   });
 
   test("soft: 剩余在 60K-80K → 触发工具输出遮罩", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 650K 字符 × 0.20 → 130K tokens，剩余 ~70K
-    mgr.setSystemPrompt("a".repeat(650_000));
+    // 目标 130K tokens，剩余 ~70K
+    mgr.setSystemPrompt("a".repeat(Math.ceil(130_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("soft");
   });
 
   test("hard: 剩余在 40K-60K → 触发摘要压缩", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 750K 字符 × 0.20 → 150K tokens，剩余 ~50K
-    mgr.setSystemPrompt("a".repeat(750_000));
+    // 目标 150K tokens，剩余 ~50K
+    mgr.setSystemPrompt("a".repeat(Math.ceil(150_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("hard");
   });
 
   test("emergency: 剩余 ≤ 40K → 紧急截断", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
-    // 850K 字符 × 0.20 → 170K tokens，剩余 ~30K
-    mgr.setSystemPrompt("a".repeat(850_000));
+    // 目标 170K tokens，剩余 ~30K
+    mgr.setSystemPrompt("a".repeat(Math.ceil(170_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("emergency");
   });
 
   test("小窗口模型（≤ 60K）仅剩 10% 时触发 emergency", () => {
     const mgr = new Manager({ maxTokens: 50_000 });
-    // 230K 字符 × 0.20 → 46K tokens，剩余 ~4K ≤ 10%
-    mgr.setSystemPrompt("a".repeat(230_000));
+    // 目标 46K tokens，剩余 ~4K ≤ 10%
+    mgr.setSystemPrompt("a".repeat(Math.ceil(46_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("emergency");
   });
 
   test("小窗口模型（≤ 60K）剩余 > 10% 时不触发", () => {
     const mgr = new Manager({ maxTokens: 50_000 });
-    // 215K 字符 × 0.20 → 43K tokens，剩余 ~7K > 10%
-    mgr.setSystemPrompt("a".repeat(215_000));
+    // 目标 43K tokens，剩余 ~7K > 10%
+    mgr.setSystemPrompt("a".repeat(Math.ceil(43_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("none");
   });
 
@@ -178,15 +179,15 @@ describe("CompactionLevel", () => {
   // 1M 窗口下 compression = max(60K, 0.18×1M=180K) = 180K → 剩余 ≤ 180K（用量 ≥ 820K）即 hard。
   test("1M 窗口：used=820K 触发 hard（P0-2 提前，旧系数需 880K）", () => {
     const mgr = new Manager({ maxTokens: 1_000_000 });
-    // 4.1M 字符 × 0.20 → 820K tokens，剩余 180K = compressionThreshold 边界（≤ 触发 hard）
-    mgr.setSystemPrompt("a".repeat(4_100_000));
+    // 目标 820K tokens，剩余 180K = compressionThreshold 边界（≤ 触发 hard）
+    mgr.setSystemPrompt("a".repeat(Math.ceil(820_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("hard");
   });
 
   test("1M 窗口：used=810K 仍为 soft（剩余 190K 在 masking 220K 内、未到 hard 180K）", () => {
     const mgr = new Manager({ maxTokens: 1_000_000 });
-    // 4.05M 字符 × 0.20 → 810K tokens，剩余 190K：>180K(hard) 且 ≤220K(masking) → soft
-    mgr.setSystemPrompt("a".repeat(4_050_000));
+    // 目标 810K tokens，剩余 190K：>180K(hard) 且 ≤220K(masking) → soft
+    mgr.setSystemPrompt("a".repeat(Math.ceil(810_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("soft");
   });
 });
@@ -195,14 +196,14 @@ describe("setAutoCompactPctOverride (§12 P1-1)", () => {
   test("设 50% override：200K 窗口 used 达 100K 即 hard", () => {
     const mgr = new Manager({ maxTokens: 200_000 });
     mgr.setAutoCompactPctOverride(0.5);
-    // 500K 字符 × 0.20 → 100K tokens，剩余 100K = 窗口×(1-0.5) 边界 → hard
-    mgr.setSystemPrompt("a".repeat(500_000));
+    // 目标 100K tokens，剩余 100K = 窗口×(1-0.5) 边界 → hard
+    mgr.setSystemPrompt("a".repeat(Math.ceil(100_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("hard");
   });
 
   test("构造参数 compactThreshold 等价 override（接活死参数）", () => {
     const mgr = new Manager({ maxTokens: 200_000, compactThreshold: 0.5 });
-    mgr.setSystemPrompt("a".repeat(500_000));
+    mgr.setSystemPrompt("a".repeat(Math.ceil(100_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("hard");
   });
 
@@ -227,8 +228,8 @@ describe("setAutoCompactPctOverride (§12 P1-1)", () => {
     // 设 99% → override 剩余门槛 = 2K，但 emergency = max(40K, 20K) = 40K
     // compressionThreshold 取 max(2K, 40K) = 40K，hard 不会晚于 emergency 触发
     mgr.setAutoCompactPctOverride(0.99);
-    // 850K 字符 → 170K tokens，剩余 30K ≤ 40K(emergency) → emergency（而非被 override 顶到只剩 2K 才动）
-    mgr.setSystemPrompt("a".repeat(850_000));
+    // 目标 170K tokens，剩余 30K ≤ 40K(emergency) → emergency（而非被 override 顶到只剩 2K 才动）
+    mgr.setSystemPrompt("a".repeat(Math.ceil(170_000 / 0.28)));
     expect(mgr.getCompactionLevel()).toBe("emergency");
   });
 });

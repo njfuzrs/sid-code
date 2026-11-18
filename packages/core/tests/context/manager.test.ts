@@ -136,17 +136,17 @@ describe("ContextManager", () => {
     // （绝对 buffer + 相对系数 + 完成缓冲区）不同源 —— 会给调用方错误信号。
     // 现在语义 = 已达 hard 档或更紧急，两者恒等。
     const mgr = new Manager({ maxTokens: 1000 }); // 小窗口：默认无 hard 档，仅 emergency
-    mgr.setSystemPrompt("a".repeat(3300)); // ~660 tokens，剩余 340 > 100 门槛
+    mgr.setSystemPrompt("a".repeat(Math.ceil(660 / 0.28))); // ~660 tokens，剩余 340 > 100 门槛
     expect(mgr.getCompactionLevel(0)).toBe("none");
     expect(mgr.needsCompaction(0)).toBe(false);
 
-    mgr.setSystemPrompt("a".repeat(4600)); // ~920 tokens，剩余 80 ≤ 100 → emergency
+    mgr.setSystemPrompt("a".repeat(Math.ceil(920 / 0.28))); // ~920 tokens，剩余 80 ≤ 100 → emergency
     expect(mgr.getCompactionLevel(0)).toBe("emergency");
     expect(mgr.needsCompaction(0)).toBe(true);
 
     // 标准窗口：needsCompaction 恒等于「level ∈ {hard, emergency}」
     const std = new Manager({ maxTokens: 200_000 });
-    std.setSystemPrompt("a".repeat(Math.ceil(140_000 / 0.2))); // 恰好到 70% 触发点
+    std.setSystemPrompt("a".repeat(Math.ceil(140_000 / 0.28))); // 恰好到 70% 触发点
     expect(std.needsCompaction(0)).toBe(["hard", "emergency"].includes(std.getCompactionLevel(0)));
     expect(std.needsCompaction(0)).toBe(true);
   });
@@ -494,11 +494,11 @@ describe("增量压缩", () => {
       const mgr = new Manager({ maxTokens });
       const trigger = mgr.getTokenBreakdown(0).compactThresholdTokens;
       // 恰好到触发点：应已进入 hard（或更紧急）
-      mgr.setSystemPrompt("a".repeat(Math.ceil(trigger / 0.2)));
+      mgr.setSystemPrompt("a".repeat(Math.ceil(trigger / 0.28)));
       expect(["hard", "emergency"]).toContain(mgr.getCompactionLevel(0));
       // 触发点前 10%：不应到 hard
       const mgr2 = new Manager({ maxTokens });
-      mgr2.setSystemPrompt("a".repeat(Math.floor((trigger * 0.9) / 0.2)));
+      mgr2.setSystemPrompt("a".repeat(Math.floor((trigger * 0.9) / 0.28)));
       expect(["none", "soft"]).toContain(mgr2.getCompactionLevel(0));
     }
   });
@@ -565,11 +565,11 @@ describe("增量压缩", () => {
   test("§12 复审：小窗口模型下 P1-1 override 同样生效（此前被静默忽略）", () => {
     // 32K 窗口设 50%：应在用量过半时进 hard，而非一直等到 90% 才 emergency
     const mgr = new Manager({ maxTokens: 32_000, compactThreshold: 0.5 });
-    mgr.setSystemPrompt("a".repeat(Math.ceil(17_000 / 0.2))); // ~17K tokens > 16K
+    mgr.setSystemPrompt("a".repeat(Math.ceil(17_000 / 0.28))); // ~17K tokens > 16K
     expect(mgr.getCompactionLevel(0)).toBe("hard");
     // 未设 override 的小窗口：同样用量下不触发（保持原行为）
     const plain = new Manager({ maxTokens: 32_000 });
-    plain.setSystemPrompt("a".repeat(Math.ceil(17_000 / 0.2)));
+    plain.setSystemPrompt("a".repeat(Math.ceil(17_000 / 0.28)));
     expect(plain.getCompactionLevel(0)).toBe("none");
   });
 
