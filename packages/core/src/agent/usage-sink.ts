@@ -58,7 +58,22 @@ export function createSubAgentUsageSink(
     // G6：请求数按真实值累加（调用方用入账票据回填）；缺省 1 = 旧口径，不猜。
     const requests = result.apiRequests && result.apiRequests > 0 ? result.apiRequests : 1;
     // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
-    const costUSD = sessionState.updateUsage(model, usage, 0, provider, baseURL, false, requests);
+    // stock: "none"（A7 / PR5）—— 子代理的输入大小不属于主会话「当前上下文」：
+    // ① 它有自己的上下文窗口；② 这里传的是它全部轮次的**累计值**（几十轮之和），
+    // 写进去会把 footer ↑ 从 12.9 万顶到 120 万（方案附录 B P6 实测）。
+    // 该模型自己的 stats.stockPromptTokens 仍照常写（按模型明细），只是不进会话级单值。
+    // `at`（第 8 位）传 undefined：子代理不做分时段计价口径，沿用「现在」。
+    const costUSD = sessionState.updateUsage(
+      model,
+      usage,
+      0,
+      provider,
+      baseURL,
+      false,
+      requests,
+      undefined,
+      "none",
+    );
     // G2：落盘的金额就是刚入账、状态栏看到的那个数，不另算一遍——两边才对得上账。
     if (costTraceSink) {
       try {
