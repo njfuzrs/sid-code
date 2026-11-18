@@ -144,29 +144,78 @@ export const TOOL_USE_STRUCTURAL_TOKENS = 20;
 export const TOOL_RESULT_STRUCTURAL_TOKENS = 10;
 
 /**
+ * 估算过程中的一个「可归因片段」（PR1：面板分类与决策估算同源的基础）。
+ *
+ * 为什么不给每个分类各写一个累加器：那样面板就必须**再写一遍**分块循环，
+ * 于是同一套归类规则存在两份（第 7 份手写 if 链）——`estimateBlockTokens` 补了
+ * thinking，面板那份没补，就出现了「决策算得对、面板漏算 28k」。
+ * 访问者让「各部分之和 ≡ 返回值」由构造保证，而不是靠两条并行实现自觉保持一致。
+ */
+export type TokenPart =
+  /** 系统提示词本体（含记忆/CLAUDE.md，切分由消费方按注入端记账再做） */
+  | { kind: "system" }
+  /** 工具定义 schema 合计（含 MCP / 子代理定义，同上由消费方切分） */
+  | { kind: "tools" }
+  /** 单条消息的结构开销（role / 分隔） */
+  | { kind: "overhead" }
+  /** 一个内容块，**已含**该块自身的结构开销（tool_use +20 / tool_result +10） */
+  | {
+      kind: "block";
+      role: import("../llm/types.ts").Message["role"];
+      block: import("../llm/types.ts").ContentBlock;
+    };
+
+/** `estimateConversationTokens` 的选项。`visit` 缺省时不产生任何回调开销。 */
+export interface EstimateConversationOptions {
+  systemPrompt?: string;
+  toolCount?: number;
+  toolSchemaTokens?: number | null;
+  /**
+   * 供展示层按分类归因的访问者。不传 = 热路径（决策估算），零额外开销。
+   *
+   * 保证：`Σ 回调收到的 tokens === 函数返回值`。前提是调用方不在回调里丢数
+   * （分类键必须覆盖全部 `TokenPart` 种类）。
+   */
+  visit?: (part: TokenPart, tokens: number) => void;
+}
+
+/**
  * 会话级启发式 token 估算（消息 + 结构开销 + 可选 system / 工具 schema）。
  *
  * P1-6：管线达标判据与 Manager.rawEstimateTokens 必须走同一份计算——
  * 旧 `chars/4` 漏 thinking、无 CJK 区分、不含结构开销，中文密集会话上能差出数倍。
  * 校准系数（calibrationFactor）由 Manager.estimateTokensFor 在这份基线上再乘。
+ *
+ * PR1：新增可选访问者。传入时每次 `total +=` 同步回调一次，于是「分类之和 ≡ 总量」
+ * 由构造保证；不传时只多一次 `undefined` 判断，热路径行为与性能不变。
  */
 export function estimateConversationTokens(
   messages: import("../llm/types.ts").Message[],
-  opts?: {
-    systemPrompt?: string;
-    toolCount?: number;
-    toolSchemaTokens?: number | null;
-  },
+  opts?: EstimateConversationOptions,
 ): number {
-  let total = estimateTextTokens(opts?.systemPrompt ?? "");
-  total += opts?.toolSchemaTokens ?? (opts?.toolCount ?? 0) * TOOL_SCHEMA_TOKENS_FALLBACK;
+  const visit = opts?.visit;
+  let total = 0;
+
+  const systemTokens = estimateTextTokens(opts?.systemPrompt ?? "");
+  total += systemTokens;
+  if (visit) visit({ kind: "system" }, systemTokens);
+
+  const toolTokens = opts?.toolSchemaTokens ?? (opts?.toolCount ?? 0) * TOOL_SCHEMA_TOKENS_FALLBACK;
+  total += toolTokens;
+  if (visit) visit({ kind: "tools" }, toolTokens);
+
   for (const msg of messages) {
     total += MESSAGE_STRUCTURAL_TOKENS;
+    if (visit) visit({ kind: "overhead" }, MESSAGE_STRUCTURAL_TOKENS);
     if (!Array.isArray(msg.content)) continue;
     for (const block of msg.content) {
-      total += estimateBlockTokens(block);
-      if (block.type === "tool_use") total += TOOL_USE_STRUCTURAL_TOKENS;
-      else if (block.type === "tool_result") total += TOOL_RESULT_STRUCTURAL_TOKENS;
+      // 块自身的结构开销与块合并成一次回调，归到同一分类——面板不需要把 +20/+10
+      // 单列一行（那是「工具调用/工具结果」之所以比纯文本贵的来源，拆开反而更难解释）。
+      let blockTokens = estimateBlockTokens(block);
+      if (block.type === "tool_use") blockTokens += TOOL_USE_STRUCTURAL_TOKENS;
+      else if (block.type === "tool_result") blockTokens += TOOL_RESULT_STRUCTURAL_TOKENS;
+      total += blockTokens;
+      if (visit) visit({ kind: "block", role: msg.role, block }, blockTokens);
     }
   }
   return total;
