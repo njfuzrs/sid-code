@@ -71,6 +71,9 @@ import { getTeamMemberContext } from "../swarm/team-context.ts";
 import { registerSession, unregisterSession } from "../session/concurrent.ts";
 import { clearFileIntent } from "../session/file-intent.ts";
 import { getAgentSystemPrompt, resolveAgent, BUILTIN_AGENTS } from "./agent-definition.ts";
+// PR12（D5）：只读子代理的 bash 机械门禁。放在工具层而不是系统提示——提示词是模型
+// 可以违背的建议，只读约束要成立就必须由执行前判定兜住。
+import { wrapBashWithReadOnlyGuard } from "./read-only-bash-guard.ts";
 import { platform, homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -2081,6 +2084,9 @@ export class SubAgent {
         filteredTools,
         task.type,
         this.deriveSubAgentSessionId(taskId),
+        // PR12（D5）：用**实际生效**的定义（agentDef 已按内置回落），而不是 task.type
+        // 直接反查，免得自定义类型走到这里时只读标记丢掉。
+        { readOnlyAgent: agentDef?.readOnly === true },
       );
       // M2: 把 StructuredOutput 工具挂进隔离工具集(在过滤之后,确保不被裁剪掉)
       if (structuredTool) {
@@ -2550,7 +2556,10 @@ export class SubAgent {
       const resolvedTools = this.resolveCustomTools(task);
       const tools =
         resolvedTools.length > 0
-          ? this.buildIsolatedToolRegistry(resolvedTools, task.type, observerAgentId)
+          ? this.buildIsolatedToolRegistry(resolvedTools, task.type, observerAgentId, {
+              // PR12（D5）：自定义代理的定义同样可能声明 readOnly，显式传下去。
+              readOnlyAgent: agentDefinition?.readOnly === true,
+            })
           : new ToolRegistry();
       // Agent 定义的 maxTurns 是默认值；Skill / 命令调用级 maxTurns 优先。
       const maxTurns = resolveSubAgentMaxTurns(task, agentDefinition?.maxTurns);
@@ -2788,8 +2797,14 @@ export class SubAgent {
     filteredTools: LegacyTool[],
     agentType?: string,
     agentId?: string,
+    options?: { readOnlyAgent?: boolean },
   ): ToolRegistry {
     const subTracker = new FileReadTracker();
+    // PR12（D5）：只读子代理（explore / verify / plan …）的 bash 要机械兜底。
+    // 调用方传显式值时以它为准（自定义代理的定义也带 readOnly 字段，未必能反查到
+    // BUILTIN_AGENTS）；没传就按内置定义解析。默认 false = 不改变既有类型的行为。
+    const readOnlyAgent =
+      options?.readOnlyAgent ?? resolveAgent(agentType ?? "")?.readOnly === true;
     // P1-6：子代理继承父会话的会话上下文（pid/cwd），参与并发冲突检测。
     // PR-2（B3）：sessionId 改用自己的 agentId——此前共用父 sessionId，
     // queryFileIntents 按 sessionId 排除自己，兄弟子代理的声明被当成"自己"整体
@@ -2844,6 +2859,16 @@ export class SubAgent {
         replacement = (
           t as unknown as { withFileReadTracker(tr: FileReadTracker): LegacyTool }
         ).withFileReadTracker(subTracker);
+      }
+      // PR12（D5）：只读子代理的 bash 套一层机械门禁（read-only-bash-guard.ts）。
+      // 放在 tracker 视图**之后**，包装链是「门禁 → tracker 视图 → 父实例」：
+      // 判定不通过的写命令连视图都不进，也拿不到任何写入副作用。
+      // 「只读」不能只靠系统提示——提示词是模型可以违背的建议，门禁是执行前的拦截。
+      if (t.name() === "bash" && readOnlyAgent) {
+        replacement = wrapBashWithReadOnlyGuard(replacement ?? t, {
+          workspaceDir: getAgentRoot() ?? getCwd(),
+          pathValidator: checker?.getPathValidator?.() ?? null,
+        });
       }
       if (!replacement && t.name() === "grep" && hidden) {
         replacement = new GrepTool(hidden);
