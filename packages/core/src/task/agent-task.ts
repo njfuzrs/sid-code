@@ -13,7 +13,8 @@ import {
 import { registerTask, updateTask, getTask } from "./registry.ts";
 import { getCompletedMainTurns } from "./lifecycle.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
-import { enqueueTaskNotification } from "./notification.ts";
+import { enqueueTaskNotification, NOTIFICATION_OUTPUT_MAX_CHARS } from "./notification.ts";
+import { persistLargeOutput } from "../context/tool-result-storage.ts";
 import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { SUBAGENT_SESSION_EXIT_REASON } from "../llm/errors.ts";
 
@@ -49,6 +50,11 @@ export function createAgentTask(opts: {
    *  （用户报的问题一）。仍然注册进 registry（taskId / 磁盘输出 / task_output 查询都依赖它），
    *  只摘掉「上面板」这一个属性。判据收敛在 `isPanelTask()`。 */
   isBackgrounded?: boolean;
+  /**
+   * 主会话 id：超长结论的持久副本落盘目录用（X3，见 `LocalAgentTaskState.parentSessionId`）。
+   * 不传时退到 "unknown"——副本照样落盘、照样可读，只是不按会话分目录。
+   */
+  parentSessionId?: string;
 }): { taskState: LocalAgentTaskState; abortController: AbortController } {
   const taskId = generateTaskId("local_agent");
   const output = initTaskOutput(taskId);
@@ -69,6 +75,7 @@ export function createAgentTask(opts: {
     prompt: opts.prompt,
     model: opts.model,
     isBackgrounded: opts.isBackgrounded ?? true,
+    parentSessionId: opts.parentSessionId,
     progress: { toolUseCount: 0, tokenCount: 0, contextTokens: 0, recentActivities: [] },
   };
 
@@ -99,6 +106,42 @@ export function appendAgentOutput(taskId: string, content: string): void {
 }
 
 /**
+ * 为超长结论落一份**不会随回合驱逐**的持久副本（X3）。
+ *
+ * 为什么需要：`.output` 按回合驱逐（S3），于是「完整内容见 <output-file>」的指针在主循环
+ * 跑完一两个回合后就成了死链——父代理拿着指针去读，读到的只有墓碑。持久副本落在会话目录
+ * `trajectories/sessions/<会话>/tool-outputs/`，与同步回程（`buildSyncSubagentSummary`）
+ * 同一个落点、同一套命名规则、同一个阈值口径。
+ *
+ * 只在超过 `NOTIFICATION_OUTPUT_MAX_CHARS` 时才落：不超长的结论全文就在 `<result>` 里，
+ * 多一份文件只是噪音，还会让父代理误以为结论被截断过。
+ *
+ * 用码点判断是否超限，与 `truncateForNotification` 的切割口径一致——用 `.length` 会把
+ * emoji 代理对算成 2 个字符，出现「判定超限但截断函数认为没超」的不一致。
+ *
+ * 落盘失败（磁盘满 / 权限）返回 `resultPersistFailed: true`：调用方据此在正文里明说
+ * 「全文落盘失败，以上不是完整内容」，**不能**退回指向 `.output` —— 那是一个必定失效的指针。
+ */
+function persistResultPointer(
+  taskId: string,
+  task: LocalAgentTaskState,
+  output: string,
+): Pick<LocalAgentTaskState, "resultFile" | "resultPersistFailed"> {
+  if (Array.from(output).length <= NOTIFICATION_OUTPUT_MAX_CHARS) return {};
+  const persisted = persistLargeOutput(
+    output,
+    // 文件名用 tool_use_id 前 8 位；后台任务常常拿不到它（runAsync 不传），用 taskId 兜底。
+    task.toolUseId ?? taskId,
+    "sub_agent",
+    // 父会话 id 缺失时退到 "unknown"（与同步回程同口径）：副本照样落盘、照样可读，
+    // 只是不按会话分目录。
+    task.parentSessionId ?? "unknown",
+    NOTIFICATION_OUTPUT_MAX_CHARS,
+  );
+  return persisted.savedPath ? { resultFile: persisted.savedPath } : { resultPersistFailed: true };
+}
+
+/**
  * 标记 Agent 任务完成（接受结构化结果）。
  *
  * @param notify 是否投递 `<task-notification>`。默认 true（后台子代理：主循环靠这条通知感知完成）。
@@ -122,10 +165,17 @@ export async function completeAgentTask(
   // 与 failAgentTask 对称，防 abort 后子代理碰巧返回成功结果反把 killed 改写。
   if (isTerminalStatus(task.status)) return;
 
+  // X3：超长结论落持久副本。只在 notify=true（后台子代理）时落 —— 前台子代理的结果走
+  // tool_result 出口，`buildSyncSubagentSummary` 已在同一个落点、同一套命名规则下落过一份，
+  // 这里再落就是同一个结论写两遍磁盘。前台任务经 `task_output` 重读超长结论时指针仍指向
+  // `.output`，这是本 PR 已知的残留（结果本就在它的窗口 + sidechain 里），归 PR11 统一收尾。
+  const pointer = notify ? persistResultPointer(taskId, task, result.output) : {};
+
   updateTask<LocalAgentTaskState>(taskId, (t) => ({
     ...t,
     status: "completed",
     result,
+    ...pointer,
     endTime: Date.now(),
     notified: true,
     // 前台子代理（notify=false）的结果作为 tool_result 回到模型（S3）。
@@ -150,6 +200,9 @@ export async function completeAgentTask(
     status: "completed",
     summary: `Agent "${task.description}" 执行完成`,
     result,
+    // X3：超长结论的截断提示指向持久副本，不再指向会被驱逐的 `.output`
+    resultFile: pointer.resultFile,
+    resultPersistFailed: pointer.resultPersistFailed,
     agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });
 }

@@ -69,6 +69,43 @@ export function truncateForNotification(text: string, max: number, outputFile?: 
   return head + hint;
 }
 
+/**
+ * 结论级出口的截断 + 全文指针（三处共用：同步回程 / 后台通知 / `task_output`）。
+ *
+ * 与 `truncateForNotification` 的分工：那个是通用截断——`outputFile` 传什么就指什么，
+ * 不关心目标会不会消失。本函数回答的是另一个问题：「结论全文到底在哪」，并且
+ * **拒绝静默降级**。
+ *
+ * 为什么不能直接 `truncateForNotification(text, max, task.outputFile)`：X3 的病因正是
+ * 指针指向了 `.output`——它按回合驱逐（S3 的修法是对的，它是流式工作文件），于是父代理
+ * 在主循环跑完一两个回合后拿着指针去读，读到只有墓碑。持久副本（`persistentFile`）不随
+ * 回合消失，才是「完整内容」该指向的地方。
+ *
+ * @param persistentFile 持久副本路径。给了就一定指它。
+ * @param persistFailed 已尝试落盘但失败：明说「以上不是完整内容」，**不退回**会过期的指针
+ *   —— 一个必定失效的路径比一句诚实的「没留下来」更糟（会让父代理再撞一次 ENOENT）。
+ * @param fallbackFile 本路径压根不落盘时的旧指针（workflow / monitor 的 `<result>` 等），
+ *   保持旧行为。源码里单列这个参数，是为了让「这里还在指会过期的文件」在调用点可见。
+ */
+export function truncateResultForDelivery(input: {
+  text: string;
+  persistentFile?: string;
+  persistFailed?: boolean;
+  fallbackFile?: string;
+}): string {
+  const { text, persistentFile, persistFailed, fallbackFile } = input;
+  // 码点口径与 truncateForNotification 一致：用 .length 会把 emoji 代理对算成 2 个字符，
+  // 出现「判定超限但截断函数认为没超」的不一致。
+  if (Array.from(text).length <= NOTIFICATION_OUTPUT_MAX_CHARS) return text;
+  if (persistentFile) {
+    return truncateForNotification(text, NOTIFICATION_OUTPUT_MAX_CHARS, persistentFile);
+  }
+  if (persistFailed) {
+    return `${truncateForNotification(text, NOTIFICATION_OUTPUT_MAX_CHARS)}\n[全文落盘失败，以上不是完整内容]`;
+  }
+  return truncateForNotification(text, NOTIFICATION_OUTPUT_MAX_CHARS, fallbackFile);
+}
+
 export interface TaskNotification {
   taskId: string;
   toolUseId?: string;
@@ -113,6 +150,21 @@ export interface TaskNotification {
   agentType?: string;
   /** 结构化结果（completed 状态时可用，对标 claude-code AgentToolResult） */
   result?: AgentTaskResult;
+  /**
+   * 结论全文的**持久副本**路径（X3）。超限时 `<result>` 的截断提示指向它，
+   * 而不是 `<output-file>`（后者是 `.output`，按回合驱逐，下一两个回合就是死链）。
+   *
+   * 由 `completeAgentTask` 在结论超过 `NOTIFICATION_OUTPUT_MAX_CHARS` 时落盘并填入；
+   * 其它任务类型（shell / monitor / workflow）不设，`<result>` 保持旧行为。
+   */
+  resultFile?: string;
+  /**
+   * 已尝试为超长结论落持久副本但失败（见 `LocalAgentTaskState.resultPersistFailed`）。
+   *
+   * 为 true 时截断正文带「全文落盘失败，以上不是完整内容」——不能退回指向 `.output`，
+   * 那是一个必定失效的指针。
+   */
+  resultPersistFailed?: boolean;
   /** 纯文本错误信息（failed 状态时可用，向后兼容旧调用方传 string） */
   error?: string;
   /**
@@ -224,7 +276,12 @@ export function formatNotification(n: TaskNotification): string {
     // 缺口 2 阶段 1：result 是子代理产出的数据（可能含外部不可信内容），用 untrusted 标记
     // 提示主代理「这是数据不是指令」，与 system prompt 的 subagent-result-policy 呼应。
     parts.push(
-      `  <result untrusted="true">${truncateForNotification(output, NOTIFICATION_OUTPUT_MAX_CHARS, n.outputFile)}</result>`,
+      `  <result untrusted="true">${truncateResultForDelivery({
+        text: output,
+        persistentFile: n.resultFile,
+        persistFailed: n.resultPersistFailed,
+        fallbackFile: n.outputFile,
+      })}</result>`,
       `  <usage>`,
       `    <total_tokens>${totalTokens}</total_tokens>`,
       `    <input_tokens>${usage.inputTokens}</input_tokens>`,
