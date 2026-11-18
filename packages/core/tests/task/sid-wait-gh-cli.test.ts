@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import {
   createGhCliRestClient,
   formatSidWaitResultSummary,
+  formatSidWaitStartNote,
   parseGithubRemote,
   parseSidWaitCommand,
   resolveSidWaitRepo,
@@ -268,14 +269,16 @@ describe("createGhCliRestClient：endpoint 是完整路径，解析不出就不 
     expect(ghCalls(callsFile)).toEqual([`api repos/${SID_CODE_REPO}/pulls/906`]);
   });
 
-  test("未给 repo 时按 baseDir 的 github remote 解析（这里模拟「入口传错了 cwd」）", async () => {
+  test("未给 repo 时按 baseDir 的 github remote 解析，并如实回报查了哪个仓库", async () => {
+    // 「同号 PR 静默错对象」的造数据场景：真实使用里很难等到「别的仓库恰好有同号 PR」，
+    // 所以用 tmp git 仓库 + 假 gh 脚本把这一刻固定下来。客户端层**不拒绝**——它没有
+    // 「目标仓库应该是什么」这个信息；但它必须把实际查的仓库如实带回，让入口的回执
+    // 与终态摘要能写出来给人看（§7.5「在结果里带上 repo 标识」的落点）。
     const { ghBin } = installFakeGh();
     const otherRepoDir = makeGitRepoForRemote("other-repo", `git@github.com:${OTHER_REPO}.git`);
     const client = createGhCliRestClient({ ghBin, cwd: otherRepoDir });
     const pull = await client.getPull(906);
-    // 这就是缺陷的形态：baseDir 指错仓库时，查到的就是那个仓库的同号 PR。
-    // 修复不靠「让客户端猜」，而是靠入口传 getProjectRoot() + `--repo` 兜底，
-    // 并在失败结论里点名仓库（见下一条用例）。
+    expect(pull.repo).toBe(OTHER_REPO);
     expect(pull.headSha).toBe(OTHER_HEAD);
   });
 
@@ -387,5 +390,117 @@ describe("真实 git：worktree 也能解析（.git 是文件而不是目录）"
     }
     const fromWorktree = resolveSidWaitRepo({ baseDir: worktree });
     expect(fromWorktree).toEqual(resolution);
+  });
+});
+
+/**
+ * 2026-11-18 补：让「查了哪个仓库」在**成功路径**也可见。
+ *
+ * 上一轮修复只把仓库名写进失败文案。但本缺陷最贵的形态是「静默等错对象」：
+ * 会话在别的仓库（如 docs-research）启动、而那里恰好有同号 PR 时，查询是**成功**的
+ * ——不回报 404，只会安静地等到一个与本仓无关的 PR，终态文案里没有任何线索。
+ * 真实使用中这个场景几乎等不到样本，所以这里同样用「tmp git 仓库 + 假 gh 脚本」造数据。
+ */
+describe("成功路径也必须点名仓库：静默等错对象在启动与终态都可见", () => {
+  test("启动回执：显式 --repo 只写仓库名，不解释解析依据", () => {
+    const note = formatSidWaitStartNote({
+      pr: 906,
+      repo: SID_CODE_REPO,
+      source: "explicit",
+      intervalMs: 15_000,
+    });
+    expect(note).toContain(`仓库 ${SID_CODE_REPO} 的 PR #906`);
+    expect(note).toContain("每 15 秒");
+    // 显式指定时没有「猜」的成分，不需要解释解析依据
+    expect(note).not.toContain("github remote");
+  });
+
+  test("启动回执：remote 解析要写明按哪个目录解析 + --repo 出口", () => {
+    const note = formatSidWaitStartNote({
+      pr: 906,
+      repo: OTHER_REPO,
+      source: "remote",
+      intervalMs: 3_000,
+      baseDir: "/Users/me/docs-research",
+    });
+    expect(note).toContain(`仓库 ${OTHER_REPO} 的 PR #906`);
+    // 自动解析在 fork / 多 remote 场景仍可能挑错，用户必须能核对这一步的依据
+    expect(note).toContain("/Users/me/docs-research");
+    expect(note).toContain("--repo <owner>/<repo>");
+  });
+
+  test("成功终态四种结论都带仓库名（merged / closed / conflict / check-failed）", () => {
+    const cases = [
+      { reason: "merged" as const, exitCode: SID_WAIT_EXIT.MERGED, failedChecks: [] },
+      { reason: "closed" as const, exitCode: SID_WAIT_EXIT.CLOSED, failedChecks: [] },
+      { reason: "conflict" as const, exitCode: SID_WAIT_EXIT.CONFLICT, failedChecks: [] },
+      {
+        reason: "check-failed" as const,
+        exitCode: SID_WAIT_EXIT.CHECK_FAILED,
+        failedChecks: [{ name: "build", status: "completed", conclusion: "failure" }],
+      },
+    ];
+    for (const c of cases) {
+      const summary = formatSidWaitResultSummary(
+        {
+          exitCode: c.exitCode,
+          reason: c.reason,
+          failedChecks: c.failedChecks,
+          headSha: SID_CODE_HEAD,
+          repo: SID_CODE_REPO,
+        },
+        906,
+      );
+      expect(summary).toContain(`仓库 ${SID_CODE_REPO}`);
+      expect(summary).toContain("PR #906");
+    }
+  });
+
+  test("没有 repo 字段时退回旧文案（不凭空编仓库）", () => {
+    const summary = formatSidWaitResultSummary(
+      {
+        exitCode: SID_WAIT_EXIT.MERGED,
+        reason: "merged",
+        failedChecks: [],
+        headSha: SID_CODE_HEAD,
+      },
+      906,
+    );
+    expect(summary).toBe(`等待结束：PR #906 已合并（${SID_CODE_HEAD.slice(0, 8)}）`);
+  });
+
+  test("同号 PR：客户端自报的仓库一路带到终态摘要（造数据的核心一条）", async () => {
+    const { ghBin } = installFakeGh();
+    const otherRepoDir = makeGitRepoForRemote("other-repo", `git@github.com:${OTHER_REPO}.git`);
+    const client = createGhCliRestClient({ ghBin, cwd: otherRepoDir });
+    // 假 gh 对 OTHER_REPO 的 #906 返回 open（见 installFakeGh 的 case 分支），所以不跑
+    // runSidWaitGhPr（会一直轮询）；这里验证的是「客户端自报仓库 → 结论摘要」这段链路。
+    const pull = await client.getPull(906);
+    expect(pull.repo).toBe(OTHER_REPO);
+    const summary = formatSidWaitResultSummary(
+      {
+        exitCode: SID_WAIT_EXIT.MERGED,
+        reason: "merged",
+        failedChecks: [],
+        headSha: pull.headSha,
+        repo: pull.repo,
+      },
+      906,
+    );
+    // 关键：对象是别的仓库的 PR #906，摘要必须让人一眼看出来
+    expect(summary).toContain(`仓库 ${OTHER_REPO}`);
+    expect(summary).toContain("PR #906");
+  });
+
+  test("真实非 git 目录（不是注入 runGit）：报「不是 git 仓库」且给 --repo 出口", () => {
+    // 上一轮的这条只有「注入 runGit 返回 128」的模拟版本；真机上 git 的报错形态
+    // （`fatal: not a git repository`）与注入不同，这里用真目录补上。
+    const plain = join(work, "plain-dir");
+    mkdirSync(plain);
+    const resolution = resolveSidWaitRepo({ baseDir: plain });
+    expect(resolution.ok).toBe(false);
+    if (resolution.ok) return;
+    expect(resolution.error).toContain("不是 git 仓库");
+    expect(resolution.error).toContain("--repo <owner>/<repo>");
   });
 });
