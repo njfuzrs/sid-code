@@ -17,7 +17,7 @@
  *
  * ## T4b：两级放行粒度
  *
- * - A 档 22 个 + T8 放行的 `/btw` + `/init`：`headless: true`（三形态、全部子命令）；
+ * - A 档 23 个 + T8 放行的 `/btw` + `/init`：`headless: true`（三形态、全部子命令）；
  * - A2 档 4 个：`headless: { subcommands: [...] }`，只放只读子命令（D13）。
  *   它们的**写子命令必须仍被拒绝**——整条放行会连带放开 `/cron delete`、`/worktree clean`、
  *   `/hooks enable`、`/lsp reload`，那是「更好用」换「更安全」（方案 §五.6 明确不接受）。
@@ -46,7 +46,7 @@ import { SessionState } from "@sid-code/core/session/state.ts";
 import { Registry } from "@sid-code/core/tool/registry.ts";
 
 /**
- * A 档 22 个命令 + T8 放行的 `/btw`，以及门禁用的**典型参数**。
+ * A 档 23 个命令 + T8 放行的 `/btw`，以及门禁用的**典型参数**。
  *
  * 混合型 5 个（permissions / config / help / stats / commands）无参会返回 `dialog`，
  * 这是方案 §八.3 拍板接受的形态，所以这里一律给带参形态；无参安全性由下面另一组用例锁。
@@ -67,6 +67,7 @@ const A_TIER_PROBES: Array<{ name: string; args: string }> = [
   { name: "whoami", args: "" },
   { name: "workflows", args: "" },
   { name: "cost", args: "" },
+  { name: "context", args: "" },
   { name: "todos", args: "" },
   { name: "status", args: "" },
   { name: "checkpoints", args: "" },
@@ -157,7 +158,12 @@ const MIXED_DIALOG_ON_NO_ARGS = ["permissions", "config", "help", "stats", "comm
  * （`/effort` 需要它），`/status` 不再走降级分支。这条白名单的「过期也红」正是
  * 为了逼出这类清理：留着它会让「字段已注入」这件事没人发现。
  */
-const DEGRADATION_ALLOWLIST: Record<string, string[]> = {};
+const DEGRADATION_ALLOWLIST: Record<string, string[]> = {
+  // /context 的固定开销细目要按「哪些 @ 导入进了这次 system prompt」逐项列；
+  // 无头 cmdCtx 不注入 projectRules，命令侧走 `ctx.projectRules?.importedFiles` +
+  // 空细目兜底——面板构成、阈值、对账照常输出，只少最后一节。这是明确的诚实降级。
+  context: ["projectRules"],
+};
 
 const config = defaultConfig();
 config.provider = "gate-test";
@@ -233,7 +239,7 @@ async function runProbe(probe: { name: string; args: string }): Promise<{
 }
 
 describe("放行清单 = 真实命令表里声明 headless 的内置命令", () => {
-  test("headless:true 的清单 = A 档 22 + /btw + B 档 6 + /init，多一个少一个都红", () => {
+  test("headless:true 的清单 = A 档 23 + /btw + B 档 6 + /init，多一个少一个都红", () => {
     const declaredTrue = COMMANDS.filter(
       (c) => (c.source ?? "builtin") === "builtin" && c.headless === true,
     )
@@ -267,7 +273,7 @@ describe("放行清单 = 真实命令表里声明 headless 的内置命令", () 
   });
 });
 
-describe("放行真的生效：resolveHeadlessSlash 不再拒绝 A 档 22 + /btw + B 档 6 个命令", () => {
+describe("放行真的生效：resolveHeadlessSlash 不再拒绝 A 档 23 + /btw + B 档 6 个命令", () => {
   for (const probe of [...A_TIER_PROBES, ...B_TIER_PROBES]) {
     test(`/${probe.name}`, async () => {
       const input = probe.args ? `/${probe.name} ${probe.args}` : `/${probe.name}`;
