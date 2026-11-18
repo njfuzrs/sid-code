@@ -70,6 +70,20 @@ export interface ToolClassifyResult {
   classifierUnavailable?: boolean;
   /** 分类耗时（毫秒） */
   latencyMs?: number;
+  /**
+   * PR0（C1）：这个结论是从哪条路出来的。**必填**——类型检查逼着每条返回路径表态，
+   * 漏标一处 tsc 就红（这一层刻意不做成可选：可选字段的默认值是"不知道"，
+   * 而"不知道"在落盘上会与"没走过分类器"长得一模一样）。
+   *
+   * 为什么不能只看 `latencyMs` 判：fastPath 与「分类器不可用」都不带 latencyMs，
+   * 一个意味着"零成本地替人省了一次弹窗"，另一个意味着"这次判定根本没发生"——
+   * 两者在权限漏斗上回答的是相反的问题，混在一起会让 auto 档的省/费归因直接作废。
+   *
+   * - `fast-path`：三级快速路径直接拍板，**没有发过任何请求**（故无 latencyMs）
+   * - `llm`：真发了请求，无论成功 / 解析失败 / 超时 / 抛异常
+   * - `none`：分类器不可用（未启用 / 无 provider），连请求都没发
+   */
+  via: "fast-path" | "llm" | "none";
 }
 
 /** 分类器配置 */
@@ -175,7 +189,12 @@ export class ToolClassifier {
 
     // Level 0（G7）：工具通过 toAutoClassifierInput 返回空串，声明与安全无关 → 跳过 LLM
     if (req.classifierInput === "") {
-      return { safe: true, risk: "none", reason: "工具声明无安全关联，跳过分类" };
+      return {
+        safe: true,
+        risk: "none",
+        reason: "工具声明无安全关联，跳过分类",
+        via: "fast-path",
+      };
     }
 
     // Level 1: 只读工具 —— 带路径的必须判明在工作区内
@@ -183,12 +202,12 @@ export class ToolClassifier {
       if (!PATH_FREE_ALLOW_TOOLS.has(req.toolName) && req.pathVerdict !== "inside") {
         return null;
       }
-      return { safe: true, risk: "none", reason: "只读工具，无副作用" };
+      return { safe: true, risk: "none", reason: "只读工具，无副作用", via: "fast-path" };
     }
 
     // Level 2: write/edit 在工作区内 → 自动放行
     if (ACCEPT_EDITS_TOOLS.has(req.toolName) && req.pathVerdict === "inside") {
-      return { safe: true, risk: "low", reason: "工作区内文件编辑" };
+      return { safe: true, risk: "low", reason: "工作区内文件编辑", via: "fast-path" };
     }
 
     return null; // 需要 LLM 判断
@@ -204,7 +223,13 @@ export class ToolClassifier {
 
     // 分类器不可用 → 回退
     if (!this.isAvailable()) {
-      return { safe: false, risk: "medium", reason: "分类器不可用", classifierUnavailable: true };
+      return {
+        safe: false,
+        risk: "medium",
+        reason: "分类器不可用",
+        classifierUnavailable: true,
+        via: "none",
+      };
     }
 
     const startTime = Date.now();
@@ -275,6 +300,7 @@ export class ToolClassifier {
           reason: "分类器解析失败",
           classifierUnavailable: true,
           latencyMs,
+          via: "llm",
         };
       }
 
@@ -287,6 +313,7 @@ export class ToolClassifier {
           reason: "分类器解析失败",
           classifierUnavailable: true,
           latencyMs,
+          via: "llm",
         };
       }
 
@@ -295,6 +322,9 @@ export class ToolClassifier {
         risk: parsed.risk || "medium",
         reason: parsed.reason || "分类器判定",
         latencyMs,
+        // 走到这里说明请求成功且有可解析结论——`via=llm` 的唯一「成功」形态。
+        // 解析失败 / 超时同样标 llm：它们**花掉了**一次请求，只是没拿到答案（见类型注释）。
+        via: "llm",
       };
     } catch (err: any) {
       const latencyMs = Date.now() - startTime;
@@ -309,6 +339,7 @@ export class ToolClassifier {
         reason: `分类器异常: ${err.message}`,
         classifierUnavailable: true,
         latencyMs,
+        via: "llm",
       };
     }
   }

@@ -1927,8 +1927,17 @@ export class TraceCollector {
       ...(e.toolUseId ? { tool_use_id: e.toolUseId } : {}),
       // B20：A2 注入校验器名 / A6 展开超限（step 都是 2，此前不可分）。固定标签，不含命令片段
       ...(e.guard ? { guard: e.guard } : {}),
-      // A9：auto 档分类器回退人工的成因
+      // A9 / PR0：auto 档分类器结论。PR0 起放行也落值（fast-path / llm-safe），
+      // 此前只有回退才有值 —— 于是「auto 档自动放行了多少次」在盘上无从统计。
       ...(e.autoClassifier ? { auto_classifier: e.autoClassifier } : {}),
+      // PR0（C2）：分类器这次的耗时 / 风险 / 理由。三者都是"它为什么这么判"的答案，
+      // 而 PR0 之前 `unsafe` 只是一个枚举——调提示词、排查误判全得靠猜。
+      // 隐私：`classifier_reason` 是模型自由生成的文本（可能复述命令片段或路径），
+      // `classifier_risk` 是闭集标签但云端没有消费方，两者都登记进
+      // LOCAL_ONLY_EVENT_DATA_FIELDS，上传前剥掉；`classifier_ms` 是数字，留着。
+      ...(e.classifierMs !== undefined ? { classifier_ms: e.classifierMs } : {}),
+      ...(e.classifierRisk ? { classifier_risk: e.classifierRisk } : {}),
+      ...(e.classifierReason ? { classifier_reason: e.classifierReason } : {}),
       // B12：命中的危险模式名 / 严重度。此前 reason_type=dangerousCommand 是一个平桶，
       // 硬编码模式、注入校验器、展开超限、LLM 分类器全混在一起，分不开。
       ...(e.dangerPattern ? { danger_pattern: e.dangerPattern } : {}),

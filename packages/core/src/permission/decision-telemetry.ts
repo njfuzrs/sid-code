@@ -122,14 +122,56 @@ export interface PermissionDecisionEvent {
    */
   guard?: string;
   /**
-   * A9：auto 档分类器没有放行、回退人工时的成因
-   * （absent / safety-guard / ask-rule / unsafe / unavailable / error）。
-   * 取自 `Decision.metadata.autoClassifier`，只有 auto 档的 ask 才有。
+   * A9 / PR0：auto 档分类器这一次**说了什么**。
+   * 取自 `Decision.metadata.autoClassifier`，只有 auto 档的决策才有。
+   *
+   * 闭集（回退成因）：
+   * - `absent`：没走到 auto 分支（或分类器未接线）；
+   * - `safety-guard`：硬编码危险确认，护栏禁止分类器发言；
+   * - `ask-rule`：用户显式写的 ask 规则命中，分类器根本没发言；
+   * - `unsafe`：分类器看了，判不安全；
+   * - `unavailable`：分类器不可用 / 解析失败 / 超时；
+   * - `error`：分类过程抛异常。
+   *
+   * 闭集（PR0 新增的放行形态，此前放行时**整个字段缺失**，于是「auto 档自动放行了多少次」
+   * 在轨迹里只能靠「没弹窗」反推，而反推分不出「分类器批的」与「规则直放的」）：
+   * - `fast-path`：三级快速路径零成本拍板，**一分钱没花**；
+   * - `llm-safe`：真调了一次分类器，模型判安全。
+   *
+   * ⚠️ 判读 `fast-path` 与 `llm-safe` 时**不要看 `classifierMs` 有没有值**——
+   * 前者按设计不带耗时（没发请求），后者一定带。区分两者的唯一可靠字段就是这个枚举。
    *
    * M1b 单独分出 `ask-rule`：用户显式写的 ask 规则命中时分类器**根本没发言**，
    * 与「分类器判不安全（unsafe）」混成一个数，会把用户规则的效果算成模型误判。
    */
   autoClassifier?: string;
+  /**
+   * PR0（C2）：这次分类判定的耗时（毫秒，`ToolClassifyResult.latencyMs`）。
+   *
+   * 「auto 档替人省了多少等待」需要分子（放行次数）与它配对：只知道放行了多少次，
+   * 不知道每次判定花了多久，就没法回答「auto 档比人工弹窗快多少」。
+   * 快速路径不带这个字段（没发请求），**不填 0** —— 0 会被读成一次 0ms 的调用。
+   *
+   * 外发遥测**带上**（数字，无隐私）；本文件是本地轨迹的事实源。
+   */
+  classifierMs?: number;
+  /**
+   * PR0（C2）：分类器给出的风险等级（`none` / `low` / `medium` / `high` / `critical`）。
+   * 只在真拿到模型结论时落（判定为不可用 / 解析失败 / 超时的那几种情形里它是占位值）。
+   * 只进本地轨迹：它是闭集标签但没有外发消费方。
+   */
+  classifierRisk?: string;
+  /**
+   * PR0（C2）：分类器给的一句话理由（`ToolClassifyResult.reason`，截断到 200 字）。
+   *
+   * 为什么理由要落：`unsafe` 只说"判了不安全"回答不了"它觉得哪里不安全"，
+   * 而调提示词 / 排查误判恰恰需要这句话。抛异常时它是异常消息本身
+   * （超时 / 401 / 模型返回结构变更的处置完全不同，一个常量会让三者长得一样）。
+   *
+   * **只进本地轨迹**，不进外发遥测：它是模型自由生成的文本，长度无上界、
+   * 可能含路径或命令片段（上传前由 `LOCAL_ONLY_EVENT_DATA_FIELDS` 剥掉）。
+   */
+  classifierReason?: string;
   /**
    * B21：这次弹窗的生命周期观测（只有 TUI 真弹过窗才有，见 `PromptObservation`）。
    *
@@ -282,12 +324,40 @@ export function guardOf(decision: {
   return m ? `injection:${m[1]}` : undefined;
 }
 
-/** 取 `Decision.metadata.autoClassifier`（A9）；非字符串一律视为没有 */
+/** 取 `Decision.metadata.autoClassifier`（A9 / PR0）；非字符串一律视为没有 */
 export function autoClassifierOf(decision: {
   metadata?: Record<string, unknown>;
 }): string | undefined {
   const v = decision.metadata?.autoClassifier;
   return typeof v === "string" ? v : undefined;
+}
+
+/**
+ * PR0（C2）：取分类器这次说的「耗时 / 风险 / 理由」三件套（`Decision.metadata.classifier*`）。
+ *
+ * 为什么合成一个函数：这三个字段的取法完全一样，散在 7 个 `logPermission*` 调用点各写三行，
+ * 就是下一个新鉴权分支漏抄几行、字段在轨迹里静默缺失（B11 的 `confirm_via` 正是这么丢的）。
+ * 实际是并进 `decisionFactsOf` 统一发放，这个导出留给需要单独取用的消费方。
+ *
+ * 三处都不做类型强转：落盘前宁可少一个字段，也不要落一个形状不对的值
+ * （`classifier_ms: "8000"` 这种字符串会让下游求和无声变成字符串拼接）。
+ */
+export function classifierFactsOf(decision: { metadata?: Record<string, unknown> }): {
+  autoClassifier?: string;
+  classifierMs?: number;
+  classifierRisk?: string;
+  classifierReason?: string;
+} {
+  const m = decision.metadata;
+  if (!m) return {};
+  return {
+    ...(typeof m.autoClassifier === "string" ? { autoClassifier: m.autoClassifier } : {}),
+    ...(typeof m.classifierMs === "number" && Number.isFinite(m.classifierMs)
+      ? { classifierMs: m.classifierMs }
+      : {}),
+    ...(typeof m.classifierRisk === "string" ? { classifierRisk: m.classifierRisk } : {}),
+    ...(typeof m.classifierReason === "string" ? { classifierReason: m.classifierReason } : {}),
+  };
 }
 
 /**
@@ -349,12 +419,18 @@ export function effectiveToolOf(decision: {
 }
 
 /**
- * B12：一次取齐决策上的危险成因与命令形状，供 `logPermissionAllow` / `logPermissionDeny`
+ * B12 / PR0：一次取齐决策上的结构化事实，供 `logPermissionAllow` / `logPermissionDeny`
  * 的调用点直接 spread。
  *
- * 为什么合成一个而不是让 7 个调用点各写 4 行：这几个字段的取法完全一样，散开写就是
+ * 内容 = 危险成因与命令形状（B12）+ auto 档分类器结论（PR0：`autoClassifier` /
+ * `classifierMs` / `classifierRisk` / `classifierReason`）。
+ *
+ * 为什么合成一个而不是让 7 个调用点各写几行：这几个字段的取法完全一样，散开写就是
  * 下一个新鉴权分支漏抄几行、字段在轨迹里静默缺失（B11 的 `confirm_via` 就是这么丢的：
  * 上游都带了，collector 没映射，单测只断言到观察者入参）。
+ *
+ * PR0 特意把分类器结论并进来而不是另开一个函数让调用点各调一次：C1 的整个教训就是
+ * 「放行那条路径没人补字段」——并进这个既有出口，「新分支忘了传」才没有复现空间。
  */
 export function decisionFactsOf(decision: {
   decisionReason?: { type?: string; pattern?: unknown; severity?: unknown } | null;
@@ -366,6 +442,10 @@ export function decisionFactsOf(decision: {
   envPrefixVars?: string[];
   gitTrust?: string;
   effectiveTool?: string;
+  autoClassifier?: string;
+  classifierMs?: number;
+  classifierRisk?: string;
+  classifierReason?: string;
 } {
   return {
     ...dangerOf(decision),
@@ -373,6 +453,7 @@ export function decisionFactsOf(decision: {
     ...(envPrefixVarsOf(decision) ? { envPrefixVars: envPrefixVarsOf(decision) } : {}),
     ...(gitTrustOf(decision) ? { gitTrust: gitTrustOf(decision) } : {}),
     ...(effectiveToolOf(decision) ? { effectiveTool: effectiveToolOf(decision) } : {}),
+    ...classifierFactsOf(decision),
   };
 }
 
