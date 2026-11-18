@@ -84,6 +84,17 @@ export interface ConfirmationOutcome {
   reason?: string;
   /** 弹窗前那次 check 的成因（「为什么要问」） */
   decisionReason?: PermissionDecisionReason;
+  /**
+   * PR0（C2）：弹窗前那次 check 的 `Decision.metadata`，原样带过来供审计取用。
+   *
+   * 为什么需要它：auto 档回退人工时，分类器为什么没放行只记在 metadata 里
+   * （`autoClassifier` / `classifierReason`），而 `auditConfirmationOutcome` 是
+   * 用户放行/拒绝后**唯一**的审计写入点。不把它传进来，审计那一行就只有
+   * `"reason":"用户批准"`——也正是触发会话里「查不到分类器为什么判 unsafe」的形态。
+   *
+   * 只取固定枚举与被截断的一句话理由，**不落整个 metadata**（里面可能有其它字段）。
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /** 权限检查器接口 */
@@ -205,6 +216,16 @@ export interface AuditEntry {
   classifiedBy?: "hardcoded" | "llm" | "both";
   /** LLM 分类器给出的风险等级（仅 LLM 参与判定时） */
   llmRisk?: string;
+  /**
+   * PR0（C2）：这次确认之所以要弹窗，auto 档分类器的结论是什么
+   * （与轨迹 `PermissionDecision.auto_classifier` 同值，两边按 `tool_use_id` join）。
+   *
+   * 触发会话里的形态正是这条缺失：审计只剩 `"reason":"用户批准"`，
+   * 于是「分类器判了 unsafe 还是压根没说话」在审计里查不到。
+   */
+  auto_classifier?: string;
+  /** PR0（C2）：分类器给的一句话理由（截断 200 字）。与轨迹 `classifier_reason` 同值 */
+  classifier_reason?: string;
   /**
    * 审计来源。缺省 = 真实工具决策；`policy-probe` = 启动探针（不经模型）。
    * 触发率脚本用它把探针和真实撞墙分行。
