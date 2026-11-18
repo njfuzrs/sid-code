@@ -118,6 +118,22 @@ export interface ToolEvidence {
 export interface SalvageSnapshot {
   /** 已改动文件清单（去重，保持首次改动顺序）。 */
   changedFiles: string[];
+  /**
+   * 读过的文件（去重，带读过的行段）（PR11 / X1 的确定性清单）。
+   *
+   * 为什么在 `toolEvidence` 之外还要这一段：只读子代理（explore / plan）碰壁时，
+   * 父代理最需要的不是「读了什么内容」（那是几百 KB），而是**「覆盖到哪了」**——
+   * 已经看过 `a.ts:1-120`、`b.ts` 全文，那么接手时可以跳过它们直接读没覆盖的部分。
+   * `toolEvidence` 只留最近 6 条且每条截 800 字，答不了这个问题。
+   */
+  readFiles: ReadFileRecord[];
+  /**
+   * 最后 N 次工具调用（名称 + 主参数）（PR11 / X1）。
+   *
+   * 与 `lastActivity` 的区别：后者只有最后**一条**，回答「卡在哪一步」；这一段回答
+   * 「它试过哪些路」，让父代理不必重复已经证伪的尝试。
+   */
+  recentCalls: string[];
   /** 子代理逐轮产出的文本结论（保序，已剔除空串）。 */
   findings: string[];
   /** 最近若干条**成功**工具结果（保序，最多 {@link TOOL_EVIDENCE_MAX_ITEMS} 条）。 */
@@ -132,6 +148,13 @@ export interface SalvageSnapshot {
   tokenCount: number;
 }
 
+/** 一个被读过的文件，以及读过的行段。 */
+export interface ReadFileRecord {
+  path: string;
+  /** 行段描述（`1-120` / `全文`），保序去重。 */
+  ranges: string[];
+}
+
 /**
  * 残卷收集器：喂 `onTurnEnd` 的每轮快照，随时可导出 `SalvageSnapshot`。
  *
@@ -143,6 +166,10 @@ export class SalvageCollector {
   private readonly changedSeen = new Set<string>();
   private readonly findings: string[] = [];
   private readonly evidence: ToolEvidence[] = [];
+  /** PR11（X1）：读过的文件 → 行段。用 Map 保持首次读取顺序，同时天然去重。 */
+  private readonly readSeen = new Map<string, string[]>();
+  /** PR11（X1）：最后 N 次工具调用（`工具名: 主参数`）。 */
+  private readonly recentCalls: string[] = [];
   private lastActivity?: string;
   private turns = 0;
   private toolUseCount = 0;
@@ -169,6 +196,11 @@ export class SalvageCollector {
         this.changed.push(path);
       }
       this.lastActivity = describeCall(rec);
+      this.recordRead(rec);
+      // PR11（X1）：最近调用清单。整条 push，超出上界从头丢——
+      // 与 evidence 的 shift 策略一致：越晚的调用越接近它停下的位置。
+      this.recentCalls.push(describeCall(rec));
+      if (this.recentCalls.length > RECENT_CALLS_MAX_ITEMS) this.recentCalls.shift();
       // 工具证据（F3）：只收**成功**结果。失败的调用对只读核查也常是有效信息（"这个路径
       // 不存在"），但把 error 文本当"成果"交给主代理会让它据此下错结论；失败的证据价值
       // 远低于成功的，取舍见方案 §4.4。
@@ -193,6 +225,11 @@ export class SalvageCollector {
   snapshot(): SalvageSnapshot {
     return {
       changedFiles: [...this.changed],
+      readFiles: [...this.readSeen.entries()].map(([path, ranges]) => ({
+        path,
+        ranges: [...ranges],
+      })),
+      recentCalls: [...this.recentCalls],
       findings: [...this.findings],
       toolEvidence: this.evidence.map((e) => ({ ...e })),
       lastActivity: this.lastActivity,
@@ -200,6 +237,49 @@ export class SalvageCollector {
       toolUseCount: this.toolUseCount,
       tokenCount: this.tokenCount,
     };
+  }
+
+  /**
+   * 记录一次 `read` 调用（PR11 / X1）。
+   *
+   * 只认 `read` 一个工具：`grep` / `glob` 的产出是「匹配到的片段」，回答不了
+   * 「这个文件我看过没有」；把它们并进同一张表会让父代理误以为文件已被通读。
+   *
+   * 失败不抛：收集器挂在关键路径上，任何异常都会让整份残卷变成零。
+   */
+  private recordRead(rec: ToolCallRecord): void {
+    if (rec.name !== "read") return;
+    const input = rec.input ?? {};
+    const p = input.file_path ?? input.path;
+    if (typeof p !== "string" || p.trim() === "") return;
+    const path = p.trim();
+    // offset/limit 缺省时是「读了一整段」——记成 `全文` 而不是伪造行号：
+    // 猜一个行区间会让父代理据此判断「这段我读过」而漏读中间部分。
+    const offset = typeof input.offset === "number" ? input.offset : undefined;
+    const limit = typeof input.limit === "number" ? input.limit : undefined;
+    let range: string;
+    if (offset === undefined && limit === undefined) {
+      range = "全文";
+    } else if (limit === undefined) {
+      // 只给了 offset：读到哪由 read 自己按 DEFAULT_MAX_LINES 决定，如实记「从 N 起」。
+      range = `${offset ?? 1}-`;
+    } else {
+      const start = offset ?? 1;
+      range = `${start}-${start + limit - 1}`;
+    }
+    const ranges = this.readSeen.get(path);
+    if (ranges === undefined) {
+      this.readSeen.set(path, [range]);
+      // 上界只按**文件数**收：行段是判断「覆盖到哪」的关键，砍掉它就等于让父代理重读。
+      if (this.readSeen.size > READ_FILES_MAX_ITEMS) {
+        const oldest = this.readSeen.keys().next().value;
+        if (oldest !== undefined) this.readSeen.delete(oldest);
+      }
+      return;
+    }
+    // 已经「全文」读过的文件不再追加行段——全文是覆盖度的上界。
+    if (ranges.includes("全文") || ranges.includes(range)) return;
+    ranges.push(range);
   }
 }
 
@@ -437,6 +517,11 @@ const TOOL_EVIDENCE_MAX_CHARS = 800;
 /** 工具证据最多保留几条。与 {@link FINDING_MAX_ITEMS} 同值：两段是并列的「成果」素材，
  *  上限不同会让残卷整体体积难以预估。 */
 const TOOL_EVIDENCE_MAX_ITEMS = 6;
+/** 「最近调用」保留几条（PR11 / X1）。5 条足够看清「它试过哪几条路」，再多就是 transcript。 */
+const RECENT_CALLS_MAX_ITEMS = 5;
+/** 「读过的文件」最多保留几个（PR11 / X1）。只按文件数封顶、不裁行段——
+ *  行段是判断「覆盖到哪」的关键，砍掉它等于让父代理重读。50 与改动文件清单同值。 */
+const READ_FILES_MAX_ITEMS = 50;
 
 /**
  * 把残卷素材拼成交给主代理的结构化文本。
@@ -515,6 +600,31 @@ export function buildSalvageOutput(snap: SalvageSnapshot, opts: BuildSalvageOpti
       parts.push("    </evidence>");
     }
     parts.push("  </tool-evidence>");
+  }
+
+  // ③-d 读过的文件（PR11 / X1）：回答「覆盖到哪了」。
+  //
+  // 为什么放在 `<next-step>` 之后：通知的 `<error>` 通道有 4000 字预算（见上方 tool-evidence
+  // 注释的实测），`<next-step>` 是可执行指令、必须落在截断窗口内；这一段是"地图"，
+  // 被截掉时父代理仍可从 `.output` 取全文。
+  // 只读子代理（explore / plan）的残卷里这一段最有用：它的成果就是"看过哪些地方"。
+  if (snap.readFiles.length > 0) {
+    const shown = snap.readFiles.slice(0, READ_FILES_MAX_ITEMS);
+    const omitted = snap.readFiles.length - shown.length;
+    parts.push(`  <read-files count="${snap.readFiles.length}">`);
+    for (const f of shown) {
+      // 路径作为正文、行段作为属性：路径可能含引号/尖括号（罕见但存在），走正文更安全。
+      parts.push(`    <file ranges="${escapeXmlAttr(f.ranges.join(", "))}">${f.path}</file>`);
+    }
+    if (omitted > 0) parts.push(`    <omitted>${omitted} 个文件未列出</omitted>`);
+    parts.push("  </read-files>");
+  }
+
+  // ③-e 最近 N 次工具调用（PR11 / X1）：回答「它试过哪些路」，避免父代理重复已证伪的尝试。
+  if (snap.recentCalls.length > 0) {
+    parts.push(`  <recent-calls count="${snap.recentCalls.length}">`);
+    for (const c of snap.recentCalls) parts.push(`    <call>${escapeXmlContent(c)}</call>`);
+    parts.push("  </recent-calls>");
   }
 
   if (opts.outputFile) parts.push(`  <output-file>${opts.outputFile}</output-file>`);

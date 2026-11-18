@@ -53,6 +53,8 @@ import {
   updateTask,
   // P0-1：残卷要带上 output-file 路径（残卷是摘要，完整输出在磁盘上）。
   getTask,
+  // PR11（X1）：task_stop 默认走优雅停止，循环靠这个信号判断该不该转入收尾轮。
+  getAgentStopRequestSignal,
 } from "../task/index.ts";
 import type { AgentTaskResult, LocalAgentTaskState } from "../task/types.ts";
 import {
@@ -2141,6 +2143,10 @@ export class SubAgent {
         tools,
         maxTurns,
         signal: mergedSignal,
+        // PR11（X1）：task_stop 默认走优雅停止 —— 置这个信号让循环别开新轮、转入收尾轮。
+        // 与 `signal` 分开（见 AgentLoopConfig.stopRequestSignal 注释）：abort 之后循环里
+        // 每一处 `signal.aborted` 判定都走"中止"分支，收尾轮在结构上就起不来。
+        stopRequestSignal: taskId ? getAgentStopRequestSignal(taskId) : undefined,
         loopDetector,
         sendParamsExtra,
         // B0：两条 runAgentLoop 路径共有字段收进工厂（hookSystem / permissionChecker /

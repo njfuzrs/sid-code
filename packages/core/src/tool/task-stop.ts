@@ -13,6 +13,7 @@ import {
   isMonitorTask,
   killShellTask,
   killAgentTask,
+  requestAgentStop,
   killWorkflowTask,
   killMonitorTask,
 } from "../task/index.ts";
@@ -22,6 +23,13 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 const taskStopSchema = lazySchema(() =>
   z.object({
     task_id: z.string().describe("要终止的任务 ID"),
+    force: z
+      .boolean()
+      .optional()
+      .describe(
+        "子代理专用。默认 false = 优雅停止（中止在途请求后让它跑一轮总结，最多等 60 秒，" +
+          "交回已有成果）；true = 立刻硬杀，不跑总结。仅在子代理已经跑偏、连总结都不想要时用。",
+      ),
   }),
 );
 
@@ -47,7 +55,7 @@ export class TaskStopTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
-    const params = input as { task_id: string };
+    const params = input as { task_id: string; force?: boolean };
 
     if (!params.task_id) {
       return { output: "错误: 缺少 task_id 参数", isError: true };
@@ -71,7 +79,27 @@ export class TaskStopTool implements Tool {
     if (isShellTask(task)) {
       killShellTask(task.id);
     } else if (isAgentTask(task)) {
-      killAgentTask(task.id);
+      // PR11（X1）：默认走优雅停止 —— 中止在途请求后让子代理跑一轮总结，把已有成果
+      // 交回来。硬杀掉的往往正是「已经读完文件、只差一次总结」的最贵一段（见
+      // agentic-loop 的 PARENT_STOP_FINALIZE_PROMPT）。
+      //
+      // force: true 与「没有优雅通道」两种情形仍走 killAgentTask：前者是父代理明确
+      // 不要总结（子代理已经跑偏），后者是任务形态不支持（历史任务 / 已终态竞态）。
+      if (params.force || !requestAgentStop(task.id)) {
+        killAgentTask(task.id);
+      } else {
+        // 优雅停止是**异步收工**：这里立刻返回，任务状态要等子代理交出总结才落终态。
+        // 明说这一点，否则父代理会以为任务已经停了，转头发现它还在跑。
+        return {
+          output: JSON.stringify({
+            task_id: task.id,
+            status: getTask(task.id)?.status ?? task.status,
+            message:
+              `已请求子代理优雅停止："${task.description}"。它会在收尾轮交回已有成果` +
+              `（最多 60 秒，超时自动硬杀）。结果通过任务完成通知交回。`,
+          }),
+        };
+      }
     } else if (isWorkflowTask(task)) {
       killWorkflowTask(task.id);
     } else if (isMonitorTask(task)) {

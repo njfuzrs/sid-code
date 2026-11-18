@@ -58,6 +58,15 @@ export interface AgentTaskResult {
     inputTokens: number;
     outputTokens: number;
   };
+  /**
+   * PR11（D1）：本次的停止归因（来自 `SubAgentResult.stopAttribution.stop_action`）。
+   *
+   * 为什么放在 result 里而不是只留在遥测：完成通知的 summary 只有一句
+   * 「Agent "xxx" 执行完成」——无论它是正常收工、打满轮次被强制总结，还是被父代理叫停。
+   * 三种可信度不同的结论被压成同一句话，父代理只能全信或全疑。
+   * 缺省（前台结果 / 旧调用方）时不拼任何附注，行为与改造前一致。
+   */
+  stopAction?: string;
 }
 
 /** 任务状态基类 */

@@ -280,11 +280,27 @@ describe("P3-3 · 子代理强制总结轮：响应里的 tool_use 必须剥离"
   test("源码形态：总结轮两道防线都在（发送前补齐 + 响应后剥离）", () => {
     // 这两处很容易在重构中掉一个，而掉了之后要等"未知 stop + 撞上限"这种罕见组合
     // 才会 400 —— 集成用例覆盖不到的角落用形态断言兜住。
-    const summaryIdx = AGENTIC_LOOP_SRC.indexOf("达到最大轮次 ${maxTurns}，请求强制总结");
-    expect(summaryIdx).toBeGreaterThan(-1);
-    // X2 之后总结轮改为 runRecoverableTurn（升档 + 续写 + 每段经 commitAssistant 入史），
-    // 块长从约 6k 增到约 8k，切片窗口相应放宽到 +12000。锚点与三条断言的意图都不变。
-    const summaryBlock = AGENTIC_LOOP_SRC.slice(summaryIdx - 2500, summaryIdx + 12000);
+    //
+    // PR11 之后锚点从"打满轮次"那段内联代码换成收尾函数本身：收尾逻辑抽成
+    // `runFinalizeTurn` 供四个非正常出口共用，两道防线搬进了函数体。锚点跟着实现走，
+    // 断言的**意图不变**（防线在、原样入史那行不在），另外补了一条"函数确实被调用"
+    // 的断言——只断言函数体存在、却没人调用它，等于防线形同虚设。
+    const summaryIdx = AGENTIC_LOOP_SRC.indexOf("const runFinalizeTurn = async");
+    expect(summaryIdx, "收尾函数 runFinalizeTurn 必须存在（四个非正常出口共用）").toBeGreaterThan(
+      -1,
+    );
+    // 用函数体内的结束标记精确切片，不依赖"块长 + 魔数窗口"——那种写法每次重构都要调数字。
+    const endMarker = "return summaryAccumulated.length > 0;";
+    const summaryEnd = AGENTIC_LOOP_SRC.indexOf(endMarker, summaryIdx);
+    expect(summaryEnd, "收尾函数必须返回「是否真的产出了总结」").toBeGreaterThan(-1);
+    const summaryBlock = AGENTIC_LOOP_SRC.slice(summaryIdx, summaryEnd + endMarker.length);
+
+    // 调用点断言：收尾函数必须真的被调用（抽成函数却没人调 = 防线失效）。
+    const callSites = AGENTIC_LOOP_SRC.split("await runFinalizeTurn({").length - 1;
+    expect(
+      callSites,
+      `runFinalizeTurn 必须至少在打满轮次这一个出口被调用，实际 ${callSites} 处`,
+    ).toBeGreaterThanOrEqual(1);
     expect(summaryBlock, "总结轮发送前必须调 finalizeMessagesForSend").toContain(
       "finalizeMessagesForSend(ctxMgr.getMessages())",
     );

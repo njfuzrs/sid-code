@@ -14,12 +14,28 @@ import { registerTask, updateTask, getTask } from "./registry.ts";
 import { getCompletedMainTurns } from "./lifecycle.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import { enqueueTaskNotification, NOTIFICATION_OUTPUT_MAX_CHARS } from "./notification.ts";
+// PR11（D1）：非正常出口在摘要里带停止原因，让父代理能判断结论可信度。
+import { describeStopNotice } from "../agent/stop-notice.ts";
 import { persistLargeOutput } from "../context/tool-result-storage.ts";
 import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { SUBAGENT_SESSION_EXIT_REASON } from "../llm/errors.ts";
 
 /** 活跃 Agent 的 AbortController（用于 kill） */
 const activeAgentControllers = new Map<string, AbortController>();
+
+/**
+ * PR11（X1）：每个任务的「请求停止」控制器。
+ *
+ * 与 `activeAgentControllers` 是**两套语义**，不能合并：
+ * - `activeAgentControllers` abort = 立刻停（硬杀）。abort 之后循环里每一处
+ *   `signal.aborted` 判定都走"中止"分支，**收尾轮在结构上就不可能跑起来**。
+ * - 本控制器 abort = 「别开新轮了，把话说完」：子代理中止在途请求、跳出主循环、
+ *   再跑一轮不带 tools 的总结，然后以 `stopped_by_parent` 结束。
+ *
+ * 为什么值得有第二条路：`task_stop` 打在子代理身上的时刻，往往是它已经读完文件、
+ * 跑完命令、只差一次总结的时刻 —— 那一刻硬杀掉的正是最贵的一段。
+ */
+const activeStopRequestControllers = new Map<string, AbortController>();
 
 /**
  * 每个任务的「已到终态」信号（complete / fail / kill 时 resolve）。
@@ -32,6 +48,9 @@ function markSettled(taskId: string): void {
   settleResolvers.get(taskId)?.();
   settleResolvers.delete(taskId);
   settledSignals.delete(taskId);
+  // PR11：停止请求通道随任务终态一起回收。不删的话 60 秒兜底定时器的回调
+  // 会在一个已经不存在的任务上再查一次 registry（无害，但 map 会随会话长期增长）。
+  activeStopRequestControllers.delete(taskId);
 }
 
 /** 会话退出回收等待子代理收尾的上限。pre-flush 钩子逐个 await，failsafe 5s，故取 2s。 */
@@ -81,6 +100,7 @@ export function createAgentTask(opts: {
 
   registerTask(taskState);
   activeAgentControllers.set(taskId, abortController);
+  activeStopRequestControllers.set(taskId, new AbortController());
   settledSignals.set(taskId, new Promise<void>((resolve) => settleResolvers.set(taskId, resolve)));
   // PR-B S5：子代理已无墙钟 / 硬 kill，会话退出时仍在跑的子代理必须显式回收，
   // 否则留下孤儿循环（继续烧 token）。按 name 去重，反复注册不堆积。
@@ -161,6 +181,9 @@ export async function completeAgentTask(
   const task = getTask(taskId) as LocalAgentTaskState | undefined;
   if (!task) return;
 
+  // PR11（D1）：finalize（正常收尾）时返回 undefined，摘要保持原样。
+  const stopNotice = describeStopNotice(result.stopAction);
+
   // 终态保护：若任务已被 kill（killed 终态），不覆盖成 completed、不重复发通知。
   // 与 failAgentTask 对称，防 abort 后子代理碰巧返回成功结果反把 killed 改写。
   if (isTerminalStatus(task.status)) return;
@@ -198,7 +221,14 @@ export async function completeAgentTask(
     toolUseId: task.toolUseId,
     outputFile: task.outputFile,
     status: "completed",
-    summary: `Agent "${task.description}" 执行完成`,
+    // PR11（D1）：非正常出口在摘要里带上停止原因。
+    //
+    // 此前所有 completed 通知都是同一句「执行完成」，父代理无从区分「模型自己说完了」
+    // 与「打满轮次被强制总结」「被父代理叫停」——而这三者的结论可信度并不相同。
+    // 附注只是加一句限定语，不改 status（三者产出的都是可用结论，任务确实完成了）。
+    summary: stopNotice
+      ? `Agent "${task.description}" 执行完成（${stopNotice}）`
+      : `Agent "${task.description}" 执行完成`,
     result,
     // X3：超长结论的截断提示指向持久副本，不再指向会被驱逐的 `.output`
     resultFile: pointer.resultFile,
@@ -377,4 +407,53 @@ export function killAgentTask(taskId: string): void {
 /** 获取 Agent 任务的 AbortSignal */
 export function getAgentTaskSignal(taskId: string): AbortSignal | undefined {
   return activeAgentControllers.get(taskId)?.signal;
+}
+
+/**
+ * PR11（X1）：优雅停止的兜底时限 —— 请求停止之后到这个点还没交回总结，就退化硬杀。
+ *
+ * 为什么必须有这一条：优雅停止要发一轮总结请求、要等模型把话说出来，而模型此时
+ * 可能正卡在一个半死流里。没有兜底的话，`task_stop` 的语义就从「停」变成了
+ * 「请求它也许未来某刻会停」——父代理的刹车不能因为「优雅」而失灵。
+ */
+export const AGENT_STOP_GRACEFUL_TIMEOUT_MS = 60_000;
+
+/**
+ * PR11（X1）：请求子代理**优雅停止** —— 别开新轮了，把话说完。
+ *
+ * 与 {@link killAgentTask} 的分工：这里只置停止信号（子代理中止在途请求、跳出主循环、
+ * 再跑一轮不带 tools 的总结），任务状态仍由子代理自己走 complete/fail 正常收尾，
+ * `stop_action` 记成 `stopped_by_parent`。killAgentTask 保持原语义（立刻 abort + killed）。
+ *
+ * 兜底：`AGENT_STOP_GRACEFUL_TIMEOUT_MS` 内没等到终态就调 killAgentTask 硬杀。
+ *
+ * @returns false = 该任务没有优雅停止通道（不是 agent 任务 / 已终态），调用方应转硬杀。
+ */
+export function requestAgentStop(taskId: string, opts?: { timeoutMs?: number }): boolean {
+  const controller = activeStopRequestControllers.get(taskId);
+  if (!controller) return false;
+  // 幂等：父代理可能连发两次 task_stop，第二次不该再起一个兜底定时器。
+  if (controller.signal.aborted) return true;
+  controller.abort();
+
+  const timeoutMs = opts?.timeoutMs ?? AGENT_STOP_GRACEFUL_TIMEOUT_MS;
+  const timer = setTimeout(() => {
+    const task = getTask(taskId) as LocalAgentTaskState | undefined;
+    // 任务已终态就什么都不做：总结赶在时限内交回来了，这是期望路径。
+    if (task && !isTerminalStatus(task.status)) {
+      killAgentTask(taskId);
+    }
+  }, timeoutMs);
+  // unref：兜底定时器不该把一个已经空闲的进程钉住（CLI 退出时尤其明显）。
+  timer.unref?.();
+
+  const settled = settledSignals.get(taskId);
+  if (settled) void settled.then(() => clearTimeout(timer));
+
+  return true;
+}
+
+/** 获取「请求停止」信号：子代理循环用它判断该不该转入收尾轮（PR11 / X1）。 */
+export function getAgentStopRequestSignal(taskId: string): AbortSignal | undefined {
+  return activeStopRequestControllers.get(taskId)?.signal;
 }
