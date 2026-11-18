@@ -135,9 +135,13 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   //     `rm -rf $HOME`、`mkfs -t ext4 /dev/sdb`、`dd of=… if=…`。
   // 2026-10-26 的探针实测见 .agents/notes/implemented/bug-fix/2026-10-26-危险命令按token判定.md。
   //
-  // Fork 炸弹保留原文正则：它对完整形态要求很严（`echo ':(){ :|:& };:'` 实测不误报），
-  // token 化没有收益。
-  { name: "Fork 炸弹", pattern: /:()\s*\{.*:\|:.*&.*\}\s*;/, severity: "critical" },
+  // 「Fork 炸弹」也不在这张表里：它按 scripts + 引号掩码单独判，见 detectForkBomb。
+  // 修前在这里写成 /:()\s*\{…/：`()` 是**空捕获组**而非字面括号，实际要求 `:{`，
+  // 真正的 `:(){` 一律漏判（always-allow 下静默放行）。它当时能生效纯属巧合——
+  // 模式里恰好含 `\|`，被下面的 pipelinePatterns 归类捞走，对**未拆段**的
+  // `expansion.scripts` 匹配；换成 `[|]` / `\x7c` 等等价写法就会掉进 nonPipelinePatterns，
+  // 改对**已拆段**的 `expansion.variants`（`{p:":(){"}` / `{p:":"}` / `{p:"}"}`）匹配 → 永远失配。
+  // 显式拆出来，是为了让「对原文 + 引号外的代码位匹配」这件事不再依赖正则字面量里的副作用。
 
   // high: 拒绝但允许用户确认
   // 「sudo 命令」不在正则表里：按程序位置判（detectPrivilegeEscalation），见那里的注释。
@@ -206,6 +210,121 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   // hardcodedDangerCheck 会按复合命令拆分逐子命令查这些模式，加进此表后自动继承拆分能力。
   ...GIT_DANGER_PATTERNS,
 ];
+
+/**
+ * Fork 炸弹原文形态。与 `read-only-validation.ts` 的 `isDestructiveCommand` 同一口径
+ * （那边是「只读判定」的镜像，两处判据必须一致，否则同一条命令会一边判危险一边判只读）。
+ *
+ * 两种写法都显式收：POSIX 的 `:() { … }` 与 bash 的 `function : { … }`。
+ *
+ * 为什么要显式写 `function\s+:`，而不是只收 `:()`：
+ * 旧正则 `/:()\s*\{…/` 里 `()` 是**空捕获组**，实际语义是「`:` + 可选空白 + `{`」。
+ * 于是它恰好覆盖了 `function : { :|:& }; :`（2026-11-18 实测：修前确实拦得住），
+ * 却漏掉真正的 `:(){` —— 两者之间隔着 `(`，`\s*` 匹配不到。
+ * 也就是说「`: {` 形态能拦」是**巧合而非设计**，换成 `:()` 写法就漏。显式写出来，
+ * 让两种形态都由判据本身保证，不再依赖空捕获组的副作用。
+ */
+const FORK_BOMB_PATTERN = /(?::\s*\(\s*\)|function\s+:)\s*\{[^}]*:\s*\|\s*:[^}]*&[^}]*\}\s*;/;
+
+/**
+ * 把**引号内**的字符等长替换成空格，只保留引号外的原文。
+ *
+ * 为什么需要它：Fork 炸弹是「只该在**代码位**命中」的文本判据。
+ * `echo ':(){ :|:& };:'` / `grep ":(){ :|:& };"` / `git commit -m "…fork bomb…"` 里的
+ * 同一串文本是**数据**，而这些恰恰是讨论该形态时最常见的写法。修前靠正则写错
+ * （`()` 是空捕获组，永远匹配不上真形态）才侥幸不误报；把正则改对之后若直接 `.test()`，
+ * 它们会变成 critical **硬拒**——always-allow / acceptEdits 下没有出口，用户点不了「允许」。
+ *
+ * 等长替换而非删除：保持位置与结构不变，正则里的 `[^}]*` / `\s*` 计数不被打乱。
+ *
+ * 内层脚本不必担心被掩掉：`sh -c '…'` / `eval '…'` / heredoc 正文 / 命令替换的内层
+ * 在 `expansion.scripts` 里是**独立的一项**（`expandShellCommand` 已展开），
+ * 掩掉外层引号后仍会在那一项里被看到。
+ *
+ * 已知不覆盖（不属本判据的职责）：`eval "$(…)"` / `eval $var` 这类**动态构造**后
+ * 才知道要执行什么——与 PR #443 记的「程序语义藏在参数里」同类，结构化判定那一层
+ * 也拿不到，需另案。
+ */
+function maskQuotedRanges(text: string): string {
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+  let escaped = false;
+  // bash 只在**词首**把 `#` 当注释（`echo a#b` 里的 `#` 是字面量）。
+  // 取值刻意保守：只有紧跟在行首 / 空白 / `;&|()<>` 之后的 `#` 才算注释。
+  // 宁可漏掩（多报一次，用户仍可换个写法）也不错掩（把真炸弹当注释放过去）。
+  let atWordStart = true;
+  for (const ch of text) {
+    if (inComment) {
+      if (ch === "\n") {
+        inComment = false;
+        atWordStart = true;
+        out += ch;
+      } else {
+        out += " ";
+      }
+      continue;
+    }
+    if (escaped) {
+      out += inSingle || inDouble ? " " : ch;
+      escaped = false;
+      atWordStart = false;
+      continue;
+    }
+    // 反斜杠在单引号内是字面量，不触发转义（bash 引号规则）
+    if (ch === "\\" && !inSingle) {
+      escaped = true;
+      out += inDouble ? " " : ch;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      out += " ";
+      atWordStart = false;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      out += " ";
+      atWordStart = false;
+      continue;
+    }
+    if (inSingle || inDouble) {
+      out += " ";
+      continue;
+    }
+    if (ch === "#" && atWordStart) {
+      inComment = true;
+      out += " ";
+      continue;
+    }
+    out += ch;
+    atWordStart = /\s/.test(ch) || ";&|()<>".includes(ch);
+  }
+  return out;
+}
+
+/**
+ * Fork 炸弹判定：对每层脚本（原文 + `sh -c` / `eval` / heredoc 正文等内层）
+ * 的**引号外**部分匹配 `FORK_BOMB_PATTERN`。
+ *
+ * 为什么不放在 `DANGEROUS_PATTERNS` 表里：那张表按「正则源码里有没有 `\|`」把模式分到
+ * pipeline / nonPipeline 两组，前者对 `expansion.scripts`（未拆段）匹配，后者对
+ * `expansion.variants`（**已拆段**）匹配。fork bomb 的模式里天然含 `:|:`，于是它会
+ * 落进 pipeline 组——但这是**字面量巧合**：把 `\|` 换成 `[|]` / `\x7c` 任一等价写法，
+ * 它就会掉进另一组，对着被拆碎的 `[":(){ :", ":", "}"]` 匹配，永远失配且**没有任何测试会红**。
+ * 所以这里显式判，不依赖那个副作用；顺带也让「引号掩码」这层修饰有地方挂。
+ */
+function detectForkBomb(expansion: ShellCommandExpansion): DangerousFinding | null {
+  for (const script of expansion.scripts) {
+    if (FORK_BOMB_PATTERN.test(maskQuotedRanges(script))) {
+      return { name: "Fork 炸弹", severity: "critical" };
+    }
+  }
+  return null;
+}
 
 /** 文件工具（需要路径校验）。notebook_edit 路径字段是 notebook_path，见 extractFilePath。 */
 const FILE_TOOLS = new Set(["read", "write", "edit", "notebook_edit"]);
@@ -3555,6 +3674,11 @@ export class PermissionChecker implements Checker {
     // 0. 结构化 critical 判定
     const structural = detectStructuredCriticalDanger(expansion, { cwd, home: os.homedir() });
     if (structural) return structural;
+
+    // 0'. Fork 炸弹：对每层脚本的**引号外**部分匹配原文形态（判据见 detectForkBomb）。
+    // 放在正则表两步之前——它是 critical（无出口），必须先于任何 high 命中。
+    const forkBomb = detectForkBomb(expansion);
+    if (forkBomb) return forkBomb;
 
     // 1a. 跨管道危险模式（对整段脚本）
     const pipelinePatterns = DANGEROUS_PATTERNS.filter(
