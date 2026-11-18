@@ -313,6 +313,16 @@ export function formatSidWaitMisuseReceipt(
 
 /** gh REST 的单 PR 快照（只取本原语用得到的字段） */
 export interface GhPullSnapshot {
+  /**
+   * 这份快照是从哪个仓库查来的 `<owner>/<repo>`。**必填**。
+   *
+   * 它要回答的正是本原语最贵的失败形态：「你等的是哪个仓库」。旧实现的成功路径完全不
+   * 记录仓库——会话在 docs-research 启动、而那里恰好有同号 PR 时，会静默等到一个与本仓
+   * 无关的 PR（merged / check-failed 都是真的，只是对象错了），终态通知里没有任何线索。
+   * 入口层无法替客户端判断「查得对不对」（它只知道自己想要哪个仓库），所以让客户端如实
+   * 回报实际查询的仓库，再由启动回执与终态摘要把它写出来给人看。
+   */
+  repo: string;
   state: "open" | "closed";
   merged: boolean;
   /** 最新 head commit sha。**每次轮询都重新取**——这就是 auto-update-branch 的回归点 */
@@ -371,11 +381,12 @@ export interface SidWaitGhPrResult {
    */
   fatalDetail?: string;
   /**
-   * 本次实际查询的仓库 `<owner>/<repo>`。
+   * 本次**实际查询**的仓库 `<owner>/<repo>`。成功终态与失败终态都要带。
    *
-   * 必须带在 rest-fatal / rest-failed 的结论里：这个缺陷最贵的形态是「查错仓库」，
-   * 而旧文案只说「PR 号不存在 / 无权限」，把排查方向指反了。带上仓库名，用户一眼
-   * 就能看出「我没在等这个仓库」。
+   * 失败终态带它，是为了把「查错仓库」从「PR 号不存在 / 无权限」里区分出来；
+   * 成功终态带它，是因为「静默等错对象」不会报错——会话在别的仓库启动、那里恰好有
+   * 同号 PR 时，merged / check-failed 都是真的，只是对象错了。终态摘要必须写明仓库名，
+   * 否则这条最贵的失败形态在成功路径上完全不可见。
    */
   repo?: string;
   /** `rest-failed` 时实际累计到的连续失败次数（调用方可传非默认阈值） */
@@ -554,6 +565,9 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
       continue;
     }
 
+    // 终态一律带上**快照自报的仓库**（`pull.repo`），不是入口传的 `opts.repo`：
+    // 报告的是「我实际等到的是哪个仓库的 PR」。两者若不一致，说明客户端没按入口给的
+    // 仓库查——那正是要暴露的 bug，而不是用入口值把它盖掉。
     if (pull.merged) {
       emit(`MERGED ${pull.headSha}`);
       return {
@@ -561,6 +575,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
         reason: "merged",
         failedChecks: [],
         headSha: pull.headSha,
+        repo: pull.repo,
       };
     }
     if (pull.state === "closed") {
@@ -570,6 +585,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
         reason: "closed",
         failedChecks: [],
         headSha: pull.headSha,
+        repo: pull.repo,
       };
     }
     if (pull.mergeableState === "dirty") {
@@ -579,6 +595,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
         reason: "conflict",
         failedChecks: [],
         headSha: pull.headSha,
+        repo: pull.repo,
       };
     }
 
@@ -620,6 +637,7 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
         reason: "check-failed",
         failedChecks: failed,
         headSha: pull.headSha,
+        repo: pull.repo,
       };
     }
 
@@ -638,18 +656,22 @@ export async function runSidWaitGhPr(opts: SidWaitGhPrOptions): Promise<SidWaitG
 
 /** 终态通知/回执里的一句话摘要（退出码之外还要说清「为什么结束」） */
 export function formatSidWaitResultSummary(result: SidWaitGhPrResult, pr: number): string {
+  // 成功终态同样点名仓库：静默等错对象时，merged / check-failed 都是**真实**的，
+  // 只是对象不是你要的那个。不含仓库名的文案在这条路径上没有任何线索可核。
+  // 前置失败（rest-fatal 带 fatalDetail）下面单独处理，它的文案自带仓库语境。
+  const where = result.repo ? `仓库 ${result.repo} 的 PR #${pr}` : `PR #${pr}`;
   switch (result.reason) {
     case "merged":
-      return `等待结束：PR #${pr} 已合并（${shortSha(result.headSha)}）`;
+      return `等待结束：${where} 已合并（${shortSha(result.headSha)}）`;
     case "closed":
-      return `等待结束：PR #${pr} 已关闭但未合并（${shortSha(result.headSha)}）`;
+      return `等待结束：${where} 已关闭但未合并（${shortSha(result.headSha)}）`;
     case "conflict":
-      return `等待结束：PR #${pr} 与 base 有冲突（mergeable_state=dirty，${shortSha(result.headSha)}）`;
+      return `等待结束：${where} 与 base 有冲突（mergeable_state=dirty，${shortSha(result.headSha)}）`;
     case "check-failed": {
       const names = result.failedChecks.map((c) => `${c.name}(${c.conclusion})`);
       const shown = names.slice(0, 3).join("、");
       const more = names.length > 3 ? ` 等 ${names.length} 项` : "";
-      return `等待结束：PR #${pr} 有检查失败——${shown}${more}（${shortSha(result.headSha)}）`;
+      return `等待结束：${where} 有检查失败——${shown}${more}（${shortSha(result.headSha)}）`;
     }
     case "rest-failed":
       return `等待结束：查询${result.repo ? `仓库 ${result.repo} 的 ` : ""}PR #${pr} 的 gh REST 连续失败 ${
@@ -661,17 +683,43 @@ export function formatSidWaitResultSummary(result: SidWaitGhPrResult, pr: number
       if (result.fatalDetail) return `等待结束：${result.fatalDetail}`;
       // 第一句必须点出**实际查了哪个仓库**：这个缺陷最贵的形态是「查错仓库」，
       // 而旧文案只说「PR 号不存在 / 无权限」，把排查方向指反了（PR 号与 token 都正常）。
-      const where = result.repo ? `仓库 ${result.repo} 的 PR #${pr}` : `PR #${pr}`;
+      const fatalWhere = result.repo ? `仓库 ${result.repo} 的 PR #${pr}` : `PR #${pr}`;
       const repoHint = result.repo
         ? `。若这不是你要等的仓库，用 \`sid-wait gh-pr ${pr} --repo <owner>/<repo>\` 显式指定`
         : `。若当前目录不在目标仓库，用 \`--repo <owner>/<repo>\` 显式指定要等哪个仓库`;
-      return `等待结束：查询${where} 被 GitHub 拒绝（HTTP ${
+      return `等待结束：查询${fatalWhere} 被 GitHub 拒绝（HTTP ${
         result.httpStatus ?? "4xx"
       }）——这不是暂时的网络问题，先确认 PR 号存在、当前 token 对该仓库有读权限${repoHint}`;
     }
     case "aborted":
-      return `等待结束：PR #${pr} 的等待已被停止`;
+      return `等待结束：${where} 的等待已被停止`;
   }
+}
+
+/**
+ * 启动回执里点明「正在等哪个仓库的哪个 PR」。
+ *
+ * 为什么成功路径也要写：失败文案带仓库名只覆盖「查错仓库且报错」那一半。
+ * 会话本身在别的仓库（如 docs-research）启动、而那里恰好有同号 PR 时，查询是**成功**的
+ * ——不回一条 404，只会安静地等到一个与本仓无关的结果。启动回执是唯一能在等待开始
+ * 那一刻让人发现「对象错了」的窗口，成本只有一行。
+ *
+ * `source=remote` 时额外说明解析依据（哪个目录的 github remote）：自动解析在 fork /
+ * 多 remote 场景仍可能挑错，用户必须能自己核对这一步是怎么来的。
+ */
+export function formatSidWaitStartNote(opts: {
+  pr: number;
+  repo: string;
+  source: "explicit" | "remote";
+  intervalMs: number;
+  /** source=remote 时的解析基线目录（会话启动目录） */
+  baseDir?: string;
+}): string {
+  const repoPart =
+    opts.source === "remote"
+      ? `正在等仓库 ${opts.repo} 的 PR #${opts.pr}（按 ${opts.baseDir ?? "会话启动目录"} 的 github remote 解析；不是目标仓库就用 --repo <owner>/<repo> 指定）`
+      : `正在等仓库 ${opts.repo} 的 PR #${opts.pr}`;
+  return `${repoPart}：每 ${Math.round(opts.intervalMs / 1000)} 秒查一次最新 head 与 check-runs（不启动外部进程）。`;
 }
 
 // ── 仓库解析：查哪个仓库由入口显式决定，不由 cwd 决定 ──
@@ -843,7 +891,7 @@ export interface GhCliRestClientOptions {
 }
 
 /** 从 GitHub 响应里宽容地取字段：字段缺失/类型不对按「这次查询无效」抛错，计入 REST 失败 */
-function toPullSnapshot(raw: unknown, pr: number): GhPullSnapshot {
+function toPullSnapshot(raw: unknown, pr: number, repo: string): GhPullSnapshot {
   const obj = raw as Record<string, unknown> | null;
   const head = obj?.head as Record<string, unknown> | undefined;
   const headSha = typeof head?.sha === "string" ? head.sha : "";
@@ -851,6 +899,10 @@ function toPullSnapshot(raw: unknown, pr: number): GhPullSnapshot {
     throw new Error(`pulls/${pr} 响应缺少 head.sha`);
   }
   return {
+    // 仓库名由调用方（endpoint 构造处）传入，不从响应体里猜：gh REST 的 pull 响应
+    // 虽然带 base.repo.full_name，但那是 base 仓库（fork PR 时与查询仓库不同），
+    // 用它会让「查了哪个仓库」在 fork 场景下说错。查询哪个仓库，这里就是哪个。
+    repo,
     state: obj.state === "closed" ? "closed" : "open",
     merged: obj.merged === true,
     headSha,
@@ -946,7 +998,8 @@ export function createGhCliRestClient(options: GhCliRestClientOptions = {}): GhR
 
   return {
     async getPull(pr: number): Promise<GhPullSnapshot> {
-      return toPullSnapshot(await runApi(`repos/${requireRepo()}/pulls/${pr}`), pr);
+      const repo = requireRepo();
+      return toPullSnapshot(await runApi(`repos/${repo}/pulls/${pr}`), pr, repo);
     },
     async getCheckRuns(_pr: number, sha: string): Promise<GhCheckRunsSnapshot> {
       const ref = encodeURIComponent(sha);

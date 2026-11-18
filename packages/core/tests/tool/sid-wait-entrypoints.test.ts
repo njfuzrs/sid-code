@@ -36,6 +36,8 @@ import { dequeuePendingNotifications } from "../../src/task/notification.ts";
 import type { LocalMonitorTaskState, LocalShellTaskState } from "../../src/task/types.ts";
 
 const HEAD = "cccc3333cccc3333cccc3333cccc3333cccc3333";
+/** 快照必填的仓库名；入口用例只关心任务形态，仓库固定成本仓 */
+const REPO = "njfuzrs/sid-code";
 
 let originalConfigDir: string | undefined;
 let tmpHome = "";
@@ -46,11 +48,11 @@ let checkCalls = 0;
 let lastClientOptions: GhCliRestClientOptions | null = null;
 
 function openPull(): GhPullSnapshot {
-  return { state: "open", merged: false, headSha: HEAD, mergeableState: "blocked" };
+  return { repo: REPO, state: "open", merged: false, headSha: HEAD, mergeableState: "blocked" };
 }
 
 function mergedPull(): GhPullSnapshot {
-  return { state: "closed", merged: true, headSha: HEAD, mergeableState: null };
+  return { repo: REPO, state: "closed", merged: true, headSha: HEAD, mergeableState: null };
 }
 
 /** 装上假客户端：按 pullQueue 顺序返回，最后一项重复（模拟状态不变） */
@@ -415,7 +417,10 @@ describe("R11 入口：仓库与解析基线在 spawn 之前定下来", () => {
     expect(lastClientOptions?.repo).toBe("njfuzrs/sid-code");
     // 基线必须是会话启动目录：传 getCwd() 就等于把缺陷原样放回去
     expect(lastClientOptions?.cwd).toBe(getProjectRoot());
-    const parsed = JSON.parse(result.output) as { task_id: string };
+    const parsed = JSON.parse(result.output) as { task_id: string; message: string };
+    // 启动回执必须点名「正在等哪个仓库的哪个 PR」：静默等错对象时查询是**成功**的
+    // （不报 404），启动那一刻是唯一能让人发现对象错了的窗口。
+    expect(parsed.message).toContain("仓库 njfuzrs/sid-code 的 PR #779");
     killShellTask(parsed.task_id);
   });
 
@@ -430,6 +435,8 @@ describe("R11 入口：仓库与解析基线在 spawn 之前定下来", () => {
     expect(result.isError).toBeFalsy();
     expect(lastClientOptions?.repo).toBe("njfuzrs/sid-code");
     expect(lastClientOptions?.cwd).toBe(getProjectRoot());
+    // 与 bash 入口同一承诺：启动回执点名仓库
+    expect(result.data).toContain("仓库 njfuzrs/sid-code 的 PR #779");
     const task = getAllTasks()[0] as LocalMonitorTaskState | undefined;
     if (task) killMonitorTask(task.id);
   });

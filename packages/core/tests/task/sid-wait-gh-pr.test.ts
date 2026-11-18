@@ -35,17 +35,19 @@ import {
 
 const HEAD_A = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
 const HEAD_B = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222";
+/** 快照必填的仓库名。这些用例只关心状态机，仓库固定成一个值即可 */
+const REPO = "njfuzrs/sid-code";
 
 function openPull(headSha = HEAD_A, mergeableState: string | null = "blocked"): GhPullSnapshot {
-  return { state: "open", merged: false, headSha, mergeableState };
+  return { repo: REPO, state: "open", merged: false, headSha, mergeableState };
 }
 
 function mergedPull(headSha = HEAD_A): GhPullSnapshot {
-  return { state: "closed", merged: true, headSha, mergeableState: null };
+  return { repo: REPO, state: "closed", merged: true, headSha, mergeableState: null };
 }
 
 function closedPull(headSha = HEAD_A): GhPullSnapshot {
-  return { state: "closed", merged: false, headSha, mergeableState: null };
+  return { repo: REPO, state: "closed", merged: false, headSha, mergeableState: null };
 }
 
 function check(name: string, conclusion: string | null, id = 1): GhCheckRun {

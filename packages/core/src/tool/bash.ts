@@ -1977,6 +1977,10 @@ export class BashTool implements Tool {
     }
     const sidWaitRepo =
       sidWaitResolution && sidWaitResolution.ok ? sidWaitResolution.repo : undefined;
+    // 仓库的来源要一路带到启动回执：`remote` 意味着「按会话启动目录的 github remote 猜的」，
+    // 用户必须能看出这一步的依据，才有机会在等错仓库时当场用 --repo 纠正。
+    const sidWaitRepoSource =
+      sidWaitResolution && sidWaitResolution.ok ? sidWaitResolution.source : undefined;
     const effectiveWaitSeconds =
       params.wait_until_seconds ?? (sidWait ? task.DEFAULT_SID_WAIT_DEADLINE_S : undefined);
     // R9：toolUseId 一并透传，WaitAdmission 事件据此把准入判定与那次 tool_use 对上号。
@@ -2055,9 +2059,18 @@ export class BashTool implements Tool {
 
     // R7：内置原语的回执要说清「它为什么不需要手写循环」——退出条件由 harness 保证，
     // 模型不必自己拼 `while` + `case`，也不必根据退出码再判断一次 PR 状态。
-    const builtinNote = sidWait
-      ? `\n内置等待原语：每 ${Math.round(sidWait.intervalMs / 1000)} 秒查一次 PR #${sidWait.pr} 的最新 head 与 check-runs（不启动外部进程）。退出即结论：合并 exit 0 / 检查失败 exit 1 / 已关闭 exit 3 / 有冲突 exit 4 / REST 连续失败 exit 5。`
-      : "";
+    // 必须点名**正在等哪个仓库的哪个 PR**：静默等错对象时查询是成功的（不报 404），
+    // 启动回执是唯一能让人在等待开始那一刻发现「对象错了」的窗口，成本只有一行。
+    const builtinNote =
+      sidWait && sidWaitRepo && sidWaitRepoSource
+        ? `\n内置等待原语：${task.formatSidWaitStartNote({
+            pr: sidWait.pr,
+            repo: sidWaitRepo,
+            source: sidWaitRepoSource,
+            intervalMs: sidWait.intervalMs,
+            baseDir: getProjectRoot(),
+          })}退出即结论：合并 exit 0 / 检查失败 exit 1 / 已关闭 exit 3 / 有冲突 exit 4 / REST 连续失败 exit 5。`
+        : "";
 
     return {
       output: JSON.stringify({

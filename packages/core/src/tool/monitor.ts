@@ -48,6 +48,7 @@ import {
   // R11：查哪个仓库必须在 spawn 之前定下来，且基线不是会话 cwd（它会随 `cd` 漂移）
   resolveSidWaitRepo,
   formatSidWaitResultSummary,
+  formatSidWaitStartNote,
   formatManualLoopHint,
   isMonitorTask,
 } from "../task/index.ts";
@@ -354,6 +355,10 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     }
     const sidWaitRepo =
       sidWaitResolution && sidWaitResolution.ok ? sidWaitResolution.repo : undefined;
+    // 来源随启动回执一起透出：`remote` 是「按会话启动目录的 github remote 猜的」，
+    // 用户必须能看出依据，才能在等错仓库时当场用 --repo 纠正。
+    const sidWaitRepoSource =
+      sidWaitResolution && sidWaitResolution.ok ? sidWaitResolution.source : undefined;
 
     const taskState = sidWait
       ? spawnBuiltinMonitorTask({
@@ -427,9 +432,18 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     const minutes = Math.round(timeoutMs / 60_000);
     // R7：内置原语的「事件」由 harness 自己产生，说明它盯的是哪些条件，
     // 免得模型以为还需要自己再查一次 PR 状态。
-    const builtinNote = sidWait
-      ? `\n内置等待原语：每 ${Math.round(sidWait.intervalMs / 1000)} 秒查一次 PR #${sidWait.pr} 的最新 head 与 check-runs（不启动外部进程）。事件来自合并 / 关闭 / 有冲突 / 检查失败 / head 变化，退出码：合并 0 / 检查失败 1 / 关闭 3 / 冲突 4 / REST 连续失败 5。\n`
-      : "";
+    // 必须点名**正在等哪个仓库的哪个 PR**：静默等错对象时查询是成功的（不报 404），
+    // 启动回执是唯一能让人在等待开始那一刻发现「对象错了」的窗口，成本只有一行。
+    const builtinNote =
+      sidWait && sidWaitRepo && sidWaitRepoSource
+        ? `\n内置等待原语：${formatSidWaitStartNote({
+            pr: sidWait.pr,
+            repo: sidWaitRepo,
+            source: sidWaitRepoSource,
+            intervalMs: sidWait.intervalMs,
+            baseDir: getProjectRoot(),
+          })}事件来自合并 / 关闭 / 有冲突 / 检查失败 / head 变化，退出码：合并 0 / 检查失败 1 / 关闭 3 / 冲突 4 / REST 连续失败 5。\n`
+        : "";
     // D19（方案 §10.3）：无头形态（`-p` 单轮）没有 prompt 注入通道，事件没法在回合边界
     // 叫醒主循环，进程只能等到 monitor 结束再退出。不写这句时模型会按交互式的习惯
     // 说完「已启动，我先做别的」就收尾，用户拿到一个跑完即退的进程、看不到结果。
