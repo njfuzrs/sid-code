@@ -557,6 +557,52 @@ export interface BeforeModelInput extends HookInput {
      * 已有分析脚本会静默产出错数（北极星铁律 3：分母口径一变曲线就整体平移）。
      */
     estimated_input_tokens_calibrated?: number | null;
+    /**
+     * PR0（2026-11-18，context 面板取数不准方案 §4.1）：发送前那一刻的
+     * `ContextManager.estimateTokens(toolCount)` —— **全量历史**口径（含锚点抬升，
+     * **未扣**本地释放量）。与同请求的 `sendBudget.estimatedInputTokens` 是**同一个值**
+     * （主循环提成局部常量后两处共用，不重复遍历一遍消息）。
+     *
+     * 它与 `estimated_input_tokens_calibrated` 是**两个不同的量**，不要混用：
+     * - 本字段 = `estimateTokens()`：作用对象是**全量历史** `this.messages`，
+     *   内部还会对上一次真实 usage 取 `Math.max` 锚定。压缩 / 遮罩 / 清理**不会**让它变小。
+     * - `estimated_input_tokens_calibrated` = `estimateTokensFor(发送副本)`：作用对象是
+     *   **实际发出的那份 messages**，不套锚点。它是能直接跟 `usage.input_tokens` 比值的那个量。
+     *
+     * 为什么两个都要有：把两者与 `ctx_freed_tokens` 一联立，就能把
+     * 「预测发送量 = ctx_estimated_tokens − ctx_freed_tokens」和真实 input 的误差
+     * 拆成「锚点抬升」与「本地释放」两个分量——此前这两个量只在 Manager 内部可见，
+     * 只能靠猜（方案 §2 里约 9.7k 的残差就是这么来的）。
+     */
+    ctx_estimated_tokens?: number;
+    /**
+     * PR0：本地压缩 / 遮罩 / 清理累计释放的 token（`ContextManager.getLocalFreedTokens()`，
+     * 即 `tokenFreedTracker.getTotalFreed()`，**未乘**校准系数的原始记账口径）。
+     *
+     * 这些释放量对 API usage **不可见**：发送副本已经瘦掉，但全量历史里还在。
+     * 于是「预测发送量」必须减去它才与真实 input 可比；不扣会把误差系统性放大成虚高。
+     *
+     * ⚠️ 字段语义写在方案 §4.1：它就是**决策里实际减掉的那个量**。
+     * PR2 之后如果 freed 改成乘校准系数，取值口径要跟着变，但字段名与语义不变。
+     */
+    ctx_freed_tokens?: number;
+    /**
+     * PR0：`ContextManager.getLastActualInputTokens()` —— 上一次成功响应的真实输入
+     * token 锚点；任何压缩都会把它清零（0 不是观测值，是「无锚点」）。
+     *
+     * 用途：判断锚点抬升是否生效——`ctx_estimated_tokens === ctx_anchor_tokens`
+     * 即 `estimateTokens()` 的 `Math.max(calibrated, anchor)` 取了锚点那一支。
+     */
+    ctx_anchor_tokens?: number;
+    /**
+     * PR0：`ContextManager.isCalibrated()` —— 本会话是否已收到过真实 usage。
+     *
+     * 用途：误差统计要按它分组。会话第一次调用必然未校准（`calibrationFactor = 1`），
+     * 把它混进 p95 会把「校准器还没学到东西」算成「校准不准」。
+     * 与 `estimated_input_tokens_calibrated === null` 同义，但显式布尔值让分析脚本
+     * 不必推断 null 的语义。
+     */
+    ctx_calibrated?: boolean;
     /** 原始 content blocks 结构（不 stringify，采集器用） */
     raw_messages?: unknown[];
     /** system prompt（每次请求都有，但采集器只取首次） */
