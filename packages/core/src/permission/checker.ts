@@ -611,6 +611,15 @@ export class PermissionChecker implements Checker {
   private bashClassifier: BashClassifier | null = null;
   /** 泛化工具分类器（auto 模式核心，通过 setToolClassifier 注入） */
   private toolClassifier: import("./tool-classifier.ts").ToolClassifier | null = null;
+  /**
+   * PR2（B1）：auto 档分类器能看见的「用户授权」账本。
+   *
+   * 只由 `QueryEngine.submitMessage` 写入（唯一写入点，见 `permission/user-intent.ts`）。
+   * checker 只读：把 `snapshot()` 塞进每次 `classify()`，分类器据此判断「这个动作是否
+   * 超出了用户的授权」，而不是「这个动作有没有副作用」。
+   * 未注入（未接线 / 老测试）时分类器请求不带 `<user_intent>`，退化为旧口径。
+   */
+  private userIntentLedger: import("./user-intent.ts").UserIntentLedger | null = null;
   /** 工作区路径（供 auto 模式分类器使用） */
   private workspacePath: string;
   /**
@@ -708,6 +717,9 @@ export class PermissionChecker implements Checker {
     if (this.sandboxManager) derived.setSandboxManager(this.sandboxManager);
     if (this.bashClassifier) derived.setBashClassifier(this.bashClassifier);
     if (this.toolClassifier) derived.setToolClassifier(this.toolClassifier);
+    // PR2（B1）：账本按引用共享，不复制。派生 checker 服务于子代理——子代理做的事，
+    // 授权仍然来自主会话里的用户；复制一份快照反而会让子代理看不到父会话此后的新指示。
+    if (this.userIntentLedger) derived.setUserIntentLedger(this.userIntentLedger);
     if (this.bridgePermissionDelegate)
       derived.setBridgePermissionDelegate(this.bridgePermissionDelegate);
     if (this.externalAskChannel) derived.setExternalAskChannel(true);
@@ -778,6 +790,22 @@ export class PermissionChecker implements Checker {
   /** 获取泛化工具分类器 */
   getToolClassifier(): import("./tool-classifier.ts").ToolClassifier | null {
     return this.toolClassifier;
+  }
+
+  /**
+   * PR2（B1）：注入 auto 档分类器可见的「用户授权」账本（null 清除）。
+   *
+   * 账本的写入点只有 `QueryEngine`，checker 只读。由 `cli.ts` 在两处接线
+   * （engine deps + 这里），派生 checker 在 `deriveWithConfig` 里按引用搬运——
+   * 子代理做的事，授权仍然来自主会话里的用户。
+   */
+  setUserIntentLedger(ledger: import("./user-intent.ts").UserIntentLedger | null): void {
+    this.userIntentLedger = ledger;
+  }
+
+  /** 获取用户授权账本（诊断与派生用） */
+  getUserIntentLedger(): import("./user-intent.ts").UserIntentLedger | null {
+    return this.userIntentLedger;
   }
 
   /** 获取 denial tracking 状态（供 agent loop 读取） */
@@ -2447,12 +2475,21 @@ export class PermissionChecker implements Checker {
             const classifyResult = await toolClassifier.classify({
               toolName: req.toolName,
               input: (req.input || {}) as Record<string, unknown>,
-              cwd: this.workspacePath,
+              // PR2（B1）：cwd 传这条命令的**实际执行目录**，与危险路径判定同一口径。
+              // 此前固定传 this.workspacePath：`cd /tmp/x && …` 这类命令在分类器眼里
+              // 看起来仍在工作区里，判断依据从第一步就偏了。
+              cwd: await resolveBashCwdForCheck(req),
+              // PR2（B1）：把工作区根与路径归属结论一并交给分类器——它从此不必自己猜
+              // 「这个路径算不算工作区内」，只需回答「是否超出用户授权」。
+              workspace: this.workspacePath,
               classifierInput,
               // M1：路径归属由 PathValidator 算好传下去，fastPath 只认结论（不自己判断）
               pathVerdict: this.classifyPathVerdict(req),
               // M1b：工作区外读写 / 可执行代码路径必须由分类器看上下文，零成本快路径退场
               skipFastPath: shouldSkipFastPath(result.decisionReason),
+              // PR2（B1）：用户亲手说过的话——新判据是「是否超出授权」，这是唯一依据。
+              // 未接线（老测试 / 无 engine）时为 undefined，分类器退化为旧口径。
+              userIntent: this.userIntentLedger?.snapshot(),
             });
             // PR0：先取「分类器说了什么」的事实，放行与回退共用同一份——分两处手写会让
             // 「fast-path 多带了 classifier_ms / llm-safe 忘了带 risk」这种漂移没有门禁能发现。

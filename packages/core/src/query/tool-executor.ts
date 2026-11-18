@@ -120,6 +120,42 @@ class QueueSkippedError extends Error {
 }
 
 /**
+ * C2（PR2）：从决策里取出「auto 为什么没放行」，供确认框展示。
+ *
+ * 只收 PR0 已经落盘的固定枚举：`autoClassifier` / `classifierReason`，加结构检查命中项。
+ * - `absent` = 分类器压根没参与（未启用 / 未接线），不是「没放行」，不显示；
+ * - `fast-path` / `llm-safe` = 放行，不显示；
+ * - 其余四种（`unsafe` / `unavailable` / `error` / `safety-guard` / `ask-rule`）才显示。
+ *
+ * 展示失败绝不影响决策：任何异常都在调用方被忽略（字段缺失 → 不显示那一行）。
+ */
+function autoFallbackNoteOf(decision: {
+  metadata?: Record<string, unknown>;
+  decisionReason?: { type: string; pattern?: string; reason?: string; tool?: string };
+}): import("../permission/types.ts").AutoFallbackNote | undefined {
+  const kind = decision.metadata?.autoClassifier;
+  if (typeof kind !== "string") return undefined;
+  if (kind === "absent" || kind === "fast-path" || kind === "llm-safe") return undefined;
+  const reason = decision.metadata?.classifierReason;
+  const dr = decision.decisionReason;
+  // 结构检查命中项：dangerousCommand 给 pattern，safetyCheck 给 reason，destructiveTool 给工具名。
+  // 三者正是 classifierMayApprove 返回 false 的三种来源（M1b 的 ask-rule 除外，它不需要 guard）。
+  const guard =
+    dr?.type === "dangerousCommand"
+      ? dr.pattern
+      : dr?.type === "safetyCheck"
+        ? dr.reason
+        : dr?.type === "destructiveTool"
+          ? dr.tool
+          : undefined;
+  return {
+    kind,
+    ...(typeof reason === "string" && reason ? { reason } : {}),
+    ...(guard ? { guard } : {}),
+  };
+}
+
+/**
  * GAP-02 串行级联判据：这条 Bash 是否「不改任何东西」（只读命令，`cd` 前缀不算改动）。
  * 拿不到命令串时按写类处理——宁可多拦一条，不让写操作在失败后继续。
  */
@@ -401,6 +437,12 @@ export interface ToolExecutorDeps {
      * 为真时「本会话始终允许」只记整条精确规则、不生成前缀规则，也不落盘。
      */
     safetyConfirmation?: boolean,
+    /**
+     * C2（PR2）：auto 档回退到人工时，「分类器为什么没放行」的展示摘要。
+     * 非 auto 回退（或 auto 已放行）时为 undefined，确认框不显示这一行。
+     * 只用于展示，不参与任何判定。
+     */
+    autoFallback?: import("../permission/types.ts").AutoFallbackNote,
   ) => Promise<boolean>;
   /**
    * Plan Mode 状态转换处理。
@@ -1252,6 +1294,9 @@ export async function resolveToolPermission(
                 // B9：安全类确认（危险命令 / hook 要求确认 / MCP 自报破坏性）透传给回调，
                 // 「始终允许」据此只记整条精确规则、只在会话内。
                 isSafetyConfirmation(decision.decisionReason),
+                // C2（PR2）：auto 档回退人工时告诉用户「分类器为什么没放行」。
+                // 以前用户只看到命令，看不到分类器说了什么，无法判断是模型误判还是自己没授权。
+                autoFallbackNoteOf(decision),
               )
               .then((confirmed) => {
                 if (!resolve.isResolved()) {

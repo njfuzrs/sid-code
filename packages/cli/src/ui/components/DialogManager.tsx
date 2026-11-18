@@ -35,6 +35,7 @@ import {
 } from "../constants/figures.ts";
 import { renderMarkdown } from "../markdown.ts";
 import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
+import { describeAutoFallback } from "../auto-fallback-note.ts";
 import {
   notePromptKey,
   notePromptKeyDropped,
@@ -106,6 +107,9 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   }, []);
   // 危险操作差异化：破坏性命令标红 + 警告行 + 仪式感文案（对标 cc destructiveCommandWarning）
   const danger = inspectToolCall(request.toolName, request.toolInput);
+  // C2（PR2）：auto 档回退人工时，把「分类器为什么没放行」摊开。
+  // 用户看到命令却看不到分类器结论，就无法判断这次弹窗是「模型误判」还是「确实没授权」。
+  const autoFallbackLine = describeAutoFallback(request.autoFallback);
 
   const choices = buildPermissionChoices({
     toolName: request.toolName,
@@ -157,6 +161,14 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
             <Text color={theme.status.error} bold>
               {WARNING_MARK} 此操作不可逆：{danger.label}
             </Text>
+          </Box>
+        )}
+        {/* C2（PR2）：auto 档回退人工时说明「分类器为什么没放行」。
+            次要色而不是警告色：这行是解释，不是风险信号（风险由上方 danger 行承担）；
+            用 text.secondary 保持 L1「克制点睛」——同一框里错误红只留给不可逆操作。 */}
+        {autoFallbackLine && (
+          <Box>
+            <Text color={theme.text.secondary}>{autoFallbackLine}</Text>
           </Box>
         )}
         {/* 不可达规则提示（对标 cc Unreachable Rules）：当前工具有被高优先级规则遮蔽的规则时展示 */}
