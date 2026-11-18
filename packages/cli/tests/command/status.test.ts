@@ -25,6 +25,9 @@ function makeFullCtx() {
     ctxMgr: {
       messageCount: () => 42,
       estimateTokens: () => 50_000,
+      // A6：展示走发送量口径
+      getSendTokens: () => 50_000,
+      getHistoryTokens: () => 50_000,
       getMaxTokens: () => 200_000,
       getInvokedSkills: () => [{ name: "deep-research" }],
     },
@@ -61,6 +64,7 @@ describe("/status 命令", () => {
       ctxMgr: {
         messageCount: () => 0,
         estimateTokens: () => 0,
+        getSendTokens: () => 0,
       },
     } as unknown as CommandContext;
     const r = await mod.call("", ctx);
@@ -79,6 +83,9 @@ describe("/status 命令", () => {
           throw new Error("boom");
         },
         estimateTokens: () => {
+          throw new Error("boom");
+        },
+        getSendTokens: () => {
           throw new Error("boom");
         },
       },

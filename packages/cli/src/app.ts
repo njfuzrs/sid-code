@@ -4215,7 +4215,8 @@ export class App {
         // 缺 tokensBefore 时退回「压缩后的当前估算」→ savedRatio 算成 0，
         // 是刻意选的保守值：宁可少报省了多少，也不要凭空造一个压缩前的数。
         // 它只喂 adaptive 样本，而这两条路径拿不到 coverage、样本整条不入库。
-        tokensBefore: info.tokensBefore ?? this.ctxMgr.estimateTokens(),
+        // A6：这是**压缩前**的度量值（喂 compact-stats / adaptive 样本），用全量历史口径。
+        tokensBefore: info.tokensBefore ?? this.ctxMgr.getHistoryTokens(),
         // reactive 的 snip / collapse 的分段摘要都不是「LLM 把历史压成一段摘要」，
         // 但 collapse 确实调了 LLM。这个字段只喂 adaptive 的样本分类，而没有 coverage
         // 时样本整条不入库，所以这里取值不影响任何统计。

@@ -82,6 +82,10 @@ function makeCtx(messages: Message[], provider: any, opts: { lockFree?: boolean 
     manualCompactions,
     messageCount: () => msgs.length,
     estimateTokens: () => msgs.length * 10,
+    // A6（2026-11-18）：/compact 的前后对比走 getHistoryTokens（度量口径），
+    // 其余发送量口径走 getSendTokens。mock 必须两个都有，否则生产侧调用即 undefined。
+    getHistoryTokens: () => msgs.length * 10,
+    getSendTokens: () => msgs.length * 10,
     acquireCompactLock: () => opts.lockFree !== false,
     releaseCompactLock: () => {},
     getMessages: () => msgs,

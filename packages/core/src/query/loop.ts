@@ -1583,7 +1583,10 @@ async function* queryLoopBody(
 
       // ─── 上下文使用率监控 ───
       const toolCount = toolRegistry.size();
-      const currentTokens = ctxMgr.estimateTokens(toolCount);
+      // A6：**发送量**。这个值同时喂 blocking、峰值、context_assembled 与输出升档，
+      // 四者问的都是「下一次请求要发出去多少」。此前用裸 estimateTokens 不扣本地释放量，
+      // 于是遮罩/清理释放得越多，越容易误判「剩余极少」而提前触发压缩（文档 A6 根因）。
+      const currentTokens = ctxMgr.getSendTokens(toolCount);
       const contextMax = ctxMgr.getMaxTokens();
       const usagePercent = (currentTokens / contextMax) * 100;
       const remaining = 100 - usagePercent;
@@ -1706,7 +1709,7 @@ async function* queryLoopBody(
               // P1-6：管线逐步替换消息时用与 getCompactionLevel 同一把尺子
               // （CJK 区分 + calibrationFactor + system/tool schema）。此前管线内部
               // 用 chars/4，中文密集会话上与触发判据能差出数倍。
-              estimateTokens: (msgs) => ctxMgr.estimateTokensFor(msgs, toolCount),
+              estimateMessages: (msgs) => ctxMgr.estimateTokensFor(msgs, toolCount),
             });
 
             if (pipelineResult.steps.length > 0) {
@@ -1765,11 +1768,14 @@ async function* queryLoopBody(
               let collapsed = false;
               if (deps.contextCollapse) {
                 try {
-                  const ratioAfterPipeline = ctxMgr.estimateTokens(toolCount) / contextMax;
+                  // A6：collapse 的触发比例问的是「发送出去有多少」，用发送量口径。
+                  const ratioAfterPipeline = ctxMgr.getSendTokens(toolCount) / contextMax;
                   // P1-14：collapse 成功会**跳过** autoCompact，于是收尾（绑在 autoCompact 上）
                   // 整条不执行。这里先抓 before 快照，成功后自己调收尾。
                   const collapseMsgsBefore = ctxMgr.messageCount();
-                  const collapseTokensBefore = ctxMgr.estimateTokens(toolCount);
+                  // A6：这是**压缩前后对比**的度量（落到 compact-stats 与防线指标），
+                  // 用全量历史口径，与改动前的数值逐位相同——口径一换曲线就整体平移。
+                  const collapseTokensBefore = ctxMgr.getHistoryTokens(toolCount);
                   collapsed = await deps.contextCollapse(ratioAfterPipeline);
                   if (collapsed) {
                     log.info("QUERY_LOOP", "Context Collapse 成功，跳过 autoCompact");
@@ -3219,7 +3225,10 @@ async function* queryLoopBody(
       // **共用同一个值**。两处各算一次不只是多一次全量遍历——只要有逻辑在中间改过
       // messages（哪怕只是未来某个 PR 加的），预算用的估算与轨迹记的估算就会是两个数，
       // 而「估算 vs 真实 input」的对账脚本看不出这种偏差来自哪里。
-      const sendEstimatedInputTokens = ctxMgr.estimateTokens(toolCount);
+      // A6：窗口钳制问的是「这一次真正发出去多少」，用发送量口径（扣掉本地已释放量）。
+      // 不扣的后果是：遮罩/清理把发送副本瘦下来之后，这里仍按膨胀历史算窗口剩余，
+      // 于是给出一个不必要的小 max_tokens 甚至判「必然 400」而去压缩。
+      const sendEstimatedInputTokens = ctxMgr.getSendTokens(toolCount);
       const sendBudget = resolveRequestOutputBudget({
         requestBudget: state.maxOutputTokensOverride ?? config.maxTokens,
         modelMaxOutputTokens: resolveMaxOutputTokensForModel(config.model, config.availableModels),
@@ -3270,7 +3279,7 @@ async function* queryLoopBody(
           terminal: true,
           text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
             fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
-            totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
+            totalTokens: ctxMgr.getSendTokens(toolRegistry.size()),
             memoryTokens: ctxMgr.getMemoryTokens(),
             maxTokens: ctxMgr.getMaxTokens(),
             latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
@@ -4231,7 +4240,7 @@ async function* queryLoopBody(
               terminal: true,
               text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
                 fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
-                totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
+                totalTokens: ctxMgr.getSendTokens(toolRegistry.size()),
                 memoryTokens: ctxMgr.getMemoryTokens(),
                 maxTokens: ctxMgr.getMaxTokens(),
                 latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
@@ -7162,7 +7171,7 @@ async function* queryLoopBody(
             terminal: true,
             text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
               fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
-              totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
+              totalTokens: ctxMgr.getSendTokens(toolRegistry.size()),
               memoryTokens: ctxMgr.getMemoryTokens(),
               maxTokens: ctxMgr.getMaxTokens(),
               latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
@@ -7408,7 +7417,10 @@ async function* queryLoopBody(
     //
     // PR0（2026-11-18）：与主循环同款，估算提成局部常量，`summaryBudget` 与下面的
     // BeforeModel 共用同一个值（这一轮不传 tools，toolCount 必须是 0）。
-    const summaryEstimatedInputTokens = ctxMgr.estimateTokens(0);
+    // A6（PR 内核实）：这一轮虽然不传 tools，但 messages 仍走发送副本，问的是「实际发出去多少」，
+    // 所以用发送量口径（toolCount 必须是 0，与 messages/getSystemPrompt 一致）。
+    // 若改用全量历史，遮罩/清理释放得多时会把剩余窗口算小，白白给一个更低的 max_tokens。
+    const summaryEstimatedInputTokens = ctxMgr.getSendTokens(0);
     const summaryBudget = resolveRequestOutputBudget({
       requestBudget: config.maxTokens,
       modelMaxOutputTokens: resolveMaxOutputTokensForModel(config.model, config.availableModels),

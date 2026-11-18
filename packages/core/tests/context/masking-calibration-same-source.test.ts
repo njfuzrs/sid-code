@@ -207,7 +207,7 @@ describe("发现 3b — 管线目标线落在 masking 线下方 5%", () => {
         maxTokens: WINDOW,
         toolCount: 0,
         targetUsageRatio: target,
-        estimateTokens: () => usage * WINDOW,
+        estimateMessages: () => usage * WINDOW,
       });
       expect(r.needsAutoCompact, `pct=${pct}`).toBe(true);
     }

@@ -597,6 +597,14 @@ export class Manager {
    */
   private sentIntactToolResultIds = new Set<string>();
   /**
+   * A3：已把「旧工具输出引用」折叠成占位的 id。
+   *
+   * 折叠每轮都从 `this.messages` 原文重算（切片前 20 个之外的引用），同一个 id 会在
+   * 后续每一轮被重新收集并再次折叠 —— 没有这个集合，释放量会被重复记账、把减量算爆。
+   * 与其余四类释放源（masked / cold / stale / replacement）一样按 tool_use_id 一次性记账。
+   */
+  private collapsedRefIds = new Set<string>();
+  /**
    * P0-5：本地压缩对 API usage 不可见，用本追踪器补偿记账。
    * getCompactionLevel 从 used 里扣掉累计释放量，避免压缩产物立刻再触发压缩。
    */
@@ -1017,14 +1025,17 @@ export class Manager {
         this.maskedState.has(id) ||
         this.replacementState.has(id),
     });
+    let savedTokens = 0;
     let savedChars = 0;
     for (const p of plan) {
       this.coldClearState.set(p.toolUseId, p.replacement);
+      // A3：记账用估算差值（plan 在替换之前按原文算好了），不再用 chars/4
+      savedTokens += p.savedTokens;
       savedChars += Math.max(0, p.originalLength - p.replacement.length);
     }
     if (plan.length > 0) {
-      if (savedChars > 0) {
-        this.tokenFreedTracker.recordCompact(Math.ceil(savedChars / 4), "coldCacheClear");
+      if (savedTokens > 0) {
+        this.tokenFreedTracker.recordCompact(savedTokens, "coldCacheClear");
       }
       this.pendingSendCauses.add("cold_clear");
     }
@@ -1042,9 +1053,11 @@ export class Manager {
    * 作用在**发送投影**上判定（遮罩 / 冷清理占位已贴好），决策写进 staleClearState，
    * 之后每轮由 applyFrozenClearState 重放，并由 getForkPrefixMessages 贴到 fork 前缀上。
    *
-   * 释放量记进 tokenFreedTracker，Footer 与压缩档位都扣得到。**口径与其余三条不同**：
-   * 这里用 `estimateTextTokens` 的差值（更接近真实 token），其余三条用 `Math.ceil(chars/4)`
-   * （粗估）。选择前者是因为 K/N 阈值本身就按 token 校准；两条口径不可混算同一个数。
+   * 释放量记进 tokenFreedTracker，Footer 与压缩档位都扣得到。**口径与其余三条统一**：
+   * A3 之后全仓一律用 `estimateTextTokens(原文) − estimateTextTokens(占位)`，
+   * `chars/4` 已从冷清理 / 大输出清理 / 遮罩三处删除（此前同一个累加器里混着两种单位，
+   * 中文会话只记到 38%、ASCII 又多记 25%）。K/N 阈值本来就按 token 校准，所以这条口径
+   * 才是对的，另外三条向它看齐。
    */
   private commitStaleToolOutputClear(projection: Message[]): void {
     // 开关在**最开头**短路，而不是把门槛调到无穷大：子代理负载上这条通道本就不该运行，
@@ -1546,7 +1559,6 @@ export class Manager {
         const meta = cleanMap.get(key);
         if (meta && block.type === "tool_result") {
           const alreadyReplaced = this.replacementState.has(block.tool_use_id);
-          const originalLen = typeof block.content === "string" ? block.content.length : 0;
           const guidance = this.replacementState.getOrCreate(block.tool_use_id, () => {
             const { filePath, toolName, inputSummary } = meta;
             if (filePath) {
@@ -1560,9 +1572,13 @@ export class Manager {
             return TOOL_RESULT_CLEARED_MESSAGE;
           });
           // P0-5：只在首次改写时记账。getCleanedMessages 每轮都跑，重复 record 会把减量算爆。
-          const saved = originalLen - guidance.length;
-          if (!alreadyReplaced && saved > 0) {
-            this.tokenFreedTracker.recordCompact(Math.ceil(saved / 4), "cleanedMessages");
+          // A3：单位统一为 `estimateTextTokens(原文) − estimateTextTokens(占位)`。此前用
+          // `ceil(字符数/4)`，而替换后的占位文案本身是中文，两个方向都会算错
+          //（中文原文只记到 38%，ASCII 原文多记 25%）。
+          const originalContent = typeof block.content === "string" ? block.content : "";
+          const freedTokens = estimateTextTokens(originalContent) - estimateTextTokens(guidance);
+          if (!alreadyReplaced && freedTokens > 0) {
+            this.tokenFreedTracker.recordCompact(freedTokens, "cleanedMessages");
           }
           if (!alreadyReplaced) this.pendingSendCauses.add("cleaned");
           return {
@@ -1574,7 +1590,7 @@ export class Manager {
       }),
     }));
 
-    collapseOldPersistedReferences(result);
+    this.collapseOldPersistedReferences(result, true);
 
     // 验证消息格式（仅警告，不阻塞）
     this.validateSendCopy(full, result);
@@ -1639,7 +1655,7 @@ export class Manager {
     // 折叠会就地改写 content 数组：没有经过上面重建的消息对象仍是 this.messages 的引用，
     // 所以先浅拷一层 content 再折叠，绝不碰主历史。
     const out = view.map((m) => ({ ...m, content: [...m.content] }));
-    collapseOldPersistedReferences(out);
+    this.collapseOldPersistedReferences(out, false);
     return out;
   }
 
@@ -1684,8 +1700,9 @@ export class Manager {
           fb.content !== block.content
         ) {
           this.maskedState.set(block.tool_use_id, fb.content);
-          const saved = block.content.length - fb.content.length;
-          if (saved > 0) this.tokenFreedTracker.recordCompact(Math.ceil(saved / 4), "masking");
+          // A3：单位统一为估算差值，与其余三处一致（此前是 ceil(字符数/4)）
+          const freedTokens = estimateTextTokens(block.content) - estimateTextTokens(fb.content);
+          if (freedTokens > 0) this.tokenFreedTracker.recordCompact(freedTokens, "masking");
           newlyMasked = true;
           msgChanged = true;
           return fb;
@@ -1699,6 +1716,54 @@ export class Manager {
     });
     if (newlyMasked) this.pendingSendCauses.add("masking");
     return changed ? out : full;
+  }
+
+  /**
+   * 旧持久化引用折叠：引用约 200 字节，不会被大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
+   * 但累积数十个后仍占上下文。保留最近 20 个完整引用，更旧的折叠为极简占位。
+   *
+   * 发送路径（getCleanedMessages）与 fork 前缀视图（getForkPrefixMessages）共用这一份，
+   * 两处各写一遍就是下一次「fork 与主循环前缀分叉」。**就地改写**入参的 content 数组。
+   *
+   * @param recordFreed 只有发送路径传 true。fork 前缀视图必须严格只读、无副作用
+   *   （它的契约见 getForkPrefixMessages 注释：一调就改了主循环下一轮的前缀与校准分母）。
+   */
+  private collapseOldPersistedReferences(result: Message[], recordFreed: boolean): void {
+    const REFERENCE_KEEP_RECENT = 20;
+    const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
+    for (let i = 0; i < result.length; i++) {
+      const msg = result[i];
+      for (let j = 0; j < msg.content.length; j++) {
+        const block = msg.content[j];
+        if (
+          block.type === "tool_result" &&
+          typeof block.content === "string" &&
+          isPersistedReference(block.content)
+        ) {
+          persistedRefPositions.push({ msgIdx: i, blockIdx: j });
+        }
+      }
+    }
+    if (persistedRefPositions.length <= REFERENCE_KEEP_RECENT) return;
+    const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
+    for (const { msgIdx, blockIdx } of toCollapse) {
+      const block = result[msgIdx].content[blockIdx];
+      if (block.type !== "tool_result") continue;
+      const collapsed = "[旧工具输出，如需查阅请重新执行对应工具]";
+      // A3：折叠同样从发送副本里瘦掉内容，必须记账 —— 否则 `getSendTokens` 扣不到这部分，
+      // 「tracker 累计 === raw(全量) − raw(发送副本)」的不变量在有旧引用的长会话里恒不成立。
+      // 按 tool_use_id 只在**首次**折叠时记一次：本函数每轮都从 `this.messages` 原文重算
+      //（折叠结果不写回原文），同一个 id 会被反复折叠，重复记会把减量算爆。
+      if (recordFreed && !this.collapsedRefIds.has(block.tool_use_id)) {
+        this.collapsedRefIds.add(block.tool_use_id);
+        const freed = estimateTextTokens(block.content) - estimateTextTokens(collapsed);
+        if (freed > 0) this.tokenFreedTracker.recordCompact(freed, "persistedRefCollapse");
+      }
+      (result[msgIdx].content as any[])[blockIdx] = {
+        ...block,
+        content: collapsed,
+      };
+    }
   }
 
   /**
@@ -2081,6 +2146,12 @@ export class Manager {
    * P1-6/P1-7：输出经 calibrationFactor 校准（已收到真实 usage 后），收敛到真实口径，
    * 避免纯字符启发式对代码/JSON 低估导致 compact 触发过晚、上下文溢出。
    * 未校准前（calibrated=false）等同纯启发式估算。
+   *
+   * @deprecated 生产代码请改用两个具名 API ——「上下文有多大」实际有两种语义，
+   * 这个裸名字看不出是哪种，于是 27 处调用方一律直接用，全部漏扣本地释放量（A6）：
+   * - 展示 / 决策 / 预算钳制 → {@link getSendTokens}
+   * - 压缩前后对比等度量 → {@link getHistoryTokens}
+   * 归零门禁见 `packages/core/tests/context/context-size-api-gate.test.ts`。
    */
   estimateTokens(toolCount: number = 0): number {
     const raw = this.rawEstimateTokens(toolCount);
@@ -2090,6 +2161,31 @@ export class Manager {
     // 上一次 API 实际就发了这么多 prompt，之后只会增不会减（除非中途压缩）。
     // 取「校准估算」与「真实锚点」的较大值，确保不会因启发式低估而把 compact 推迟到溢出。
     return Math.max(calibrated, this.lastActualInputTokens);
+  }
+
+  /**
+   * **发送量**：下一次请求实际发出去的大小（全量历史减去遮罩 / 清理已经瘦掉的部分）。
+   *
+   * 展示（footer / `/status` / `/context`）、决策（压缩档位 / blocking / 输出预算钳制）
+   * 一律用它。此前这些调用方拿到的都是裸 `estimateTokens()`，全部漏扣本地释放量，
+   * 后果是「遮罩释放得越多，越容易误判为剩余极少」（A6）。
+   *
+   * 底层就是 PR1 的单一表达式 `sendTokensFrom(estimateTokens(toolCount))`——这里只是给它
+   * 一个说得清语义的名字，扣减逻辑仍只有 `localReductionTokens()` 一处。
+   */
+  getSendTokens(toolCount: number = 0): number {
+    return this.sendTokensFrom(this.estimateTokens(toolCount));
+  }
+
+  /**
+   * **全量历史**：本地保存的完整历史有多大（含锚点，不扣本地释放量）。
+   *
+   * 只用于压缩前后对比之类的**度量**（`tokensBefore` / `tokensAfter` 落到
+   * `compact-stats.json` 与防线指标，是历史曲线的数据源）。改成发送量会让曲线整体平移
+   * ——北极星第 3 条铁律：口径一变，曲线就平移。数值与改动前的 `estimateTokens` 逐位相同。
+   */
+  getHistoryTokens(toolCount: number = 0): number {
+    return this.estimateTokens(toolCount);
   }
 
   /**
@@ -2122,9 +2218,22 @@ export class Manager {
 
   /**
    * 本地压缩 / 遮罩 / 清理累计释放的 token（PR1：全类唯一减项入口）。
+   *
+   * A3（PR2）：返回**已换算到「校准后」空间**的量，不再直接透传 tracker 的原始记账值。
+   *
+   * 为什么必须乘系数：freed 记账用的是未校准的启发式估算（`estimateTextTokens` 差值），
+   * 而它被从**已校准**的 `estimateTokens` 里减掉。`recordActualTokens` 把锚点换算回全量
+   * 口径时用的是 `actual + localReduction × factor`（乘了），扣减侧此前没乘 —— 同一个
+   * localReduction 被按两种单位各算了一遍，中文会话上释放量被系统性少记
+   *（中文 1 字符 ≈ 1 token，而记账侧曾用 `chars/4`）。
+   *
+   * 取 `round` 而不是 `ceil`：这是减项，向上取整会让发送量被多扣（偏乐观），
+   * 与 `calibrate()` 用 `ceil`（估算值要偏保守）方向相反，两者刻意不同。
    */
   private localReductionTokens(): number {
-    return this.tokenFreedTracker.getTotalFreed();
+    const raw = this.tokenFreedTracker.getTotalFreed();
+    if (!this.calibrated) return raw;
+    return Math.round(raw * this.calibrationFactor);
   }
 
   /**
@@ -2203,12 +2312,12 @@ export class Manager {
    * 里还在的那部分），排查「估算 vs 真实 input」时无法把差值拆成「锚点抬升」和
    * 「本地释放」两个分量——只能靠猜。PR0 的 BeforeModel 字段就是要把这个量搬上轨迹。
    *
-   * ⚠️ 口径：这里返回的是**未乘校准系数**的原始值（tracker 记账时用的是 chars/4），
-   * 与 `getContextUsageForDisplay` 里减掉的是同一个量。PR2 之后如果 freed 改成乘系数，
-   * 这个 getter 要跟着改，字段语义（「决策里实际减掉的那个量」）不变。
+   * ⚠️ 口径：返回的是**决策里实际减掉的那个量**，即 `localReductionTokens()`
+   * （未校准时等于原始记账值，校准后已乘 factor）。字段语义不变——排查
+   * 「估算 vs 真实 input」时它始终能和 `getSendTokens()` 对上账。
    */
   getLocalFreedTokens(): number {
-    return this.tokenFreedTracker.getTotalFreed();
+    return this.localReductionTokens();
   }
 
   /**
@@ -2378,15 +2487,10 @@ export class Manager {
      */
     calibrated: boolean;
   } {
-    // 与 getCompactionLevel **同源**扣掉本地已释放量（2026-11-09 修正）。
-    //
-    // 此前这里直接 `estimateTokens(toolCount)`，而 getCompactionLevel 会减去
-    // `tokenFreedTracker.getTotalFreed()` —— 同一份估算，决策扣了账、展示没扣。
-    // tokenFreedTracker 记的正是「发送副本已经瘦掉、但全量历史里还在」的部分：
-    // masking（`manager.ts` 的 applyStickyMasking）、大输出清理（KEEP_RECENT_OUTPUTS）、
-    // 冷缓存清理，三者都对 API usage 不可见。不扣的后果是状态栏与 /context 恒按
-    // 膨胀历史计价，长会话实测虚高 1.9–2.7 倍（3 个会话：1,162,927→438,012 等）。
-    const used = this.sendTokensFrom(this.estimateTokens(toolCount));
+    // 与 getCompactionLevel **同源**：两者都走 `getSendTokens`，扣减口只有
+    // `localReductionTokens()` 一处（A3）。此前这里内联 `estimateTokens - getTotalFreed()`，
+    // 减项用的是未校准记账值，而 estimateTokens 已校准 —— 同一个量按两种单位各算了一遍。
+    const used = this.getSendTokens(toolCount);
     const t = this.getCompactionThresholds();
     const trigger = Math.max(1, t.compactionTriggerUsed); // 防 0 除
     return {
@@ -2601,7 +2705,8 @@ export class Manager {
   getCompactionLevel(toolCount: number = 0): CompactionLevel {
     // P0-5：getCleanedMessages 等本地减量对 API usage 不可见，从 used 里扣掉已记账的释放量，
     // 避免「发送副本已瘦、触发尺子仍按膨胀历史」立刻再进 hard。
-    const used = this.sendTokensFrom(this.estimateTokens(toolCount));
+    // A3：扣减口统一走 `getSendTokens`（唯一扣减点是 localReductionTokens，已乘校准系数）。
+    const used = this.getSendTokens(toolCount);
     const t = this.getCompactionThresholds();
     const remaining = t.effectiveWindow - used;
 
@@ -2651,7 +2756,7 @@ export class Manager {
   emergencyTruncate(): CompactionOutcome {
     const log = getLogger();
     const before = this.messages.length;
-    const tokensBefore = this.estimateTokens();
+    const tokensBefore = this.getHistoryTokens();
     const splitPoint = this.findCompressSplitPoint(0.3, { minFloors: false });
 
     // P0-4：no-op 分支不再静默（此前无 else 分支，且下方日志无条件打印）。
@@ -2733,7 +2838,7 @@ export class Manager {
     this.resetLocalCompactState();
 
     const after = this.messages.length;
-    const tokensAfter = this.estimateTokens();
+    const tokensAfter = this.getHistoryTokens();
     if (after < before) {
       log.warn("CONTEXT", `紧急压缩: ${before} → ${after} 条消息`);
     } else {
@@ -3066,7 +3171,7 @@ export class Manager {
   ): CompactionOutcome {
     const log = getLogger();
     const messageCountBefore = this.messages.length;
-    const tokensBefore = this.estimateTokens();
+    const tokensBefore = this.getHistoryTokens();
     /** no-op 时统一返回的「什么都没变」结果 */
     const noop = (reason: CompactionOutcome["reason"], splitPoint: number): CompactionOutcome => ({
       success: false,
@@ -3157,7 +3262,7 @@ export class Manager {
     // 否则 tokensAfter 仍被旧锚点钉在高位（既污染验证日志，也让后续 compact 决策误判）。
     this.invalidateActualTokenAnchor();
 
-    const tokensAfter = this.estimateTokens();
+    const tokensAfter = this.getHistoryTokens();
     const messageCountAfter = this.messages.length;
 
     // P0-1：成功的唯一判据是「消息数真的下降了」。重注入（Skill / Plan / 文件恢复）可能
@@ -3360,41 +3465,4 @@ function buildRoleBridge(nextRole: Message["role"], origin: string): Message {
   return nextRole === "user"
     ? { role: "assistant", content: [{ type: "text", text: "好的。" }], _meta: { origin } }
     : { role: "user", content: [{ type: "text", text: "继续。" }], _meta: { origin } };
-}
-
-/**
- * 旧持久化引用折叠：引用约 200 字节，不会被大输出清理逻辑触及（永远 < OUTPUT_THRESHOLD），
- * 但累积数十个后仍占上下文。保留最近 REFERENCE_KEEP_RECENT 个完整引用，更旧的折叠为极简占位。
- *
- * 发送路径（getCleanedMessages）与 fork 前缀视图（getForkPrefixMessages）共用这一份，
- * 两处各写一遍就是下一次「fork 与主循环前缀分叉」。**就地改写**入参的 content 数组。
- */
-function collapseOldPersistedReferences(result: Message[]): void {
-  const REFERENCE_KEEP_RECENT = 20;
-  const persistedRefPositions: { msgIdx: number; blockIdx: number }[] = [];
-  for (let i = 0; i < result.length; i++) {
-    const msg = result[i];
-    for (let j = 0; j < msg.content.length; j++) {
-      const block = msg.content[j];
-      if (
-        block.type === "tool_result" &&
-        typeof block.content === "string" &&
-        isPersistedReference(block.content)
-      ) {
-        persistedRefPositions.push({ msgIdx: i, blockIdx: j });
-      }
-    }
-  }
-  if (persistedRefPositions.length > REFERENCE_KEEP_RECENT) {
-    const toCollapse = persistedRefPositions.slice(0, -REFERENCE_KEEP_RECENT);
-    for (const { msgIdx, blockIdx } of toCollapse) {
-      const block = result[msgIdx].content[blockIdx];
-      if (block.type === "tool_result") {
-        (result[msgIdx].content as any[])[blockIdx] = {
-          ...block,
-          content: "[旧工具输出，如需查阅请重新执行对应工具]",
-        };
-      }
-    }
-  }
 }
