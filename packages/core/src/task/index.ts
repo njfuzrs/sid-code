@@ -317,6 +317,9 @@ export {
   failAgentTask,
   killAgentTask,
   getAgentTaskSignal,
+  requestAgentStop,
+  getAgentStopRequestSignal,
+  AGENT_STOP_GRACEFUL_TIMEOUT_MS,
 } from "./agent-task.ts";
 
 export {

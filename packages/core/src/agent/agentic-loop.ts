@@ -166,6 +166,20 @@ export interface AgentLoopConfig {
   maxTurns: number;
   /** 中止信号 */
   signal: AbortSignal;
+  /**
+   * PR11（X1）：父代理「请求停止」信号 —— 与 `signal` 是**两件事**。
+   *
+   * `signal.aborted` 的语义是「立刻停，什么都别做了」（ESC / 会话退出 / `task_stop` 的
+   * `force: true`）；本信号是「别开新轮了，但把话说完」：中止在途的那一次请求、
+   * 跳出主循环、再跑一轮不带 tools 的总结，然后以 `stop_action=stopped_by_parent` 结束。
+   *
+   * 为什么必须分开：此前 `task_stop` 只有 abort 一条路，abort 之后循环里每一处
+   * `signal.aborted` 判定都会走"中止"分支，收尾轮在结构上就不可能跑起来——
+   * 而那正是子代理已经读完文件、跑完命令、只差一次总结的时刻（浪费掉的正是最贵的一段）。
+   *
+   * 缺省（undefined）时行为与改造前完全一致：没有父代理来停它。
+   */
+  stopRequestSignal?: AbortSignal;
   /** 循环检测器（外部创建，便于生命周期控制） */
   loopDetector: LoopDetector;
   /** 流式文本回调（用于 TUI 实时显示） */
@@ -318,6 +332,54 @@ function readSubAgentTodos(tools: ToolRegistry): TodoItem[] | null {
  * （`fallback.ts` 的 fbCeiling）。两层机制已覆盖"不够用"和"超上限"两端。
  */
 export const SUBAGENT_DEFAULT_MAX_TOKENS = 4096;
+
+/**
+ * 「打满轮次」出口的收尾提示词。
+ *
+ * 措辞要点：明确说明「无法继续调用工具」+「不要调用任何工具」——不少第三方模型
+ * （DeepSeek / Qwen 等）在看得到 tools 定义时会继续尝试调度，把收尾轮又拖成一整轮
+ * 工具循环。虽然这一轮**不下发 tools**，但历史里前几轮的 tool_use 仍在，重复一次
+ * 能显著降低「又输出一个 tool_use」的概率（响应侧还有一道剥离兜底）。
+ */
+export const MAX_TURNS_FINALIZE_PROMPT =
+  "你已达到最大轮次限制，无法继续调用工具。请立即输出你到目前为止的所有发现和结论，" +
+  "以结构化格式（表格/列表）呈现。不要再调用任何工具，直接输出结论。";
+
+/**
+ * 「父代理请求停止」出口的收尾提示词（PR11 / X1）。
+ *
+ * 与打满轮次那一条的关键差别：**这不是惩罚，是收工通知**。父代理派任务时往往只需要
+ * 「你现在知道什么」，不需要子代理穷尽。所以措辞不能写「你达到了限制」——模型会理解成
+ * 「我失败了」并开始道歉或重试。这里要求它说清「已完成 / 未完成 / 下一步」，让父代理
+ * 能直接决定是接手、改派还是放弃。
+ *
+ * 同样明令不要调用工具：与打满轮次同一类坑（第三方模型看到历史里的 tool_use 会继续调度）。
+ */
+export const PARENT_STOP_FINALIZE_PROMPT =
+  "父代理要求你现在停止并交回结果。请立即用一轮输出总结：已完成什么（结论 / 改动的文件 / " +
+  "关键发现）、还有什么没做完、下一步建议做什么。不要再调用任何工具，直接输出结论。";
+
+/**
+ * 「撞上下文窗口」出口的收尾提示词（PR11 / X4）。
+ *
+ * 为什么这句要强调「简短」：这个出口的前提就是**上下文已经顶满**——收尾轮自己也要占
+ * 输入预算。让它写成长文等于把腾出来的空间又吃回去，下一次请求照样撞上限。
+ * 所以要求「只要结论，不要过程」。
+ */
+export const CTX_WINDOW_FINALIZE_PROMPT =
+  "上下文已接近模型窗口上限，无法再继续调用工具。请用尽量简短的篇幅输出你到目前为止的" +
+  "关键发现与结论（要具体：文件路径、函数名、行号、结论），不要复盘过程，不要再调用任何工具。";
+
+/**
+ * 「循环恢复耗尽」出口的收尾提示词（PR11 / D1 的可见部分）。
+ *
+ * 措辞要点：**点破它卡住了**。这个出口的前提是检测到重复（同样的内容 / 同样的工具调用
+ * 反复出现），明确说出来，模型才会换角度给结论而不是又重复一遍。
+ * 与其它三条一样明令不要调工具——它之所以走到这里，正是因为一直在重复同一批调用。
+ */
+export const LOOP_EXHAUSTED_FINALIZE_PROMPT =
+  "检测到你连续多轮在原地重复（相同的内容或相同的工具调用），继续下去不会有新进展。" +
+  "请停止调用工具，直接输出你目前已经确认的事实与结论（要具体：文件路径、结论、未完成的点）。";
 
 // 升档软顶 `SUBAGENT_ESCALATED_MAX_TOKENS` 定义在 query/max-tokens-recovery.ts：
 // spawn 子进程（cli/entrypoints/headless.ts）也要用它，放在本文件会让子进程
@@ -503,6 +565,14 @@ async function runAgentLoopInner(
   /** 本轮新产出的文本（F5，每轮重置；见 onTurnEnd.turnText） */
   let currentTurnText = "";
   let unknownStopWarning: string | undefined;
+  /**
+   * PR11（X1）：本次循环是否因「父代理请求停止」而提前退出。
+   *
+   * 为什么单独记一个变量而不是看 `stopRequestSignal.aborted`：收尾轮本身也要占用时间，
+   * 而收尾轮跑完之后我们还需要知道「该用 stopped_by_parent 而不是 max_turns 标这次结束」。
+   * 直接读 signal 会在「收尾轮跑到一半父代理又发了一次停止」这类情形下改变归因。
+   */
+  let stoppedByParent = false;
   // B5-1：`model_context_window_exceeded` 的压缩续写次数。有界（见该分支注释）——
   // 压缩没压动就不再续写，否则会在"压不动 → 再撞上限"之间空转到 maxTurns 耗尽。
   let ctxWindowRecoveryCount = 0;
@@ -661,13 +731,25 @@ async function runAgentLoopInner(
   const callWithTurnHardTimeout = async <T>(
     run: (callSignal: AbortSignal, touch: () => void) => Promise<T>,
     streamIndex: number,
+    /**
+     * PR11（X1）：额外并进本轮**请求层**的中止源（父代理「请求停止」）。
+     *
+     * 为什么只在这里合并、而不是把外层 `signal` 换掉：外层 signal 的 abort 语义是
+     * 「立刻停，什么都别做了」，一旦它被置位，循环里每一处 `signal.aborted` 判定都会走
+     * 中止分支，收尾轮在结构上就起不来。这里只让**在途请求**被打断——这样「优雅停止」
+     * 才不是「等当前这一轮自然跑完」（单轮可能是一分钟以上的长流）。
+     *
+     * 收尾轮**不传**这个参数：它正是「被请求停止之后要跑的那一轮」，再被打断就没意义了。
+     */
+    extraSignal?: AbortSignal,
   ): Promise<{ exhausted: false; value: T } | { exhausted: true; errorMessage: string }> => {
     const timeoutMs = netTimeouts.maxTurnDurationMs;
     const maxAttempts = (config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries) + 1;
+    const turnSignal = extraSignal ? AbortSignal.any([signal, extraSignal]) : signal;
     for (let attempt = 1; ; attempt++) {
       const outcome = await raceTurnHardTimeout(run, {
         timeoutMs,
-        signal,
+        signal: turnSignal,
         onFire: () =>
           emitTimeoutFired(
             streamIndex,
@@ -683,7 +765,7 @@ async function runAgentLoopInner(
       );
       retryStats.attempts++;
       retryStats.lastReason = "turn_hard_timeout";
-      if (signal.aborted || attempt >= maxAttempts) {
+      if (turnSignal.aborted || attempt >= maxAttempts) {
         return {
           exhausted: true,
           errorMessage: `单轮硬超时（连续 ${Math.round(timeoutMs / 1000)}s 无流事件），已重试 ${attempt - 1} 次`,
@@ -720,7 +802,269 @@ async function runAgentLoopInner(
     }
   };
 
+  /**
+   * 统一收尾（PR11）：发一轮**不带 tools** 的请求，让模型把已有发现落成结构化结论。
+   *
+   * ── 为什么抽成函数（而不是继续内联在打满轮次那一处）────────────────────
+   * 在此之前，只有「打满轮次」这一个出口会收尾；另外四条非正常出口（父代理停止 /
+   * 窗口耗尽 / 循环恢复耗尽 ×2）一律直接 return，父代理拿到的只有 salvage 的
+   * 启发式摘要。而这几条路上子代理往往已经读完文件、跑完命令，只差一次「把话说完」——
+   * 一轮不带 tools 的请求就能把整段工作从「白跑」变成「可用」。
+   *
+   * 抽出来而不是复制一份：这段里的两段恢复（升档 → 续写）、孤儿 tool_use 补齐、
+   * 响应里 tool_use 的剥离、协议边界，每一条都是踩出来的。复制必然漂移。
+   *
+   * @param opts.prompt 注入给模型的收尾提示词。不同出口的措辞不同——模型要知道
+   *   「为什么停」（打满轮次 / 父代理要求 / 上下文顶满），才知道该总结到什么粒度。
+   * @param opts.reason 归因标签，只进日志与遥测，不发给模型。
+   * @returns 是否产出了非空总结。false 时调用方应保持原有的失败语义，不要误报成功。
+   */
+  const runFinalizeTurn = async (opts: { prompt: string; reason: string }): Promise<boolean> => {
+    log.info("AGENT_LOOP", opts.reason);
+
+    // ─── P3-3（2026-09-23）：总结轮发送前必须补齐孤儿 tool_use ───
+    //
+    // 这一轮跑在 while **之外**，所以吃不到循环内那道 `finalizeMessagesForSend`
+    // 兜底（见上方「发送前协议兜底」一段）。而进到这里的路径里有一条会**带着未执行的
+    // tool_use**：未知 stopReason（`response.stopReason` 不认识）时，assistant 已经
+    // 入史（`addMessage({ role: "assistant", content: response.content })`），
+    // 紧接着 `break` 跳出循环 —— 那些 tool_use 永远不会有对应的 tool_result。
+    // 再塞一条 user「请总结」，发出去的历史就是 assistant(tool_use) → user(text)，
+    // 协议上已破配对：OpenAI 族 400，Anthropic 族同样拒。
+    //
+    // 后果比"少一轮总结"重得多：总结轮是把前面 maxTurns 轮产出落地成结论的**唯一**
+    // 机会，它 400 掉之后整段工作只剩 extractFinalText 的启发式 salvage。
+    // 修在产生端（发送前补占位），与主循环同一条原则。
+    {
+      const backfill = finalizeMessagesForSend(ctxMgr.getMessages());
+      if (backfill.changed) {
+        ctxMgr.setMessages(backfill.messages);
+        if (backfill.backfilled.length > 0) {
+          log.error(
+            "AGENT_LOOP",
+            `P3-3：总结轮发送前补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（防 400）`,
+          );
+        }
+        if (backfill.stripped.length > 0) {
+          log.error(
+            "AGENT_LOOP",
+            `P3-3：总结轮发送前切除 ${backfill.stripped.length} 个游离 tool_result`,
+          );
+        }
+      }
+    }
+
+    ctxMgr.addMessage({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: opts.prompt,
+        },
+      ],
+    });
+
+    // T13.1：强制总结轮同样发射 StreamPhase 事件（与主循环轮对齐，避免总结轮 LLM 调用不可见）。
+    // 用独立命名空间 20000+turns，与主循环轮 10000+turns 区分，避免 index 撞车。
+    const summaryStreamIndex = 20000 + turns;
+    const summaryStartTime = Date.now();
+    // B4：总结轮同样带 observerAgentId —— 20000 命名空间只避开了「同一子代理内主流
+    // 与总结流」的撞车，避不开「多个并行子代理的总结轮」互相撞车（它们 turns 常常相同）。
+    emitStreamPhase(
+      summaryStreamIndex,
+      "fetch_sent",
+      { caller: "sub-agent-summary", model },
+      observerAgentId,
+    );
+
+    let summaryAccumulated = "";
+
+    try {
+      // B2（D2）：总结轮同样走漏斗，**首次获得韧性**。
+      //
+      // 这一轮此前是纯直连：一次 429 就让整个子代理白跑——前面 maxTurns 轮的工具
+      // 调用与 token 全部作废，只因收尾那一次请求没有重试。它恰好是最不该失败的一轮
+      // （所有产出都靠它落地成结构化结论），却是唯一完全没有韧性的一轮。
+      const openSummaryStream = (callSignal: AbortSignal, maxTokensForAttempt: number) =>
+        streamWithResilience(
+          provider,
+          {
+            model,
+            messages: ctxMgr.getCleanedMessages(),
+            system: ctxMgr.getSystemPrompt(),
+            // X2：总结轮同样吃升档值（主流升档过就用升档后的上限，否则用默认预算）。
+            // 总结轮产出通常比主流短，但它恰恰是最不该断在半句的一轮 ——
+            // 前面 maxTurns 轮的全部产出都靠这一轮落地成结论。
+            maxTokens: maxTokensForAttempt,
+            // 不传 tools，禁止模型继续调工具
+            ...config.sendParamsExtra,
+          },
+          callSignal,
+          {
+            querySource: "agent:summary",
+            usageAccounting: config.usageAccounting,
+            switchMode: "auto",
+            maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
+            retryBackoffBaseMs: config.retryBackoffBaseMs,
+            retryBackoffMaxMs: config.retryBackoffMaxMs,
+            availability,
+            agentId: config.agentId,
+            // PR2：同主流 —— 把总结轮已有的 20000 号段传进漏斗，两侧拼出同一把快照键。
+            observerIndex: summaryStreamIndex,
+            // PR-B S2：口径同主流（与主循环同一个 fallbackStreamTimeoutMs）。
+            streamTimeoutMs: netTimeouts.fallbackStreamTimeoutMs,
+            // B1（2026-10-14）：总结轮同样不传 deadlineAt，口径同主流。用户中止由外层 signal
+            // 打断（fallback 的退避 sleep 监听 signal），不会睡满 120s。
+            // B5-4：总结轮的重试同样计入。它与主流共用一个计数器是刻意的——
+            // 用户问的是"这个子代理一共重试了几次"，不区分是主流还是收尾那一次。
+            onTelemetry: onTelemetryTap,
+            onRetry: (attempt: number, error: string) => {
+              clearStreamSnapshot(summaryStreamIndex, undefined, observerAgentId);
+              emitStreamPhase(
+                summaryStreamIndex,
+                "error",
+                {
+                  caller: "sub-agent-summary",
+                  model,
+                  error,
+                  attempt,
+                  elapsed_ms: Date.now() - summaryStartTime,
+                },
+                observerAgentId,
+              );
+              emitStreamPhase(
+                summaryStreamIndex,
+                "fetch_sent",
+                { caller: "sub-agent-summary", model, attempt },
+                observerAgentId,
+              );
+            },
+          },
+        );
+
+      // X2：总结轮同样走两段恢复（升档 → 续写）。
+      //
+      // 这一轮是「前面 maxTurns 轮的产出落地成结论」的唯一机会，它撞 max_tokens 断在
+      // 半句是最不该发生的一种残缺 —— 而此前它是一次性请求，撞了就断，无任何恢复。
+      // 与主流共用 `maxTokensRecovery` 实例：升档只做一次、续写次数共用同一个上界，
+      // 否则一个已经续写 8 次的子代理会在收尾这轮再烧 8 次。
+      //
+      // 每段响应都必须入史（`commitAssistant`）：`extractFinalText` 要靠续写提示的
+      // origin 标记把这些段按顺序拼回整份结论。
+
+      let summaryFirstSegment = true;
+      await runRecoverableTurn({
+        state: maxTokensRecovery,
+        initialMaxTokens: maxOutputTokensOverride ?? SUBAGENT_DEFAULT_MAX_TOKENS,
+        modelMax: resolveMaxOutputTokensForModel(model),
+        // A6：总结轮不传 tools，toolCount 必须是 0（A6 迁移表要求补上遗漏的 toolCount）。
+        // 口径是发送量——问的是「这一轮实际发出去多少」，不扣本地释放量会把余量算小。
+        windowCeiling:
+          ctxMgr.getMaxTokens() - ctxMgr.getSendTokens(0) - OUTPUT_BUDGET_SAFETY_BUFFER,
+        softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
+        isAborted: () => signal.aborted,
+        send: async (maxTokensForAttempt) => {
+          // 升档后同步给外层变量，让「这个子代理当前生效的上限」全局一致
+          maxOutputTokensOverride = maxTokensForAttempt;
+          const summaryRace = await callWithTurnHardTimeout(
+            (callSignal, touch) =>
+              processStream(
+                tapStreamActivity(openSummaryStream(callSignal, maxTokensForAttempt), touch),
+                { signal: callSignal },
+              ),
+            summaryStreamIndex,
+          );
+          // 总结轮兜底耗尽：降级到 extractFinalText 的启发式（与下方 catch 同口径）。
+          if (summaryRace.exhausted) throw new Error(summaryRace.errorMessage);
+          const resp = summaryRace.value;
+          accumulateUsage(totalUsage, resp.usage);
+          // M1：总结轮同样是「一次真实请求」，它才是最后一次 —— 进度里的上下文口径
+          // 必须跟着走到这里，否则总结期涨上去的上下文在进度上永远看不到。
+          try {
+            lastContextTokens = normalizeCacheUsage(resp.usage, provider.name()).promptTotal;
+          } catch {
+            /* 取不到就保留上一轮的值：宁可滞后一轮，也不要报 0 */
+          }
+          emitStreamPhase(
+            summaryStreamIndex,
+            "completed",
+            { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime },
+            observerAgentId,
+          );
+          return {
+            response: resp,
+            outputTokens: resp.usage.outputTokens,
+            truncated: isTruncationStopReason(resp.stopReason),
+          };
+        },
+        commitAssistant: (resp) => {
+          // 提取总结文本：第一段**替换** lastTextOutput（总结轮是最终结论，覆盖主流内容），
+          // 后续续写段**追加**（同一份结论被截断后的自然延续）。
+          const summaryTexts = resp.content.filter((b) => b.type === "text");
+          if (summaryTexts.length > 0) {
+            const segment = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+            summaryAccumulated = summaryFirstSegment ? segment : summaryAccumulated + segment;
+            summaryFirstSegment = false;
+            currentTurnText = segment;
+            lastTextOutput = summaryAccumulated;
+          }
+
+          // ─── P3-3：总结轮响应必须剥离 tool_use（与主循环 loop.ts 同一做法）───
+          //
+          // 本轮**没有下发 tools**（上方 streamWithResilience 未传 tools），但响应里仍可能
+          // 出现 tool_use：mock 忽略 tools 参数、模型异常、网关回放旧内容都会。它在此轮
+          // 无法执行（既不走 executeTools，也已经在上面那道发送前兜底之后），入历史就是
+          // 一个**新造的**孤儿 —— 这次 400 发生在下一次发送（子代理返回的 messages 被
+          // 父级复用时）。刚在上面补完孤儿、转头自己造一个，是最容易漏的那种对称缺口。
+          const summaryContent = resp.content.filter((b) => b.type !== "tool_use");
+          if (summaryContent.length < resp.content.length) {
+            log.warn(
+              "AGENT_LOOP",
+              `P3-3：强制总结轮响应含 ${resp.content.length - summaryContent.length} 个 tool_use（本轮未传 tools，无法执行），已剥离以防孤儿 → 400`,
+            );
+          }
+          // 全被剥光时不要塞一条空 content 的 assistant —— 空 content 数组同样是协议非法。
+          if (summaryContent.length > 0) {
+            ctxMgr.addMessage({ role: "assistant", content: summaryContent });
+          }
+        },
+        onNotice: (notice) => {
+          // 与主流同一个 origin：extractFinalText 据此识别总结轮的续写边界
+          ctxMgr.addMessage(buildInternalMessage(MAX_TOKENS_CONTINUATION_ORIGIN, "user", notice));
+        },
+      });
+      config.onTurnEnd?.(buildTurnEndInfo({ turn: turns + 1 }));
+    } catch (err: any) {
+      // 强制总结失败不影响整体返回（降级到 extractFinalText 的启发式过滤）
+      emitStreamPhase(
+        summaryStreamIndex,
+        "error",
+        {
+          caller: "sub-agent-summary",
+          model,
+          error: err.message,
+          elapsed_ms: Date.now() - summaryStartTime,
+        },
+        observerAgentId,
+      );
+      log.warn("AGENT_LOOP", `强制总结轮失败: ${err.message}`);
+    }
+
+    // 判定「这一轮是否真的产出了总结」：summaryAccumulated 只在本轮有 text 时才被赋值。
+    // 用它而不是 lastTextOutput —— 后者可能带着主流最后一轮的内容，会把「收尾失败」
+    // 误判成成功，进而让调用方返回一个空壳 success。
+    return summaryAccumulated.length > 0;
+  };
+
   while (turns < maxTurns) {
+    // PR11（X1）：父代理请求停止 → 不再开新轮，直接去收尾轮把已知的说完。
+    // 放在 turns++ 之前：这一轮根本没跑，不该占一次轮次预算（否则收尾轮的
+    // stream 号段与 onTurnEnd 的 turn 号都会跳一号，回放对不上）。
+    if (config.stopRequestSignal?.aborted) {
+      log.info("AGENT_LOOP", "父代理请求停止：不再开新轮，转入收尾轮");
+      stoppedByParent = true;
+      break;
+    }
     turns++;
     currentTurnText = "";
     log.debug("AGENT_LOOP", `轮次 ${turns}/${maxTurns}`);
@@ -1009,8 +1353,16 @@ async function runAgentLoopInner(
         (callSignal, touch) =>
           processStream(tapStreamActivity(openStream(callSignal), touch), { signal: callSignal }),
         agentStreamIndex,
+        // PR11（X1）：把「父代理请求停止」并进本轮请求信号（只打断在途请求，不动外层 signal）。
+        config.stopRequestSignal,
       );
       if (r.exhausted) {
+        // PR11（X1）：这次「耗尽」是父代理请求停止打断造成的 —— 不是失败，转去收尾轮。
+        if (config.stopRequestSignal?.aborted && !signal.aborted) {
+          log.info("AGENT_LOOP", "父代理请求停止：在途请求已中断，转入收尾轮");
+          stoppedByParent = true;
+          break;
+        }
         return {
           success: false,
           turns,
@@ -1023,6 +1375,14 @@ async function runAgentLoopInner(
       }
       response = r.value;
     } catch (err) {
+      // PR11（X1）：中断来自「父代理请求停止」时，这不是失败 —— 转去收尾轮把已有成果
+      // 落成结论。判据同时要求外层 `signal` 未 abort：硬中止（ESC / 会话退出 / force）
+      // 照旧返回失败，否则会话退出会被悄悄拖成一次「还要再跑一轮总结」。
+      if (config.stopRequestSignal?.aborted && !signal.aborted) {
+        log.info("AGENT_LOOP", "父代理请求停止：在途请求已中断，转入收尾轮");
+        stoppedByParent = true;
+        break;
+      }
       // 漏斗只在「用户/外部 abort」时抛（可重试错误已在内部消化成重试或 error 事件）。
       const errMessage = (err as Error)?.message ?? String(err);
       emitStreamPhase(
@@ -1275,6 +1635,13 @@ async function runAgentLoopInner(
     if (lastTextOutput && loopDetector.recordContent(lastTextOutput)) {
       const recovered = injectLoopRecovery(ctxMgr, loopDetector, loopRecoveryPrompt, log);
       if (!recovered) {
+        // PR11（D1）：恢复次数耗尽也要先收尾。撞内容循环的子代理已经产出了纯文本，
+        // 结论就在手边；不总结直接返回失败，父代理拿到的只有残卷（而残卷是启发式的）。
+        await runFinalizeTurn({
+          prompt: LOOP_EXHAUSTED_FINALIZE_PROMPT,
+          reason: "内容循环恢复次数耗尽，请求强制总结",
+        });
+        retryStats.stopAction = "loop_recovery_exhausted";
         return {
           success: false,
           turns,
@@ -1403,6 +1770,14 @@ async function runAgentLoopInner(
       if (loopDetected) {
         const recovered = injectLoopRecovery(ctxMgr, loopDetector, loopRecoveryPrompt, log);
         if (!recovered) {
+          // PR11（D1）：与内容循环同一处理——耗尽也要先收尾。
+          // 撞工具循环时子代理往往已经跑过一批命令、读过一批文件，`lastTextOutput`
+          // 可能只剩上一轮的半句话；收尾轮是把它已有的观察压成结论的唯一机会。
+          await runFinalizeTurn({
+            prompt: LOOP_EXHAUSTED_FINALIZE_PROMPT,
+            reason: "工具循环恢复次数耗尽，请求强制总结",
+          });
+          retryStats.stopAction = "loop_recovery_exhausted";
           return {
             success: false,
             turns,
@@ -1594,6 +1969,32 @@ async function runAgentLoopInner(
           `撞模型 context window 上限且压缩未生效（${compactResult.messageCountBefore} 条未变），子代理终止`,
         );
         retryStats.stopAction = "context_window_exhausted";
+        // PR11（X4）：返回失败之前先收一次尾。
+        //
+        // 走到这里 = 常规压缩压不动了，但「压不动」不等于「发不出请求」：上下文可能只是
+        // 略高于窗口，腾掉最旧那一段就够了。而子代理此刻往往已经读完文件、跑完命令、
+        // 只差一次总结——一次收尾轮的成本远低于让整段工作作废（父代理拿到的会是空壳）。
+        //
+        // 复用 emergencyTruncate 而不是另写一套裁剪：它已经是现成的最激进一档
+        // （保留最近 30% + 极简摘要），且返回 CompactionOutcome 能如实告知腾没腾出空间。
+        const freed = ctxMgr.emergencyTruncate();
+        if (freed.success) {
+          const finalized = await runFinalizeTurn({
+            prompt: CTX_WINDOW_FINALIZE_PROMPT,
+            reason: "撞 context window 上限，紧急腾出空间后请求强制总结",
+          });
+          // 总结真的产出了才标成功：没产出就照旧走失败出口，不制造「空壳 success」。
+          if (finalized) {
+            return {
+              success: true,
+              turns,
+              totalUsage,
+              toolUseCount,
+              lastTextOutput,
+              messages: ctxMgr.getMessages(),
+            };
+          }
+        }
         return {
           success: false,
           turns,
@@ -1619,6 +2020,26 @@ async function runAgentLoopInner(
           `context window 压缩续写已达 ${MAX_CTX_WINDOW_RECOVERY} 次上限，子代理终止`,
         );
         retryStats.stopAction = "context_window_exhausted";
+        // PR11（X4）：与上一处同一条 —— 失败之前先收一次尾。
+        // 这里比上面更接近「真的压不动了」，但也正是最需要总结的时刻：连续撞了 2 次上限，
+        // 说明历史里堆满了工具输出，而子代理的结论往往就藏在最后那一两轮里。
+        const freed = ctxMgr.emergencyTruncate();
+        if (freed.success) {
+          const finalized = await runFinalizeTurn({
+            prompt: CTX_WINDOW_FINALIZE_PROMPT,
+            reason: "context window 压缩续写耗尽，紧急腾出空间后请求强制总结",
+          });
+          if (finalized) {
+            return {
+              success: true,
+              turns,
+              totalUsage,
+              toolUseCount,
+              lastTextOutput,
+              messages: ctxMgr.getMessages(),
+            };
+          }
+        }
         return {
           success: false,
           turns,
@@ -1681,238 +2102,28 @@ async function runAgentLoopInner(
   // 导致 result 无法被主循环利用。对标 CC 的策略（Anthropic 模型 thinking 有独立 type
   // 自然被过滤），但 sid-code 支持第三方模型（DeepSeek 等），其 reasoning 混在 text block 中，
   // 无法靠 type 过滤。解法：在退出前追加一轮"请总结"，让模型输出结构化结论再退出。
+  //
+  // PR11：这一轮现在由 runFinalizeTurn 承担，非正常出口共用同一份实现。
+  //
+  // 两个出口的区别只在提示词：打满轮次说「你到限制了」，父代理请求停止说「父代理要收工了」。
+  // 同一句「你达到了限制」在这两处的含义完全不同——后者不是失败，模型不该道歉或重试。
   if (!signal.aborted) {
-    log.info("AGENT_LOOP", `达到最大轮次 ${maxTurns}，请求强制总结`);
-
-    // ─── P3-3（2026-09-23）：总结轮发送前必须补齐孤儿 tool_use ───
-    //
-    // 这一轮跑在 while **之外**，所以吃不到循环内那道 `finalizeMessagesForSend`
-    // 兜底（见上方「发送前协议兜底」一段）。而进到这里的路径里有一条会**带着未执行的
-    // tool_use**：未知 stopReason（`response.stopReason` 不认识）时，assistant 已经
-    // 入史（`addMessage({ role: "assistant", content: response.content })`），
-    // 紧接着 `break` 跳出循环 —— 那些 tool_use 永远不会有对应的 tool_result。
-    // 再塞一条 user「请总结」，发出去的历史就是 assistant(tool_use) → user(text)，
-    // 协议上已破配对：OpenAI 族 400，Anthropic 族同样拒。
-    //
-    // 后果比"少一轮总结"重得多：总结轮是把前面 maxTurns 轮产出落地成结论的**唯一**
-    // 机会，它 400 掉之后整段工作只剩 extractFinalText 的启发式 salvage。
-    // 修在产生端（发送前补占位），与主循环同一条原则。
-    {
-      const backfill = finalizeMessagesForSend(ctxMgr.getMessages());
-      if (backfill.changed) {
-        ctxMgr.setMessages(backfill.messages);
-        if (backfill.backfilled.length > 0) {
-          log.error(
-            "AGENT_LOOP",
-            `P3-3：总结轮发送前补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（防 400）`,
-          );
-        }
-        if (backfill.stripped.length > 0) {
-          log.error(
-            "AGENT_LOOP",
-            `P3-3：总结轮发送前切除 ${backfill.stripped.length} 个游离 tool_result`,
-          );
-        }
-      }
-    }
-
-    ctxMgr.addMessage({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: "你已达到最大轮次限制，无法继续调用工具。请立即输出你到目前为止的所有发现和结论，以结构化格式（表格/列表）呈现。不要再调用任何工具，直接输出结论。",
-        },
-      ],
+    await runFinalizeTurn({
+      prompt: stoppedByParent ? PARENT_STOP_FINALIZE_PROMPT : MAX_TURNS_FINALIZE_PROMPT,
+      reason: stoppedByParent
+        ? "父代理请求停止，请求强制总结"
+        : `达到最大轮次 ${maxTurns}，请求强制总结`,
     });
-
-    // T13.1：强制总结轮同样发射 StreamPhase 事件（与主循环轮对齐，避免总结轮 LLM 调用不可见）。
-    // 用独立命名空间 20000+turns，与主循环轮 10000+turns 区分，避免 index 撞车。
-    const summaryStreamIndex = 20000 + turns;
-    const summaryStartTime = Date.now();
-    // B4：总结轮同样带 observerAgentId —— 20000 命名空间只避开了「同一子代理内主流
-    // 与总结流」的撞车，避不开「多个并行子代理的总结轮」互相撞车（它们 turns 常常相同）。
-    emitStreamPhase(
-      summaryStreamIndex,
-      "fetch_sent",
-      { caller: "sub-agent-summary", model },
-      observerAgentId,
-    );
-
-    try {
-      // B2（D2）：总结轮同样走漏斗，**首次获得韧性**。
-      //
-      // 这一轮此前是纯直连：一次 429 就让整个子代理白跑——前面 maxTurns 轮的工具
-      // 调用与 token 全部作废，只因收尾那一次请求没有重试。它恰好是最不该失败的一轮
-      // （所有产出都靠它落地成结构化结论），却是唯一完全没有韧性的一轮。
-      const openSummaryStream = (callSignal: AbortSignal, maxTokensForAttempt: number) =>
-        streamWithResilience(
-          provider,
-          {
-            model,
-            messages: ctxMgr.getCleanedMessages(),
-            system: ctxMgr.getSystemPrompt(),
-            // X2：总结轮同样吃升档值（主流升档过就用升档后的上限，否则用默认预算）。
-            // 总结轮产出通常比主流短，但它恰恰是最不该断在半句的一轮 ——
-            // 前面 maxTurns 轮的全部产出都靠这一轮落地成结论。
-            maxTokens: maxTokensForAttempt,
-            // 不传 tools，禁止模型继续调工具
-            ...config.sendParamsExtra,
-          },
-          callSignal,
-          {
-            querySource: "agent:summary",
-            usageAccounting: config.usageAccounting,
-            switchMode: "auto",
-            maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
-            retryBackoffBaseMs: config.retryBackoffBaseMs,
-            retryBackoffMaxMs: config.retryBackoffMaxMs,
-            availability,
-            agentId: config.agentId,
-            // PR2：同主流 —— 把总结轮已有的 20000 号段传进漏斗，两侧拼出同一把快照键。
-            observerIndex: summaryStreamIndex,
-            // PR-B S2：口径同主流（与主循环同一个 fallbackStreamTimeoutMs）。
-            streamTimeoutMs: netTimeouts.fallbackStreamTimeoutMs,
-            // B1（2026-10-14）：总结轮同样不传 deadlineAt，口径同主流。用户中止由外层 signal
-            // 打断（fallback 的退避 sleep 监听 signal），不会睡满 120s。
-            // B5-4：总结轮的重试同样计入。它与主流共用一个计数器是刻意的——
-            // 用户问的是"这个子代理一共重试了几次"，不区分是主流还是收尾那一次。
-            onTelemetry: onTelemetryTap,
-            onRetry: (attempt: number, error: string) => {
-              clearStreamSnapshot(summaryStreamIndex, undefined, observerAgentId);
-              emitStreamPhase(
-                summaryStreamIndex,
-                "error",
-                {
-                  caller: "sub-agent-summary",
-                  model,
-                  error,
-                  attempt,
-                  elapsed_ms: Date.now() - summaryStartTime,
-                },
-                observerAgentId,
-              );
-              emitStreamPhase(
-                summaryStreamIndex,
-                "fetch_sent",
-                { caller: "sub-agent-summary", model, attempt },
-                observerAgentId,
-              );
-            },
-          },
-        );
-
-      // X2：总结轮同样走两段恢复（升档 → 续写）。
-      //
-      // 这一轮是「前面 maxTurns 轮的产出落地成结论」的唯一机会，它撞 max_tokens 断在
-      // 半句是最不该发生的一种残缺 —— 而此前它是一次性请求，撞了就断，无任何恢复。
-      // 与主流共用 `maxTokensRecovery` 实例：升档只做一次、续写次数共用同一个上界，
-      // 否则一个已经续写 8 次的子代理会在收尾这轮再烧 8 次。
-      //
-      // 每段响应都必须入史（`commitAssistant`）：`extractFinalText` 要靠续写提示的
-      // origin 标记把这些段按顺序拼回整份结论。
-      let summaryAccumulated = "";
-      let summaryFirstSegment = true;
-      await runRecoverableTurn({
-        state: maxTokensRecovery,
-        initialMaxTokens: maxOutputTokensOverride ?? SUBAGENT_DEFAULT_MAX_TOKENS,
-        modelMax: resolveMaxOutputTokensForModel(model),
-        // A6：总结轮不传 tools，toolCount 必须是 0（A6 迁移表要求补上遗漏的 toolCount）。
-        // 口径是发送量——问的是「这一轮实际发出去多少」，不扣本地释放量会把余量算小。
-        windowCeiling:
-          ctxMgr.getMaxTokens() - ctxMgr.getSendTokens(0) - OUTPUT_BUDGET_SAFETY_BUFFER,
-        softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
-        isAborted: () => signal.aborted,
-        send: async (maxTokensForAttempt) => {
-          // 升档后同步给外层变量，让「这个子代理当前生效的上限」全局一致
-          maxOutputTokensOverride = maxTokensForAttempt;
-          const summaryRace = await callWithTurnHardTimeout(
-            (callSignal, touch) =>
-              processStream(
-                tapStreamActivity(openSummaryStream(callSignal, maxTokensForAttempt), touch),
-                { signal: callSignal },
-              ),
-            summaryStreamIndex,
-          );
-          // 总结轮兜底耗尽：降级到 extractFinalText 的启发式（与下方 catch 同口径）。
-          if (summaryRace.exhausted) throw new Error(summaryRace.errorMessage);
-          const resp = summaryRace.value;
-          accumulateUsage(totalUsage, resp.usage);
-          // M1：总结轮同样是「一次真实请求」，它才是最后一次 —— 进度里的上下文口径
-          // 必须跟着走到这里，否则总结期涨上去的上下文在进度上永远看不到。
-          try {
-            lastContextTokens = normalizeCacheUsage(resp.usage, provider.name()).promptTotal;
-          } catch {
-            /* 取不到就保留上一轮的值：宁可滞后一轮，也不要报 0 */
-          }
-          emitStreamPhase(
-            summaryStreamIndex,
-            "completed",
-            { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime },
-            observerAgentId,
-          );
-          return {
-            response: resp,
-            outputTokens: resp.usage.outputTokens,
-            truncated: isTruncationStopReason(resp.stopReason),
-          };
-        },
-        commitAssistant: (resp) => {
-          // 提取总结文本：第一段**替换** lastTextOutput（总结轮是最终结论，覆盖主流内容），
-          // 后续续写段**追加**（同一份结论被截断后的自然延续）。
-          const summaryTexts = resp.content.filter((b) => b.type === "text");
-          if (summaryTexts.length > 0) {
-            const segment = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
-            summaryAccumulated = summaryFirstSegment ? segment : summaryAccumulated + segment;
-            summaryFirstSegment = false;
-            currentTurnText = segment;
-            lastTextOutput = summaryAccumulated;
-          }
-
-          // ─── P3-3：总结轮响应必须剥离 tool_use（与主循环 loop.ts 同一做法）───
-          //
-          // 本轮**没有下发 tools**（上方 streamWithResilience 未传 tools），但响应里仍可能
-          // 出现 tool_use：mock 忽略 tools 参数、模型异常、网关回放旧内容都会。它在此轮
-          // 无法执行（既不走 executeTools，也已经在上面那道发送前兜底之后），入历史就是
-          // 一个**新造的**孤儿 —— 这次 400 发生在下一次发送（子代理返回的 messages 被
-          // 父级复用时）。刚在上面补完孤儿、转头自己造一个，是最容易漏的那种对称缺口。
-          const summaryContent = resp.content.filter((b) => b.type !== "tool_use");
-          if (summaryContent.length < resp.content.length) {
-            log.warn(
-              "AGENT_LOOP",
-              `P3-3：强制总结轮响应含 ${resp.content.length - summaryContent.length} 个 tool_use（本轮未传 tools，无法执行），已剥离以防孤儿 → 400`,
-            );
-          }
-          // 全被剥光时不要塞一条空 content 的 assistant —— 空 content 数组同样是协议非法。
-          if (summaryContent.length > 0) {
-            ctxMgr.addMessage({ role: "assistant", content: summaryContent });
-          }
-        },
-        onNotice: (notice) => {
-          // 与主流同一个 origin：extractFinalText 据此识别总结轮的续写边界
-          ctxMgr.addMessage(buildInternalMessage(MAX_TOKENS_CONTINUATION_ORIGIN, "user", notice));
-        },
-      });
-      config.onTurnEnd?.(buildTurnEndInfo({ turn: turns + 1 }));
-    } catch (err: any) {
-      // 强制总结失败不影响整体返回（降级到 extractFinalText 的启发式过滤）
-      emitStreamPhase(
-        summaryStreamIndex,
-        "error",
-        {
-          caller: "sub-agent-summary",
-          model,
-          error: err.message,
-          elapsed_ms: Date.now() - summaryStartTime,
-        },
-        observerAgentId,
-      );
-      log.warn("AGENT_LOOP", `强制总结轮失败: ${err.message}`);
-    }
   }
 
-  // L2-D：走到这里只有两种来源——未知停止原因 break（已标）或 while 条件打满 maxTurns
-  if (!retryStats.stopAction) retryStats.stopAction = signal.aborted ? "aborted" : "max_turns";
+  // L2-D：走到这里只有三种来源——未知停止原因 break（已标）、父代理请求停止、while 打满 maxTurns。
+  if (!retryStats.stopAction) {
+    retryStats.stopAction = signal.aborted
+      ? "aborted"
+      : stoppedByParent
+        ? "stopped_by_parent"
+        : "max_turns";
+  }
   return {
     success: true,
     turns,

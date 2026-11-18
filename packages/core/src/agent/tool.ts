@@ -29,6 +29,8 @@ import {
   resolveMaxDepth,
 } from "./depth-context.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
+// PR11（D1）：非正常出口的停止原因要写进回程头部，让父代理能判断结论的可信度。
+import { describeStopNotice } from "./stop-notice.ts";
 import { resolveSubAgentTypeParam } from "./sub-agent-input.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -1076,6 +1078,9 @@ export function buildSyncSubagentSummary(input: {
 }): string {
   const { type, result, sessionId, toolUseId } = input;
 
+  // PR11（D1）：停止原因附注。finalize（正常收尾）返回 undefined，不插任何行。
+  const stopNotice = describeStopNotice(result.stopAttribution?.stop_action);
+
   let body = result.output;
   let outputFile: string | undefined;
   // 与 truncateForNotification 同一口径（码点）判断是否超限：用 .length 会把 emoji 等
@@ -1106,6 +1111,13 @@ export function buildSyncSubagentSummary(input: {
 
   return [
     `[子代理完成] 类型: ${type}, 轮次: ${result.turns}`,
+    // PR11（D1）：非正常出口把停止原因带到头部。
+    //
+    // 为什么放在第一行而不是埋在正文：父代理对子代理结果的默认处理是「当成可靠结论用」，
+    // 而「打满轮次被强制总结」「被父代理叫停」这两种情况下结论的可信度是不同的
+    // （前者可能只覆盖了任务的一半，后者是被主动中断）。一个不显眼的括注不会改变它的行为。
+    // `finalize`（正常收尾）不插这一行——每份结果都挂一句「正常完成」是纯噪音。
+    ...(stopNotice ? [`[停止原因] ${stopNotice}`] : []),
     `Token 用量: input=${result.usage.inputTokens}, output=${result.usage.outputTokens}`,
     // 只在真的落盘时给指针：不超上限的结论全文就在下面，给路径是噪音。
     ...(outputFile ? [`<output-file>${outputFile}</output-file>`] : []),
