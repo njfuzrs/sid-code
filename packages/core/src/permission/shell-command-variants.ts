@@ -940,6 +940,153 @@ function extractGroupBodies(script: string): string[] {
 }
 
 /**
+ * C-1 的另一半：远端程序的「脚本参数」也是代码。
+ *
+ * `ssh host 'rm -rf /etc'` 的引号参数不是普通数据——ssh 把它交给远端 login shell 执行。
+ * 修前危险层只把 `ssh` 当程序名，参数一个字都不看，always-allow 档静默放行
+ * （探针实测 10 种远端形态全部 allowed=true）。
+ *
+ * 与 heredoc 正文的区别：那是「正文」，这是「位置参数」，需要各自定位命令从哪里开始。
+ *
+ * 为什么不能无脑把参数拼接后递归：`ssh host "echo 'rm -rf / is bad'"` 只是打印一段文本，
+ * 递归展开后 `rm` 出现在 `echo` 的参数里，结构化判据（program === "rm"）不会命中，
+ * 但文本正则仍可能把整条命令判成 high —— 那是**有出口**的弹窗，不是 critical 硬拒，
+ * 可以接受。真正不能做的是把 `ssh host "echo ..."` 里的文本当命令执行语义去判 critical。
+ */
+const REMOTE_EXEC_PROGRAMS = /^(ssh|docker|podman|nerdctl|kubectl|oc)$/;
+
+/**
+ * 各程序「带一个值」的选项（跳过选项时要连值一起跳，否则会把值当成 host/容器名）。
+ *
+ * ⚠️ 必须按程序分开，不能合成一个集合：`-i` 在 ssh 里是 identity（带值），
+ * 在 `docker exec` 里是 interactive（不带值）。合成一个集合时 `docker exec -i c sh`
+ * 会把容器名 `c` 当成 `-i` 的值跳掉，命令起点算到 `sh` 之后，整段脚本就漏判了
+ * （2026-11-18 实测：`docker exec c sh -c "rm -rf /etc"` 因此一直 allowed）。
+ */
+const SSH_OPTIONS_WITH_VALUE = new Set([
+  "-B",
+  "-b",
+  "-c",
+  "-D",
+  "-E",
+  "-e",
+  "-F",
+  "-I",
+  "-i",
+  "-L",
+  "-l",
+  "-m",
+  "-O",
+  "-o",
+  "-p",
+  "-Q",
+  "-R",
+  "-S",
+  "-W",
+  "-w",
+]);
+
+/** docker / podman / nerdctl exec 的带值选项（`-i` / `-t` / `-d` 不带值） */
+const CONTAINER_EXEC_OPTIONS_WITH_VALUE = new Set([
+  "-e",
+  "-u",
+  "-w",
+  "--env",
+  "--env-file",
+  "--user",
+  "--workdir",
+  "--detach-keys",
+]);
+
+/** kubectl / oc exec 的带值选项 */
+const K8S_EXEC_OPTIONS_WITH_VALUE = new Set(["-c", "-n", "--container", "--namespace"]);
+
+function remoteOptionsWithValue(program: string): Set<string> {
+  if (program === "ssh") return SSH_OPTIONS_WITH_VALUE;
+  if (program === "kubectl" || program === "oc") return K8S_EXEC_OPTIONS_WITH_VALUE;
+  return CONTAINER_EXEC_OPTIONS_WITH_VALUE;
+}
+
+/**
+ * 找「命令参数」起始的 token 下标；没有命令部分返回 -1。
+ *
+ * 各程序的形态：
+ * - `ssh [opts] host [command…]` —— host 之后都是远端命令
+ * - `docker/podman/nerdctl exec [opts] container command…` —— 容器名之后
+ * - `kubectl/oc exec [opts] pod [--] command…` —— pod 与可选 `--` 之后
+ */
+function remoteCommandStartToken(program: string, tokens: PositionedToken[]): number {
+  let i = 0;
+  if (program === "ssh") {
+    i = 1;
+  } else {
+    if (tokens[1]?.value !== "exec") return -1;
+    i = 2;
+  }
+  // 跳过选项（含带值选项的值）
+  const withValue = remoteOptionsWithValue(program);
+  while (i < tokens.length) {
+    const v = tokens[i].value;
+    if (v === "--") {
+      i++;
+      break;
+    }
+    if (!v.startsWith("-") || v === "-") break;
+    i += withValue.has(v) ? 2 : 1;
+  }
+  // 跳过一个位置参数：ssh 的 host / 容器名 / pod 名
+  if (i >= tokens.length) return -1;
+  i += 1;
+  // kubectl/oc 允许 `--` 分隔命令
+  if (tokens[i]?.value === "--") i += 1;
+  return i < tokens.length ? i : -1;
+}
+
+/** 整段被一对引号包裹时剥掉外层引号（`'rm -rf /etc'` → `rm -rf /etc`） */
+function stripOuterQuotesIfWhole(text: string): string {
+  const t = text.trim();
+  if (t.length >= 2) {
+    const first = t[0];
+    if ((first === "'" && t[t.length - 1] === "'") || (first === '"' && t[t.length - 1] === '"')) {
+      return t.slice(1, -1);
+    }
+  }
+  return t;
+}
+
+/**
+ * 提取远端程序「脚本参数」的文本（空数组 = 没有命令部分，如交互式 `ssh host`）。
+ *
+ * 用 token 的 value 拼接（已去外层引号）而不是原始切片：`ssh host 'rm -rf /etc'` 的
+ * 引号是「让本地 shell 不当成分隔符」用的，远端拿到的 argv 就是 `rm -rf /etc`。
+ */
+function extractRemoteScriptTexts(script: string): string[] {
+  const out: string[] = [];
+  for (const pipeline of splitCommandStructure(script)) {
+    for (const stage of pipeline.stages) {
+      const c = canonicalizeSimpleCommand(stage);
+      if (!c.program || !REMOTE_EXEC_PROGRAMS.test(c.program)) continue;
+      const normalized = normalizeSimpleCommandPrefix(stage);
+      const tokens = tokenizeWithPositions(normalized);
+      const start = remoteCommandStartToken(c.program, tokens);
+      if (start < 0) continue;
+      const rest = tokens.slice(start);
+      // 单个参数（`ssh host 'rm -rf /etc'`）：它整段就是脚本，剥掉外层引号，
+      // 否则递归展开时整串会被当成一个 program 名。
+      // 多个参数（`docker exec c sh -c 'rm -rf /etc'`）：必须保留**原始文本**，
+      // 用去引号的 token 拼接会把 `-c` 的脚本参数拆成 `rm` `-rf` `/etc` 三个 token，
+      // `sh -c` 的 innerScripts 只拿到 `rm`，危险层就看不到 `-rf /etc`。
+      const text =
+        rest.length === 1
+          ? stripOuterQuotesIfWhole(normalized.slice(rest[0].start, rest[0].end))
+          : normalized.slice(rest[0].start).trim();
+      if (text) out.push(text);
+    }
+  }
+  return out;
+}
+
+/**
  * 把一条 bash 命令展开成所有「等价执行形态」。只用于拦截类判定，见文件头「口径」一节。
  */
 export function expandShellCommand(cmd: string): ShellCommandExpansion {
@@ -990,7 +1137,11 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
     if (scripts.has(source)) return;
     scripts.add(source);
 
-    const nested: string[] = [...extractSubstitutionBodies(source)];
+    const nested: string[] = [
+      ...extractSubstitutionBodies(source),
+      // C-1：远端程序的脚本参数也是代码（`ssh host 'rm -rf /etc'`）。
+      ...extractRemoteScriptTexts(source),
+    ];
     for (const pipeline of splitCommandStructure(source)) {
       const parsed: Array<{ program: string; args: string[]; text: string }> = [];
       for (const stage of pipeline.stages) {

