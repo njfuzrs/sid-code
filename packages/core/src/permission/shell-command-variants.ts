@@ -32,8 +32,10 @@
  */
 
 import * as path from "node:path";
+import type { HeredocBlock } from "../tool/bash/heredoc.ts";
 import {
   extractHeredocBlocks,
+  isPosixShellProgram,
   isShellLikeProgram,
   splitCommandStructure,
 } from "./shell-structure.ts";
@@ -260,8 +262,7 @@ export function listInvokedPrograms(sub: string): string[] | null {
 /** 把参数当脚本执行的 shell（`sh -c '<脚本>'`） */
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "mksh"]);
 
-/** 单个简单命令规范化的结果 */
-interface CanonicalCommand {
+export interface CanonicalCommand {
   /** 命令头规范化后的整条（参数保持原文）；与原文相同时为 null */
   canonical: string | null;
   /** 规范化后的程序名 */
@@ -274,7 +275,7 @@ interface CanonicalCommand {
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-function canonicalizeSimpleCommand(sub: string): CanonicalCommand {
+export function canonicalizeSimpleCommand(sub: string): CanonicalCommand {
   const tokens = tokenizeWithPositions(sub);
   let i = 0;
   // 1. 前导环境变量赋值
@@ -471,6 +472,152 @@ const MAX_DEPTH = 4;
 const MAX_VARIANTS = 128;
 
 /**
+ * 会把 stdin 正文交给**远端 / 容器内** shell 解释的程序。
+ *
+ * `ssh host <<EOF` 的正文在远端被 login shell 解析，`docker exec -i c sh <<EOF` 在容器里
+ * 被 sh 解析——解析发生在别处，但「正文是 shell 脚本」这件事没变，注入层要按脚本扫。
+ * 危险命令层不靠这张表（它按 `isShellLikeProgram(owner)` 判，`ssh` 不在其中，宁可漏也不误报）；
+ * 注入层是 fail-closed 的，宁可多扫一遍正文。
+ */
+const REMOTE_SHELL_PROGRAMS = new Set(["ssh", "docker", "podman", "kubectl", "nerdctl", "oc"]);
+
+/** 一个 heredoc 块的接收者归属 */
+export interface HeredocOwnership {
+  block: HeredocBlock;
+  /** 承接这块正文的简单命令段（程序名 + 参数）；null = 认不出接收者 */
+  owner: { program: string; args: string[] } | null;
+  /**
+   * 正文按 **shell 语法**执行（真 shell 接收 / 管道下游是真 shell / 远端 shell）。
+   * 注入层（bash 词法差异检测）只对这类正文再扫一遍。
+   */
+  shellScript: boolean;
+  /**
+   * 危险命令层口径：正文要作为待判命令递归展开。
+   *
+   * 比 `shellScript` 宽——`python3 - <<'PY'` 的正文是 Python 代码，bash 词法差异对它
+   * 无意义（注入层不该扫），但里面可能写着 `os.system("rm -rf /")`，危险命令层按现状
+   * 仍要展开（口径不变，见 §4.2.1）。
+   */
+  codeForDangerScan: boolean;
+  /** 正文由「从 stdin 读代码的解释器」接收（`python3 - <<'PY'`） */
+  interpreterStdin: boolean;
+}
+
+/**
+ * 远端程序收到的 stdin 是否会被某个 shell 解释。
+ *
+ * 两种成立形态：
+ * - 远端命令里点名了 shell（`docker exec -i c sh`、`ssh h bash -s`）；
+ * - `ssh host <<EOF` 这种没点名任何命令的形态——远端跑的就是 login shell。
+ *
+ * `ssh host cat > f <<EOF` 不在此列（点名了 cat，正文是它的数据）。
+ */
+function remoteShellReceivesScript(program: string, args: string[]): boolean {
+  if (!REMOTE_SHELL_PROGRAMS.has(program)) return false;
+  if (args.some((a) => isPosixShellProgram(path.basename(a)))) return true;
+  // heredoc 占位符（`<<__SID_HD_0__`）是重定向记号，不是远端要执行的命令名——
+  // 不过滤掉它，`ssh h <<EOF` 会被算成「远端执行了两个参数」而漏判。
+  const positionals = args.filter((a) => !a.startsWith("-") && !a.includes("<<"));
+  if (program === "ssh") {
+    // 第一个位置参数是 host；它之后没有别的命令 → 远端 login shell 读正文
+    return positionals.length <= 1;
+  }
+  return false;
+}
+
+/**
+ * 判定每个 heredoc 块被谁接收、正文该不该按 shell 文本处理。
+ *
+ * **单一事实源**：`expandShellCommand`（危险命令层，决定正文要不要递归判危险）与
+ * `partitionHeredocForScan`（注入层，决定正文要不要按 bash 词法扫）都走它——两层的
+ * 「正文归属」判据各写一份必然漂移，2026-11-17 的 A1 误报就是归属判据只在危险层存在。
+ */
+export function classifyHeredocOwnership(
+  stripped: string,
+  blocks: readonly HeredocBlock[],
+): HeredocOwnership[] {
+  const ownership: HeredocOwnership[] = blocks.map((block) => ({
+    block,
+    owner: null,
+    shellScript: false,
+    codeForDangerScan: false,
+    interpreterStdin: false,
+  }));
+  if (ownership.length === 0) return ownership;
+
+  const parsedPipelines = splitCommandStructure(stripped).map((pipeline) =>
+    pipeline.stages.map((stage) => {
+      const c = canonicalizeSimpleCommand(stage);
+      return { program: c.program, args: c.args };
+    }),
+  );
+
+  for (const parsed of parsedPipelines) {
+    for (const item of ownership) {
+      if (item.owner) continue;
+      const placeholder = `<<${item.block.placeholder}`;
+      const ownerIdx = parsed.findIndex((p) => p.args.some((a) => a.includes(placeholder)));
+      if (ownerIdx < 0) continue;
+      const owner = parsed[ownerIdx];
+      item.owner = { program: owner.program, args: owner.args };
+      // 管道下游是真 shell（`cat <<EOF | sh`）：正文经管道进了 shell，同样按脚本处理
+      const downstreamShell = parsed
+        .slice(ownerIdx + 1)
+        .some((p) => isPosixShellProgram(p.program));
+      item.shellScript =
+        isPosixShellProgram(owner.program) ||
+        downstreamShell ||
+        remoteShellReceivesScript(owner.program, owner.args);
+      // 危险命令层口径（含 python/perl/ruby 的正文）保持不变，见 HeredocOwnership 注释
+      item.codeForDangerScan = isShellLikeProgram(owner.program) || downstreamShell;
+      item.interpreterStdin =
+        !downstreamShell && interpreterReadsCodeFromStdin(owner.program, owner.args);
+    }
+  }
+  return ownership;
+}
+
+/** heredoc 分区结果：注入层据此决定扫哪几段文本 */
+export interface HeredocScanPartition {
+  /** 剥掉全部正文后的命令段（`<<__SID_HD_n__` 占位） */
+  stripped: string;
+  /** 必须按 shell 命令文本扫描的片段：真 shell / 远端 shell 接收者的正文 + 不带引号正文里的 $()/反引号内层 */
+  shellFragments: string[];
+  /** 分区是否可信：认不出接收者 → false，调用方按原文扫（fail-closed） */
+  reliable: boolean;
+}
+
+/**
+ * 把一条命令按 heredoc 接收者切成「命令段」与「要按脚本扫的正文」。
+ *
+ * 注入层（`bash-security.ts` 的 `checkInjectionPatterns`）与危险命令层对正文的归属判定
+ * 必须一致，所以这里复用 `classifyHeredocOwnership`，不另写一份。
+ */
+export function partitionHeredocForScan(cmd: string): HeredocScanPartition {
+  const { stripped, blocks } = extractHeredocBlocks(cmd);
+  // 没有可识别的块（无 heredoc / 未闭合 / `$((1 << 2))`）：stripped 就是原文，
+  // 按它扫与按原文扫等价，分区可信。
+  if (blocks.length === 0) return { stripped, shellFragments: [], reliable: true };
+
+  const shellFragments: string[] = [];
+  let reliable = true;
+  for (const item of classifyHeredocOwnership(stripped, blocks)) {
+    // 不带引号定界符（`<<EOF`）的正文会先做变量展开与命令替换：`cat <<EOF ⏎ $(rm -rf /) ⏎ EOF`
+    // 里的 `$(…)` 在 shell 里**真的会执行**。带引号（`<<'EOF'`）是纯字面量，一条都不取。
+    if (!item.block.quoted) {
+      shellFragments.push(...extractSubstitutionBodies(item.block.body));
+    }
+    if (!item.owner) {
+      // 认不出接收者（多管道边界 / 解析失败）：调用方回退按原文扫
+      reliable = false;
+      continue;
+    }
+    if (item.shellScript) shellFragments.push(item.block.body);
+  }
+  return { stripped, shellFragments, reliable };
+}
+
+/**
  * 把一条 bash 命令展开成所有「等价执行形态」。只用于拦截类判定，见文件头「口径」一节。
  */
 export function expandShellCommand(cmd: string): ShellCommandExpansion {
@@ -513,33 +660,26 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
         }
         nested.push(...c.innerScripts);
       }
-      // heredoc 正文的归属：接收者是解释器（`bash <<EOF`）或管道下游是解释器
-      // （`cat <<EOF | bash`）时正文是脚本，要递归判危险；接收者是文件时正文是数据，丢弃。
-      for (const block of blocks) {
-        // 不带引号定界符（`<<EOF`）的正文会先做变量展开与命令替换，
-        // `cat <<EOF ⏎ $(rm -rf /) ⏎ EOF` 里的 `$(…)` 在 shell 里**真的会执行**。
-        // 接收者不是 shell 时上面那条 `nested.push(block.body)` 不触发，正文里的
-        // 替换就完全没人看——修前这条命令在 always-allow 下直接放行。
-        // 带引号（`<<'EOF'`）是纯字面量，一条都不取。
-        if (!block.quoted) nested.push(...extractSubstitutionBodies(block.body));
-        const placeholder = `<<${block.placeholder}`;
-        const ownerIdx = parsed.findIndex((p) => p.args.some((a) => a.includes(placeholder)));
-        if (ownerIdx < 0) continue;
-        const owner = parsed[ownerIdx];
-        const downstreamShell = parsed
-          .slice(ownerIdx + 1)
-          .some((p) => isShellLikeProgram(p.program));
-        if (isShellLikeProgram(owner.program) || downstreamShell) {
-          nested.push(block.body);
-        }
-        // 解释器从 stdin 读脚本（`python3 - <<'PY'`）：正文是代码，不是 shell 命令。
-        // 与上面的 nested 不互斥——它已按 shell 口径展开过一遍（现状，不动它，
-        // 否则会改 Step 2 的危险命令判定面），这里额外给写目标提取留一份原样正文。
-        if (!downstreamShell && interpreterReadsCodeFromStdin(owner.program, owner.args)) {
-          interpreterHeredocs.push(block.body);
-        }
-      }
+      // heredoc 正文的归属在 pipeline 循环外统一判（见 classifyHeredocOwnership），
+      // 这里不能再各判一份——归属判据两处各写一遍必然漂移，A1 就是那么来的。
       pipelines.push(parsed);
+    }
+
+    // heredoc 正文的归属：接收者是解释器（`bash <<EOF`）或管道下游是解释器
+    // （`cat <<EOF | bash`）时正文是脚本，要递归判危险；接收者是文件时正文是数据，丢弃。
+    for (const item of classifyHeredocOwnership(source, blocks)) {
+      // 不带引号定界符（`<<EOF`）的正文会先做变量展开与命令替换，
+      // `cat <<EOF ⏎ $(rm -rf /) ⏎ EOF` 里的 `$(…)` 在 shell 里**真的会执行**。
+      // 接收者不是 shell 时下面那条 `nested.push(block.body)` 不触发，正文里的
+      // 替换就完全没人看——修前这条命令在 always-allow 下直接放行。
+      // 带引号（`<<'EOF'`）是纯字面量，一条都不取。
+      if (!item.block.quoted) nested.push(...extractSubstitutionBodies(item.block.body));
+      if (!item.owner) continue;
+      if (item.codeForDangerScan) nested.push(item.block.body);
+      // 解释器从 stdin 读脚本（`python3 - <<'PY'`）：正文是代码，不是 shell 命令。
+      // 与上面的 nested 不互斥——它已按 shell 口径展开过一遍（现状，不动它，
+      // 否则会改 Step 2 的危险命令判定面），这里额外给写目标提取留一份原样正文。
+      if (item.interpreterStdin) interpreterHeredocs.push(item.block.body);
     }
     if (depth < MAX_DEPTH) {
       for (const n of nested) visit(n, depth + 1);

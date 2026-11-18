@@ -16,7 +16,8 @@ import {
   validateProcEnvironAccess,
   validateCarriageReturn,
   validateNewlines,
-  validateUnicodeWhitespace,
+  validateInvisibleUnicodeWhitespace,
+  validateVisibleUnicodeWhitespace,
   validateControlCharacters,
   validateObfuscatedFlags,
   validateBraceExpansion,
@@ -112,14 +113,22 @@ describe("validateNewlines", () => {
   });
 });
 
-describe("validateUnicodeWhitespace", () => {
-  test("不间断空格 / 全角空格 / 零宽 BOM → 命中", () => {
-    expect(validateUnicodeWhitespace("cat /etc/passwd")).not.toBeNull();
-    expect(validateUnicodeWhitespace("ls　-la")).not.toBeNull();
-    expect(validateUnicodeWhitespace("echo﻿hi")).not.toBeNull();
+describe("validateUnicodeWhitespace（拆不可见 / 可见两层）", () => {
+  test("可见宽度空格（不间断空格 / 全角空格）→ 归可见层", () => {
+    expect(validateVisibleUnicodeWhitespace("cat\u00A0/etc/passwd")).not.toBeNull();
+    expect(validateVisibleUnicodeWhitespace("ls\u3000-la")).not.toBeNull();
+    // 不可见码点不归这一层
+    expect(validateVisibleUnicodeWhitespace("echo\uFEFFhi")).toBeNull();
   });
-  test("普通 ASCII 空格 → 放行", () => {
-    expect(validateUnicodeWhitespace("cat /etc/passwd")).toBeNull();
+  test("不可见码点（零宽 BOM / 行分隔符）→ 归不可见层", () => {
+    expect(validateInvisibleUnicodeWhitespace("echo\uFEFFhi")).not.toBeNull();
+    expect(validateInvisibleUnicodeWhitespace("echo\u2028rm -rf /")).not.toBeNull();
+    // 可见宽度空格不归这一层
+    expect(validateInvisibleUnicodeWhitespace("cat\u00A0/etc/passwd")).toBeNull();
+  });
+  test("普通 ASCII 空格 → 两层都放行", () => {
+    expect(validateVisibleUnicodeWhitespace("cat /etc/passwd")).toBeNull();
+    expect(validateInvisibleUnicodeWhitespace("cat /etc/passwd")).toBeNull();
   });
 });
 
