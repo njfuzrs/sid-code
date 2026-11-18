@@ -66,7 +66,6 @@ export type DialogType =
   | "commands"
   | "help"
   | "export"
-  | "context"
   | "rewind"
   | "claude-md-external-imports"
   // M3：项目 .mcp.json 中待审批 MCP 服务器的启动审批框
@@ -131,6 +130,16 @@ export interface CommandContext {
   sessionState: SessionState;
   hookSystem?: HookSystem;
   cwd: string;
+  /**
+   * 当前生效的项目规则快照（PR3：`/context` 的固定开销细目要按 `@` 导入清单逐项列）。
+   *
+   * 只声明用得到的部分而不是整个 `ProjectRules`：契约层不该被规则加载器的完整形状绑住，
+   * 而命令侧也确实只需要「哪些 `@` 导入进了这次 system prompt」。
+   * 未注入时（headless 测试 / 无规则文件）省略细目，面板主体照常输出。
+   */
+  projectRules?: {
+    importedFiles?: import("../config/import-processor.ts").ImportedFileRecord[];
+  };
   /**
    * §12 P2-4 复审：最近访问文件追踪器。手动 /compact 压缩后据它重注入最近读过的文件
    * （与自动压缩共用 query/compact/post-compact.ts 的收尾）。未注入则跳过文件恢复。

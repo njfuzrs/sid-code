@@ -31,7 +31,6 @@ import { AgentsDialog } from "./AgentsDialog.tsx";
 import { CommandsDialog } from "./CommandsDialog.tsx";
 import { HelpDialog } from "./HelpDialog.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
-import { ContextDialog } from "./ContextDialog.tsx";
 import { RewindDialog } from "./RewindDialog.tsx";
 import { ClaudeMdExternalImportDialog } from "./ClaudeMdExternalImportDialog.tsx";
 import { ConflictDialog } from "./ConflictDialog.tsx";
@@ -410,10 +409,6 @@ const DialogSwitchBody = ({
   }
   if (activeDialog === "export" && callbacks.onExportConversation) {
     return <ExportDialog onClose={onDialogClose} onExport={callbacks.onExportConversation} />;
-  }
-  // /context：上下文分类 token 拆解可视化
-  if (activeDialog === "context" && callbacks.getContextBreakdown) {
-    return <ContextDialog onClose={onDialogClose} getBreakdown={callbacks.getContextBreakdown} />;
   }
   // P2-1：Esc+Esc 会话回退选择器
   if (activeDialog === "rewind") {
