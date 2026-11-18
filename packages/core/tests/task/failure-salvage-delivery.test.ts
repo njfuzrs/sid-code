@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -155,7 +155,11 @@ describe("F3 失败残卷投递", () => {
     expect(content.length).toBeLessThan(NOTIFICATION_ERROR_MAX_CHARS + 1000);
   });
 
-  test("已被 kill 的任务不追写残卷（.output 归 kill 路径收尾）", async () => {
+  test("已被 kill 的任务仍追写残卷（硬杀出口的确定性清单必须可见）", async () => {
+    // PR11 二次修复：契约变更。旧断言写的是「killed 不追写，`.output` 归 kill 路径收尾」，
+    // 但 kill 路径实际只 `flushTaskOutput` 了逐轮文本、从来不发残卷——于是 `task_stop
+    // force` 与 60 秒超时退化两条硬杀路径上，salvage 的确定性清单永远落不了盘。
+    // 现在 killed 与运行中一样追写残卷；真正「已有结尾」的终态只有 completed / failed。
     const t = newAgentTask();
     killAgentTask(t.id);
     // killAgentTask 的 flush 是 fire-and-forget，等它落地
@@ -164,10 +168,13 @@ describe("F3 失败残卷投递", () => {
     await failAgentTask(t.id, SALVAGE);
     await flushTaskOutput(t.id);
 
-    expect(existsSync(t.outputFile) ? readFileSync(t.outputFile, "utf-8") : "").not.toContain(
-      "<partial-result>",
-    );
+    expect(readFileSync(t.outputFile, "utf-8")).toContain("<partial-result>");
+    // 状态不被改写：仍然是 killed，不是 failed
     expect(getTask(t.id)!.status).toBe("killed");
+    // 通知不重复：kill 那一条已发过，残卷不额外发失败通知
+    const notifs = dequeuePendingNotifications();
+    expect(notifs).toHaveLength(1);
+    expect(notifs[0]!.structured!.status).toBe("killed");
   });
 
   test("前台子代理（notify=false）不投递通知，但残卷仍写进 .output", async () => {

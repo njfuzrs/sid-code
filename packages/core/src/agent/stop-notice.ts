@@ -27,6 +27,11 @@ const STOP_NOTICES: Readonly<Record<string, string>> = {
   context_window_exhausted: "上下文撞到模型窗口上限，以下为压缩后的总结",
   loop_recovery_exhausted: "检测到循环且恢复次数耗尽，以下为收尾总结",
   empty_param_exhausted: "工具参数连续为空，以下为收尾总结",
+  // `max_tokens_exhausted` 是一条 **success: true** 的出口（续写收益递减后停止续写，
+  // 见 agentic-loop 的 maxTokensRecovery.decide → action === "stop"）。没有专属文案时
+  // 它落到兜底分支，父代理会读到 `非正常结束（max_tokens_exhausted）…` —— 英文枚举名
+  // 直接进模型上下文，既不可读也不符合「每种非 finalize 出口都有说明」的要求。
+  max_tokens_exhausted: "输出续写收益耗尽，以下为已产出的部分",
   aborted: "执行被中止，以下为已产出的部分",
 };
 

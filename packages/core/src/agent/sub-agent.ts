@@ -1050,6 +1050,14 @@ export class SubAgent {
           totalToolUseCount: result.toolUseCount,
           totalTokens: result.usage.inputTokens + result.usage.outputTokens,
           usage: result.usage,
+          // PR11（D1）二次修复：停止归因必须真的传进 `AgentTaskResult`。
+          //
+          // `types.ts` 定义了这个字段、`completeAgentTask` 也读了它拼摘要，但这里
+          // 一度没赋值 —— 于是后台完成通知的 `<summary>` 永远是「执行完成」，
+          // 打满轮次 / 被父代理停止 / 窗口耗尽三种可信度不同的结论在父代理眼里同形。
+          // 同步回程（`buildSyncSubagentSummary`）走的是 `result.stopAttribution`，
+          // 两条交付通道共用同一个来源，不要在任一侧另造口径。
+          stopAction: result.stopAttribution?.stop_action,
         };
         await completeAgentTask(taskId, agentResult, notify);
       } else {
