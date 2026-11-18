@@ -15,10 +15,10 @@ describe("TokenEstimator", () => {
       expect(estimator.estimateText("")).toBe(0);
     });
 
-    test("纯 ASCII 文本：约 0.20 token/char", () => {
+    test("纯 ASCII 文本：约 0.28 token/char", () => {
       const text = "Hello, this is a test message for token estimation.";
       const tokens = estimator.estimateText(text);
-      // 51 chars * 0.20 = 10.2 → ceil = 11
+      // 51 chars * 0.28 = 14.28 → ceil = 15
       expect(tokens).toBe(11);
     });
 
@@ -72,8 +72,8 @@ describe("TokenEstimator", () => {
       const tokens = estimator.estimateMessages([
         { role: "user", content: [{ type: "text", text: "Hello" }] },
       ]);
-      // 4 (overhead) + ceil(5 * 0.20) = 4 + 1 = 5
-      expect(tokens).toBe(5);
+      // 4 (overhead) + ceil(5 * 0.28) = 4 + 2 = 6
+      expect(tokens).toBe(6);
     });
 
     test("包含 tool_use 块", () => {

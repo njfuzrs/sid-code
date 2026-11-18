@@ -174,11 +174,16 @@ describe("P1-14 — contextCollapse 成功后走压缩后收尾", () => {
     tailCalls: TailCall[];
   } {
     // 200K 窗口的档位边界（getCompactionThresholds）：hard 在已用 140K 起、
-    // emergency 在 160K 起。40 轮 × 9K 字符 ≈ 144K，落在 hard 档，且管线走完
-    // 仍未达标（needsAutoCompact=true）——这两个条件同时满足才会走到 collapse 分支。
+    // emergency 在 160K 起。40 轮 × 2 条 × pad 字符，按 ASCII 系数换算后目标 ≈144K，
+    // 落在 hard 档，且管线走完仍未达标（needsAutoCompact=true）——两个条件同时满足
+    // 才会走到 collapse 分支。
+    //
+    // pad 用 9_000 × 0.20 / 0.28 反推：这个 harness 原先按旧系数 0.20 写死 9_000 字符
+    //（≈144K tokens），系数改 0.28 后同样字符数会算成 ≈202K，越到 emergency 档，
+    // 断言 "hard" 直接失效。反推写法让构造跟着系数走，不再依赖某个具体系数值。
     const ctxMgr = new ContextManager({ maxTokens: 200_000 });
     ctxMgr.setSystemPrompt("test");
-    ctxMgr.setMessages(buildTextHistory(40, 9_000));
+    ctxMgr.setMessages(buildTextHistory(40, Math.ceil((9_000 * 0.2) / 0.28)));
 
     const tailCalls: TailCall[] = [];
     const deps = {

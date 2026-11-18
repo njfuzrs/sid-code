@@ -10,11 +10,11 @@ describe("estimateTextTokens", () => {
     expect(estimateTextTokens("")).toBe(0);
   });
 
-  test("纯 ASCII 文本：约 0.20 token/char", () => {
+  test("纯 ASCII 文本：约 0.28 token/char", () => {
     const text = "hello world"; // 11 chars
     const tokens = estimateTextTokens(text);
-    // 11 * 0.20 = 2.2 → ceil = 3
-    expect(tokens).toBe(3);
+    // 11 * 0.28 = 3.08 → ceil = 4（2026-11-18：系数 0.20→0.28，代码/JSON 增量不再低估）
+    expect(tokens).toBe(4);
   });
 
   test("纯中文文本：约 0.65 token/char", () => {
@@ -27,7 +27,7 @@ describe("estimateTextTokens", () => {
   test("中英文混合文本", () => {
     const text = "hello你好"; // 5 ASCII + 2 CJK
     const tokens = estimateTextTokens(text);
-    // 5 * 0.20 + 2 * 0.65 = 1.0 + 1.3 = 2.3 → ceil = 3
+    // 5 * 0.28 + 2 * 0.65 = 1.4 + 1.3 = 2.7 → ceil = 3
     expect(tokens).toBe(3);
   });
 
@@ -43,15 +43,16 @@ describe("estimateTextTokens", () => {
     const asciiText = "This is a test string for token estimation";
     const oldEstimate = Math.ceil(asciiText.length / 4);
     const newEstimate = estimateTextTokens(asciiText);
-    // 纯 ASCII：新系数 0.20 与旧 length/4（0.25）接近，差距放宽到 ≤3
+    // 纯 ASCII：新系数 0.28 与旧 length/4（0.25）接近，差距放宽到 ≤3
     expect(Math.abs(newEstimate - oldEstimate)).toBeLessThanOrEqual(3);
   });
 
   test("超长文本使用快速近似（按抽样语言占比加权）", () => {
     const longText = "a".repeat(200_000);
     const tokens = estimateTextTokens(longText);
-    // EST-6：全 ASCII → 抽样占比 0 非 ASCII → 0.20/char。200000 * 0.20 = 40000
-    expect(tokens).toBe(40_000);
+    // EST-6：全 ASCII → 抽样占比 0 非 ASCII → 0.28/char。200000 * 0.28 = 56000，
+    // 逐次浮点累加上取整后多 1（实测 56001）
+    expect(tokens).toBe(56_001);
   });
 
   test("超长纯中文文本按非 ASCII 系数估算", () => {
@@ -65,14 +66,14 @@ describe("estimateTextTokens", () => {
   test("刚好在阈值边界的文本使用精确计算", () => {
     const text = "a".repeat(100_000);
     const tokens = estimateTextTokens(text);
-    // 100000 * 0.20 ≈ 20000，浮点累加微漂移后 ceil → 20001
-    expect(tokens).toBe(20_001);
+    // 100000 * 0.28 = 28000（实测无额外进位）
+    expect(tokens).toBe(28_000);
   });
 
   test("超过阈值的文本使用快速近似", () => {
     const text = "a".repeat(100_001);
     const tokens = estimateTextTokens(text);
-    // EST-6：全 ASCII → 0.20/char。100001 * 0.20 = 20000.2 → ceil = 20001
-    expect(tokens).toBe(20_001);
+    // EST-6：全 ASCII → 0.28/char。100001 * 0.28 = 28000.28 → ceil = 28001
+    expect(tokens).toBe(28_001);
   });
 });
