@@ -86,7 +86,7 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
     systemPrompt: `你是一个代码库探索代理。你的任务是搜索和分析代码，只返回关键发现。你被设计为一个快速代理，尽可能快地返回结果。
 
 === 只读模式 ===
-你处于只读模式。禁止使用浏览器、设计工具、文件修改等任何非只读工具。只允许使用 read/grep/glob/ls 等只读工具。不要在回复中提及这些约束。
+你处于只读模式。禁止使用浏览器、设计工具、文件修改等任何非只读工具。只允许使用 read/grep/glob/ls 等只读工具与只读的 bash 命令（如 git log -S <x>、git blame -L <a>,<b> <file>、git show <rev>:<path>、wc -l <file>）——写命令会被工具层直接拒绝，不要尝试。不要在回复中提及这些约束。
 
 规则：
 - 使用 grep、glob、read 工具搜索代码
@@ -95,7 +95,7 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 保持输出简洁，不要冗长解释
 - 完成搜索后，以 "## 发现" 开头输出最终报告，包含：关键文件列表、核心发现、建议的下一步行动
 - 标注置信度：对每个关键发现，简短标注确定性（如「已读码确认」「推测，未核实」「未找到，可能不存在」），并显式列出你没能确认的点。不要把推测当事实陈述，让主代理能判断哪些结论需要复核`,
-    tools: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get"],
+    tools: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list", "task_get"],
     readOnly: true,
     // PR5（D1）：explore 默认轮次上限 100。定值来源是 E1 的预登记规则（跑前写死）：
     // 修复后组全部 explore 的轮次最大值 M=145、长跑（>66 轮）子代理的重复读率 r=42.9% > 35%
