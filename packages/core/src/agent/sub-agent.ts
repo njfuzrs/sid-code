@@ -1570,6 +1570,9 @@ export class SubAgent {
     let spawnTurn = 0;
     let spawnToolUseCount = 0;
     let spawnTokenCount = 0;
+    // M1：spawn 子进程上报的**当前上下文**大小（promptTotal）。与 spawnTokenCount（累计）
+    // 是两个问题，父进程分别写进 <progress context_tokens> / cumulative_io_tokens。
+    let spawnContextTokens = 0;
 
     // 构建启动参数——使用绝对路径，避免用户项目 cwd 下找不到 headless.ts
     const spawnArgs = ["run", HEADLESS_ENTRY];
@@ -1749,6 +1752,7 @@ export class SubAgent {
                 spawnTurn = msg.turn ?? spawnTurn;
                 if (msg.tokenCount != null) spawnTokenCount = msg.tokenCount;
                 if (msg.toolUseCount != null) spawnToolUseCount = msg.toolUseCount;
+                if (msg.contextTokens != null) spawnContextTokens = msg.contextTokens;
                 // 实时进度回写：spawn 子进程每轮上报真实 token / 工具次数 / 活动文案。
                 // 两路消费，同一份窗口数据：
                 //   - registry（updateAgentProgress）→ 后台任务面板；
@@ -1761,6 +1765,9 @@ export class SubAgent {
                     updateAgentProgress(taskId, {
                       toolUseCount: msg.toolUseCount ?? 0,
                       tokenCount: msg.tokenCount ?? 0,
+                      // 用记下来的值而不是 msg.contextTokens ?? 0：旧子进程不带该字段时，
+                      // 兜底成 0 会把「已知的上下文大小」覆盖掉，等于谎报上下文空了。
+                      contextTokens: spawnContextTokens,
                       lastActivity: msg.lastActivity
                         ? { toolName: "", input: {}, activityDescription: msg.lastActivity }
                         : undefined,
@@ -2091,6 +2098,9 @@ export class SubAgent {
       let lastTextOutput = "";
       let toolUseCount = 0;
       let tokenCount = 0;
+      // M1：当前上下文大小（最后一次请求的 promptTotal）。与 tokenCount 是两个问题，
+      // 分别写进 <progress context_tokens> / <progress cumulative_io_tokens>。
+      let contextTokens = 0;
       /** 最近活动滑动窗口（跨轮累积，容量 MAX_RECENT_ACTIVITIES）。
        *  onTurnEnd 拿到的 info.tools 只是**本轮**的工具，所以窗口状态必须挂在这一层。 */
       let recentActivities: string[] = [];
@@ -2188,6 +2198,8 @@ export class SubAgent {
           // 真实进度直接取 runAgentLoop 累计值（token 来自 totalUsage，非伪造估算）
           toolUseCount = info.toolUseCount;
           tokenCount = info.tokenCount;
+          // M1：上下文大小与累计量是两个问题，分别取（见 TurnEndInfo 的两个字段注释）
+          contextTokens = info.contextTokens;
 
           // P0-1(b)：喂残卷收集器。onTurnEnd 在**工具执行之后**触发且带本轮工具名+入参
           // （agentic-loop.ts 的 turnToolInfo），所以在这一层就能攒出"已改动文件 / 已确认
@@ -2263,6 +2275,7 @@ export class SubAgent {
             updateAgentProgress(taskId, {
               toolUseCount,
               tokenCount,
+              contextTokens,
               lastActivity: lastToolEntry
                 ? {
                     toolName: lastToolEntry.name,

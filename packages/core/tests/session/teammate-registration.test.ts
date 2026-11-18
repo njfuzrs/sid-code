@@ -48,7 +48,7 @@ function agentTask(id: string, status: LocalAgentTaskState["status"]): LocalAgen
     agentType: "general",
     prompt: "do",
     isBackgrounded: true,
-    progress: { toolUseCount: 0, tokenCount: 0, recentActivities: [] },
+    progress: { toolUseCount: 0, tokenCount: 0, contextTokens: 0, recentActivities: [] },
   };
   registerTask(t);
   return t;

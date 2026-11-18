@@ -512,7 +512,9 @@ export async function generateTaskStatusAttachment(): Promise<string | null> {
     lines.push(`    <description>${task.description}</description>`);
     if (isAgentTask(task) && task.progress) {
       const p = task.progress;
-      lines.push(`    <progress tools="${p.toolUseCount}" tokens="${p.tokenCount}">`);
+      lines.push(
+        `    <progress tools="${p.toolUseCount}" context_tokens="${p.contextTokens}" cumulative_io_tokens="${p.tokenCount}">`,
+      );
       if (p.lastActivity) {
         lines.push(
           `      <last-activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last-activity>`,

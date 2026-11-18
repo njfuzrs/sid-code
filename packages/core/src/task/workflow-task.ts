@@ -47,7 +47,7 @@ export function createWorkflowTask(opts: {
     source: opts.source,
     isBackgrounded: true,
     agentCount: 0,
-    progress: { toolUseCount: 0, tokenCount: 0, recentActivities: [] },
+    progress: { toolUseCount: 0, tokenCount: 0, contextTokens: 0, recentActivities: [] },
   };
 
   registerTask(taskState);
