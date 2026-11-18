@@ -16,6 +16,7 @@ import {
   BudgetExceededError,
   AgentLimitError,
   UndeclaredPhaseError,
+  InvalidAgentPromptError,
   MAX_ITEMS_PER_CALL,
   type AgentRunner,
   type AgentCallContext,
@@ -463,5 +464,56 @@ describe("M6 runtime — workflow() 内联子 workflow(嵌套仅一层)", () => 
       return await workflow('child', { child: true });`;
     const { value } = await runInSandbox(parentScript, api);
     expect(value).toEqual({ child: true });
+  });
+});
+
+/**
+ * 2026-11-18 事故回归：脚本把 `agent(prompt, opts)` 写成单对象形态
+ * `agent({agentType:'verify', prompt: ..., schema: ...})`，整个对象成为 prompt，
+ * 8 个子代理全部只收到 `[object Object]`，而运行时零报错——白跑 6 分钟。
+ * 这组用例固化「参数写错必须立刻红，且穿透 parallel」。
+ */
+describe("M1 runtime — agent() 首参必须是 prompt 字符串", () => {
+  /** 把 api.agent 当宽松签名调用，模拟 vm 里没有类型检查的真实情形 */
+  const callAgent = (api: ReturnType<WorkflowRuntime["buildApi"]>) =>
+    api.agent as unknown as (prompt: unknown) => Promise<unknown>;
+
+  test("单对象形态 → InvalidAgentPromptError（不再静默变成 [object Object]）", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner() });
+    const misuse = { agentType: "verify", prompt: "核验 U1", schema: { type: "object" } };
+    await expect(callAgent(rt.buildApi())(misuse)).rejects.toThrow(InvalidAgentPromptError);
+  });
+
+  test("报错文案点明正确签名、误用形态与后果", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner() });
+    const err = await callAgent(rt.buildApi())({ prompt: "x" }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(InvalidAgentPromptError);
+    const msg = (err as Error).message;
+    expect(msg).toContain("agent(prompt, opts?)"); // 正确签名
+    expect(msg).toContain("带 prompt 字段的对象"); // 点名误用形态
+    expect(msg).toContain("[object Object]"); // 说明子代理会收到什么
+  });
+
+  test("参数错误不占 callIndex（写错的调用不该让 resume 结构键漂移）", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner() });
+    await expect(callAgent(rt.buildApi())({})).rejects.toThrow(InvalidAgentPromptError);
+    expect(rt.agentCallCount).toBe(0);
+  });
+
+  test("parallel 内的参数错误穿透，不吞成 null", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner() });
+    const api = rt.buildApi();
+    const call = callAgent(api);
+    await expect(
+      api.parallel([() => call({ prompt: "a" }), () => call({ prompt: "b" })]),
+    ).rejects.toThrow(InvalidAgentPromptError);
+  });
+
+  test("null / array / number / undefined 同样报错（不止对象形态）", async () => {
+    const rt = new WorkflowRuntime({ runner: makeRunner() });
+    const call = callAgent(rt.buildApi());
+    for (const bad of [null, ["a"], 42, undefined]) {
+      await expect(call(bad)).rejects.toThrow(InvalidAgentPromptError);
+    }
   });
 });

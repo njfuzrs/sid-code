@@ -165,4 +165,52 @@ describe("/workflows 命令", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("进度树：默认 agent#N 回退 prompt 摘要，并交代「已落盘 / 已发起」差额", async () => {
+    const prev = process.env.SID_CONFIG_DIR;
+    const home = mkdtempSync(join(tmpdir(), "sid-wf-label-"));
+    process.env.SID_CONFIG_DIR = home;
+    try {
+      // 已发起 4 个，只有 2 个写入 journal（另 2 个在跑，或返回 null 不写盘）
+      makeWfTask({ runId: "wf_label", workflowName: "labelled", agentCount: 4 });
+      const journalDir = join(home, "workflows", "journals");
+      mkdirSync(journalDir, { recursive: true });
+      const lines = [
+        // 默认 label 无业务语义 → 用 promptPreview 取代
+        {
+          callIndex: 0,
+          fingerprint: "a",
+          result: "部分落地",
+          label: "agent#0",
+          promptPreview: "单元 U1 — 缓存链路",
+          phase: "批1",
+        },
+        // 显式 label 优先于 promptPreview
+        {
+          callIndex: 1,
+          fingerprint: "b",
+          result: "通过",
+          label: "业务标签",
+          promptPreview: "单元 U2",
+          phase: "批1",
+        },
+      ];
+      writeFileSync(
+        join(journalDir, "wf_label.jsonl"),
+        lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+      );
+
+      const mod = await loadCmd();
+      const v = ((await mod.call("wf_label", EMPTY_CTX)) as { value: string }).value;
+      expect(v).toContain("单元 U1 — 缓存链路"); // 默认 label 被 prompt 摘要取代
+      expect(v).not.toContain("agent#0");
+      expect(v).toContain("业务标签"); // 显式 label 保留
+      expect(v).toContain("2 个已落盘 / 已发起 4"); // 差额来源可见
+      expect(v).toContain("差额 2 个"); // 解释差额是什么
+    } finally {
+      if (prev === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prev;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
