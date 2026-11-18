@@ -37,7 +37,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/compact` | 压缩对话历史（无参全量 / 数字只压前半段 / 文本 focus 保留重点） | — | `[比例\|下标\|focus 指令]` |
 | `/config` | 显示当前配置 | `/settings` | — |
 | `/conflict` | 显示并发冲突状态（活跃的文件意图） | `/cl` | — |
-| `/context` | 上下文用量可视化（分类 token 拆解 + 距压缩阈值） | — | — |
+| `/context` | 上下文用量拆解：分类 token、压缩档位与阈值、实测对账 | — | — |
 | `/copy` | 复制最后一条助手回复到剪贴板（code 只复制代码块） | — | `[code]` |
 | `/cost` | 显示 token 用量和费用 | — | — |
 | `/cron` | 管理定时任务（列出 / 删除） | `/schedule` | `[list\|delete <id>]` |
