@@ -156,8 +156,13 @@ export interface ContextTokenBreakdown {
   freed: {
     /** 合计（= `getLocalFreedTokens()`） */
     tokens: number;
-    /** 按策略拆开（`masking` / `staleToolOutput` / `coldCacheClear` / `cleanedMessages`），供细目展示 */
-    byStrategy: Array<{ strategy: string; tokens: number }>;
+    /**
+     * 按策略拆开（`masking` / `staleToolOutput` / `coldCacheClear` / `cleanedMessages`），供细目展示。
+     *
+     * `count` 是记账条数——面板要显示「过期清理 24 项」，只给 token 数说不出「清理了几次」。
+     * 两者都只由 `TokenFreedTracker.recordCompact` 产生，同一条记录同时撑起两个量。
+     */
+    byStrategy: Array<{ strategy: string; tokens: number; count: number }>;
   };
   /** 上下文窗口上限 */
   maxTokens: number;
@@ -298,6 +303,16 @@ export interface CompactionThresholds {
   effectiveWindow: number;
   /** 完成缓冲区（输出预留 + 摘要预留） */
   completionBuffer: number;
+  /**
+   * 完成缓冲区里的「输出预留」分量（本次请求打算留多少 token 给回复）。
+   *
+   * 与 {@link summaryReserve} 一起返回的理由：`/context` 要展示
+   * 「完成预留 52,768 = 回复输出 32,768 + 一次摘要 20,000」，让用户看得出这个数字怎么来的。
+   * 不变量：`outputReserve + summaryReserve === completionBuffer`（钳位后仍然成立）。
+   */
+  outputReserve: number;
+  /** 完成缓冲区里的「一次 LLM 摘要往返」预留分量。 */
+  summaryReserve: number;
   /** 剩余 ≤ 此值 → soft（工具输出遮罩） */
   maskingRemaining: number;
   /** 剩余 ≤ 此值 → hard（LLM 摘要压缩） */
@@ -2380,15 +2395,22 @@ export class Manager {
 
     // ── 1. 完成缓冲区（P3-2）：作为 hard/emergency 剩余门槛的「地板」，不做窗口减法 ──
     let completionBuffer = 0;
+    // 两个分量必须一起返回（/context 展示「完成预留 52,768 = 回复输出 32,768 + 一次摘要 20,000」）。
+    // 被 TOTAL_MAX_RATIO 钳制时，摘要分量取「钳制后剩余」，保证
+    // `outputReserve + summaryReserve === completionBuffer` 恒成立（否则拆分行的加总对不上总数）。
+    let outputReserve = 0;
+    let summaryReserve = 0;
     if (this.maxTokens > COMPLETION_BUFFER.MIN_WINDOW_TO_APPLY) {
-      const outputReserve = Math.min(
+      const rawOutputReserve = Math.min(
         this.requestOutputBudget ?? COMPLETION_BUFFER.DEFAULT_OUTPUT_RESERVE,
         Math.floor(this.maxTokens * COMPLETION_BUFFER.OUTPUT_RESERVE_MAX_RATIO),
       );
       completionBuffer = Math.min(
-        outputReserve + COMPLETION_BUFFER.SUMMARY_RESERVE,
+        rawOutputReserve + COMPLETION_BUFFER.SUMMARY_RESERVE,
         Math.floor(this.maxTokens * COMPLETION_BUFFER.TOTAL_MAX_RATIO),
       );
+      outputReserve = Math.min(rawOutputReserve, completionBuffer);
+      summaryReserve = Math.max(0, completionBuffer - outputReserve);
     }
     // 有效窗口 = 全窗口：阈值判定分母不变（缓冲区通过抬高门槛体现，见上方 COMPLETION_BUFFER 注释）。
     // 保留该字段供 /context 展示与未来演进；当前恒等于 maxTokens。
@@ -2408,6 +2430,8 @@ export class Manager {
       return {
         effectiveWindow,
         completionBuffer,
+        outputReserve,
+        summaryReserve,
         maskingRemaining: 0,
         compressionRemaining,
         emergencyRemaining,
@@ -2447,6 +2471,8 @@ export class Manager {
     return {
       effectiveWindow,
       completionBuffer,
+      outputReserve,
+      summaryReserve,
       maskingRemaining,
       compressionRemaining,
       emergencyRemaining,
@@ -2672,13 +2698,16 @@ export class Manager {
    * 记账（totalFreed 与 records 在同一个方法里同步增长）。
    * 按释放量降序——UI 不需要再排；同量时保持首次记账的顺序（Map 插入序，稳定）。
    */
-  private freedByStrategy(): Array<{ strategy: string; tokens: number }> {
-    const byStrategy = new Map<string, number>();
+  private freedByStrategy(): Array<{ strategy: string; tokens: number; count: number }> {
+    const byStrategy = new Map<string, { tokens: number; count: number }>();
     for (const rec of this.tokenFreedTracker.getRecords()) {
-      byStrategy.set(rec.strategy, (byStrategy.get(rec.strategy) ?? 0) + rec.tokensFreed);
+      const cur = byStrategy.get(rec.strategy) ?? { tokens: 0, count: 0 };
+      cur.tokens += rec.tokensFreed;
+      cur.count += 1;
+      byStrategy.set(rec.strategy, cur);
     }
     return [...byStrategy.entries()]
-      .map(([strategy, tokens]) => ({ strategy, tokens }))
+      .map(([strategy, v]) => ({ strategy, tokens: v.tokens, count: v.count }))
       .sort((a, b) => b.tokens - a.tokens);
   }
 

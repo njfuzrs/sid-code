@@ -22,6 +22,7 @@
  */
 
 import { estimateTextTokens } from "./token.ts";
+import { getLogger } from "../debug/index.ts";
 import type { ImportedFileRecord } from "../config/import-processor.ts";
 
 export interface FixedOverheadSource {
@@ -39,6 +40,23 @@ export interface FixedOverheadReport {
   sources: FixedOverheadSource[];
   /** 单项超过窗口 2% 时的提示（来源 + 处理方法） */
   hints: string[];
+  /**
+   * A4：母项（「记忆/CLAUDE.md」分类）减去已列细目之和的残差，恒 ≥ 0。
+   *
+   * 存在的理由：`sources` 只覆盖「记忆索引各段」与「`@` 导入文件」两类，而母项里还有
+   * CLAUDE.md 正文、召回模式下的记忆摘要、会话记忆等没有单独列出的部分。不把这个差额
+   * 显式列出来，用户把细目加总后会发现**小于**面板上的「记忆/CLAUDE.md」，
+   * 只能怀疑哪个数字算错了。
+   *
+   * 口径：母项由调用方传入（`opts.memoryFilesTokens`，已校准），细目也走同一个校准系数，
+   * 所以 `Σ sources + residual === memoryFiles` 严格成立（钳位例外见下）。
+   * 未传母项时（旧调用方 / 单测）恒为 0，此时本字段无意义。
+   *
+   * 残差为负 = 细目之和超过了母项，说明两边口径又漂了（例如注入端漏记 memory 分量）。
+   * 处置：钳到 0 显示 + 记一条 debug 日志，**不在面板上造一个负数**——负残差对用户
+   * 没有可行动的含义，对开发者则是一条需要排查的信号。
+   */
+  residual: number;
 }
 
 /** 单项提示阈值：占窗口比例 */
@@ -134,11 +152,18 @@ function fmtK(n: number): string {
  * @param opts.maxTokens     窗口（2% 提示阈值的分母）
  * @param opts.calibrationFactor 真实 usage 反推的校准系数（未校准传 1）
  * @param opts.projectRoot   用于把路径显示成相对路径
+ * @param opts.memoryFilesTokens 母项「记忆/CLAUDE.md」的校准后总量（用于算 `residual`）。
+ *   不传时残差恒为 0（旧调用方 / 单测），此时细目加总与母项的关系不由本函数保证。
  */
 export function computeFixedOverheadSources(
   systemPrompt: string,
   importedFiles: readonly ImportedFileRecord[] | undefined,
-  opts: { maxTokens: number; calibrationFactor: number; projectRoot?: string },
+  opts: {
+    maxTokens: number;
+    calibrationFactor: number;
+    projectRoot?: string;
+    memoryFilesTokens?: number;
+  },
 ): FixedOverheadReport {
   const factor =
     Number.isFinite(opts.calibrationFactor) && opts.calibrationFactor > 0
@@ -192,5 +217,24 @@ export function computeFixedOverheadSources(
     }
   }
 
-  return { sources, hints };
+  // ── A4：残差 = 母项 − 已列细目之和 ──
+  // 母项与细目走同一个校准系数，所以直接相减，不需要再乘一次。
+  // 母项缺失（旧调用方 / 单测）时残差恒 0 —— 此时「细目加总 = 母项」不由本函数保证。
+  const listedTotal = sources.reduce((sum, s) => sum + s.tokens, 0);
+  const mother = opts.memoryFilesTokens;
+  let residual = 0;
+  if (typeof mother === "number" && Number.isFinite(mother) && mother > 0) {
+    residual = mother - listedTotal;
+    if (residual < 0) {
+      // 负残差 = 细目之和超过母项。面板上显示负数对用户没有可行动含义，
+      // 但它是「注入端口径漂移」的真实信号（例如 memory 分量漏记），所以留日志。
+      getLogger().debug(
+        "CONTEXT",
+        `固定开销残差为负（细目 ${listedTotal} > 母项 ${mother}），已钳到 0；请检查 memory 分量记账`,
+      );
+      residual = 0;
+    }
+  }
+
+  return { sources, hints, residual };
 }

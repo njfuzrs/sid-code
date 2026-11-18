@@ -8628,32 +8628,6 @@ export class App {
   }
 
   /**
-   * F5 / PR-4：/context 的分类拆解 + 固定开销来源（记忆索引、`@` 导入文件逐项）。
-   *
-   * 来源细目从**实际发出的 system prompt** 里切，不读磁盘——被截断 / 作用域外 / 召回模式下
-   * 没注入的都不算；token 用与其它分类同一个校准系数。计算失败只丢细目，分类拆解照常返回。
-   */
-  private getContextBreakdownWithSources(): import("@sid-code/core/context/manager.ts").ContextTokenBreakdown {
-    const bd = this.ctxMgr.getTokenBreakdown(this.toolRegistry.size());
-    try {
-      const { computeFixedOverheadSources } =
-        require("@sid-code/core/context/fixed-overhead.ts") as typeof import("@sid-code/core/context/fixed-overhead.ts");
-      bd.fixedOverhead = computeFixedOverheadSources(
-        this.ctxMgr.getSystemPrompt(),
-        this.currentProjectRules?.importedFiles,
-        {
-          maxTokens: bd.maxTokens,
-          calibrationFactor: this.ctxMgr.getCalibrationFactor(),
-          projectRoot: getProjectRoot(),
-        },
-      );
-    } catch (err: any) {
-      getLogger().debug("APP", `固定开销来源计算失败（不影响 /context）: ${err?.message}`);
-    }
-    return bd;
-  }
-
-  /**
    * P1-7：记录启动期/重建期的记忆 token 基线，并立即把「基线 + JIT」的合计报给 ctxMgr。
    *
    * 所有 `onSectionTokens` 回调都必须经这里，不能裸调 `ctxMgr.setMemoryTokens` ——
@@ -12319,6 +12293,10 @@ export class App {
           ctxMgr: this.ctxMgr,
           toolRegistry: this.toolRegistry,
           cwd: process.cwd(),
+          // PR3：/context 的固定开销细目要按「哪些 @ 导入进了这次 system prompt」逐项列。
+          // 规则快照活在 currentProjectRules 里（启动 / 文件变化 / 导入审批时重载），
+          // 命令侧不重新读盘——读盘会与「实际发出的提示词」不一致。
+          ...(this.currentProjectRules ? { projectRules: this.currentProjectRules } : {}),
           config: this.config,
           // 与 checkpoint 同口径：逻辑会话 id（resume 时是被恢复会话 id）。
           // 轨迹目录 sessions/<id>/ 与会话 jsonl 都按它归属，/trace /perf /insights
@@ -12661,8 +12639,6 @@ export class App {
       },
       // /export 面板：导出对话到剪贴板或文件
       onExportConversation: (target, format) => this.exportConversation(target, format),
-      // /context 面板：实时读取上下文分类 token 拆解
-      getContextBreakdown: () => this.getContextBreakdownWithSources(),
       // P2-1：Esc+Esc 回退选择器读取回退点列表（最新在前，投影为 UI 展示结构）。
       getRewindPoints: () => {
         const points = this.rewindManager?.listPoints() ?? [];

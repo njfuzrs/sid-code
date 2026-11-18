@@ -180,8 +180,6 @@ export interface TUICallbacks {
   onBackgroundCurrent?: () => Promise<string | null>;
   /** /export 面板选择后执行导出 */
   onExportConversation?: (target: "clipboard" | "file", format: "md" | "json" | "both") => void;
-  /** /context 面板：读取当前上下文分类 token 拆解（稳定引用，调用时实时计算） */
-  getContextBreakdown?: () => import("@sid-code/core/context/manager.ts").ContextTokenBreakdown;
   /**
    * P2-1：Esc+Esc 回退选择器读取回退点列表（最新在前）。
    * 投影为 UI 展示结构，不直接暴露 RewindPoint 内部字段。
