@@ -113,14 +113,17 @@ describe("team_message 身份与投递", () => {
 
 describe("team_message 不被工具过滤裁掉", () => {
   const fakeTool = (name: string) => ({ name: () => name }) as any;
-  const tools = [fakeTool("team_message"), fakeTool("read"), fakeTool("bash")];
+  const tools = [fakeTool("team_message"), fakeTool("read"), fakeTool("bash"), fakeTool("write")];
   const names = (list: any[]) => list.map((t) => t.name());
 
-  it("内置 explore 白名单（不含 bash）仍保留 team_message", () => {
+  it("内置 explore 白名单（PR12 起含 bash）仍保留 team_message", () => {
     const kept = names(filterToolsForAgent(tools, { isBuiltIn: true, builtInType: "explore" }));
     expect(kept).toContain("team_message");
     expect(kept).toContain("read");
-    expect(kept).not.toContain("bash"); // 白名单本身仍生效
+    // PR12：explore 工具表加了 bash（只读性由工具层机械门禁保证，不在白名单层区分）。
+    // 「白名单本身仍生效」的判据换成 write —— 它才是 explore 不该有的写工具。
+    expect(kept).toContain("bash");
+    expect(kept).not.toContain("write");
   });
 
   it("后台异步 agent 白名单仍保留 team_message", () => {
