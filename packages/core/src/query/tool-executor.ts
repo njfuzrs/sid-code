@@ -1283,6 +1283,10 @@ export async function resolveToolPermission(
         source: result.source,
         reason: result.decision.reason,
         decisionReason: decision.decisionReason,
+        // PR0（C2）：把「为什么要问」那次的分类器结论带进审计终局行。
+        // 不带它，审计里这一行就只有 `"reason":"用户批准"`——触发会话里
+        // 「分类器为什么判 unsafe」正是因此查不到（轨迹只有枚举，理由没落）。
+        metadata: decision.metadata,
       });
     } catch (e) {
       log.warn("PERMISSION", `确认终局写审计失败（忽略）: ${(e as Error)?.message}`);
