@@ -142,6 +142,30 @@ export function resolveTimeoutBounds(): { defaultMs: number; maxMs: number } {
 }
 
 /**
+ * 附录 C-2：请求的 `timeout` 被上限钳制时的说明文案（空串 = 未钳制）。
+ *
+ * 修前 `Math.min(params.timeout, maxMs)` 是**静默**钳制：模型请求 1200s、实际按 600s
+ * 被杀，超时文案写的是「超过 600 秒被终止」，与它自己请求的数字对不上，于是归因成
+ * 「平台 flake / 偶发超时」并原样重试，而不是「上限在这里，该转后台或调 env」。
+ * 用户侧同样表现为「我设了 20 分钟为什么 10 分钟就断」。
+ *
+ * 只在**前台**加：后台命令的结果是 JSON（task_id 等），前置一行文本会破坏解析，
+ * 且后台任务的等待期限走 `wait_until_seconds`，不读这个 timeout 的回执。
+ */
+function clampTimeoutNotice(input: unknown): string {
+  const params = input as { timeout?: unknown; run_in_background?: unknown } | null;
+  if (params?.run_in_background === true) return "";
+  const requested = params?.timeout;
+  if (typeof requested !== "number" || !Number.isFinite(requested)) return "";
+  const { maxMs } = resolveTimeoutBounds();
+  if (requested <= maxMs) return "";
+  return (
+    `[注意] 请求的超时 ${Math.round(requested / 1000)}s 超过上限，实际按 ` +
+    `${Math.round(maxMs / 1000)}s 执行（env BASH_MAX_TIMEOUT_MS 可调）。`
+  );
+}
+
+/**
  * 前台命令实时进度节流间隔（毫秒）。
  * bun test / 构建等命令每秒可输出数百行，逐行 emit 会把 React 重渲打爆并触发全屏闪烁
  *（见 src/ui/CLAUDE.md L3.4）。攒够一个间隔再吐一次尾部，兼顾"实时感"与渲染成本。
@@ -1103,12 +1127,23 @@ export class BashTool implements Tool {
     // 窗口（构造期就在建 shell 快照）——那时模型还没读过文件，tracker 是空的，无影响。
     const snapshot = this.beginBashTracking(input);
     const result = await this.executeCommand(input, signal, onProgress);
+    // 附录 C-2：请求的 timeout 被上限静默钳制时，在结果**首行**注明实际值。
+    //
+    // 修前 `Math.min(…, maxMs)` 的钳制没有任何回执：模型请求 1200s、实际 600s 被杀，
+    // 超时文案写的是「超过 600 秒被终止」，与它自己请求的数字对不上，于是归因成
+    // 「平台 flake」并原样重试，而不是「上限在这里 / 该转后台」。静默钳制在
+    // 用户侧的表现同样是「我设了 20 分钟为什么 10 分钟就断」。
+    const clampNote = clampTimeoutNotice(input);
+    const withClampNote = clampNote
+      ? { ...result, output: `${clampNote}\n${result.output ?? ""}` }
+      : result;
     // C1：`bun test` 0 匹配时补一句提示（只追加文案，不动 isError / 退出码）
     const cmd = (input as { command?: unknown } | null)?.command;
-    const noMatch = typeof cmd === "string" ? bunTestNoMatchNotice(cmd, result.output ?? "") : "";
+    const noMatch =
+      typeof cmd === "string" ? bunTestNoMatchNotice(cmd, withClampNote.output ?? "") : "";
     const withNoMatch = noMatch
-      ? { ...result, output: `${result.output ?? ""}${noMatch}` }
-      : result;
+      ? { ...withClampNote, output: `${withClampNote.output ?? ""}${noMatch}` }
+      : withClampNote;
     return this.withTrackedFileChanges(
       input,
       this.withForegroundSleepNotice(

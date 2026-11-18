@@ -3340,12 +3340,19 @@ async function* queryLoopBody(
               ? ctxMgr.estimateTokensFor(sendParams.messages, toolRegistry.size())
               : null,
             // PR0（2026-11-18）：请求前的上下文估算四件套，让「估算 vs 真实 input」能逐次对账。
-            // ctx_estimated_tokens 与上面的 sendBudget 共用同一个常量（不重复遍历消息）；
-            // 后三个都是 O(1) 读取，不新增估算。四个字段的口径见 hook/types.ts 对应注释：
+            // ⚠️ ctx_estimated_tokens 必须取**全量历史**口径（getHistoryTokens），
+            // 不能复用上面的 sendEstimatedInputTokens（那是 getSendTokens()，发送量，已扣过
+            // 本地释放量）。四件套的对账公式是「预测发送量 = ctx_estimated_tokens −
+            // ctx_freed_tokens」，用发送量填这一格等于把 freed 扣两次：E1 端到端验收
+            // （2026-11-18）实测 M1 被抬到 S1 31.1% / S2 117.7%，而 freed 恒为 0 的 E0
+            // 会话完全看不出来（减法恒等），是典型的「只在有释放量时才显形的口径漂移」。
+            // 代价是多一次 O(消息数) 遍历——这一处每请求一次，可忽略；把口径钉死比省一次
+            // 遍历重要。后三个都是 O(1) 读取，不新增估算。四个字段的口径见
+            // hook/types.ts 对应注释：
             //   · estimateTokens 含锚点抬升、不扣本地释放 → 与估计的发送量差 ctx_freed_tokens
             //   · ctx_anchor_tokens === ctx_estimated_tokens 即「锚点抬升生效」
             //   · ctx_calibrated 用来把首轮未校准的调用从误差统计里分出去
-            ctx_estimated_tokens: sendEstimatedInputTokens,
+            ctx_estimated_tokens: ctxMgr.getHistoryTokens(toolCount),
             ctx_freed_tokens: ctxMgr.getLocalFreedTokens(),
             ctx_anchor_tokens: ctxMgr.getLastActualInputTokens(),
             ctx_calibrated: ctxMgr.isCalibrated(),
