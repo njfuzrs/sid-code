@@ -70,6 +70,7 @@ import {
   detectDroppedImagePath,
   resolveCopiedImageFile,
 } from "./utils/clipboard-image.ts";
+import { unescapeDroppedPath } from "./utils/dropped-path.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -115,6 +116,13 @@ const PROMPT = "> ";
 const SHELL_PROMPT = "! ";
 /** InputArea 最大可见行数（超过时 viewport 滚动） */
 const MAX_INPUT_LINES = 8;
+
+/**
+ * 拖拽路径还原提示的衰减配置（L4-C）：输入框里已经是干净路径，提示只是解释
+ * 「刚才那串转义被处理了」，教过 3 次就够，之后不再打扰。
+ */
+const DROPPED_PATH_HINT_KEY = "droppedPathUnescape";
+const DROPPED_PATH_HINT_MAX_SHOWS = 3;
 
 /**
  * 输入框边框：只画上下两条细横线，不画左右竖线。
@@ -814,6 +822,20 @@ export function InputArea({
 
     if (key.name === "paste") {
       const cleaned = cleanPasteText(key.sequence);
+      // 终端把拖拽的文件/目录路径按 shell 转义后的形态给进来（`a\&b`、`'/Volumes/My Disk'`），
+      // 原样插进输入框后，模型会拿着字面量去找一个不存在的文件名。
+      // 还原判据全在 unescapeDroppedPath 里（单行 + 转义/引号真的生效 + 路径前缀 + 还原后
+      // existsSync），四关全过才替换，所以这里可以无脑调用。
+      // 放在所有分支之前：图片路径同样可能含 `&`，先还原才能命中 detectDroppedImagePath。
+      const pathText = unescapeDroppedPath(cleaned);
+      if (pathText !== cleaned) {
+        log.debug("UI:INPUT", `已还原拖拽路径: ${pathText}`);
+        // L4-C 渐进衰减：输入框里已经是干净路径，老手不需要每次都被再提醒一遍。
+        if (shouldShowHint(DROPPED_PATH_HINT_KEY, DROPPED_PATH_HINT_MAX_SHOWS)) {
+          markHintShown(DROPPED_PATH_HINT_KEY);
+          showTransientMessage("已还原拖拽路径的转义", TransientMessageType.Hint);
+        }
+      }
 
       // P2-6 剪贴板截图：空 paste 是终端对"剪贴板里是图片"的典型信号（parse-keypress 保留空 paste）。
       // 尝试把剪贴板图片落临时文件 → 插入 @<path> 引用，走 Read 工具的 vision 管道。
@@ -824,7 +846,7 @@ export function InputArea({
       }
 
       // P2-7 拖放图片：粘贴内容是单个图片文件路径（终端拖文件常粘贴路径）→ 转 @<path> 引用。
-      const dropped = detectDroppedImagePath(cleaned);
+      const dropped = detectDroppedImagePath(pathText);
       if (dropped) {
         insertImageRef(dropped);
         log.debug("UI:INPUT", `拖放图片: ${dropped}`);
@@ -833,7 +855,7 @@ export function InputArea({
 
       // 访达复制图片文件（Cmd+C）后粘贴：终端只给裸文件名，从剪贴板文件引用找回真实路径。
       // 不处理时用户消息里只剩一个文件名，模型得自己去全盘 glob（实测 20s 超时两次）。
-      const copied = resolveCopiedImageFile(cleaned);
+      const copied = resolveCopiedImageFile(pathText);
       if (copied) {
         insertImageRef(copied);
         log.info("UI:INPUT", `访达复制的图片: ${copied}`);
@@ -841,16 +863,16 @@ export function InputArea({
         return true;
       }
 
-      if (cleaned.length > 0) {
+      if (pathText.length > 0) {
         // IN3：大块粘贴登记元数据并插入精简占位引用，提交时还原；
         // 小块粘贴直接插入，保持顺手。
-        if (shouldPlaceholder(cleaned)) {
-          const ref = registerPaste(cleaned, "text");
-          log.debug("UI:INPUT", `粘贴(占位): ${cleaned.length} 字符 → ${ref}`);
+        if (shouldPlaceholder(pathText)) {
+          const ref = registerPaste(pathText, "text");
+          log.debug("UI:INPUT", `粘贴(占位): ${pathText.length} 字符 → ${ref}`);
           tb.insert(ref);
         } else {
-          log.debug("UI:INPUT", `粘贴: ${cleaned.length} 字符`);
-          tb.insert(cleaned);
+          log.debug("UI:INPUT", `粘贴: ${pathText.length} 字符`);
+          tb.insert(pathText);
         }
       }
       return true;

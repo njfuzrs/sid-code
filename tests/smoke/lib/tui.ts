@@ -153,6 +153,12 @@ export async function driveTui(
         failure = await waitFor(step.text, DEFAULT_WAIT_MS, `${label}（回显）`);
         // 再等过「快速回车」窗口，否则紧跟的回车会被当成换行（见 TYPE_SETTLE_MS）
         if (!failure) await Bun.sleep(TYPE_SETTLE_MS);
+      } else if (step.kind === "raw") {
+        send(step.text);
+        // 不做 waitFor：raw 里是控制序列（如 bracketed paste 的 `\x1b[200~`），屏幕上
+        // 出现的是它的**结果**而不是原文，按原文等回显必然超时。判据交给下一步 wait。
+        // 但要等 TUI 把这段处理完，否则紧跟的 key 会早于内容落进缓冲区。
+        await Bun.sleep(TYPE_SETTLE_MS);
       } else if (step.kind === "key") {
         send(KEYS[step.key]);
       } else if (step.kind === "pause") {

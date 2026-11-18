@@ -188,6 +188,18 @@ export type AfterStep = DaemonStep | PrintStep;
 export type TuiStep =
   | { kind: "type"; text: string }
   /**
+   * 原样写入字节，**不等回显**。给需要自带控制序列的输入用：
+   *
+   * - bracketed paste（`\x1b[200~…\x1b[201~`）——`type` 是裸字节 + 等回显，
+   *   既进不了 `key.name === "paste"` 分支，`waitFor(step.text)` 也会因为
+   *   屏幕上只有粘贴内容而匹配不到；
+   * - 其它需要一次写入整串控制序列的场景（不要在剧本里拼 `type` 加裸 ESC）。
+   *
+   * 写入后按 `TYPE_SETTLE_MS` 等 TUI 处理完：紧跟的 `key` 不能早于内容落进缓冲区。
+   * 判据一律交给下一步 `wait`——这一步自己不做任何断言。
+   */
+  | { kind: "raw"; text: string }
+  /**
    * 按键名必须与 `tui.ts` 的 `KEYS` 键一一对应（那边是真字节，这边只是名字）。
    * 新增键时两处都要加——只加这边会在运行时 `KEYS[step.key]` 取到 undefined，
    * `send(undefined)` 静默什么都不做，剧本卡在下一步等超时（失败形态很远）。
