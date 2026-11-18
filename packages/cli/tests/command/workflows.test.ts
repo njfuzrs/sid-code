@@ -33,7 +33,7 @@ function makeWfTask(over: Partial<LocalWorkflowTaskState> = {}): LocalWorkflowTa
     agentCount: over.agentCount ?? 2,
     currentPhase: over.currentPhase ?? "Find",
     isBackgrounded: true,
-    progress: { toolUseCount: 0, tokenCount: 0, recentActivities: [] },
+    progress: { toolUseCount: 0, tokenCount: 0, contextTokens: 0, recentActivities: [] },
     ...over,
   };
   registerTask(t);

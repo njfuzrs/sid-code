@@ -69,7 +69,7 @@ export function createAgentTask(opts: {
     prompt: opts.prompt,
     model: opts.model,
     isBackgrounded: opts.isBackgrounded ?? true,
-    progress: { toolUseCount: 0, tokenCount: 0, recentActivities: [] },
+    progress: { toolUseCount: 0, tokenCount: 0, contextTokens: 0, recentActivities: [] },
   };
 
   registerTask(taskState);

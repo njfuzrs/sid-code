@@ -229,7 +229,9 @@ export class TaskOutputTool implements Tool {
       // 独有字段。合并后保留 —— 模型查运行中子代理时最常问的就是「已经做了多少」。
       const p = currentTask.progress;
       if (p) {
-        parts.push(`  <progress tools="${p.toolUseCount}" tokens="${p.tokenCount}">`);
+        parts.push(
+          `  <progress tools="${p.toolUseCount}" context_tokens="${p.contextTokens}" cumulative_io_tokens="${p.tokenCount}">`,
+        );
         if (p.lastActivity) {
           parts.push(
             `    <last_activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last_activity>`,
