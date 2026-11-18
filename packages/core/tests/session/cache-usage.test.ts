@@ -346,7 +346,7 @@ describe("SessionState.getStockPromptTokens — 末次完整输入(stock)", () =
     expect(ss.getCumulativePromptTokens()).toBe(3000);
   });
 
-  test("多模型会话：stock 各模型末次完整输入简单求和", () => {
+  test("多模型会话：stock 取主循环末次调用，跨模型不叠加（A7 / PR5）", () => {
     const ss = new SessionState("test");
     ss.updateUsage(
       "claude-sonnet-4-20250514",
@@ -365,8 +365,13 @@ describe("SessionState.getStockPromptTokens — 末次完整输入(stock)", () =
       100,
       "openai",
     );
-    // claude 末次 promptTotal = 2000 + 40000 + 1000 = 43000；deepseek = 12000
-    expect(ss.getStockPromptTokens()).toBe(43000 + 12000);
+    // claude 末次 promptTotal = 2000 + 40000 + 1000 = 43000；deepseek = 12000。
+    // 会话级「当前上下文」只取**末次**主循环调用（deepseek 12000），不把两个模型的窗口
+    // 叠成 55000 —— /model 切换后旧模型那份已经不构成"当前上下文"了（A7 的验收点）。
+    expect(ss.getStockPromptTokens()).toBe(12000);
+    // 按模型明细仍保留（/stats、/cost 拆解用），只是不参与上面的会话级口径
+    expect(ss.modelUsage["claude-sonnet-4-20250514"].stockPromptTokens).toBe(43000);
+    expect(ss.modelUsage["deepseek-v4-pro"].stockPromptTokens).toBe(12000);
   });
 });
 
