@@ -17,7 +17,7 @@ import { getLogger } from "../debug/logger.ts";
 import { UsageSinkTicket, hasNonZeroUsage } from "../llm/billing-sink.ts";
 import { createAgentTask, failAgentTask } from "../task/index.ts";
 import { BACKGROUND_RECEIPT_NOTICE } from "../task/background-receipt.ts";
-import { NOTIFICATION_OUTPUT_MAX_CHARS, truncateForNotification } from "../task/notification.ts";
+import { NOTIFICATION_OUTPUT_MAX_CHARS, truncateResultForDelivery } from "../task/notification.ts";
 import { persistLargeOutput } from "../context/tool-result-storage.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { buildAgentHookSystem } from "./agent-hooks.ts";
@@ -883,6 +883,9 @@ ${typeLines}
       agentType: params.type,
       prompt: params.prompt,
       description: params.description,
+      // X3：超长结论的持久副本按会话分目录（与同步回程同一个落点）。这里必须记下来——
+      // `completeAgentTask` 是模块级函数，拿不到本实例上的 parentSessionId。
+      parentSessionId: this.parentSessionId,
     });
 
     // 合并外部 signal:保存 handler 引用,后台任务结束时摘除监听器(LEAK-4)
@@ -1092,9 +1095,13 @@ export function buildSyncSubagentSummary(input: {
     // 「全文没留下来」。旧路径（上下文层 >30,000）失败时会留 `文件=[保存失败]` 标记；这条
     // 同步回程复用 persistLargeOutput 的静默降级，标记不能跟着一起丢——否则父代理会把
     // 16,000 字的截断结果当成完整结论，且没有任何信号提示它内容不完整。
-    body = outputFile
-      ? truncateForNotification(result.output, NOTIFICATION_OUTPUT_MAX_CHARS, outputFile)
-      : `${truncateForNotification(result.output, NOTIFICATION_OUTPUT_MAX_CHARS)}\n[全文落盘失败，以上不是完整内容]`;
+    // 这段口径（含失败标记的逐字文案）已抽成 `truncateResultForDelivery`，与后台通知 /
+    // task_output 共用一份实现——三处各写一遍正是 X3 之前那个「同一份结论、三个不同指针」的来源。
+    body = truncateResultForDelivery({
+      text: result.output,
+      persistentFile: outputFile,
+      persistFailed: !outputFile,
+    });
   }
 
   return [

@@ -20,8 +20,7 @@ import {
   claimResultDelivery,
   withdrawTaskNotification,
   getCompletedMainTurns,
-  NOTIFICATION_OUTPUT_MAX_CHARS,
-  truncateForNotification,
+  truncateResultForDelivery,
 } from "../task/index.ts";
 import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -243,10 +242,19 @@ export class TaskOutputTool implements Tool {
         parts.push(`  <progress_summary>${currentTask.progressSummary}</progress_summary>`);
       }
     }
-    if (agentResult && terminal) {
+    // 这里的 `isAgentTask(currentTask)` 是给 TS 收窄用的（`agentResult` 的来源它推不出来）：
+    // 下面要读的 resultFile / resultPersistFailed 只存在于 LocalAgentTaskState 上。
+    if (agentResult && terminal && isAgentTask(currentTask)) {
       parts.push(
         `  <output-file>${currentTask.outputFile}</output-file>`,
-        `  <result untrusted="true">${truncateForNotification(agentResult.output, NOTIFICATION_OUTPUT_MAX_CHARS, currentTask.outputFile)}</result>`,
+        // X3：截断提示指向**持久副本**（resultFile，不随回合驱逐），不再指向 `.output`。
+        // 指向 `.output` 时，主循环跑完一两个回合后父代理拿着这条指针去读只会读到墓碑。
+        `  <result untrusted="true">${truncateResultForDelivery({
+          text: agentResult.output,
+          persistentFile: currentTask.resultFile,
+          persistFailed: currentTask.resultPersistFailed,
+          fallbackFile: currentTask.outputFile,
+        })}</result>`,
         `  <usage>`,
         `    <total_tokens>${agentResult.totalTokens}</total_tokens>`,
         `    <input_tokens>${agentResult.usage.inputTokens}</input_tokens>`,

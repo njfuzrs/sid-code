@@ -87,6 +87,7 @@ export {
   withdrawTaskNotification,
   NOTIFICATION_OUTPUT_MAX_CHARS,
   truncateForNotification,
+  truncateResultForDelivery,
 } from "./notification.ts";
 
 // 空闲唤醒原语（通知到达时续跑一轮的那套等待/订阅）。集中在这里转出，
