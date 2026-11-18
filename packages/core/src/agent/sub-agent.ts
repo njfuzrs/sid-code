@@ -1468,6 +1468,12 @@ export class SubAgent {
         description: task.description,
         parentToolUseId: task._parentToolUseId,
       },
+      // PR12 补齐：spawn 路径同样要过只读门禁。此前只有进程内路径在
+      // `buildIsolatedToolRegistry` 里套了 `wrapBashWithReadOnlyGuard`，而 spawn 路径把
+      // 「父原始注册表」直接交给 `executeToolForChild` 执行子进程回传的 tool_use ——
+      // 于是 `explore` 在 spawn 模式（源码态 headless.ts 存在时可达）拿到的 bash
+      // 是未包装的写权限实例，只读约束在这条路径上**静默失效**。
+      agentDefinition?.readOnly === true,
     );
   }
 
@@ -1538,11 +1544,20 @@ export class SubAgent {
 
     // N3：自定义路径无 taskId，按「类型 + 调用序号」派生 sidechain agentId（每次调用唯一，
     // 同类型并发不共用一个文件；序号语义见 _customAgentSeq 注释）。
-    return this.executeSpawnedInternal(initMsg, tools, signal, undefined, undefined, {
-      agentId: task._customKey ?? `custom-${task.type ?? "task"}-c${++_customAgentSeq}`,
-      agentType: task.type ?? "custom",
-      description: task.userPrompt?.slice(0, 120) ?? "",
-    });
+    return this.executeSpawnedInternal(
+      initMsg,
+      tools,
+      signal,
+      undefined,
+      undefined,
+      {
+        agentId: task._customKey ?? `custom-${task.type ?? "task"}-c${++_customAgentSeq}`,
+        agentType: task.type ?? "custom",
+        description: task.userPrompt?.slice(0, 120) ?? "",
+      },
+      // PR12 补齐：自定义 agent 的 frontmatter 同样可能声明 readOnly，与内置类型同等对待。
+      agentDefinition?.readOnly === true,
+    );
   }
 
   /** 核心 spawn 逻辑：启动子进程、通信、超时控制 */
@@ -1558,6 +1573,16 @@ export class SubAgent {
       description: string;
       parentToolUseId?: string;
     },
+    /**
+     * PR12 补齐：该子代理是否声明为只读。
+     *
+     * 进程内路径在 `buildIsolatedToolRegistry` 里给 bash 套了
+     * `wrapBashWithReadOnlyGuard`；spawn 路径的工具是由**父进程**代为执行的
+     * （子进程只发 tool_use），但用的注册表是 `task.tools ?? this.toolRegistry`
+     * ——父的原始实例，没有门禁视图。不在这里补，`explore` 在 spawn 模式
+     * （源码态 headless.ts 存在时可达）就能用 bash 直接写文件。
+     */
+    readOnlyAgent = false,
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
@@ -1729,6 +1754,7 @@ export class SubAgent {
                   signal,
                   msg.id,
                   this.deriveSubAgentSessionId(taskId),
+                  readOnlyAgent,
                 );
                 // P0-1(b)：喂残卷。只在**执行成功**时记——失败的 write/edit 没有真的改动
                 // 文件，记进"已改动文件清单"就是假信息（与 agentic-loop 只把非 is_error
@@ -1983,13 +2009,30 @@ export class SubAgent {
     signal?: AbortSignal,
     toolUseId?: string,
     sessionId?: string,
+    /**
+     * PR12 补齐：只读子代理的 bash 必须原地套门禁。
+     *
+     * 这条路径拿到的 `tools` 是父的**原始**注册表（`task.tools ?? this.toolRegistry`），
+     * 没有 `buildIsolatedToolRegistry` 里的 `wrapBashWithReadOnlyGuard` 视图。判定与
+     * 进程内路径**同一函数**（`judgeReadOnlyBash`），不另写一份命令名单。
+     */
+    readOnlyAgent = false,
   ): Promise<{ content: string; is_error: boolean }> {
     // spawn 路径的规范 id 就是 deriveSubAgentSessionId(taskId)：落盘目录、权限埋点 agentId（S10）、
     // LSP 诊断归属三处同值，结束时由 executeSpawnedInternal 的 finally 把诊断转给主循环。
     const id = sessionId ?? this.deriveSubAgentSessionId();
+    let tool = tools.get(name);
+    // 门禁放在取到实例之后、runToolUse 之前：只读的写命令在这一层就被拒，
+    // 不会进到工具内部拿到任何副作用。
+    if (tool && name === "bash" && readOnlyAgent) {
+      tool = wrapBashWithReadOnlyGuard(tool, {
+        workspaceDir: getAgentRoot() ?? getCwd(),
+        pathValidator: this.permissionChecker?.getPathValidator?.() ?? null,
+      });
+    }
     const r = await runToolUse(
       { type: "tool_use", id: toolUseId ?? "spawn", name, input },
-      tools.get(name),
+      tool,
       { hookSystem: this.hookSystem, permissionChecker: this.permissionChecker, signal },
       { sessionId: id, ...(sessionId ? { agentId: sessionId } : {}), diagnosticOwner: id },
     );
