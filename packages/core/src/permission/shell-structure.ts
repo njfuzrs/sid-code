@@ -242,14 +242,36 @@ export function splitCommandStructure(cmd: string): CommandPipeline[] {
 }
 
 /**
- * 这个程序名是不是「会把 stdin 当代码执行」的解释器。
+ * 真 shell：正文按 **shell 语法**解析执行。
+ *
+ * 只有这一类的 heredoc 正文值得用 bash 词法差异检测（注入层 bash-security.ts）去扫：
+ * `bash <<EOF` 的正文是 shell 脚本，`ls a#b` 在那里真的会被 shell 解析。
+ */
+const POSIX_SHELL_PROGRAMS = /^(sh|bash|zsh|dash|ksh|fish|ash|mksh)$/;
+
+/**
+ * 其它从 stdin 读代码的解释器：正文是**另一种语言**的代码。
+ *
+ * 危险命令层（shell-command-variants.ts 的正文递归展开）需要这个保守口径——正文里
+ * 可能写着 `os.system("rm -rf /")`。但注入层检查的是 **bash 词法差异**，对 Python 代码
+ * 扫 bash 词法毫无意义：`d = {'a': 1, 'b': 2}` 只因为长得像 brace expansion 就被拦，
+ * 实测这一类占全部 heredoc 误报的 176/349（2026-11-17 auto 档误报复盘）。
+ */
+const CODE_INTERPRETER_PROGRAMS = /^(python[23]?(\.\d+)?|perl|ruby|node|nodejs)$/;
+
+/** 真 shell 判定（注入层口径） */
+export function isPosixShellProgram(program: string): boolean {
+  return POSIX_SHELL_PROGRAMS.test(program);
+}
+
+/**
+ * 「会把 stdin 当代码执行」的解释器（危险命令层口径，= 真 shell ∪ 代码解释器）。
  *
  * heredoc 的接收者判定要用它：`bash <<EOF` 的正文是脚本（要递归判危险），
  * `cat > f <<EOF` 的正文是数据（不参与匹配）。
+ *
+ * ⚠️ 注入层**不要**用它，用 `isPosixShellProgram`——两者拆开正是为了 A1（见上）。
  */
-const SHELL_LIKE_PROGRAMS =
-  /^(sh|bash|zsh|dash|ksh|fish|ash|mksh|python[23]?(\.\d+)?|perl|ruby|node|nodejs)$/;
-
 export function isShellLikeProgram(program: string): boolean {
-  return SHELL_LIKE_PROGRAMS.test(program);
+  return isPosixShellProgram(program) || CODE_INTERPRETER_PROGRAMS.test(program);
 }

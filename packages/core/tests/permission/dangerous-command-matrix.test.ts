@@ -424,13 +424,11 @@ describe("H. heredoc 正文的归属（接收者决定）", () => {
     await expectCritical(["cat > notes.md <<'EOF'", "hello", "EOF", "rm -rf /"].join("\n"));
   });
 
-  test("非 critical：算术左移 `$((1 << 2))` 不被误认成 heredoc", async () => {
-    // `$((1 << 2))` 里的 `<<` 会让 injection 层报 heredoc-in-substitution（既有 high，有出口）。
-    // 这里锁的是「不因它被判 critical」——那是本次修的无出口误报。
-    const v = await verdict(`echo $((1 << 2))`);
-    expect(v.allowed).toBe(false);
-    expect(v.needsConfirmation).toBe(true);
-    expect(v.severity).not.toBe("critical");
+  test("放行：算术左移 `$((1 << 2))` 不被误认成 heredoc", async () => {
+    // 修前 `$((1 << 2))` 里的 `<<` 会让 injection 层报 heredoc-in-substitution
+    // （`/\$\(.*<</s` 只看「`$(` 后面有没有 `<<`」，不看 `$(` 是否已闭合）。
+    // 2026-11-18 A2 把判据改成括号深度后，算术展开整段跳过——这条命令不再需要确认。
+    await expectAllowed(`echo $((1 << 2))`);
   });
 
   test("放行：herestring `<<<` 不是 heredoc", async () => {

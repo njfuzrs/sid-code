@@ -2927,7 +2927,9 @@ export class PermissionChecker implements Checker {
     if (injectionFinding) {
       log.info(
         "PERMISSION",
-        `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(注入防护: ${injectionFinding.id})`,
+        `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(注入防护: ${injectionFinding.id}${
+          injectionFinding.scope ? `/${injectionFinding.scope}` : ""
+        })`,
       );
       return {
         allowed: false,
@@ -2936,9 +2938,18 @@ export class PermissionChecker implements Checker {
         decisionReason: {
           type: "dangerousCommand",
           pattern: `injection:${injectionFinding.id}`,
-          severity: "high",
+          // A4：severity 从 finding 透传，不再硬编码 "high"。
+          // 注入校验的语义是「值得看一眼」（ask），与 rm -rf / 那种「确定危险」
+          // 不是一级；硬编码 high 会让遥测分不开两类，也把升级路径堵死。
+          severity: injectionFinding.severity,
         },
-        metadata: { classifiedBy: "injection-validator", injectionId: injectionFinding.id },
+        metadata: {
+          classifiedBy: "injection-validator",
+          injectionId: injectionFinding.id,
+          // 命中位于 heredoc 脚本正文（`bash <<EOF` 的正文）时标出来，
+          // 否则轨迹里只看得到 `bash <<EOF` 这一行，不知道可疑的是正文哪段。
+          ...(injectionFinding.scope ? { injectionScope: injectionFinding.scope } : {}),
+        },
       };
     }
 

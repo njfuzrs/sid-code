@@ -25,7 +25,7 @@
  *   调用方（checker.ts）据此映射为 needsConfirmation 决策。
  */
 
-import { extractHeredocBlocks } from "./shell-structure.ts";
+import { canonicalizeSimpleCommand, partitionHeredocForScan } from "./shell-command-variants.ts";
 import { splitShellSubcommands } from "../tool/bash/parser.ts";
 
 /** 校验器命中结果 */
@@ -36,6 +36,14 @@ export interface InjectionFinding {
   severity: "ask";
   /** 人类可读的命中原因 */
   message: string;
+  /**
+   * 命中位置：命令段（不填）还是 heredoc 脚本正文（`"heredoc-script"`）。
+   *
+   * 只进 metadata（日志/审计），**不改 id、不改处置**：正文是脚本时命中的意义与命令段
+   * 命中等价。但确认框要能说清「是正文里那段脚本有问题」，否则用户看到的是
+   * `bash <<EOF` 这一行、完全不知道哪里可疑（2026-11-17 复盘）。
+   */
+  scope?: "heredoc-script";
 }
 
 /** 引号剥离的多种产物（对标 cc extractQuotedContent） */
@@ -234,13 +242,13 @@ export function validateCarriageReturn(command: string): InjectionFinding | null
  *   都需要拦截。
  */
 export function validateNewlines(command: string): InjectionFinding | null {
-  // heredoc 正文先剥离：它是数据（或整体交给 shell 的脚本），不是「换行分隔出的第二条命令」。
-  // 不剥离时 `cat > notes.md <<'EOF'`⏎`rm -rf / is dangerous`⏎`EOF` 这类最普通的写文件
-  // 形态每次都要求确认——同一根因（正文被当成命令文本）的另一层表现。
-  // 正文给 shell 的形态（`bash <<EOF`）本来就没有「两条命令」的问题，剥离同样正确。
-  const { stripped } = extractHeredocBlocks(command);
-  // 用 fullyUnquoted（剥离引号），引号内的换行是合法数据
-  const { fullyUnquoted } = extractQuotedContent(stripped);
+  // 用 fullyUnquoted（剥离引号），引号内的换行是合法数据。
+  //
+  // heredoc 正文的剥离**不在这里做**：2026-11-17 起由 checkInjectionPatterns 统一按
+  // 接收者分区处理（`partitionHeredocForScan`）。校验器各自剥一遍正文的代价是
+  // 「剥不干净的形态」（正文里的 `<<` 被当成第二处 heredoc）在这一层反复误报，
+  // 而且各校验器的剥离口径迟早漂移。
+  const { fullyUnquoted } = extractQuotedContent(command);
   const preStrip = fullyUnquoted;
 
   if (!/[\n\r]/.test(preStrip)) return null;
@@ -258,16 +266,38 @@ export function validateNewlines(command: string): InjectionFinding | null {
 }
 
 /**
- * Unicode 空白：bash 把它们当字面字符，词法器可能当词分隔符——制造解析差异。
- * 包括不间断空格、各种宽度空格、行/段分隔符、零宽 BOM 等。
+ * 不可见 / 换行类 Unicode 码点：在终端与解析器之间**显示宽度与换行语义**不一致
+ * （行分隔符会让确认框只显示第一行，后面的内容看不见）。属于「看到的就是这些？」层。
  */
 // eslint-disable-next-line no-misleading-character-class
-const UNICODE_WS_RE = new RegExp(
-  "[\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]",
-);
+const INVISIBLE_UNICODE_WS_RE = new RegExp("[\\u2028\\u2029\\uFEFF]");
 
-export function validateUnicodeWhitespace(command: string): InjectionFinding | null {
-  if (UNICODE_WS_RE.test(command)) {
+/**
+ * 可见宽度的 Unicode 空格：bash 当字面字符、词法器可能当词分隔符 → **词法差异**。
+ * 对命令替换正文（数据）按字面扫描没有意义，只对要按 shell 语法解释的文本生效。
+ */
+// eslint-disable-next-line no-misleading-character-class
+const VISIBLE_UNICODE_WS_RE = new RegExp("[\\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000]");
+
+/**
+ * Unicode 空白：bash 把它们当字面字符，词法器可能当词分隔符——制造解析差异。
+ *
+ * 拆成两个校验器（同一个 id）是 A5 的核心：不可见码点对**任何**文本都成立（数据正文
+ * 也值得确认），可见宽度空格只对按 shell 语法解释的文本成立。
+ */
+export function validateInvisibleUnicodeWhitespace(command: string): InjectionFinding | null {
+  if (INVISIBLE_UNICODE_WS_RE.test(command)) {
+    return {
+      id: "unicode-whitespace",
+      severity: "ask",
+      message: "命令包含 Unicode 空白字符，可能造成解析不一致",
+    };
+  }
+  return null;
+}
+
+export function validateVisibleUnicodeWhitespace(command: string): InjectionFinding | null {
+  if (VISIBLE_UNICODE_WS_RE.test(command)) {
     return {
       id: "unicode-whitespace",
       severity: "ask",
@@ -713,15 +743,11 @@ const COMMAND_SUBSTITUTION_PATTERNS: Array<{ pattern: RegExp; message: string }>
 ];
 
 export function validateProcessSubstitution(command: string): InjectionFinding | null {
-  // heredoc 正文不是命令文本：`python3 - <<'PY' ⏎ a=(1 2) ⏎ PY` 的 `=(` 是 Python
-  // 元组，`cat > f <<'EOF' ⏎ <(x) ⏎ EOF` 的 `<(` 是待写入的日志内容。不剥正文就扫，
-  // 最普通的「把一段脚本/文档走 heredoc 交给 stdin」全部误报成 injection high。
+  // 用 fullyUnquoted——引号内的这些字符是字面数据，安全。
   //
-  // 只剥正文、不剥 `<<` 记号（它被换成 `<<__SID_HD_n__` 留在 stripped 里），
-  // 所以heredoc 记号本身的判定面不变。
-  const { stripped } = extractHeredocBlocks(command);
-  // 用 fullyUnquoted——引号内的这些字符是字面数据，安全
-  const { fullyUnquoted } = extractQuotedContent(stripped);
+  // heredoc 正文的剥离不在这里做（2026-11-17 A5）：由 checkInjectionPatterns 按接收者
+  // 统一分区。原先这里自己剥一遍，代价是「正文里也有 `<<`」的形态剥不干净、反复误报。
+  const { fullyUnquoted } = extractQuotedContent(command);
   for (const { pattern, message } of COMMAND_SUBSTITUTION_PATTERNS) {
     if (pattern.test(fullyUnquoted)) {
       return {
@@ -843,14 +869,30 @@ export function validateBackslashEscapedOperators(command: string): InjectionFin
 }
 
 /**
- * heredoc-in-substitution：检测 $() 命令替换内嵌 heredoc 的危险构造。
+ * heredoc-in-substitution：检测 `$()` 命令替换内嵌 heredoc 的危险构造。
  *
- * `$(...<<...)` 形态可隐藏注入的命令。cc 有一套精密的"安全 heredoc 早放行"逻辑
+ * `$(...<<...)` 形态可隐藏注入的命令。cc 有一套精密的「安全 heredoc 早放行」逻辑
  *   （只放行 $(cat <<'EOF'...EOF) 这种可证明安全的形态），其余一律拦。
- *   本实现取保守策略：检测到 $() 内有 heredoc（`<<`）即告警，交给用户确认。
+ *   本实现取保守策略：检测到 **未闭合的 `$()`** 内出现 heredoc 记号（`<<`）即告警。
+ *
+ * 为什么不能用 `/\\$\\(.*<</s`（修前实现）：它只问「`$(` 后面有没有 `<<`」，不看
+ * 那个 `$(` 是否已闭合。于是
+ *
+ *     echo "分支: $(git branch --show-current)"; cat > f.md << 'EOF'
+ *
+ * 里第一处 `$()` 已经关掉、后面的 heredoc 跟它无关，却照样命中——2026-11-17 auto 档
+ * 弹窗的两次现场里就有这一条。判据改为**括号深度**：扫到 `<<` 时 `$(` 栈必须非空。
+ *
+ * 另外两条边界：
+ * - `$((1 << 2))` 是算术展开，内部不可能有 heredoc——整段跳过，否则移位运算误报；
+ * - 单引号内是字面量，跳过；双引号内的 `$()` **会**执行，不跳过；
+ * - 反斜杠转义的 `\$(` 不入栈。
+ *
+ * 调用方传入的已经是「剥离 heredoc 正文、保留 `<<__SID_HD_n__` 记号」的命令段，
+ * 所以真嵌入形态（`x=$(cat <<'EOF' … EOF)`）的 `$(` 与 `<<` 都还在。
  */
 export function validateHeredocInSubstitution(command: string): InjectionFinding | null {
-  if (/\$\(.*<</s.test(command)) {
+  if (heredocInsideOpenSubstitution(command)) {
     return {
       id: "heredoc-in-substitution",
       severity: "ask",
@@ -858,6 +900,53 @@ export function validateHeredocInSubstitution(command: string): InjectionFinding
     };
   }
   return null;
+}
+
+/** `<<` 是否落在**未闭合的** `$(` 里（A2 的判据，见 validateHeredocInSubstitution 注释） */
+function heredocInsideOpenSubstitution(command: string): boolean {
+  let depth = 0;
+  let inSingle = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (ch === "\\") {
+      // 转义字符整体跳过：`\$(x)` 里的 `$(` 不展开
+      i++;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === "$" && command[i + 1] === "(") {
+      if (command[i + 2] === "(") {
+        // 算术展开 `$(( … ))`：内部是整数运算，跳过整个括号组（含嵌套）
+        let parens = 0;
+        let j = i + 1;
+        for (; j < command.length; j++) {
+          if (command[j] === "(") parens++;
+          else if (command[j] === ")") {
+            parens--;
+            if (parens === 0) break;
+          }
+        }
+        i = j;
+        continue;
+      }
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === ")" && depth > 0) {
+      depth--;
+      continue;
+    }
+    if (ch === "<" && command[i + 1] === "<" && depth > 0) return true;
+  }
+  return false;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -957,10 +1046,19 @@ export function validateJqCommand(command: string): InjectionFinding | null {
  * 这一最常见惯用法不是命令串层面的注入向量，不在此拦截（避免误伤）。
  */
 export function validateShellMetacharacters(command: string): InjectionFinding | null {
-  // (a) eval 内嵌元字符
-  if (/\beval\b/.test(command)) {
-    const afterEval = command.slice(command.indexOf("eval") + 4);
-    if (/[;&|`]/.test(afterEval)) {
+  // (a) eval 后接含元字符的字符串
+  //
+  // 判据必须落在**命令词位置**：修前是 `/\beval\b/` + 首个 `eval` 之后任意位置有 `[;&|`]`，
+  // 于是 `bun run eval:run … 2>&1 | tail`、`bun test ./tests/eval/… | tail` 这类命令
+  // 里 `eval` 只是路径/脚本名的一部分、后面的 `;`/`|` 属于外层管道，也照样命中——
+  // 2026-11-17 auto 档弹窗的两次现场里 `eval:run` 就是主因之一。
+  //
+  // 现在只认「规范化后 program === eval」的简单命令（`sudo`/`env`/`command` 等前缀
+  // 由 canonicalizeSimpleCommand 剥掉），再看它自己的参数里有没有元字符。
+  for (const sub of splitShellSubcommands(command)) {
+    const canonical = canonicalizeSimpleCommand(sub);
+    if (canonical.program !== "eval") continue;
+    if (/[;&|`]/.test(canonical.args.join(" "))) {
       return {
         id: "shell-metachar-eval",
         severity: "ask",
@@ -1071,46 +1169,94 @@ function extractBaseCommand(command: string): string {
 }
 
 /**
+ * 注入校验的两层：**任何文本都成立**的（RAW）与**只在按 shell 语法解释的文本上成立**的
+ * （SHELL）。
+ *
+ * A5 的核心就是这条分界。修前所有校验器一视同仁地扫「命令 + heredoc 正文」，于是
+ *
+ *     gh pr create --title "feat(eval): x" --body-file - << 'SIDEOF'
+ *     - 修了 eval 的 `#` 定位（LS a#b → word_end → literal_char）
+ *     SIDEOF
+ *
+ * 这种正文是**待提交的 PR 描述**（数据）也会因为含 `#`/`{a,b}`/`\ ` 被判 injection。
+ * 词法差异只对「会被 shell 解析的文本」有意义——正文交给 `cat`/`gh`/`git -F` 时它不会。
+ */
+const RAW_TEXT_VALIDATORS: ReadonlyArray<(command: string) => InjectionFinding | null> = [
+  validateControlCharacters,
+  validateInvisibleUnicodeWhitespace,
+];
+
+const SHELL_SYNTAX_VALIDATORS: ReadonlyArray<(command: string) => InjectionFinding | null> = [
+  validateVisibleUnicodeWhitespace,
+  validateCarriageReturn,
+  validateIFSInjection,
+  validateProcEnvironAccess,
+  validateHeredocInSubstitution,
+  validateProcessSubstitution,
+  validateZshDangerousCommands,
+  // 需要 baseCommand 的 echo 豁免：判据顺序与修前一致（它排在 brace/newlines 之前），
+  // 顺序变了会让同类命令的「首个命中 id」漂移——obfuscated-flags 的防漂移哨兵就靠 id 断言。
+  (command) => validateObfuscatedFlags(command, extractBaseCommand(command)),
+  validateBraceExpansion,
+  validateNewlines,
+  validateMidWordHash,
+  validateCommentQuoteDesync,
+  validateQuotedNewline,
+  validateBackslashEscapedOperators,
+  // G9：补齐的 5 个校验器
+  validateMalformedTokenInjection,
+  validateJqCommand,
+  validateShellMetacharacters,
+  validateBackslashEscapedWhitespace,
+  validateDangerousVariablesAndIncomplete,
+];
+
+/** heredoc 正文递归扫描的深度上限（正文里套正文：`bash <<A ⏎ bash <<B …`） */
+const MAX_INJECTION_DEPTH = 4;
+
+/**
  * 全部注入/混淆校验器（按从快到慢、从常见到罕见排序）。
  *
  * 返回首个命中的告警（短路）；全部不命中返回 null。
  *
  * 调用方应在"危险命令名检测之后、LLM 分类器之前"调用本函数——它是纯逻辑、零成本，
  *   能在 LLM 调用前先拦掉结构性注入，也为 LLM 不可用时提供结构层兜底。
+ *
+ * heredoc 正文按**接收者**分区（`partitionHeredocForScan`）：
+ * - 命令段（剥掉全部正文后的 `<<__SID_HD_n__` 占位文本）→ 两层校验器都扫；
+ * - 真 shell 接收的正文（`bash <<EOF` / `cat <<EOF | sh` / `ssh h <<EOF`）→ 递归扫；
+ * - 其余正文是数据（`gh pr create --file - <<EOF`、`python3 - <<'PY'`）→ 不扫；
+ * - 不带引号定界符的正文里的 `$()`/反引号会被 shell 展开执行 → 单独取出来扫；
+ * - 分区不可信（认不出接收者）→ 退回按原文扫，**与修前行为完全相同**（fail-closed）。
  */
-export function checkInjectionPatterns(command: string): InjectionFinding | null {
+export function checkInjectionPatterns(command: string, depth = 0): InjectionFinding | null {
   if (!command || !command.trim()) return null;
 
-  const baseCommand = extractBaseCommand(command);
-
-  // 顺序：先跑零依赖的快速正则校验器，再跑需要引号提取的状态机校验器
-  const validators: Array<() => InjectionFinding | null> = [
-    () => validateControlCharacters(command),
-    () => validateUnicodeWhitespace(command),
-    () => validateCarriageReturn(command),
-    () => validateIFSInjection(command),
-    () => validateProcEnvironAccess(command),
-    () => validateHeredocInSubstitution(command),
-    () => validateProcessSubstitution(command),
-    () => validateZshDangerousCommands(command),
-    () => validateObfuscatedFlags(command, baseCommand),
-    () => validateBraceExpansion(command),
-    () => validateNewlines(command),
-    () => validateMidWordHash(command),
-    () => validateCommentQuoteDesync(command),
-    () => validateQuotedNewline(command),
-    () => validateBackslashEscapedOperators(command),
-    // G9：补齐的 5 个校验器
-    () => validateMalformedTokenInjection(command),
-    () => validateJqCommand(command),
-    () => validateShellMetacharacters(command),
-    () => validateBackslashEscapedWhitespace(command),
-    () => validateDangerousVariablesAndIncomplete(command),
-  ];
-
-  for (const run of validators) {
-    const finding = run();
+  // RAW 层：不依赖 shell 语义，对原文直接判（正文是什么都得看一眼）
+  for (const run of RAW_TEXT_VALIDATORS) {
+    const finding = run(command);
     if (finding) return finding;
+  }
+
+  const partition = partitionHeredocForScan(command);
+  const target = partition.reliable ? partition.stripped : command;
+
+  for (const run of SHELL_SYNTAX_VALIDATORS) {
+    const finding = run(target);
+    if (finding) return finding;
+  }
+  // 需要 baseCommand 的校验器（echo 豁免）单独跑，baseCommand 从同一段 target 取
+  const baseCommand = extractBaseCommand(target);
+  const obfuscated = validateObfuscatedFlags(target, baseCommand);
+  if (obfuscated) return obfuscated;
+
+  if (!partition.reliable || depth >= MAX_INJECTION_DEPTH) return null;
+  for (const fragment of partition.shellFragments) {
+    const finding = checkInjectionPatterns(fragment, depth + 1);
+    if (finding) {
+      // scope 只进 metadata（日志/审计），不改 id——正文命中与命令段命中的处置相同
+      return { ...finding, scope: "heredoc-script" };
+    }
   }
   return null;
 }

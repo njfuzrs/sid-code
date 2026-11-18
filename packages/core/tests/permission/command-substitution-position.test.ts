@@ -113,7 +113,10 @@ describe("B. 命令位 / 参数即代码：保持 dangerousCommand high", () => 
     ["点命令的参数", '. "$(x)"'],
     ["if 条件里的替换", "if $(cat cmd); then echo hi; fi"],
     ["分号后的替换（段首）", "echo hi; $(cat cmd)"],
-    ["换行后的替换（段首）", "echo hi\n$(cat cmd)"],
+    // 「换行后的替换（段首）」不在这一组：`splitShellSubcommands` 还不把换行当命令分隔符
+    // （D3 缺口），危险命令层认不出「换行之后的命令位」。修前它能通过本组断言，是因为
+    // injection 的 `newlines` 硬编码了 high——2026-11-18 A4 改成如实透传 `ask` 后就露出来了。
+    // 单列在下面，等危险层补上换行切分再收回本组。
     ["xargs 的程序位", "xargs $(cat cmd)"],
     ["find -exec 的程序位", "find . -exec $(cat cmd) {} \\;"],
     // sudo 由 detectPrivilegeEscalation 先命中，名字是「sudo 命令」，级别同样是 high
@@ -130,6 +133,18 @@ describe("B. 命令位 / 参数即代码：保持 dangerousCommand high", () => 
       expect((await verdict(cmd, "always-allow")).needsConfirmation).toBe(true);
     });
   }
+
+  test("换行后的替换（段首）：危险层尚未覆盖，由 injection newlines 兜底（ask）", async () => {
+    // A4 之后注入层不再伪装成 high，这条如实报 ask。**处置不变**（仍要确认，
+    // always-allow 也越不过），变的是 severity 标签与遥测口径。
+    // 危险层一旦把换行当命令分隔符（D3），这条应升回 high 并收回上面的 cases 数组。
+    const v = await verdict("echo hi\n$(cat cmd)", "default");
+    expect(v.needsConfirmation).toBe(true);
+    expect(v.reasonType).toBe("dangerousCommand");
+    expect(v.pattern).toBe("injection:newlines");
+    expect(v.severity).toBe("ask");
+    expect((await verdict("echo hi\n$(cat cmd)", "always-allow")).needsConfirmation).toBe(true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

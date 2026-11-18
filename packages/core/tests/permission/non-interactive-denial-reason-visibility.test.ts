@@ -94,10 +94,18 @@ describe("非交互模式拒绝必须把成因说给模型（A11 34/66 次被拒
       // flag，见 bash-security-obfuscated-flags.test.ts）。修完它退化成「需确认」，
       // 与本文件第 1 条成因重复 → 「三类可区分」这条核心判据就失去覆盖了。
       // 所以换成同批轨迹里**仍然**被判 injection 的另一条真实命令，判据不变、样本更新。
-      label: "只读检索命令 → 被判 eval 后含 shell 元字符",
+      //
+      // 2026-11-18 再换一次：上一次换的样本
+      // `cd … && sed … && printf -- '---- eval ----\n' && grep -n "fn evaluate" … | head -50`
+      // 命中的是 `shell-metachar-eval` 的**误报**（`eval` 只是 printf 参数里的字样，
+      // 它后面的 `|` 属于外层管道），A3 把判据收到命令词位置后它不再命中。
+      // 换成「heredoc 嵌在命令替换里」这条真实写法：`x=$(cat <<'EOF' … EOF)` 确实会
+      // 被 heredoc-in-substitution 拦（真嵌入形态，A2 的括号深度判定仍判它命中）。
+      // 同上：换样本是为了保住「三类成因可区分」这条判据，不是放宽断言。
+      label: "heredoc 嵌进命令替换 → 被判 $() 内嵌 heredoc",
       tool: "bash",
       input: {
-        command: `cd /Users/zhourusheng/Code/person/github/codex/codex-rs/execpolicy/src && sed -n '1,70p' policy.rs && printf -- '---- eval ----\\n' && grep -n "fn evaluate\\|fn check\\|Decision::\\|Evaluation\\|Unmatched\\|unmatched" policy.rs | head -50`,
+        command: ["x=$(cat <<'EOF'", "hello", "EOF", ")", 'echo "$x"'].join("\n"),
       },
       mustExplain: "injection",
     },
