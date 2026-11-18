@@ -125,7 +125,7 @@ const mod: LocalCommandModule = {
         );
       }
 
-      lines.push(...renderJournalTree(join(journalsDir, `${w.runId}.jsonl`)));
+      lines.push(...renderJournalTree(join(journalsDir, `${w.runId}.jsonl`), w.agentCount));
       return lines.join("\n");
     }
   },
@@ -217,14 +217,28 @@ function renderDiskDetail(
  * 无 phase 的条目（老 journal 或 phase() 之前的调用）归到「未分组」。
  * 分组顺序按该 phase 首次出现的 callIndex，即脚本实际执行顺序。
  * 内存 run 与磁盘历史 run 共用，保证两种详情长得一样。
+ *
+ * @param agentCount 内存 run 的「已发起」数。journal 只在 agent **成功返回**时追加
+ *   （runtime 的 `result !== null` 才写盘），所以「已落盘」通常小于「已发起」——
+ *   差额是运行中或返回 null（失败/被跳过）的调用。2026-11-18 用户看到
+ *   「已发起 4 / 进度树 2 个」以为是丢数据，根因就是这里没解释差额。
  */
-function renderJournalTree(path: string): string[] {
+function renderJournalTree(path: string, agentCount?: number): string[] {
   const lines: string[] = [];
   try {
     const journal = new Journal(path);
     journal.load();
     const entries = journal.all();
-    if (entries.length === 0) return lines;
+    if (entries.length === 0) {
+      // 一条都没落盘时也要交代「已发起多少」——否则运行中的 run 看起来像什么都没跑。
+      if (agentCount && agentCount > 0) {
+        lines.push(
+          "",
+          `进度树（0 个已落盘 / 已发起 ${agentCount}）: 全部在跑或返回 null（失败不写 journal）`,
+        );
+      }
+      return lines;
+    }
     const groups = new Map<string, typeof entries>();
     for (const entry of entries) {
       const key = entry.phase && entry.phase.trim() ? entry.phase : "(未分组)";
@@ -232,18 +246,51 @@ function renderJournalTree(path: string): string[] {
       if (list) list.push(entry);
       else groups.set(key, [entry]);
     }
-    lines.push("", `进度树（${entries.length} 个 agent）:`);
+    const total =
+      agentCount && agentCount > entries.length
+        ? `${entries.length} 个已落盘 / 已发起 ${agentCount}`
+        : `${entries.length} 个 agent`;
+    lines.push("", `进度树（${total}）:`);
+    if (agentCount && agentCount > entries.length) {
+      lines.push(
+        `  （差额 ${agentCount - entries.length} 个：运行中，或返回 null——失败/被跳过不写 journal）`,
+      );
+    }
     for (const [phase, list] of groups) {
       lines.push(`  ${phase}`);
       for (const entry of list) {
-        const label = entry.label ?? `call#${entry.callIndex}`;
-        lines.push(`    ⎿ [${entry.callIndex}] ${label}  →  ${previewResult(entry.result)}`);
+        lines.push(
+          `    ⎿ [${entry.callIndex}] ${displayLabel(entry)}  →  ${previewResult(entry.result)}`,
+        );
       }
     }
   } catch {
     // journal 不存在/读取失败不阻断——运行中或极早期 run 可能还没落盘。
   }
   return lines;
+}
+
+/** 默认 label 形态（runtime 在脚本没传 opts.label 时生成），无业务语义。 */
+const DEFAULT_LABEL_RE = /^agent#\d+$/;
+
+/**
+ * 进度树每行的名字：业务 label > prompt 摘要 > call#N。
+ *
+ * 为什么不能直接用 `entry.label`：runtime 会给每个调用兜底一个 `agent#N`，
+ * 老 journal 里也都存着这个默认值。那串编号对读面板的人没有信息量——2026-11-18
+ * 那次 run 的 8 行全是 `agent#0..7`，用户完全看不出每个 agent 在核验什么。
+ * 新 journal 会带 promptPreview；老 journal 没有就退回编号。
+ */
+function displayLabel(entry: {
+  callIndex: number;
+  label?: string;
+  promptPreview?: string;
+}): string {
+  const businessLabel =
+    entry.label && entry.label.trim() && !DEFAULT_LABEL_RE.test(entry.label.trim())
+      ? entry.label.trim()
+      : undefined;
+  return businessLabel ?? entry.promptPreview ?? `call#${entry.callIndex}`;
 }
 
 /** 把 agent 结果压成一行预览（对象 JSON 化，字符串截断）。 */
