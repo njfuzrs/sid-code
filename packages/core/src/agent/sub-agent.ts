@@ -407,13 +407,20 @@ async function enhanceSubAgentPrompt(
   //
   // 标题必须跟着语言走：en 模式下要求模型"以「## 结论」开头"，等于逼它在英文报告里
   // 插一个中文标题——要么它照做（污染 en 输出），要么它不照做（这条约束失效）。
+  //
+  // PR5（D1）：措辞从「如果你**感觉**快要达到轮次限制」改成指向 harness 的实测提示
+  // （`agentic-loop.ts` 在剩余轮次降到阈值时注入「还剩 N 轮工具调用」）。
+  // 旧措辞要求模型对「还剩几轮」有感觉，而轨迹里 42.9% 的长跑子代理正是感觉失准、
+  // 把轮次花在重复读上；有了确定性的提示之后，这条约束只需要告诉模型**看到提示就收**。
   notes.push(
     isEn
       ? "[CRITICAL] Your final message must be a structured summary/conclusion, not planning or reasoning. " +
-          "If you sense you are close to the turn limit, stop exploring immediately and output the conclusions you already have. " +
+          'If you receive a harness notice saying "N tool-call turns remaining", that is the wrap-up window: ' +
+          "stop exploring immediately and output the conclusions you already have. " +
           'Format: start with "## Conclusion" or "## Findings" and organise findings as a table or list.'
       : "【关键约束】你的最后一条消息必须是结构化总结/结论，不能是规划或思考过程。" +
-          "如果你感觉快要达到轮次限制，请立即停止探索并输出目前已有的结论。" +
+          "当你收到 harness 的「还剩 N 轮工具调用」提示时，说明已进入收尾窗口：" +
+          "请立即停止探索并输出目前已有的结论。" +
           "格式要求：以「## 结论」或「## 发现」开头，用表格/列表组织发现内容。",
   );
 

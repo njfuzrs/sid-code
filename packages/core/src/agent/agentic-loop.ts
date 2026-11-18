@@ -346,6 +346,29 @@ export const MAX_TURNS_FINALIZE_PROMPT =
   "以结构化格式（表格/列表）呈现。不要再调用任何工具，直接输出结论。";
 
 /**
+ * PR5（D1）：剩余轮次提示的触发比例。剩余轮次 ≤ `max(3, ⌈上限 × 该比例⌉)` 时注入一次。
+ *
+ * 为什么是比例而不是固定值：上限 100 的 explore 用固定 3 轮太晚（只剩 3 轮时模型来不及
+ * 收），上限 10 的调用又太早（第 1 轮就报「快没了」等于逼它草率收工）。10% 让两种规模
+ * 都落在「还有余地、但该停止开新战线」的窗口里。下限 3 是给极小上限（1~30）兜底的。
+ *
+ * 为什么只注入一次：每轮都报一个递减的数字会变成噪音，而噪音的处置是模型学会无视它。
+ * 一次性的「预算警告」在实践里才会被当真。
+ */
+const TURN_BUDGET_NOTICE_RATIO = 0.1;
+
+/**
+ * 计算剩余轮次提示的触发阈值（剩余轮次 ≤ 该值时注入）。
+ *
+ * `maxTurns` 为 `Infinity`（未声明上限）时返回 `Infinity`，调用方据此跳过注入 ——
+ * 无上限的调用永远不该收到「快用完了」。
+ */
+export function turnBudgetNoticeThreshold(maxTurns: number): number {
+  if (!Number.isFinite(maxTurns)) return Infinity;
+  return Math.max(3, Math.ceil(maxTurns * TURN_BUDGET_NOTICE_RATIO));
+}
+
+/**
  * 「父代理请求停止」出口的收尾提示词（PR11 / X1）。
  *
  * 与打满轮次那一条的关键差别：**这不是惩罚，是收工通知**。父代理派任务时往往只需要
@@ -596,6 +619,9 @@ async function runAgentLoopInner(
   // 一条用户消息、生命周期以轮计**，那套机器搬过来大半是空转。这里只留纯节流：
   // 距上次注入 ≥ N 轮就重注一次，N 与主循环共用 TODO_REMINDER_CONFIG。
   let lastTodoReminderTurn = 0;
+  // PR5（D1）：剩余轮次提示是否已注入。整条子代理生命周期**只注入一次**——
+  // 每轮都报「还剩 N 轮」会变成噪音，而噪音的处置是模型学会无视它。
+  let turnBudgetNoticeSent = false;
   // end_turn 完成度门禁的软续命次数（上限与主循环共用 MAX_TODO_GATE_RETRIES）
   let todoGateRetryCount = 0;
   // 续命预算的复位基线：completed 项数。只改措辞的 todo_write 不复位（与主循环同一口径，
@@ -1131,6 +1157,35 @@ async function runAgentLoopInner(
         log.info(
           "AGENT_LOOP",
           `P1-3：回注 todo 清单（子代理），未完成 ${countUnfinished(todosForReminder)} 项`,
+        );
+      }
+    }
+
+    // PR5（D1）：剩余轮次可见。上限有限、且剩余轮次降到阈值时**注入一次**。
+    //
+    // 修的是「模型对预算没有判据」：`MAX_TURNS_FINALIZE_PROMPT` 只在打满之后才出现，
+    // 模型在此之前完全不知道还剩几轮，只能凭「感觉」决定何时收工——而 2026-11-16 的
+    // E1 数据里 42.9% 的长跑子代理把轮次花在重复读上，说明这个「感觉」并不准。
+    // 一次性提示把猜变成事实：还剩 N 轮，于是「再深挖一层」与「现在就收」成为可比较的选择。
+    //
+    // 只发给**发送副本**（与上面两段同一条不变量），不写回 ctxMgr。
+    if (!turnBudgetNoticeSent && Number.isFinite(maxTurns)) {
+      const noticeThreshold = turnBudgetNoticeThreshold(maxTurns);
+      const remainingTurns = maxTurns - turns;
+      if (remainingTurns <= noticeThreshold) {
+        turnBudgetNoticeSent = true;
+        reminderParts.push(
+          `<system-reminder>\n` +
+            `轮次预算提示（来自 harness，非用户输入）：本次子代理最多运行 ${maxTurns} 轮，` +
+            `当前是第 ${turns} 轮，还剩 ${remainingTurns} 轮工具调用。\n` +
+            `请把剩余轮次用在补齐最关键的证据上：已经足够回答任务就立即停止探索并输出结论；` +
+            `确实做不完就在结论里写明「未完成的部分」，让父代理能接着做。` +
+            `不要用剩余轮次重复已经做过的搜索。\n` +
+            `</system-reminder>`,
+        );
+        log.info(
+          "AGENT_LOOP",
+          `PR5（D1）：注入剩余轮次提示（第 ${turns}/${maxTurns} 轮，剩余 ${remainingTurns} 轮）`,
         );
       }
     }
