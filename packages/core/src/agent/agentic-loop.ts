@@ -1480,9 +1480,10 @@ async function runAgentLoopInner(
         modelMax: resolveMaxOutputTokensForModel(model),
         // 窗口余量与主循环同口径：物理上限（如 384k）在窗口只剩一点时不能直接发，
         // 否则把「一次截断」换成「一次必然 400」。
+        // A6：窗口余量问的是「实际发出去多少」，用发送量口径（扣掉本地已释放量）。
         windowCeiling:
           ctxMgr.getMaxTokens() -
-          ctxMgr.estimateTokens(toolDefs?.length ?? 0) -
+          ctxMgr.getSendTokens(toolDefs?.length ?? 0) -
           OUTPUT_BUDGET_SAFETY_BUFFER,
         softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
       });
@@ -1786,8 +1787,10 @@ async function runAgentLoopInner(
         state: maxTokensRecovery,
         initialMaxTokens: maxOutputTokensOverride ?? SUBAGENT_DEFAULT_MAX_TOKENS,
         modelMax: resolveMaxOutputTokensForModel(model),
+        // A6：总结轮不传 tools，toolCount 必须是 0（A6 迁移表要求补上遗漏的 toolCount）。
+        // 口径是发送量——问的是「这一轮实际发出去多少」，不扣本地释放量会把余量算小。
         windowCeiling:
-          ctxMgr.getMaxTokens() - ctxMgr.estimateTokens() - OUTPUT_BUDGET_SAFETY_BUFFER,
+          ctxMgr.getMaxTokens() - ctxMgr.getSendTokens(0) - OUTPUT_BUDGET_SAFETY_BUFFER,
         softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
         isAborted: () => signal.aborted,
         send: async (maxTokensForAttempt) => {

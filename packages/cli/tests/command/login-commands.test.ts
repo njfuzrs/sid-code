@@ -204,7 +204,7 @@ describe("/whoami", () => {
 describe("/status 企业登录段", () => {
   const ctx = {
     config: { model: "m" },
-    ctxMgr: { messageCount: () => 0, estimateTokens: () => 0 },
+    ctxMgr: { messageCount: () => 0, estimateTokens: () => 0, getSendTokens: () => 0 },
   };
 
   test("配了 backend.url 且已登录：显示用户名", async () => {

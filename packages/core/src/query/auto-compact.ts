@@ -197,7 +197,9 @@ async function doAutoCompact(
 ): Promise<AutoCompactResult> {
   const log = getLogger();
   const messagesBefore = messages.length;
-  const tokensBefore = deps.ctxMgr.estimateTokens();
+  // A6：压缩前后对比是**度量**口径（落 compact-stats / 防线指标），用全量历史。
+  // 改成发送量会让历史曲线整体平移（北极星第 3 条铁律），数值与改动前逐位相同。
+  const tokensBefore = deps.ctxMgr.getHistoryTokens();
 
   // 熔断器检查：如果熔断中，直接降级为简单截断
   if (!circuitBreaker.canExecute()) {
@@ -246,7 +248,7 @@ async function doAutoCompact(
       trigger: "auto",
       messagesBefore,
       tokensBefore,
-      tokensAfter: deps.ctxMgr.estimateTokens(),
+      tokensAfter: deps.ctxMgr.getHistoryTokens(),
     });
     return { kind: truncatedOutcome.success ? "truncated" : "failed" };
   }
@@ -306,7 +308,7 @@ async function doAutoCompact(
               source: "session_memory",
               messagesBefore,
               tokensBefore,
-              tokensAfter: deps.ctxMgr.estimateTokens(),
+              tokensAfter: deps.ctxMgr.getHistoryTokens(),
             });
             return { kind: "summarized" };
           }
@@ -434,7 +436,7 @@ async function doAutoCompact(
           trigger: "auto",
           messagesBefore,
           tokensBefore,
-          tokensAfter: deps.ctxMgr.estimateTokens(),
+          tokensAfter: deps.ctxMgr.getHistoryTokens(),
         });
         return { kind: "summarized" };
       }
@@ -495,7 +497,7 @@ async function doAutoCompact(
     trigger: "auto",
     messagesBefore,
     tokensBefore,
-    tokensAfter: deps.ctxMgr.estimateTokens(),
+    tokensAfter: deps.ctxMgr.getHistoryTokens(),
   });
   return { kind: fallbackOutcome.success ? "truncated" : "failed" };
 }

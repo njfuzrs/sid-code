@@ -79,7 +79,7 @@ describe("P1-6 — 管线达标判据与触发判据同源", () => {
     expect(mgr.estimateTokensFor([userMsg("压完剩这一条")])).toBeLessThan(50_000);
   });
 
-  test("管线用传入的 estimateTokens 判达标（而非内部 chars/4）", () => {
+  test("管线用传入的 estimateMessages 判达标（而非内部 chars/4）", () => {
     const msgs = Array.from({ length: 40 }, (_, i) =>
       i % 2 === 0 ? userMsg(`问题${i}`) : asstMsg(`回答${i}`),
     );
@@ -89,7 +89,9 @@ describe("P1-6 — 管线达标判据与触发判据同源", () => {
       maxTokens: 100_000,
       toolCount: 10,
       targetUsageRatio: 0.8,
-      estimateTokens: (m) => {
+      // 2026-11-18 改名：这个选项的入参是「任意候选消息列表」，与
+      // ContextManager.estimateTokens() 无关，同名会误导（见 CompactPipelineOptions 注释）
+      estimateMessages: (m) => {
         called++;
         return estimateConversationTokens(m, { toolCount: 10 });
       },

@@ -111,7 +111,9 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
       // 「注入之后仍在触发点以下」——5 个刚读过的大文件足以把使用率顶回 hard 档，
       // 于是压完立刻又要压。此前全仓零埋点，这个抖动在生产上完全不可观测
       // （`willRetriggerNextTurn` 搜遍全仓零命中），只能靠用户报「怎么一直在压缩」。
-      const tokensBeforeReattach = ctxMgr.estimateTokens();
+      // A6：判据是「注入之后会不会立刻再触发」，问的是**发送量**（扣掉本地已释放量）。
+      // 用全量历史会把使用率算高，把一个本来安全的再注入误判成「压完又要压」。
+      const tokensBeforeReattach = ctxMgr.getSendTokens();
       const fileMsgs = buildReattachFileMessages(opts.fileReadTracker);
       if (fileMsgs.length > 0) {
         ctxMgr.appendReattachMessages(fileMsgs);
@@ -207,7 +209,8 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
     }
   }
 
-  const tokensAfter = ctxMgr.estimateTokens();
+  // A6：与 tokensBeforeReattach 同一把尺子（发送量），否则 before/after 用的是两种口径。
+  const tokensAfter = ctxMgr.getSendTokens();
   const messagesAfter = ctxMgr.messageCount();
   const tokensBefore = opts.tokensBefore;
   const savedRatio =
@@ -278,7 +281,8 @@ function reportReattachPressure(
   const log = getLogger();
   try {
     const { ctxMgr, trigger } = opts;
-    const tokensAfterReattach = ctxMgr.estimateTokens();
+    // A6：与 tokensBeforeReattach 同一把尺子（发送量），差值才是真正注入进去的 token。
+    const tokensAfterReattach = ctxMgr.getSendTokens();
     const reattachTokens = Math.max(0, tokensAfterReattach - tokensBeforeReattach);
     const maxTokens = ctxMgr.getMaxTokens();
     // 「压缩省下的量里有多少被重注入吃回去」——分母是本次压缩真实省下的量。

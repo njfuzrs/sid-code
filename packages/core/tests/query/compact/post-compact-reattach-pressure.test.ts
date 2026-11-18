@@ -17,7 +17,7 @@ type Event = { event: string; timestamp: string; data?: Record<string, unknown> 
 function fakeCtxMgr(tokenSeq: number[], level: string, maxTokens = 200_000) {
   let i = 0;
   return {
-    estimateTokens: () => tokenSeq[Math.min(i++, tokenSeq.length - 1)],
+    getSendTokens: () => tokenSeq[Math.min(i++, tokenSeq.length - 1)],
     getMaxTokens: () => maxTokens,
     getCompactionLevel: () => level,
     appendReattachMessages: () => {},

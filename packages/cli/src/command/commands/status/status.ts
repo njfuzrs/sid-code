@@ -50,7 +50,9 @@ const mod: LocalCommandModule = {
     // ── 消息数 + token 用量 ──
     try {
       const msgCount = ctx.ctxMgr.messageCount();
-      const used = ctx.ctxMgr.estimateTokens();
+      // A6：/status 展示的是「这个会话当前发出去多大」，用发送量口径
+      //（与 footer / /context 面板同源，扣掉遮罩/清理已释放的部分）。
+      const used = ctx.ctxMgr.getSendTokens();
       const max = ctx.ctxMgr.getMaxTokens?.();
       lines.push("", `  消息数: ${msgCount}`);
       if (typeof max === "number" && max > 0) {

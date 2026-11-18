@@ -78,7 +78,9 @@ const mod: LocalCommandModule = {
         // PreCompact hook 异常不阻断压缩（与 PostCompact 一致的容错策略）
       }
 
-      const tokensBefore = ctx.ctxMgr.estimateTokens();
+      // A6：压缩前后对比是**度量**口径（compact-stats / 防线指标），用全量历史，
+      // 数值与改动前逐位相同。改成发送量会让历史曲线整体平移。
+      const tokensBefore = ctx.ctxMgr.getHistoryTokens();
       const arg = args.trim();
 
       if (arg) {
@@ -187,7 +189,7 @@ async function runPartial(
       trigger: "manual",
       messagesBefore: opts.before,
       tokensBefore: opts.tokensBefore,
-      tokensAfter: ctx.ctxMgr.estimateTokens(),
+      tokensAfter: ctx.ctxMgr.getHistoryTokens(),
     });
     // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
     return errorText(`压缩未执行：${result.reason ?? "未知原因"}`);
@@ -234,7 +236,7 @@ async function runPartial(
     trigger: "manual",
     messagesBefore: opts.before,
     tokensBefore: opts.tokensBefore,
-    tokensAfter: ctx.ctxMgr.estimateTokens(),
+    tokensAfter: ctx.ctxMgr.getHistoryTokens(),
   });
   return {
     type: "text",
@@ -321,7 +323,7 @@ function runLocalTruncationFallback(
     trigger: "manual",
     messagesBefore: before,
     tokensBefore,
-    tokensAfter: ctx.ctxMgr.estimateTokens(),
+    tokensAfter: ctx.ctxMgr.getHistoryTokens(),
   });
   if (!outcome.success) {
     // no-op：消息一字未动，不得宣告「已压缩」（P0-1）。此时也不 fire PostCompact——
@@ -350,7 +352,8 @@ async function firePostCompact(
   tokensBefore: number,
 ): Promise<void> {
   try {
-    const tokensAfter = ctx.ctxMgr.estimateTokens();
+    // A6：与 tokensBefore 同一把尺子（全量历史度量口径），差值是这次压缩真正腾出的空间。
+    const tokensAfter = ctx.ctxMgr.getHistoryTokens();
     await ctx.hookSystem?.firePostCompactEvent(
       "manual",
       before,

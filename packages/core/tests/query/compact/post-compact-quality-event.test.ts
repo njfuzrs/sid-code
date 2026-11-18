@@ -16,6 +16,7 @@ type Event = { event: string; timestamp: string; data?: Record<string, unknown> 
 function fakeCtxMgr() {
   return {
     estimateTokens: () => 50_000,
+    getSendTokens: () => 50_000,
     getMaxTokens: () => 200_000,
     getCompactionLevel: () => "none",
     appendReattachMessages: () => {},

@@ -50,8 +50,13 @@ export interface CompactPipelineOptions {
   /**
    * P1-6：与 getCompactionLevel 同源的估算器。传入后管线逐步替换消息时走校准尺子，
    * 不再用 chars/4。未传则退化为 estimateConversationTokens（仍含 thinking / CJK）。
+   *
+   * ⚠️ 名字刻意是 `estimateMessages` 而不是 `estimateTokens`（2026-11-18 改名）：
+   * 它的入参是**任意一份候选消息列表**（管线每一步的中间结果），调用方传进来的实现是
+   * `estimateTokensFor`，与 `ContextManager.estimateTokens()` 无关，也不扣本地释放量。
+   * 沿用同名会让人以为它和那个 @deprecated 的裸口径是一回事。
    */
-  estimateTokens?: (messages: Message[]) => number;
+  estimateMessages?: (messages: Message[]) => number;
 }
 
 /**
@@ -69,8 +74,8 @@ export function runCompactPipeline(
   let currentMessages = messages;
   let currentRatio = options.currentUsageRatio;
   const estimate = (msgs: Message[]): number =>
-    options.estimateTokens
-      ? options.estimateTokens(msgs)
+    options.estimateMessages
+      ? options.estimateMessages(msgs)
       : estimateConversationTokens(msgs, { toolCount: options.toolCount });
   const ratioOf = (msgs: Message[]): number =>
     options.maxTokens > 0 ? estimate(msgs) / options.maxTokens : currentRatio;

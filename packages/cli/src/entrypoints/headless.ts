@@ -279,10 +279,11 @@ async function runAgentLoop(
       // 大窗口模型下子代理写长文件 / 长回答会被硬截断，父进程只看到一次
       // 「max_tokens 停止」，无从归因到「子代理的输出预算太小」。
       // 输入估算在**发送这一刻**重取（循环顶部的值可能已被历史增长拉旧）。
+      // A6：窗口钳制问的是「这一次真正发出去多少」，用发送量口径（扣掉本地已释放量）。
       const sendBudget = resolveHeadlessSendBudget(
         init,
         ctxMgr.getMaxTokens(),
-        ctxMgr.estimateTokens(init.tool_defs.length),
+        ctxMgr.getSendTokens(init.tool_defs.length),
       );
       if (!sendBudget.ok) {
         // 与主循环不同，headless 没有压缩分支可退：窗口剩余连 floor 都放不下时，
@@ -508,9 +509,10 @@ async function runAgentLoop(
           modelMax: init.max_output_tokens,
           // 窗口余量与进程内子代理同口径。注意不能用 sendBudget.windowLimitTokens ——
           // 那个字段只在 !ok 分支的诊断类型上，ok 分支没有它。
+          // A6：与 sendBudget 同一口径（发送量），否则两处算出的窗口余量会不一致。
           windowCeiling:
             ctxMgr.getMaxTokens() -
-            ctxMgr.estimateTokens(init.tool_defs.length) -
+            ctxMgr.getSendTokens(init.tool_defs.length) -
             OUTPUT_BUDGET_SAFETY_BUFFER,
           softCap: SUBAGENT_ESCALATED_MAX_TOKENS,
         });

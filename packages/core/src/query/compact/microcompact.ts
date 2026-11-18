@@ -27,6 +27,7 @@ import { emitToolResultCleared } from "../guidance-events.ts";
 import type { Message, ContentBlock } from "../../llm/types.ts";
 import { getLogger } from "../../debug/index.ts";
 import { isReadOnlyCommand } from "../../tool/bash/read-only-validation.ts";
+import { estimateTextTokens } from "../../context/token.ts";
 
 // ─── 工具分类 ───
 
@@ -170,8 +171,16 @@ export interface MicrocompactPlanEntry {
   toolUseId: string;
   /** 改写后的完整内容（占位符或摘要） */
   replacement: string;
-  /** 原始内容长度（字符），用于记账 */
+  /** 原始内容长度（字符），用于日志与观测 */
   originalLength: number;
+  /**
+   * 释放的 token：`estimateTextTokens(原文) − estimateTextTokens(占位)`。
+   *
+   * A3：全仓记账**只用这一种单位**。此前冷清理 / 大输出清理 / 遮罩三处用
+   * `Math.ceil(字符数 / 4)`，而过期清理用估算差值 —— 同一个累加器里混着两种单位，
+   * 中文会话上只记到 38%、ASCII 上又多记 25%。`chars/4` 已从这 4 处全部删除。
+   */
+  savedTokens: number;
 }
 
 /**
@@ -225,6 +234,8 @@ export function planMicrocompact(
         toolUseId: b.tool_use_id,
         replacement,
         originalLength: b.content.length,
+        // A3：在**替换之前**按原文算，与过期清理同一口径（全仓只用这一种单位）
+        savedTokens: estimateTextTokens(b.content) - estimateTextTokens(replacement),
       });
     });
   }
