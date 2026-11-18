@@ -26,7 +26,7 @@ import type { Provider } from "@sid-code/core/llm/provider.ts";
 import { describeToolActivity } from "@sid-code/core/agent/progress.ts";
 import { isEndTurnLikeStopReason } from "@sid-code/core/agent/message-invariants.ts";
 import type { ContentBlock, StreamEvent, Usage } from "@sid-code/core/llm/types.ts";
-import { accumulateUsage } from "@sid-code/core/llm/types.ts";
+import { accumulateUsage, normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
 import { normalizeToolInput } from "@sid-code/core/llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, recordStreamRestart } from "@sid-code/core/llm/stream-restart.ts";
 import { getLogger } from "@sid-code/core/debug/index.ts";
@@ -228,6 +228,13 @@ async function runAgentLoop(
   let turns = 0;
   let lastTextOutput = "";
   let toolUseCount = 0;
+  /**
+   * M1：最后一次请求的**当前上下文**大小（promptTotal）。与 `totalUsage` 是两个问题：
+   * 后者是「这个子代理一共烧了多少」（累计、单调增长），前者是「它现在占着多大的窗口」。
+   * 父进程把两者分别渲染成 `context_tokens` / `cumulative_io_tokens`，
+   * 混用一个字段会让父代理把累计值误当成上下文占用（M1 的原始症状）。
+   */
+  let lastContextTokens = 0;
   // X2：撞输出上限的两段恢复状态（升档只一次、续写有界）。
   const maxTokensRecovery = new MaxTokensRecoveryState();
   // 升档后的输出预算（undefined = 用本轮 resolveHeadlessSendBudget 的结果）
@@ -368,6 +375,14 @@ async function runAgentLoop(
       // 与 query/agent/agentic-loop 三处口径一致（消灭第四套拷贝的丢字段缺陷）。
       accumulateUsage(totalUsage, response.usage);
 
+      // M1：当前上下文口径（与 agentic-loop 同源：normalizeCacheUsage 的 promptTotal）。
+      // 取不到就保留上一轮的值——宁可滞后一轮，也不要报 0（0 会被父代理读成"上下文空了"）。
+      try {
+        lastContextTokens = normalizeCacheUsage(response.usage, init.provider_name).promptTotal;
+      } catch {
+        /* 取不到不影响子进程执行 */
+      }
+
       // 提取文本输出
       const textBlocks = response.content.filter((b) => b.type === "text");
       if (textBlocks.length > 0) {
@@ -393,6 +408,8 @@ async function runAgentLoop(
           max_turns: Number.isFinite(maxTurns) ? maxTurns : 0,
           toolUseCount: toolUseCount + turnToolUses.length,
           tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+          // M1：当前上下文口径与累计量分开上报，父进程据此分别渲染两个属性
+          contextTokens: lastContextTokens,
           lastActivity: lastTool ? describeToolActivity(lastTool.name, lastTool.input) : undefined,
         });
       }

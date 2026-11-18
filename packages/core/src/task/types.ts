@@ -24,7 +24,22 @@ export interface ToolActivity {
 
 export interface AgentProgress {
   toolUseCount: number;
+  /**
+   * 累计真实 token 数（input + output，来自 totalUsage）。
+   *
+   * M1：回答的是「这个子代理一共烧了多少」，随轮次单调增长。
+   * 渲染成 `<progress cumulative_io_tokens="…">`，**不要**用它判断上下文余量。
+   */
   tokenCount: number;
+  /**
+   * 当前上下文大小（最后一次请求的 promptTotal，含 cache 命中/写入）。
+   *
+   * M1：回答的是「它现在占着多大窗口」，渲染成 `<progress context_tokens="…">`。
+   * 两个字段此前共用 `tokens` 一个属性名，父代理只能看到累计值，
+   * 于是把「一共烧了 1300 万」读成「上下文快满了」，提前几十倍动手杀掉子代理。
+   * 首轮请求完成前为 0。
+   */
+  contextTokens: number;
   lastActivity?: ToolActivity;
   recentActivities: ToolActivity[];
 }

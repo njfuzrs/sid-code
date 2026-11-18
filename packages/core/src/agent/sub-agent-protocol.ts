@@ -165,6 +165,14 @@ export interface ChildProgressMessage {
   toolUseCount?: number;
   /** 截至本轮的累计真实 token 数（input + output） */
   tokenCount?: number;
+  /**
+   * 当前上下文大小（最后一次请求的 promptTotal，含 cache 命中/写入）。
+   *
+   * M1：与 `tokenCount`（累计消耗）是两个问题，父进程分别渲染成
+   * `<progress context_tokens>` / `<progress cumulative_io_tokens>`。
+   * 可选：旧子进程不带这个字段时父进程按 0 处理，不会因此判成"上下文满了"。
+   */
+  contextTokens?: number;
   /** 本轮最后一次工具调用的简短活动文案（如「读取 src/foo.ts」） */
   lastActivity?: string;
 }

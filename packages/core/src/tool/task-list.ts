@@ -98,7 +98,9 @@ export class TaskListTool implements Tool {
         lines.push(`    <agent_type>${task.agentType}</agent_type>`);
         if (task.progress) {
           const p = task.progress;
-          lines.push(`    <progress tools="${p.toolUseCount}" tokens="${p.tokenCount}">`);
+          lines.push(
+            `    <progress tools="${p.toolUseCount}" context_tokens="${p.contextTokens}" cumulative_io_tokens="${p.tokenCount}">`,
+          );
           if (p.lastActivity) {
             lines.push(
               `      <last_activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last_activity>`,

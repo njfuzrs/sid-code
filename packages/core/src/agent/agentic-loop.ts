@@ -91,6 +91,64 @@ import {
 import type { TodoItem } from "../tool/todo-write.ts";
 
 // ============================================================
+// 逐轮快照（onTurnEnd 的对外契约）
+// ============================================================
+
+/**
+ * 一轮结束时回传的快照。
+ *
+ * 单独抽成具名接口而不是内联在 `onTurnEnd` 上，是为了让**生产侧**（本文件的
+ * `buildTurnEndInfo`）和消费侧（`sub-agent.ts` 的两条路径）引用同一个类型：
+ * 此前 6 个出口各自手写一份对象字面量，加一个字段就要改 6 遍、漏一处就是
+ * 「某个出口的进度字段缺项」这种全绿也发现不了的缺陷（M1 正是这么来的）。
+ */
+export interface TurnEndInfo {
+  turn: number;
+  /** 截至本轮的「最后一次文本输出」：纯工具轮沿用上一轮的值（salvage / 汇总依赖这个语义） */
+  textOutput: string;
+  /**
+   * **本轮**新产出的文本，没有就是空串（F5）。增量落盘（`.output`）必须用它而不是 textOutput：
+   * 后者在纯工具轮是上一轮的残留值，20261019 轨迹里一句话被重复写了 20 次。
+   */
+  turnText?: string;
+  /** 本轮工具调用信息 */
+  tools: Array<{
+    name: string;
+    input: Record<string, unknown>;
+    /**
+     * 本次调用的结果（F3，**可选**：只有真正执行了工具的那条分支才填）。
+     *
+     * 子代理的两条消费方都需要它，而它们此前只能拿到工具名+入参：
+     * - 残卷的 `<tool-evidence>` 段（只读核查型子代理的成果全在工具结果里）；
+     * - 纯工具轮的 `.output` 摘要（此前只写文本轮，纯工具轮的 `.output` 是空文件）。
+     *
+     * 只回传**引用**，不复制内容——调用方按需截断（`salvage.ts` 取前 800 字，
+     * `.output` 摘要只取字节数）。工具结果本来就以字符串形式在上下文里，
+     * 这里多一个引用不增加量级。
+     */
+    result?: { content: string; isError: boolean };
+  }>;
+  /**
+   * 截至本轮的**累计**真实 token 数（input + output，来自 totalUsage）。
+   *
+   * M1：这是「这个子代理一共烧了多少」，会随轮次单调增长（242 轮的会话能到 1300 万）。
+   * 它**不是**上下文大小——父代理拿它判断「还剩多少窗口、要不要杀」会提前几十倍动手。
+   * 上下文大小看 `contextTokens`。
+   */
+  tokenCount: number;
+  /**
+   * 最后一次请求的**当前上下文**大小（promptTotal，含 cache 命中 / 写入的全量输入）。
+   *
+   * M1：与 `tokenCount` 是两个不同的问题——这个回答「它现在占着多大窗口」。
+   * 取数源与上下文估算器校准同源（本文件 `recordActualTokens(norm.promptTotal, …)`），
+   * 两者若不同源就会出现「进度说 9%、实际已溢出」这类互相矛盾的数字。首轮请求前为 0。
+   */
+  contextTokens: number;
+  /** 截至本轮的累计工具调用次数 */
+  toolUseCount: number;
+}
+
+// ============================================================
 // 配置接口
 // ============================================================
 
@@ -115,37 +173,7 @@ export interface AgentLoopConfig {
   /** 每轮开始前的回调（用于 SendMessage 注入等） */
   onBeforeTurn?: (turn: number) => void;
   /** 每轮结束后的回调（含本轮文本和工具信息，用于磁盘输出 + 进度追踪） */
-  onTurnEnd?: (info: {
-    turn: number;
-    /** 截至本轮的「最后一次文本输出」：纯工具轮沿用上一轮的值（salvage / 汇总依赖这个语义） */
-    textOutput: string;
-    /**
-     * **本轮**新产出的文本，没有就是空串（F5）。增量落盘（`.output`）必须用它而不是 textOutput：
-     * 后者在纯工具轮是上一轮的残留值，20261019 轨迹里一句话被重复写了 20 次。
-     */
-    turnText?: string;
-    /** 本轮工具调用信息 */
-    tools: Array<{
-      name: string;
-      input: Record<string, unknown>;
-      /**
-       * 本次调用的结果（F3，**可选**：只有真正执行了工具的那条分支才填）。
-       *
-       * 子代理的两条消费方都需要它，而它们此前只能拿到工具名+入参：
-       * - 残卷的 `<tool-evidence>` 段（只读核查型子代理的成果全在工具结果里）；
-       * - 纯工具轮的 `.output` 摘要（此前只写文本轮，纯工具轮的 `.output` 是空文件）。
-       *
-       * 只回传**引用**，不复制内容——调用方按需截断（`salvage.ts` 取前 800 字，
-       * `.output` 摘要只取字节数）。工具结果本来就以字符串形式在上下文里，
-       * 这里多一个引用不增加量级。
-       */
-      result?: { content: string; isError: boolean };
-    }>;
-    /** 截至本轮的累计真实 token 数（input + output，来自 totalUsage），供进度面板展示 */
-    tokenCount: number;
-    /** 截至本轮的累计工具调用次数 */
-    toolUseCount: number;
-  }) => void;
+  onTurnEnd?: (info: TurnEndInfo) => void;
   /** 循环恢复提示词（默认使用全局 LOOP_RECOVERY_PROMPT） */
   loopRecoveryPrompt?: string;
   /** LLM 请求额外参数 */
@@ -582,6 +610,39 @@ async function runAgentLoopInner(
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
   };
+
+  /**
+   * M1：最后一次请求的**当前上下文**大小（promptTotal，含 cache 命中/写入的全量输入）。
+   *
+   * 与 `totalUsage` 刻意分开：后者是「这次子代理总共烧了多少」，随轮次单调累加，
+   * 242 轮的会话能到 1300 万；而父代理要判断的是「它现在占着多大窗口、要不要杀」。
+   * 两者混成一个 `tokens` 字段的后果是父代理把累计值当成上下文，提前几十倍动手（M1）。
+   *
+   * 取数点与上下文估算器的校准点（下方 `recordActualTokens(norm.promptTotal, …)`）同源——
+   * 两处若各算一遍，就会出现「进度说 9%、估算器说该压缩」这种互相矛盾的数字。
+   * 首轮请求完成前保持 0（那时确实没有任何请求发生过）。
+   */
+  let lastContextTokens = 0;
+
+  /**
+   * 构造一轮的 `onTurnEnd` 快照（M1）。
+   *
+   * 6 个出口（空参数重试耗尽 / 正常收工 / 工具轮 / max_tokens 恢复 / 上下文压缩 / 强制总结）
+   * 此前各自手写一份对象字面量。这不只是重复：加字段时要改 6 处，**漏一处不会有任何东西变红**，
+   * 只会让那条出口的进度少一个字段（M1 就是「token 口径」在 6 处一起错）。
+   * 收成一个函数后，口径的唯一定义点在这里，出口只需要传自己特有的 `turn` / `tools`。
+   */
+  const buildTurnEndInfo = (
+    overrides: { turn?: number; tools?: TurnEndInfo["tools"] } = {},
+  ): TurnEndInfo => ({
+    turn: overrides.turn ?? turns,
+    textOutput: lastTextOutput,
+    turnText: currentTurnText,
+    tools: overrides.tools ?? [],
+    tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+    contextTokens: lastContextTokens,
+    toolUseCount,
+  });
 
   // R1：重试/退避参数走 resolveLoopTimeouts（env > settings > 统一默认值），与主循环同源。
   // SubAgent 不持有 Config 对象，直接读 DEFAULTS 会让 env 覆盖对子代理静默失效——
@@ -1068,6 +1129,10 @@ async function runAgentLoopInner(
     try {
       const norm = normalizeCacheUsage(response.usage, provider.name());
       ctxMgr.recordActualTokens(norm.promptTotal, tools.size());
+      // M1：同一次校准里取出的 promptTotal 就是「当前上下文」的唯一口径。
+      // 放在校准同一个 try 里而不是另算一遍：两处各算一份就会出现
+      // 「进度说 9%、估算器说该压缩」这种互相矛盾的数字。
+      lastContextTokens = norm.promptTotal;
     } catch {
       /* 校准失败不影响子代理循环 */
     }
@@ -1190,14 +1255,7 @@ async function runAgentLoopInner(
         );
         ctxMgr.addMessage({ role: "assistant", content: sanitizedContent });
         retryStats.stopAction = "empty_param_exhausted";
-        config.onTurnEnd?.({
-          turn: turns,
-          textOutput: lastTextOutput,
-          turnText: currentTurnText,
-          tools: [],
-          tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-          toolUseCount,
-        });
+        config.onTurnEnd?.(buildTurnEndInfo());
         return {
           success: true,
           turns,
@@ -1319,14 +1377,7 @@ async function runAgentLoopInner(
       emptyParamRetryCount = 0;
       retryStats.stopAction = "finalize";
       log.info("AGENT_LOOP", `完成，共 ${turns} 轮`);
-      config.onTurnEnd?.({
-        turn: turns,
-        textOutput: lastTextOutput,
-        turnText: currentTurnText,
-        tools: [],
-        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-        toolUseCount,
-      });
+      config.onTurnEnd?.(buildTurnEndInfo());
       return {
         success: true,
         turns,
@@ -1440,14 +1491,7 @@ async function runAgentLoopInner(
           ...(r ? { result: { content: r.content, isError: r.is_error === true } } : {}),
         };
       });
-      config.onTurnEnd?.({
-        turn: turns,
-        textOutput: lastTextOutput,
-        turnText: currentTurnText,
-        tools: turnToolInfo,
-        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-        toolUseCount,
-      });
+      config.onTurnEnd?.(buildTurnEndInfo({ tools: turnToolInfo }));
 
       continue;
     }
@@ -1465,14 +1509,7 @@ async function runAgentLoopInner(
     //   ② 升到顶仍然截断 → 注入续写提示（带 origin 标记，供 extractFinalText 回溯拼接）；
     //   ③ 递减收益 → 先让手、再停止（与主循环同一口径，无人值守下不会无限续写）。
     if (stopAction.kind === "recover" && stopAction.how === "max_tokens") {
-      config.onTurnEnd?.({
-        turn: turns,
-        textOutput: lastTextOutput,
-        turnText: currentTurnText,
-        tools: [],
-        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-        toolUseCount,
-      });
+      config.onTurnEnd?.(buildTurnEndInfo());
 
       const decision = maxTokensRecovery.decide({
         outputTokens: response.usage.outputTokens,
@@ -1602,14 +1639,7 @@ async function runAgentLoopInner(
       );
       deferredToolsPendingAfterCompact = true;
 
-      config.onTurnEnd?.({
-        turn: turns,
-        textOutput: lastTextOutput,
-        turnText: currentTurnText,
-        tools: [],
-        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-        toolUseCount,
-      });
+      config.onTurnEnd?.(buildTurnEndInfo());
       continue;
     }
 
@@ -1808,6 +1838,13 @@ async function runAgentLoopInner(
           if (summaryRace.exhausted) throw new Error(summaryRace.errorMessage);
           const resp = summaryRace.value;
           accumulateUsage(totalUsage, resp.usage);
+          // M1：总结轮同样是「一次真实请求」，它才是最后一次 —— 进度里的上下文口径
+          // 必须跟着走到这里，否则总结期涨上去的上下文在进度上永远看不到。
+          try {
+            lastContextTokens = normalizeCacheUsage(resp.usage, provider.name()).promptTotal;
+          } catch {
+            /* 取不到就保留上一轮的值：宁可滞后一轮，也不要报 0 */
+          }
           emitStreamPhase(
             summaryStreamIndex,
             "completed",
@@ -1856,14 +1893,7 @@ async function runAgentLoopInner(
           ctxMgr.addMessage(buildInternalMessage(MAX_TOKENS_CONTINUATION_ORIGIN, "user", notice));
         },
       });
-      config.onTurnEnd?.({
-        turn: turns + 1,
-        textOutput: lastTextOutput,
-        turnText: currentTurnText,
-        tools: [],
-        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-        toolUseCount,
-      });
+      config.onTurnEnd?.(buildTurnEndInfo({ turn: turns + 1 }));
     } catch (err: any) {
       // 强制总结失败不影响整体返回（降级到 extractFinalText 的启发式过滤）
       emitStreamPhase(
