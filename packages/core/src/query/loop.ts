@@ -3214,11 +3214,17 @@ async function* queryLoopBody(
       // 可能刚改过历史，顶部的值已过期；窗口钳制要的是「发送这一刻」的历史。
       // 校准系数与 lastActualInputTokens 锚点由 estimateTokens 内部兜住，不在这里另算一份
       //（同一口径重实现一遍等于重踩一遍）。
+      //
+      // PR0（2026-11-18）：提成局部常量，`sendBudget` 与紧随其后的 `BeforeModel` 轨迹
+      // **共用同一个值**。两处各算一次不只是多一次全量遍历——只要有逻辑在中间改过
+      // messages（哪怕只是未来某个 PR 加的），预算用的估算与轨迹记的估算就会是两个数，
+      // 而「估算 vs 真实 input」的对账脚本看不出这种偏差来自哪里。
+      const sendEstimatedInputTokens = ctxMgr.estimateTokens(toolCount);
       const sendBudget = resolveRequestOutputBudget({
         requestBudget: state.maxOutputTokensOverride ?? config.maxTokens,
         modelMaxOutputTokens: resolveMaxOutputTokensForModel(config.model, config.availableModels),
         contextWindow: ctxMgr.getMaxTokens(),
-        estimatedInputTokens: ctxMgr.estimateTokens(toolCount),
+        estimatedInputTokens: sendEstimatedInputTokens,
         thinkingBudgetTokens: sendParams.thinking?.enabled
           ? sendParams.thinking.budgetTokens
           : undefined,
@@ -3324,6 +3330,16 @@ async function* queryLoopBody(
             estimated_input_tokens_calibrated: ctxMgr.isCalibrated()
               ? ctxMgr.estimateTokensFor(sendParams.messages, toolRegistry.size())
               : null,
+            // PR0（2026-11-18）：请求前的上下文估算四件套，让「估算 vs 真实 input」能逐次对账。
+            // ctx_estimated_tokens 与上面的 sendBudget 共用同一个常量（不重复遍历消息）；
+            // 后三个都是 O(1) 读取，不新增估算。四个字段的口径见 hook/types.ts 对应注释：
+            //   · estimateTokens 含锚点抬升、不扣本地释放 → 与估计的发送量差 ctx_freed_tokens
+            //   · ctx_anchor_tokens === ctx_estimated_tokens 即「锚点抬升生效」
+            //   · ctx_calibrated 用来把首轮未校准的调用从误差统计里分出去
+            ctx_estimated_tokens: sendEstimatedInputTokens,
+            ctx_freed_tokens: ctxMgr.getLocalFreedTokens(),
+            ctx_anchor_tokens: ctxMgr.getLastActualInputTokens(),
+            ctx_calibrated: ctxMgr.isCalibrated(),
             raw_messages: sendParams.messages,
             system: sendParams.system,
             tools: sendParams.tools,
@@ -7389,11 +7405,15 @@ async function* queryLoopBody(
     // 否则上下文已满时，收尾请求会带一个必然超窗的 max_tokens 发出去。
     // 预算算不出来（窗口已放不下）时退到「默认预算与用户预算的较小者」——
     // 宁可少给一点，也不要拿物理上限换一次必然 400。
+    //
+    // PR0（2026-11-18）：与主循环同款，估算提成局部常量，`summaryBudget` 与下面的
+    // BeforeModel 共用同一个值（这一轮不传 tools，toolCount 必须是 0）。
+    const summaryEstimatedInputTokens = ctxMgr.estimateTokens(0);
     const summaryBudget = resolveRequestOutputBudget({
       requestBudget: config.maxTokens,
       modelMaxOutputTokens: resolveMaxOutputTokensForModel(config.model, config.availableModels),
       contextWindow: ctxMgr.getMaxTokens(),
-      estimatedInputTokens: ctxMgr.estimateTokens(0),
+      estimatedInputTokens: summaryEstimatedInputTokens,
     });
     const summaryParams = {
       model: config.model,
@@ -7425,6 +7445,13 @@ async function* queryLoopBody(
             estimated_input_tokens_calibrated: ctxMgr.isCalibrated()
               ? ctxMgr.estimateTokensFor(summaryParams.messages, 0)
               : null,
+            // PR0（2026-11-18）：与循环内同款四件套。这一轮是「强制总结轮」，同样是一次
+            // 真实计费的调用——不带这四个字段，它就从误差统计里凭空消失（偏差还有方向：
+            // 只有撞满上限的题才走这里，而那正是最贵的一批）。
+            ctx_estimated_tokens: summaryEstimatedInputTokens,
+            ctx_freed_tokens: ctxMgr.getLocalFreedTokens(),
+            ctx_anchor_tokens: ctxMgr.getLastActualInputTokens(),
+            ctx_calibrated: ctxMgr.isCalibrated(),
           },
           {
             // ⚠️ `turn_index` 必须是 maxTurns + 1 而不是复用 maxTurns。

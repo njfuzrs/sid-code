@@ -1249,6 +1249,16 @@ export class TraceCollector {
     // 只能从 debug.log 抽查（2026-11-12 那份报告只有 6 条样本），不足做验收。
     if (req.max_tokens !== undefined) requestSide.max_tokens = req.max_tokens;
 
+    // PR0（2026-11-18）：请求前上下文估算四件套，与 events.jsonl 的 BeforeModel.data 同源同值。
+    // 条件写入（缺省不写）保持向后兼容：老调用方（测试、回放、直接调 hook）不带这些字段时，
+    // raw.jsonl 与改动前逐字节相同，不会凭空多出 `undefined` 或 0 冒充观测值。
+    if (req.ctx_estimated_tokens !== undefined) {
+      requestSide.ctx_estimated_tokens = req.ctx_estimated_tokens;
+    }
+    if (req.ctx_freed_tokens !== undefined) requestSide.ctx_freed_tokens = req.ctx_freed_tokens;
+    if (req.ctx_anchor_tokens !== undefined) requestSide.ctx_anchor_tokens = req.ctx_anchor_tokens;
+    if (req.ctx_calibrated !== undefined) requestSide.ctx_calibrated = req.ctx_calibrated;
+
     // P1-6：推理旋钮**每次请求都记**（不像 system/tools 只记首次）——它是逐轮可变的：
     // side-call 关思考、主循环开思考、用户中途 `/think off`，都会让同一会话里不同请求
     // 拿到不同的值。只记首次等于记了一个会漂移的快照，比不记更容易误导。
@@ -1282,7 +1292,24 @@ export class TraceCollector {
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
       cwd: input.cwd,
-      data: { model: req.model, index, msg_count: rawMessages.length },
+      data: {
+        model: req.model,
+        index,
+        msg_count: rawMessages.length,
+        // PR0（2026-11-18）：请求前上下文估算四件套，与 raw.jsonl 同源同值。
+        // 方案 §8.3 的对账口径就写在这四个字段上：预测发送量
+        // = ctx_estimated_tokens − ctx_freed_tokens，分母是同一个 index 的
+        // AfterModel 里归一化后的 promptTotal。
+        // 条件写入：调用方不带时不写（老轨迹形状不变），避免 0 / undefined 冒充观测值。
+        ...(req.ctx_estimated_tokens !== undefined
+          ? { ctx_estimated_tokens: req.ctx_estimated_tokens }
+          : {}),
+        ...(req.ctx_freed_tokens !== undefined ? { ctx_freed_tokens: req.ctx_freed_tokens } : {}),
+        ...(req.ctx_anchor_tokens !== undefined
+          ? { ctx_anchor_tokens: req.ctx_anchor_tokens }
+          : {}),
+        ...(req.ctx_calibrated !== undefined ? { ctx_calibrated: req.ctx_calibrated } : {}),
+      },
     });
 
     // P1-2：前缀断裂定位（只落结论，不落内容）
@@ -1350,6 +1377,17 @@ export class TraceCollector {
           // V1-1：与完整记录同源，预写行也要能回答「这次打算发多少输出」——
           // 请求没回来的那种失败（进程崩溃 / 断连）只有这一行可查。
           ...(req.max_tokens !== undefined ? { max_tokens: req.max_tokens } : {}),
+          // PR0（2026-11-18）：请求前估算四件套，与完整记录 / events.jsonl 同源同值。
+          // 预写行尤其需要它——请求 hang 住或进程被 kill 时，这一行是唯一的请求侧证据，
+          // 而「估算 vs 真实 input」的偏差分析恰恰最想看的正是这类失败调用。
+          ...(req.ctx_estimated_tokens !== undefined
+            ? { ctx_estimated_tokens: req.ctx_estimated_tokens }
+            : {}),
+          ...(req.ctx_freed_tokens !== undefined ? { ctx_freed_tokens: req.ctx_freed_tokens } : {}),
+          ...(req.ctx_anchor_tokens !== undefined
+            ? { ctx_anchor_tokens: req.ctx_anchor_tokens }
+            : {}),
+          ...(req.ctx_calibrated !== undefined ? { ctx_calibrated: req.ctx_calibrated } : {}),
         }),
       );
     } catch {
