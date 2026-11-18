@@ -40,6 +40,8 @@ const fixture: Fixture = JSON.parse(
 
 function tickPull(tick: FixtureTick): GhPullSnapshot {
   return {
+    // 回放夹具来自真实会话 ca8d7e5c（等本仓 PR #780），仓库名固定为本仓
+    repo: "njfuzrs/sid-code",
     state: tick.pull.state === "closed" ? "closed" : "open",
     merged: tick.pull.merged,
     headSha: fixture.headSha,

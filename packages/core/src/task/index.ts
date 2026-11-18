@@ -201,6 +201,9 @@ export {
   formatSidWaitMisuseReceipt,
   runSidWaitGhPr,
   formatSidWaitResultSummary,
+  // 启动回执要点名「正在等哪个仓库的哪个 PR」：静默等错对象时查询是成功的，
+  // 启动那一刻是唯一能让人发现对象错了的窗口（同样覆盖终态看不到的场景）。
+  formatSidWaitStartNote,
   formatManualLoopHint,
   __resetManualLoopHintForTest,
   createGhCliRestClient,
