@@ -320,6 +320,18 @@ export interface CostReport {
      * 注意它**看不出牌价**，所以牌价必须同时出现在来源行，否则用户失去「价目是多少」这个信息。
      */
     avgPrice: { uncached?: number; hit?: number; write?: number; output?: number };
+    /**
+     * 会改变命中率**读数含义**的会话级事实，按固定顺序给出可读说明（空数组 = 无）。
+     *
+     * 目前两条来源（都是「数字照常给、但要告诉用户它该怎么读」的情形）：
+     * - D5：当前端点 `cache_read` 已知不可信（渠道编造 usage）→ 命中率是上游自报，不可当真；
+     * - D6：本会话同一 model 换过协议族 → 历史累计按末次口径归一化，命中率偏。
+     *
+     * 为什么放在数据层而不是渲染层拼：判据分别是 `ss.isChannelUntrusted()` 与
+     * `ModelUsageStats.providerSwitched`（同一个 `modelUsage` 快照），渲染层只排版不取数
+     * —— 那正是 D9（渲染层重算指标）的病根。
+     */
+    sessionNotes: string[];
   };
   byModel: CostModelRow[];
   side: {
@@ -615,6 +627,7 @@ export function buildCostReport(ss: SessionState, opts: BuildCostReportOptions):
         write: avgUnitPrice(mainBreakdown.writeUSD, cacheView.cacheWriteTokens),
         output: avgUnitPrice(mainBreakdown.outputUSD, usage.outputTokens),
       },
+      sessionNotes: buildSessionNotes(ss),
     },
     byModel,
     side: {
@@ -641,6 +654,31 @@ function sumDiscardedTokens(ss: SessionState): number {
   let total = 0;
   for (const s of Object.values(ss.modelUsage)) total += s.discardedPromptTokens ?? 0;
   return total;
+}
+
+/**
+ * 会话级「命中率该怎么读」的说明（见 `CostReport.main.sessionNotes`）。
+ *
+ * 两条判据都来自**已经存在的记账事实**（端点可信度、provider 是否换过族），不重算任何指标：
+ * - D5：不可信渠道的 `cache_read` 是编造的。这里不隐去数字（隐去后用户会以为缓存坏了），
+ *   而是说清「这是上游自报」；
+ * - D6：`stats.provider` 是末次覆盖、`cumulativePromptTokens` 是原始口径的累计，
+ *   换过族之后历史累计按新族归一化 —— 命中率偏，但会话仍要照样显示。
+ *
+ * 顺序固定（渠道可信度在前）：它是「整批数据都不可信」，优先级高于「口径偏」。
+ */
+function buildSessionNotes(ss: SessionState): string[] {
+  const notes: string[] = [];
+  if (ss.isChannelUntrusted()) {
+    notes.push("当前渠道的 usage 已知不可信（上游自报的 cache_read 是编造的），命中率仅供参考");
+  }
+  const switched = Object.entries(ss.modelUsage)
+    .filter(([, s]) => s.providerSwitched === true)
+    .map(([m]) => m);
+  if (switched.length > 0) {
+    notes.push(`本会话换过协议族（${switched.join("、")}），命中率按末次口径`);
+  }
+  return notes;
 }
 
 /** 各模型推理 token 之和（「其中推理」，openai 族是 output 的子集）。 */

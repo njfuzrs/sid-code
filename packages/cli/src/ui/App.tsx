@@ -437,6 +437,11 @@ export interface TUIState {
    */
   cacheHitRate?: number;
   /**
+   * D5：当前端点 `cache_read` 已知不可信（`SessionState.isChannelUntrusted()`）。
+   * 为真时状态栏命中率后加 `?`。判据在 core（每轮入账后无条件写入），UI 只透传。
+   */
+  cacheChannelUntrusted?: boolean;
+  /**
    * 会话累计 API 调用次数（`SessionState.getTotalRequests()`）——状态栏 `⟳ N` 列。
    *
    * 口径是「实际发出的 HTTP 请求数」，含重试白烧 / 子代理 / maxTurns 总结轮，
@@ -1697,6 +1702,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               cacheSavingsUSD={state.cacheSavingsUSD}
               outputTps={state.outputTps}
               cacheHitRate={state.cacheHitRate}
+              cacheChannelUntrusted={state.cacheChannelUntrusted}
               totalRequests={state.totalRequests}
               discardedRequests={state.discardedRequests}
               costLimit={state.costLimit}
@@ -1766,6 +1772,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               cacheSavingsUSD={state.cacheSavingsUSD}
               outputTps={state.outputTps}
               cacheHitRate={state.cacheHitRate}
+              cacheChannelUntrusted={state.cacheChannelUntrusted}
               totalRequests={state.totalRequests}
               discardedRequests={state.discardedRequests}
               costLimit={state.costLimit}
