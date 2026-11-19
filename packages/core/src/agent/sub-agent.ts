@@ -31,7 +31,7 @@ import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-la
 import { filterToolsForAgent, isAllAgentDisallowedTool } from "./tool-filter.ts";
 import { ruleToToolName } from "../tool/allowed-tools-spec.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
-import type { PreRequestBudgetStop } from "./agentic-loop.ts";
+import type { InFlightBudgetSnapshot, PreRequestBudgetStop } from "./agentic-loop.ts";
 import { JitContextManager, JIT_CONTEXT_DEFAULT } from "../config/jit-context.ts";
 import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
 import { buildJitEventData, emitJitEvent } from "../trace/jit-telemetry.ts";
@@ -576,6 +576,20 @@ export class SubAgent {
    * 透传点、漏一条就是「某条路径上预算闸静默失效」。放实例上由注入方统一接线。
    */
   private preRequestBudgetStop?: () => PreRequestBudgetStop | null;
+  /**
+   * PR7 重修（D3-2）：在途用量上报器（由持有 `SessionState` 的注入方接线）。
+   *
+   * 与 `preRequestBudgetStop` 是**同一个开关**：注入方不配预算时两个都不装，
+   * 循环里的 `reportInFlightUsage()` 与 `probeBudgetStop()` 双双短路。
+   *
+   * 为什么签名带 `agentId`、传 `null` 表示结束：台账（`SessionState.inFlightUsage`）
+   * 的清理必须由**知道子代理何时结束**的一侧触发，而 core 不该反向持有 cli 层的
+   * 会话状态对象。漏清会让预算判据把「已结束、且已入账」的钱再算一遍，见 state.ts 注释。
+   */
+  private inFlightUsageReporter?: (
+    agentId: string,
+    snapshot: InFlightBudgetSnapshot | null,
+  ) => void;
   /** ProviderRegistry 引用（fromRegistry 创建时设置） */
   private registry?: ProviderRegistry;
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
@@ -621,6 +635,19 @@ export class SubAgent {
    */
   setPreRequestBudgetStop(fn: (() => PreRequestBudgetStop | null) | undefined): void {
     this.preRequestBudgetStop = fn;
+  }
+
+  /**
+   * PR7 重修（D3-2）：注入在途用量上报器，让预算判据在子代理运行期间就能看到已花的钱。
+   *
+   * 必须与 `setPreRequestBudgetStop` 成对注入（同一个「配了预算」开关）：只装判据不装
+   * 上报器，判据读到的仍是「子代理开始前」的数字 —— 那正是 G3 的 C4 失败形态
+   * （方案 §8.11：$0.015 预算烧到 $0.0441 才停）。
+   */
+  setInFlightUsageReporter(
+    fn: ((agentId: string, snapshot: InFlightBudgetSnapshot | null) => void) | undefined,
+  ): void {
+    this.inFlightUsageReporter = fn;
   }
 
   /**
@@ -758,6 +785,7 @@ export class SubAgent {
    */
   private buildBaseLoopConfig(
     ctxMgr: ContextManager,
+    agentId: string,
   ): Pick<
     Parameters<typeof runAgentLoop>[0],
     | "hookSystem"
@@ -766,6 +794,7 @@ export class SubAgent {
     | "discoverJitContext"
     | "usageAccounting"
     | "preRequestBudgetStop"
+    | "onInFlightUsage"
   > {
     return {
       // S13（PR-8）：两条路径（内置 / 自定义）都要带上票据，收进工厂才不会漏一条。
@@ -774,6 +803,12 @@ export class SubAgent {
       // PR7（D3）：未注入（undefined）时循环里的 `probeBudgetStop()` 直接短路，
       // 行为与改造前完全一致 —— 这就是「只对配了预算的用户生效」的落地方式。
       preRequestBudgetStop: this.preRequestBudgetStop,
+      // PR7 重修（D3-2）：同上——未注入预算时 `reportInFlightUsage()` 也短路。
+      // agentId 在这里绑定而不是让注入方自己拿：注入方（cli/app.ts）是**所有子代理共用**
+      // 的一个回调，它不知道当前跑的是哪一个；而台账按 agentId 分条记录，并发时才对得上。
+      onInFlightUsage: this.inFlightUsageReporter
+        ? (snapshot) => this.inFlightUsageReporter!(agentId, snapshot)
+        : undefined,
       // B0：permissionChecker 从 AgentLoopConfig 的必填字段——此处必须显式传值
       // （可以是 undefined），漏传在类型层就会报错，不再是静默降级。
       permissionChecker: this.permissionChecker ?? undefined,
@@ -1112,6 +1147,10 @@ export class SubAgent {
         toolUseCount: 0,
       };
     } finally {
+      // PR7 重修（D3-2）：子代理一结束就清掉自己那条在途台账。放在 finally 的**最前面**，
+      // 不依赖下面任何可能抛错的分支（hook / 任务状态写盘）——漏清的后果是预算判据把
+      // 「已结束、且已由 usage-sink 入账」的钱再算一遍，用户会在根本没花那么多时被拦停。
+      this.inFlightUsageReporter?.(agentId, null);
       // subagent_stop hook（非阻塞）。带子代理实际 model/provider/usage/turns，
       // 供 TelemetryHookProbe 创建 invoke_agent 子 span 并按 model 单独计费。
       // result 在 try/catch 任一分支都已赋值（catch 兜底构造），此处可安全读取。
@@ -1215,6 +1254,9 @@ export class SubAgent {
         }),
       );
     } finally {
+      // PR7 重修（D3-2）：与 execute() 同口径——自定义路径同样可能在运行中烧钱，
+      // 它的在途台账必须在这里清掉（key 与 buildBaseLoopConfig 的 observerAgentId 等值）。
+      this.inFlightUsageReporter?.(customAgentId, null);
       // try 抛异常时 result 未赋值（与下方 G2 同理），此处显式收窄成可空
       const customDone = result! as SubAgentResult | undefined;
       // subagent_stop hook（非阻塞）。带 agent_id：曾不带，探针按 id 配对不上，
@@ -2242,7 +2284,9 @@ export class SubAgent {
         sendParamsExtra,
         // B0：两条 runAgentLoop 路径共有字段收进工厂（hookSystem / permissionChecker /
         // availability / discoverJitContext），见 buildBaseLoopConfig 注释。
-        ...this.buildBaseLoopConfig(ctxMgr),
+        // PR7 重修（D3-2）：第二个参数是台账 key —— 与 finally 清理、config.agentId 同一个值
+        // （`deriveSubAgentSessionId` 是纯函数，三处调用结果相等）。
+        ...this.buildBaseLoopConfig(ctxMgr, this.deriveSubAgentSessionId(taskId)),
         // B2（D1）：内置子代理走漏斗时的来源标签。与自定义路径（agent:custom）区分，
         // 让遥测能回答"哪类子代理在重试"——两条路径共用一个标签就丧失了这个分辨力。
         querySource: "agent:builtin",
@@ -2685,7 +2729,8 @@ export class SubAgent {
         // B0：两条 runAgentLoop 路径共有字段收进工厂。此前这条自定义路径唯独漏传
         // permissionChecker——权限层被整体绕过（自定义子代理调 edit/bash 不经检查），
         // 是本次修复的 P0 安全缺口。现在用工厂统一收敛，不再靠人工在两处分别记住传参。
-        ...this.buildBaseLoopConfig(ctxMgr),
+        // PR7 重修（D3-2）：台账 key 与 finally 清理、config.agentId 同一个值（observerAgentId）。
+        ...this.buildBaseLoopConfig(ctxMgr, observerAgentId),
         sendParamsExtra: customSendParamsExtra,
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;

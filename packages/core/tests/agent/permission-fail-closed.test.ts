@@ -255,7 +255,11 @@ describe("B0 — config key 一致性哨兵（两条 runAgentLoop 路径共用 b
     // permissionChecker/deadlineAt/discoverJitContext 等公共字段——自定义路径正是这样
     // 漏掉了 permissionChecker（本次修复的 P0 缺口）。现在两处都必须走同一个工厂，
     // 若未来有人在其中一处手写字面量绕开工厂，这条断言应当失败。
-    const calls = [...src.matchAll(/\.\.\.this\.buildBaseLoopConfig\(ctxMgr\)/g)];
+    //
+    // PR7 重修（D3-2）：工厂多了第二个参数（agentId，在途台账的 key），
+    // 所以匹配式从「ctxMgr 后紧跟右括号」放宽为「ctxMgr + 一个实参」。
+    // 放宽的只是形参个数，守的东西不变：**两处都必须走工厂**。
+    const calls = [...src.matchAll(/\.\.\.this\.buildBaseLoopConfig\(ctxMgr,\s*[^)]+\)/g)];
     expect(calls.length).toBe(2);
   });
 

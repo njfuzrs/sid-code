@@ -30,7 +30,7 @@ import {
 } from "./depth-context.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
 // PR7（D3）：预算闸的回调形状（只在注入方配了预算时存在）。
-import type { PreRequestBudgetStop } from "./agentic-loop.ts";
+import type { InFlightBudgetSnapshot, PreRequestBudgetStop } from "./agentic-loop.ts";
 // PR11（D1）：非正常出口的停止原因要写进回程头部，让父代理能判断结论的可信度。
 import { describeStopNotice } from "./stop-notice.ts";
 import { resolveSubAgentTypeParam } from "./sub-agent-input.ts";
@@ -363,6 +363,22 @@ export class SubAgentTool implements Tool {
     this.preRequestBudgetStop = fn;
   }
 
+  /**
+   * PR7 重修（D3-2）：注入在途用量上报器（只对配了预算的会话注入）。
+   *
+   * 必须与 `setPreRequestBudgetStop` 成对注入：只装判据不装上报器，判据读到的仍是
+   * 「子代理开始前」的数字，就是 G3 的 C4 失败形态（方案 §8.11：$0.015 烧到 $0.0441）。
+   */
+  private inFlightUsageReporter?: (
+    agentId: string,
+    snapshot: InFlightBudgetSnapshot | null,
+  ) => void;
+  setInFlightUsageReporter(
+    fn: ((agentId: string, snapshot: InFlightBudgetSnapshot | null) => void) | undefined,
+  ): void {
+    this.inFlightUsageReporter = fn;
+  }
+
   /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
   readonly needsPermissionChecker = true;
 
@@ -657,6 +673,11 @@ ${typeLines}
     // 「后台子代理不受预算约束」——而验收场景（S-F）恰好就是后台子代理。
     if (this.preRequestBudgetStop) {
       subAgent.setPreRequestBudgetStop(this.preRequestBudgetStop);
+    }
+    // PR7 重修（D3-2）：与判据成对挂在同一个工厂里 —— 只装判据不装上报器，
+    // 判据读到的就是「子代理开始前」的旧数字（C4 失败形态）。
+    if (this.inFlightUsageReporter) {
+      subAgent.setInFlightUsageReporter(this.inFlightUsageReporter);
     }
 
     return subAgent;
