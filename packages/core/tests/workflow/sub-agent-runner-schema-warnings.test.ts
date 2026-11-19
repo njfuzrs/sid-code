@@ -48,6 +48,11 @@ let capturedTask: { prompt?: string; schema?: unknown; cwd?: string } | null = n
 
 const origExecute = SubAgent.prototype.execute;
 const origCreate = WorktreeManager.prototype.create;
+// remove 必须一起存原值：stubCreate 会把 create 和 remove 成对换掉，
+// 少恢复 remove 会让同进程里后跑的测试拿到「返回 true 但不删目录」的桩
+// （2026-11-19 CI 实测：worktree/symlink-pollution.test.ts 整组 8 条断言因此失败，
+//  表现为「remove 返回 true 但目录仍在」「removeThrows 拿不到异常」）。
+const origRemove = WorktreeManager.prototype.remove;
 const origFindGitRoot = (await import("@sid-code/core/worktree/manager.ts")).findGitRootForAgent;
 const { setCwd } = await import("@sid-code/core/bootstrap/state.ts");
 const origCwd = process.cwd();
@@ -115,6 +120,7 @@ beforeEach(() => {
 afterEach(() => {
   SubAgent.prototype.execute = origExecute;
   WorktreeManager.prototype.create = origCreate;
+  WorktreeManager.prototype.remove = origRemove;
   capturedTask = null;
   // logger 是全局单例，initLogger 是就地 reconfigure：不恢复的话，同批后续测试
   // 的 WARN 都会往本文件已删掉的 tmp 路径写（静默失败，现场全丢）。

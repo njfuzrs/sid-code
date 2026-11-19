@@ -246,8 +246,12 @@ describe("preflight --worktree 模式", () => {
 });
 
 describe("脚本端到端：参数与退出码", () => {
-  const run = (cwd: string, args: string[]) => {
-    const r = Bun.spawnSync(["bun", "run", SCRIPT, ...args], {
+  // 异步 spawn 而不是 spawnSync：bun test 在同一进程里并发跑测试文件（--max-concurrency 默认 20），
+  // 同步 spawn 会阻塞整个事件循环，拖慢/扰动同进程里其它文件的 git 时序测试。
+  // 2026-11-19 CI 分片实测：同步版把 worktree/symlink-pollution.test.ts 整组拖成 fail
+  // （单跑该文件 15 pass，同分片并发时 remove 返回 true 但目录仍在）。
+  const run = async (cwd: string, args: string[]) => {
+    const proc = Bun.spawn(["bun", "run", SCRIPT, ...args], {
       cwd,
       // Bun 子进程不继承运行时的 process.env：不显式传会把 preload 设的 SID_CONFIG_DIR 丢掉，
       // 子进程就会写用户真实的 ~/.sid-code/。门禁见
@@ -256,34 +260,39 @@ describe("脚本端到端：参数与退出码", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { code, out, err };
   };
 
-  test("--help 退 0 并打印判据与退出码", () => {
-    const r = run(process.cwd(), ["--help"]);
+  test("--help 退 0 并打印判据与退出码", async () => {
+    const r = await run(process.cwd(), ["--help"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain(
       "退出码：0 = 通过；1 = 有依赖解析不了（逐项打印并给修复命令）；2 = 参数错误",
     );
   });
 
-  test("未知参数 → 退 2", () => {
-    const r = run(process.cwd(), ["--nope"]);
+  test("未知参数 → 退 2", async () => {
+    const r = await run(process.cwd(), ["--nope"]);
     expect(r.code).toBe(2);
   });
 
-  test("缺依赖时退 1，通过时退 0（默认模式走 git rev-parse 取根）", () => {
+  test("缺依赖时退 1，通过时退 0（默认模式走 git rev-parse 取根）", async () => {
     const { root } = makeRepo();
     try {
       const sh = (args: string[]) =>
         Bun.spawnSync(["git", ...args], { cwd: root, stdout: "pipe", stderr: "pipe" });
       sh(["init", "-q"]);
-      const before = run(join(root, "packages", "b"), []);
+      const before = await run(join(root, "packages", "b"), []);
       expect(before.code).toBe(1);
       expect(before.out).toContain("✗ worktree 批量编排前置检查未通过");
 
       linkDep(root, join(root, "node_modules"), "@x/a", join(root, "packages", "a"));
-      const after = run(join(root, "packages", "b"), []);
+      const after = await run(join(root, "packages", "b"), []);
       expect(after.code).toBe(0);
       expect(after.out).toContain("✓ 前置检查通过：1 个 workspace 依赖均可解析");
     } finally {

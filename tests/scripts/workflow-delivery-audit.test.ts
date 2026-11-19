@@ -251,8 +251,12 @@ describe("listWorktrees / renderReport", () => {
 });
 
 describe("脚本端到端：退出码与 --export-dir", () => {
-  const run = (args: string[], cwd: string) => {
-    const r = Bun.spawnSync(["bun", "run", SCRIPT, ...args], {
+  // 异步 spawn 而不是 spawnSync：bun test 在同一进程里并发跑测试文件（--max-concurrency 默认 20），
+  // 同步 spawn 会阻塞整个事件循环，拖慢/扰动同进程里其它文件的 git 时序测试。
+  // 2026-11-19 CI 分片实测：同步版把 worktree/symlink-pollution.test.ts 整组拖成 fail
+  // （单跑该文件 15 pass，同分片并发时 remove 返回 true 但目录仍在）。
+  const run = async (args: string[], cwd: string) => {
+    const proc = Bun.spawn(["bun", "run", SCRIPT, ...args], {
       cwd,
       // Bun 子进程不继承运行时的 process.env：不显式传会把 preload 设的 SID_CONFIG_DIR 丢掉，
       // 子进程就会写用户真实的 ~/.sid-code/。门禁见
@@ -261,25 +265,30 @@ describe("脚本端到端：退出码与 --export-dir", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { code, out, err };
   };
 
-  test("--help 退 0；未知参数退 2", () => {
+  test("--help 退 0；未知参数退 2", async () => {
     const repo = makeMainRepo();
     try {
-      const h = run(["--help"], repo);
+      const h = await run(["--help"], repo);
       expect(h.code).toBe(0);
       expect(h.out).toContain("退出码：0 = 全部 committed 或没有 wf_*");
-      expect(run(["--nope"], repo).code).toBe(2);
+      expect((await run(["--nope"], repo)).code).toBe(2);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
   });
 
-  test("没有 .sid-code/worktrees → 退 0 并提示", () => {
+  test("没有 .sid-code/worktrees → 退 0 并提示", async () => {
     const repo = makeMainRepo();
     try {
-      const r = run(["--base", BASE, "--repo", repo], repo);
+      const r = await run(["--base", BASE, "--repo", repo], repo);
       expect(r.code).toBe(0);
       expect(r.out).toContain("无需审计");
     } finally {
@@ -287,14 +296,14 @@ describe("脚本端到端：退出码与 --export-dir", () => {
     }
   });
 
-  test("有未提交改动 → 退 1，--export-dir 导出 patch 并提示已 add -A", () => {
+  test("有未提交改动 → 退 1，--export-dir 导出 patch 并提示已 add -A", async () => {
     const repo = makeMainRepo();
     try {
       const wt = addWorktree(repo, "wf_u");
       write(wt, "u.txt", "hello\n");
       write(wt, "new-file.txt", "brand new\n");
       const outDir = join(repo, "patches");
-      const r = run(["--base", BASE, "--repo", repo, "--export-dir", outDir], repo);
+      const r = await run(["--base", BASE, "--repo", repo, "--export-dir", outDir], repo);
       expect(r.code).toBe(1);
       expect(r.out).toContain("已对 wf_u 执行 git add -A");
       const patch = readFileSync(join(outDir, "wf_u.patch"), "utf8");
@@ -305,14 +314,14 @@ describe("脚本端到端：退出码与 --export-dir", () => {
     }
   });
 
-  test("全部已提交 → 退 0", () => {
+  test("全部已提交 → 退 0", async () => {
     const repo = makeMainRepo();
     try {
       const wt = addWorktree(repo, "wf_a");
       write(wt, "a.txt", "a\n");
       sh(wt, "add", "-A");
       commit(wt, "feat: a");
-      const r = run(["--base", BASE, "--repo", repo], repo);
+      const r = await run(["--base", BASE, "--repo", repo], repo);
       expect(r.code).toBe(0);
       expect(r.out).toContain("committed");
     } finally {
