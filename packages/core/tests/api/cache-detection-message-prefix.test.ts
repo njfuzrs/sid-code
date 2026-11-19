@@ -6,7 +6,13 @@
  * 对齐轨迹实测（10-21~10-30）：字节侧 `prefix_break` 确认断了且浪费 > 1% 的请求里，
  * 账单侧有 35 次判成了服务端波动。
  *
- * 本文件只测 CacheBreakDetector 本身（只调 checkResponse，不进环形缓冲、不落盘）。
+ * 本文件只测 CacheBreakDetector 本身（不进环形缓冲、不落盘）。
+ *
+ * 2026-11-19 D1/D2：用例改走主循环的真实调用序列（请求前 `recordPromptState` →
+ * 响应后 `checkResponse`）。原写法连调两次 `checkResponse`，绕过了请求前快照这一步：
+ * 修复前它恰好绿着（prev 被请求前快照覆盖 = 旧契约），修复后 `pendingState` 为空时
+ * 检测器**刻意不比较**（见 cache-detection.ts 内注释），所以旧写法已不再成立。
+ * 时序层面的完整覆盖见 `cache-detection-loop-sequence.test.ts`。
  */
 import { describe, test, expect } from "bun:test";
 import { CacheBreakDetector, type CacheCheckParams } from "@sid-code/core/api/cache-detection.ts";
@@ -30,11 +36,19 @@ function params(over: Partial<CacheCheckParams>): CacheCheckParams {
   };
 }
 
+/** 一轮的真实顺序：先请求前快照（cacheReadTokens=0，与 loop.ts 一致），再响应后检测 */
+function turn(d: CacheBreakDetector, over: Partial<CacheCheckParams>) {
+  const responseParams = params(over);
+  d.recordPromptState({ ...responseParams, cacheReadTokens: 0 });
+  return d.checkResponse(responseParams);
+}
+
 /** 先建基线，再发第二轮（cache_read 掉 50%，满足 5% 且 2000 token 的双重阈值） */
 function run(prevMsgs: unknown[] | undefined, currMsgs: unknown[] | undefined) {
   const d = new CacheBreakDetector(() => 0); // 时间不前进，排除 ttl_expiry
+  d.recordPromptState(params({ cacheReadTokens: 0, messages: prevMsgs }));
   d.checkResponse(params({ cacheReadTokens: 10_000, messages: prevMsgs }));
-  return d.checkResponse(params({ cacheReadTokens: 5_000, messages: currMsgs }));
+  return turn(d, { cacheReadTokens: 5_000, messages: currMsgs });
 }
 
 describe("消息前缀进判据", () => {
@@ -96,10 +110,9 @@ describe("消息前缀进判据", () => {
     const prev = history(6);
     const curr = [...history(6)];
     curr[3] = msg(3, "（被改写）");
+    d.recordPromptState(params({ cacheReadTokens: 0, messages: prev }));
     d.checkResponse(params({ cacheReadTokens: 10_000, messages: prev }));
-    const r = d.checkResponse(
-      params({ cacheReadTokens: 5_000, systemPrompt: "changed", messages: curr }),
-    )!;
+    const r = turn(d, { cacheReadTokens: 5_000, systemPrompt: "changed", messages: curr })!;
     expect(r.categories).toEqual(["system_prompt"]);
     // 诊断字段照样带上，读的人能看到两处都变了
     expect(r.messagePrefixChanged).toBe(true);

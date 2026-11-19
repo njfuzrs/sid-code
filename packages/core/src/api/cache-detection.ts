@@ -205,7 +205,24 @@ const DROP_TOKENS_THRESHOLD = 2000; // 且绝对值 > 2000 tokens
 const TTL_WARN_MS = 300_000; // 5 分钟
 
 export class CacheBreakDetector {
+  /**
+   * 上一轮**实际发送过**的请求前缀（比较基线）。
+   *
+   * 2026-11-19（D1）：它此前会被 `recordPromptState` 直接覆盖成"本轮请求前快照"，
+   * 于是 `checkResponse` 里 `prev` 与 `curr` 变成**同一轮**的两个快照 —— 归因链逐项
+   * 比较全部相同（同轮 system / tools / 消息必然一致），本地类别（system_prompt /
+   * tools / tool_order / message_history …）**全部不可达**，`/cost` 上永远「上游 N /
+   * 本地 0」。现在请求前快照进 `pendingState` 排队，比较完成后才提为基线。
+   */
   private previousState: PromptState | null = null;
+  /**
+   * 本轮请求前的前缀快照（`recordPromptState` 写入，尚未参与比较，见 D1）。
+   *
+   * 与 `recordPromptState` 严格配对：每一条 `checkResponse` 出口都必须把它**提为基线
+   * 并清空**。漏一条的表现是 pending 滞留到下一轮 —— 下一轮比较的基线落后两轮，
+   * 归因指向错误的那个间隔。
+   */
+  private pendingState: PromptState | null = null;
   private previousCacheReadTokens = 0;
   /** 时间源，可注入便于测试 */
   private now: () => number;
@@ -219,6 +236,7 @@ export class CacheBreakDetector {
   /** 重置状态（新会话 / clear 时调用） */
   reset(): void {
     this.previousState = null;
+    this.pendingState = null;
     this.previousCacheReadTokens = 0;
     this.suppressNext = { active: false, reason: "" };
   }
@@ -229,6 +247,28 @@ export class CacheBreakDetector {
    */
   notifyCompaction(): void {
     this.suppressNext = { active: true, reason: "compaction" };
+  }
+
+  /**
+   * 取消尚未消费的抑制，**不动比较基线**（请求失败路径用，见 D7）。
+   *
+   * 为什么需要它：`suppressNext` 只在 `checkResponse` 里消费。compact 之后请求失败
+   * （`checkResponse` 不执行）时抑制标志会留到**下一次成功请求**，白抑制一次本不该
+   * 抑制的检测。
+   *
+   * 为什么不是 `reset()`：`MultiSourceCacheDetector.reset()` 是 `detectors.clear()`，
+   * 清的是**全部 agentId** 的基线；清完下一轮走「首轮」分支直接跳过检测 —— 那不是
+   * 重置基线，是丢一次检测机会。且失败请求的前缀**很可能已经被服务端缓存**（缓存写入
+   * 发生在 prompt 处理阶段，早于模型输出），基线必须保留，让下一轮正常比较。
+   */
+  cancelSuppression(): void {
+    this.suppressNext = { active: false, reason: "" };
+  }
+
+  /** 把本轮请求前快照提为基线并清空 pending（`checkResponse` 每条出口共用） */
+  private promotePending(): void {
+    if (this.pendingState) this.previousState = this.pendingState;
+    this.pendingState = null;
   }
 
   private snapshot(params: CacheCheckParams): PromptState {
@@ -255,33 +295,47 @@ export class CacheBreakDetector {
   }
 
   /**
-   * Phase 1: 请求前 — 快照当前状态（不比较）。
+   * Phase 1: 请求前 — 快照当前状态（不比较，也不覆盖基线，见 D1）。
    * 通常由 checkResponse 内部自动调用，但暴露出来供显式快照场景使用。
    */
   recordPromptState(params: CacheCheckParams): void {
-    this.previousState = this.snapshot(params);
+    this.pendingState = this.snapshot(params);
   }
 
   /**
    * Phase 2: 响应后 — 检测 cache 失效并归因。
-   * 返回 null 表示无显著失效（首次请求 / 命中正常 / 下降未达阈值 / 被抑制）。
+   * 返回 null 表示无显著失效（首次请求 / 命中正常 / 下降未达阈值 / 被抑制 / 本轮无请求前快照）。
+   *
+   * 比较对象是**相邻两轮各自「请求前」的快照**：`prev = previousState`（上轮请求前），
+   * `curr = pendingState`（本轮请求前）。2026-11-19 之前 `curr` 取响应后重新 snapshot，
+   * 而 `prev` 又被请求前快照覆盖成同一轮 —— 两者永远是同一轮，归因链恒空转（D1）。
    */
   checkResponse(params: CacheCheckParams): CacheBreakReport | null {
     // G1：抑制本次检测（compact / 冷缓存清理后的预期下降），重置基线而非告警
     if (this.suppressNext.active) {
       getLogger().debug("CACHE_DETECT", `抑制本次检测: ${this.suppressNext.reason}`);
+      // ⚠️ 这行不能丢：漏了 suppressNext 永不过期，此后每轮都进这个分支，
+      // 检测器等于彻底停摆（比原缺陷严重一个数量级）。
       this.suppressNext = { active: false, reason: "" };
       this.previousCacheReadTokens = params.cacheReadTokens;
-      this.recordPromptState(params);
+      this.promotePending();
       return null;
     }
 
     // 首次请求或上次无缓存：记录并返回
     if (!this.previousState || this.previousCacheReadTokens === 0) {
       this.previousCacheReadTokens = params.cacheReadTokens;
-      this.recordPromptState(params);
+      this.promotePending();
       return null;
     }
+
+    // ⚠️ 拿不到本轮请求前快照时**不比较，也不更新基线**。
+    // pendingState 为 null 说明 recordPromptState 没被调用（或本轮在它之前就退出了）。
+    // 此时若回落到 snapshot(params)，拿到的 `messageCount` 是响应后的（含本轮 assistant +
+    // tool results），下一轮请求前快照一定比它小 → 命中下方 compact 兜底判据，误报一次压缩。
+    // 正确处置是原样返回，等下一轮补齐。
+    const curr = this.pendingState;
+    if (!curr) return null;
 
     const prevTokens = this.previousCacheReadTokens;
     const dropTokens = prevTokens - params.cacheReadTokens;
@@ -290,13 +344,13 @@ export class CacheBreakDetector {
     // 双重阈值：下降 > 5% 且绝对值 > 2000 tokens
     if (dropPercent < DROP_PERCENT_THRESHOLD || dropTokens < DROP_TOKENS_THRESHOLD) {
       this.previousCacheReadTokens = params.cacheReadTokens;
-      this.recordPromptState(params);
+      this.promotePending();
       return null;
     }
 
     // ── 检测到 cache break，归因 ──
+    // prev / curr 都是各自轮次的「请求前」快照，比较的才是真正发出去的前缀。
     const prev = this.previousState;
-    const curr = this.snapshot(params);
     const changes: string[] = [];
     const categories: CacheBreakCategory[] = [];
 
@@ -420,9 +474,9 @@ export class CacheBreakDetector {
         : {}),
     };
 
-    // 更新状态
+    // 更新状态：本轮请求前快照成为下一轮的比较基线（pending 同时清空）
     this.previousCacheReadTokens = params.cacheReadTokens;
-    this.previousState = curr;
+    this.promotePending();
 
     return report;
   }
@@ -517,6 +571,18 @@ export class MultiSourceCacheDetector {
     this.get(agentId).notifyCompaction();
   }
 
+  /**
+   * D7：取消该 agent 尚未消费的抑制，**只清抑制、不动基线**。
+   *
+   * 刻意按 agentId 精确清除（请求失败的是哪个源就清哪个）。不要用 `reset()` 顶替：
+   * 它 `detectors.clear()` 清掉全部 agentId，下一轮走首轮分支直接跳过检测。
+   */
+  cancelSuppression(agentId = "main"): void {
+    // 只转发给**已存在**的 detector：为一次失败新建一个 detector 等于凭空造出一个
+    // 空基线源，还会挤掉 LRU 里的真实子代理源。
+    this.detectors.get(agentId)?.cancelSuppression();
+  }
+
   reset(): void {
     this.detectors.clear();
   }
@@ -542,6 +608,11 @@ export function checkResponseForCacheBreak(params: CacheCheckParams): CacheBreak
 /** G1：通知检测器即将 compact，抑制紧接的一次检测（默认主循环源） */
 export function notifyCompaction(agentId = "main"): void {
   defaultDetector.notifyCompaction(agentId);
+}
+
+/** D7：请求失败路径调用——取消尚未消费的抑制，保留比较基线（默认主循环源） */
+export function cancelSuppression(agentId = "main"): void {
+  defaultDetector.cancelSuppression(agentId);
 }
 
 export function resetCacheDetection(): void {
