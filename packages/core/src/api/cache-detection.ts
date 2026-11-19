@@ -713,13 +713,19 @@ export function getCacheHealthAdvice(): string[] {
   const trusted = recentBreaks.filter((b) => b.channelTrust !== "untrusted");
   if (trusted.length === 0) return advice;
 
-  const systemBreaks = trusted.filter((b) =>
-    b.changes.some((c) => c.includes("System prompt")),
+  // D5b：按**结构化类别**判，不对 `changes` 文案做子串匹配。
+  // 这三行此前是 `b.changes.some(c => c.includes("System prompt"))` 之类 —— 与
+  // `categories` 字段的契约（见本文件 `CacheBreakReport.categories` 注释）直接相悖：
+  // 文案是给人看的，任何一次措辞调整都会让判据静默失效，而且不会有测试变红。
+  // 类别与文案在 `note()` 里同处产出，读类别才是同源判据。
+  //
+  // `tool_order` 与 `tools` 并进同一格：两者都是「工具区前缀变了、缓存断在工具段」，
+  // 修复建议也一样（固定字典序）。旧实现用两个子串 OR 表达这件事，是同一个分类的两种口径。
+  const systemBreaks = trusted.filter((b) => b.categories.includes("system_prompt")).length;
+  const toolBreaks = trusted.filter(
+    (b) => b.categories.includes("tools") || b.categories.includes("tool_order"),
   ).length;
-  const toolBreaks = trusted.filter((b) =>
-    b.changes.some((c) => c.includes("工具变化") || c.includes("工具顺序")),
-  ).length;
-  const modelBreaks = trusted.filter((b) => b.changes.some((c) => c.includes("模型变化"))).length;
+  const modelBreaks = trusted.filter((b) => b.categories.includes("model")).length;
 
   // 阈值：同类中断占比 ≥ 50% 且 ≥ 2 次 → 给出针对性建议
   const n = trusted.length;

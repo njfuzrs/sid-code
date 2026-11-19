@@ -217,6 +217,9 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     // D18：命中率与 token/cost 同一生命周期——/clear 清空 modelUsage 后必须一起归零，
     // 否则状态栏会继续显示上一会话的 ↯N%（`undefined` = 无命中数据，Footer 不渲染该列）。
     cacheHitRate: undefined,
+    // D5：端点可信度与命中率同一生命周期 —— /clear 后还没有任何入账，下一个端点未知，
+    // 不能沿用上一段的「不可信」标记（否则新会话第一笔入账前就带着警示）。
+    cacheChannelUntrusted: undefined,
     // /clear 走 sessionState.resetCounters()（清空 modelUsage → requests 归零），
     // 这里同步把展示侧归零，保持「状态栏计量项与上下文一起清空」的既有约定。
     // 这也正是本列选 requests 而非 absoluteTurnCount 的理由之一：后者不被 resetCounters

@@ -40,6 +40,7 @@ import {
   RETRY_MARK,
   ERROR_MARK,
   CACHE_MARK,
+  CHANNEL_UNTRUSTED_MARK,
   TPS_MARK,
 } from "../constants/figures.ts";
 import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
@@ -96,6 +97,14 @@ interface FooterProps {
    * 拿全会话合计 usage 配「当前模型」推断的 provider 去归一化，多模型/跨协议族会话会错。
    */
   cacheHitRate?: number;
+  /**
+   * D5：当前端点 `cache_read` 已知不可信（core 的 `SessionState.isChannelUntrusted()` 推下来的）。
+   *
+   * 为真时命中率**照常显示**、只是在数字后加 `?`（`↯96%?`）。不隐藏数字是刻意的：
+   * 滤掉会让整列消失，用户以为「缓存坏了」；真相是「这个渠道的数不能信」。
+   * 判据由 core 在每轮入账后无条件写进会话状态，**UI 不许自己查渠道登记表**。
+   */
+  cacheChannelUntrusted?: boolean;
   /**
    * 终端列宽（响应式，随窗口 resize 变化）。用于窄终端下按优先级渐进隐藏区块，
    * 保证状态栏每行不折行。缺省时回退到 stdout.columns，仍可工作只是不随 resize 精确联动。
@@ -310,17 +319,22 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       ),
     });
   }
-  // cache：↯符号(暗) + 命中率(≥50% 绿点睛，否则亮)。
+  // cache：↯符号(暗) + 命中率(≥50% 绿点睛，否则亮)。D5：渠道不可信时数值后加 `?`（同色，
+  // 靠排版而非新色相表达「此数不可当真」——警示若也用颜色，会和「命中率低」的黄色抢焦点）。
   if (data.cache) {
     const rateColor = data.cache.rate >= 50 ? theme.status.success : val;
     metricSegs.push({
       key: "cache",
+      // str 必须与 nodes 同宽（窄屏按 str 实测列宽），所以 `?` 要出现在 str 里，
+      // 不能只在 nodes 里多渲染一个字形。
       str: data.cache.text,
       dropOrder: 4,
       nodes: (
         <>
           <Text color={dim}>{CACHE_MARK}</Text>
-          <Text color={rateColor}>{data.cache.rate}%</Text>
+          <Text color={rateColor}>
+            {data.cache.rate}%{props.cacheChannelUntrusted ? CHANNEL_UNTRUSTED_MARK : ""}
+          </Text>
         </>
       ),
     });

@@ -263,3 +263,51 @@ describe("吞吐列 · 入账 → 状态栏接线", () => {
     bridge.detach();
   });
 });
+
+describe("D5 · 渠道可信度随入账推到状态栏", () => {
+  // 这里的 session 是真实 SessionState，`channelTrust` 由生产侧的写入口设置
+  // （loop.ts 每轮 updateUsage 之后无条件调 setChannelTrust）。本文件只验「推没推」：
+  // `isChannelUntrusted()` → `bridge.current.cacheChannelUntrusted` 这条接线。
+  // 关键是**只在有入账时推**（订阅语义），不能靠首帧一次性塞值。
+
+  test("untrusted → 入账后状态栏拿到 cacheChannelUntrusted=true", async () => {
+    const { sessionState, bridge, off } = wire();
+    expect(bridge.current.cacheChannelUntrusted).toBeFalsy();
+
+    sessionState.setChannelTrust("untrusted");
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100, cacheReadInputTokens: 900 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+
+    expect(bridge.current.cacheChannelUntrusted).toBe(true);
+    // 命中率照常推（标记不是「不算数」）
+    expect(bridge.current.cacheHitRate).toBe(90);
+    off();
+    bridge.detach();
+  });
+
+  test("trusted → 推 false（标记必须能随端点变化撤回）", async () => {
+    const { sessionState, bridge, off } = wire();
+    sessionState.setChannelTrust("untrusted");
+    sessionState.updateUsage(
+      "deepseek-v4-pro",
+      { inputTokens: 1000, outputTokens: 100 },
+      10,
+      "openai",
+    );
+    await sleep(FLUSH_WAIT_MS);
+    expect(bridge.current.cacheChannelUntrusted).toBe(true);
+
+    // 会话中途换到可信端点：下一笔入账必须把标记撤掉
+    sessionState.setChannelTrust("trusted");
+    sessionState.addSideCost(0.001);
+    await sleep(FLUSH_WAIT_MS);
+    expect(bridge.current.cacheChannelUntrusted).toBe(false);
+    off();
+    bridge.detach();
+  });
+});

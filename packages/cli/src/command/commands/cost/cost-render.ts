@@ -394,6 +394,13 @@ export function renderCostReport(r: CostReport, opts: RenderCostReportOptions): 
           : "";
       lines.push(`  ${p.secondary(`本地前缀断裂 ${pb.count} 次（字节级${waste}）`)}`);
     }
+    // D5 / D6：命中率读数的「该不该当真」——数字照常显示，但必须说明它怎么来的。
+    // 两条判据在 core 的数据层已经算好（`main.sessionNotes`），这里只排版，不重算。
+    // 放在命中率行下面而不是页面末尾：脱离命中率单独一行「本会话换过协议族」，
+    // 用户不知道它在说哪个数。
+    for (const note of r.main.sessionNotes) {
+      lines.push(`  ${p.secondary(`⚠ ${note}`)}`);
+    }
     // D6：只在实测命中率确实偏低且样本足够时提示，且给的是可行动作（/cache --breaks）。
     //
     // 旧实现写死「openai 族 60-70% 属正常上限」，**完全不看实际数值** —— 取证会话

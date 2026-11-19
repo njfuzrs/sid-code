@@ -10101,6 +10101,9 @@ export class App {
       // D18：首帧就要给命中率（resume 进来的会话 modelUsage 已有值），
       // 之后由 subscribeCostToBridge 在每次入账时续推。
       cacheHitRate: this.sessionState.getCacheHitRate(),
+      // D5：resume 进来的会话可能已经带着 untrusted 端点的标记（`channelTrust` 不落盘，
+      // 首帧通常是 false，下一笔入账由 subscribeCostToBridge 续推真实值）。
+      cacheChannelUntrusted: this.sessionState.isChannelUntrusted(),
       totalRequests: this.sessionState.getTotalRequests(),
       discardedRequests: this.sessionState.getDiscardedRequests(),
       // B18：状态栏百分比的分母必须是真正会拦的那个上限。

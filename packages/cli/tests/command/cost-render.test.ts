@@ -308,3 +308,57 @@ describe("预算与作废重发（D14，有值才显示）", () => {
     expect(render(baseSession())).not.toContain("作废重发");
   });
 });
+
+describe("D5 / D6：命中率的「怎么读」标注（main.sessionNotes）", () => {
+  // 数据层（怎么判、判出什么）由 `packages/core/tests/session/channel-trust-and-provider-switch.test.ts`
+  // 断言；这里只验**排版层的接线**：note 真的被渲染、位置在命中率行下面，且没有 note 时
+  // 一个字符也不多（不制造无谓的警示噪音）。
+  const NOTE_UNTRUSTED = "当前渠道的 usage 已知不可信";
+
+  test("untrusted 渠道：/cost 命中率下面出一行说明", () => {
+    const ss = baseSession();
+    ss.setChannelTrust("untrusted");
+    const out = render(ss);
+    expect(out).toContain(NOTE_UNTRUSTED);
+
+    // 位置：必须在「命中率」行之后 —— 脱离命中率单独一行「不可信」，用户不知道在说哪个数
+    const lines = out.split("\n");
+    const rateIdx = lines.findIndex((l) => l.includes("命中率"));
+    const noteIdx = lines.findIndex((l) => l.includes(NOTE_UNTRUSTED));
+    expect(rateIdx).toBeGreaterThanOrEqual(0);
+    expect(noteIdx).toBeGreaterThan(rateIdx);
+  });
+
+  test("可信渠道：不出这行说明（默认路径零变化）", () => {
+    expect(render(baseSession())).not.toContain("已知不可信");
+    expect(render(baseSession())).not.toContain("换过协议族");
+  });
+
+  test("D6：同一 model 换过协议族 → /cost 标注「按末次口径」并点名模型", () => {
+    const ss = new SessionState("cost-render-switch");
+    ss.setAvailableModels([
+      {
+        name: "alias-model",
+        provider: "openai",
+        pricing: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25 },
+      },
+    ]);
+    ss.updateUsage(
+      "alias-model",
+      { inputTokens: 1_000, outputTokens: 100, cacheReadInputTokens: 500 },
+      5,
+      "anthropic",
+    );
+    ss.updateUsage(
+      "alias-model",
+      { inputTokens: 1_000, outputTokens: 100, cacheReadInputTokens: 500 },
+      5,
+      "openai",
+    );
+
+    const out = render(ss);
+    expect(out).toContain("换过协议族");
+    expect(out).toContain("末次口径");
+    expect(out).toContain("alias-model");
+  });
+});

@@ -286,7 +286,54 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
   });
 
   test("工具频繁变化 → 给出定序建议", () => {
-    for (let i = 0; i < 3; i++) recordCacheBreak(rec({ changes: ["工具变化: +foo"] }));
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(rec({ changes: ["工具变化: +foo"], categories: ["tools"] }));
+    }
+    const advice = getCacheHealthAdvice();
+    expect(advice.some((a) => a.includes("工具"))).toBe(true);
+  });
+
+  // ── D5b：判据是 categories，不是 changes 文案 ──
+  //
+  // 下面两条是同一个事实的正反两面，缺一条就守不住「按结构化类别判」这件事：
+  // 只写正向（categories 含 → 触发），改回 changes 子串匹配仍会通过（文案里恰好也有
+  // "System prompt"）；只写反向，判据改成恒不触发也能通过。
+
+  test("D5b：changes 文案里含 'System prompt' 但 categories 不含 → 不给建议", () => {
+    // 文案与类别在 note() 里同处产出，正常不会错位；这条模拟的是「措辞调整 / 旧记录回放」
+    // 之后两者脱节的形态 —— 旧实现的子串匹配恰恰在这种记录上会误判。
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(
+        rec({
+          changes: ["System prompt 变化"],
+          categories: ["cache_policy"], // 结构化类别与本条无关
+        }),
+      );
+    }
+    expect(getCacheHealthAdvice()).toEqual([]);
+  });
+
+  test("D5b：categories 含 system_prompt 但 changes 文案被改写 → 仍给建议", () => {
+    // 文案改成别的措辞（模拟一次无伤大雅的文案重构）：旧的 `includes("System prompt")`
+    // 在这里会**静默失效**，而有了这一条，那种改法会立刻变红。
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(
+        rec({
+          changes: ["系统提示词（system 段）被改写"],
+          categories: ["system_prompt"],
+        }),
+      );
+    }
+    const advice = getCacheHealthAdvice();
+    expect(advice.some((a) => a.includes("system 提示词"))).toBe(true);
+  });
+
+  test("D5b：工具建议读 tools / tool_order 两个类别（后者文案完全不含「变化」二字）", () => {
+    // tool_order 的文案是「工具顺序变化（内容不变但顺序改变）」，旧子串匹配靠
+    // `includes("工具顺序")` 才蒙对；这里把文案换掉、只留类别，守住「读类别」这件事。
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(rec({ changes: ["顺序抖动"], categories: ["tool_order"] }));
+    }
     const advice = getCacheHealthAdvice();
     expect(advice.some((a) => a.includes("工具"))).toBe(true);
   });
@@ -307,7 +354,13 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
   test("untrusted 与 trusted 混合时，占比只按 trusted 算", () => {
     // trusted 里只有 1 条 system 变化 + 1 条工具变化 → 各占 50%，都只有 1 次，不足以给建议
     recordCacheBreak(rec({ channelTrust: "trusted" }));
-    recordCacheBreak(rec({ changes: ["工具变化: +foo"], channelTrust: "trusted" }));
+    // 工具类别的记录必须带 `categories: ["tools"]`：D5b 起判据读结构化类别而不是
+    // `changes` 文案（契约见 `CacheBreakReport.categories`）。这里只补类别，**不改变本用例的
+    // 意图** —— 它测的是「untrusted 记录被排除出分母」，与判据读哪个字段无关。
+    // 旧夹具只给 changes 仍能过，是因为旧实现做子串匹配；按契约该给的是 categories。
+    recordCacheBreak(
+      rec({ changes: ["工具变化: +foo"], categories: ["tools"], channelTrust: "trusted" }),
+    );
     // 再塞 4 条 untrusted 的 system 变化，若没排除就会把 system 占比抬到 5/6 ≥ 50% 且 ≥ 2 次
     for (let i = 0; i < 4; i++) {
       recordCacheBreak(rec({ channelTrust: "untrusted" }));

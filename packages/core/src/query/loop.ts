@@ -4429,6 +4429,24 @@ async function* queryLoopBody(
         usageProvider,
         config.baseURL,
       );
+      // D5：把**当前端点**的渠道可信度写进会话状态，供 Footer 打「数据不可信」标记。
+      //
+      // ⚠️ 必须**无条件**写在这里（紧跟 updateUsage），**不能**挪进下面的
+      // `if (breakReport)` 分支：那里只有「发生了缓存断裂」才走，而 Footer 的标记是
+      // 每轮都要显示的 —— 放进去的后果是「没断裂的会话永远拿不到 trust，正好丢掉
+      // 最需要标记的那批」（不可信渠道恰恰常常显得「没断裂」，因为它的命中数是编的）。
+      //
+      // `readChannelTrustCached()` 是**登记表的读取缓存**（60s TTL，避免每轮读盘），
+      // 不是「本会话的 trust 结论」；结论落进 `sessionState.channelTrust`。
+      // 与下面断裂记录里的 lookupChannelTrust 用同一个入参，两处判定不会漂移。
+      try {
+        const trustHost = SessionState.hostOf(config.baseURL);
+        sessionState.setChannelTrust(
+          lookupChannelTrust(trustHost, readChannelTrustCached()).verdict,
+        );
+      } catch {
+        /* 可信度查询失败绝不影响主循环（登记表损坏时 lookup 本身已回退 unknown） */
+      }
       const thisCost = sessionState.calculateCost(
         config.model,
         response.usage,

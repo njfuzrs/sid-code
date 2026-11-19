@@ -91,6 +91,17 @@ export function readChannelTrustCached(now: number = Date.now()): ChannelTrustRe
   return reg;
 }
 
+/**
+ * 清空读取缓存（**仅供测试**）。
+ *
+ * 缓存键里带路径，所以「换 `SID_CODE_CHANNEL_TRUST`」本身就会失效；但同一个测试文件里
+ * 反复改写**同一个路径**下的内容（先写 untrusted、再写 trusted）时，60s TTL 会让第二次
+ * 读到旧表。生产没有这个需求 —— 登记表由探测脚本跨进程改写，路径不变。
+ */
+export function resetChannelTrustCache(): void {
+  cachedRegistry = undefined;
+}
+
 export function lookupChannelTrust(
   host: string | undefined,
   registry?: ChannelTrustRegistry,

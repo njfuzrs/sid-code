@@ -160,6 +160,17 @@ export interface ModelUsageStats {
   peakCostUSD?: number;
   /** 按**空闲折扣价**入账的累计费用（USD，D11）。无分时段政策的模型恒 0。 */
   offpeakCostUSD?: number;
+  /**
+   * D6：本桶被**第二个协议族**写入过（同一 model 名下换过 provider）。
+   *
+   * `cumulativePromptTokens` 存的是**原始** `inputTokens`，语义随 provider 变
+   * （Anthropic = 未命中余量，OpenAI = 含命中的全量 prompt），而 `provider` 字段是
+   * 末次覆盖。换过族之后，历史累计会被用**新的** provider 去归一化 → 命中率算错。
+   *
+   * 这里只留痕 + 告警（方案 C 先止血，§8.3）：口径本身不动，/cost 据此标注
+   * 「本会话换过协议族，命中率按末次口径」。旧快照无此字段（undefined = 没换过）。
+   */
+  providerSwitched?: boolean;
 }
 
 /**
@@ -458,7 +469,19 @@ export class SessionState {
     }
 
     const stats = this.modelUsage[model];
-    stats.provider = prov; // 末次 provider 覆盖（同模型 provider 稳定，覆盖无害）
+    // provider 末次覆盖。**同模型 provider 稳定时覆盖无害**；但同一 model 名换了协议族
+    // （自建网关改后端、或同一别名配了多个端点）时，历史 cumulativePromptTokens 是旧族的
+    // 原始口径，会被新族去归一化 → 命中率算错（D6）。
+    //
+    // 修法取方案 C（§8.3）**先止血**：留痕 + WARN + /cost 标注，口径本身不动
+    // （方案 B 的冻结分段改动面中等，留作后续）。判定只在这里做一次 —— 别挪进
+    // getCacheHitRate：那是渲染路径（cost-bridge / app.ts 高频调用），会刷屏。
+    const prevProvider = stats.provider;
+    if (prevProvider && prevProvider !== prov) {
+      stats.providerSwitched = true;
+      this.warnProviderSwitch(model, prevProvider, prov);
+    }
+    stats.provider = prov;
     // P0-4：记末次端点 host，供账本按渠道标注可信度（只取 host，不留 path/query）
     const host = SessionState.hostOf(baseURL);
     if (host) stats.endpointHost = host;
@@ -588,6 +611,9 @@ export class SessionState {
     // A7：会话级单值必须随 /clear 归零 —— 新会话没有历史上下文，
     // 留着旧值会让 footer ↑ 显示上一个会话的窗口大小（零值隐藏规则也管不到它）。
     this.mainContextStock = 0;
+    // D5：端点可信度同理 —— /clear 后还没有任何入账，下一个端点是什么还不知道。
+    // 留着旧值会让新会话在第一笔入账之前就带着「不可信」标记（或反之丢掉标记）。
+    this.channelTrust = undefined;
     // D13：逐次明细随计数器一起清（/clear 开新会话，旧会话的轮次分析不该残留）。
     this.requestLog = [];
     // PR7 重修：在途台账也归零。清掉不丢账 —— 还在跑的子代理下一轮会按自己的
@@ -1152,6 +1178,39 @@ export class SessionState {
   }
 
   /**
+   * D5：本会话**当前端点**的渠道可信度，`undefined` = 还没入账过（无端点可查）。
+   *
+   * 为什么要单独一个字段：`stats.endpointHost` 只记 host、没人拿它去查登记表，
+   * 于是「命中率是渠道编造的」这个已知事实在状态栏上完全不可见 —— 同一套系统里
+   * `getCacheHealthAdvice` 已经把 untrusted 渠道排除出统计（它的 `cache_read` 不可信），
+   * 而 Footer 照常显示那些数字，两处对同一批数据给出相反的置信度。
+   *
+   * **写入点必须在 `updateUsage` 里且无条件执行**（`loop.ts` 在 `updateUsage` 之后调
+   * {@link setChannelTrust}），不能放进 `if (breakReport)`：没有断裂的会话恰恰是
+   * 每轮都要显示 Footer 的常态，放进去等于「只有出过问题的会话才拿得到可信度」。
+   *
+   * 注意区分两件事：`readChannelTrustCached()` 是**登记表的读取缓存**（60s TTL，
+   * 避免每轮读盘），不是「本会话的 trust 结论」；本字段才是后者。
+   */
+  channelTrust?: "trusted" | "untrusted" | "unknown";
+
+  /** 写入本会话端点可信度（见 {@link channelTrust}）。只由主循环按当前请求端点调用。 */
+  setChannelTrust(verdict: "trusted" | "untrusted" | "unknown"): void {
+    this.channelTrust = verdict;
+  }
+
+  /**
+   * 当前端点的 `cache_read` 是否**已知不可信**（Footer 据此加 `?` 标记）。
+   *
+   * 只把 `"untrusted"` 当不可信：`unknown`（没探测过）按可信处理，与
+   * `channel-trust.ts` 的 `countsTowardTotals` 同一口径 —— 把没探测过的渠道一律打警示，
+   * 警示会变成噪声、最终被忽略，反而掩盖真正不可信的那一个。
+   */
+  isChannelUntrusted(): boolean {
+    return this.channelTrust === "untrusted";
+  }
+
+  /**
    * 全会话缓存命中率（0-100 整数），`undefined` = 没有缓存命中可算。
    *
    * **状态栏（Footer ⚡）的唯一取数源**。D18 之前 Footer 走的是另一套算法：
@@ -1162,6 +1221,11 @@ export class SessionState {
    *
    * `undefined`（而不是 0）用于区分「无缓存数据」和「命中率确实是 0%」：
    * 前者不渲染 ⚡ 列（避免对无缓存模型显示 0% 误导），后者如实显示。
+   *
+   * D5：**这里刻意不按 {@link channelTrust} 过滤**。不可信渠道的 `cache_read` 是编造的，
+   * 但把它滤掉只会让状态栏显示 `undefined`（整列消失），用户会以为「缓存坏了」而不是
+   * 「这个渠道的数不能信」。正确做法是照常出数 + 在渲染层加 `?` 标记（`isChannelUntrusted()`），
+   * `/cost` 里给一行说明。
    */
   getCacheHitRate(): number | undefined {
     const view = this.getNormalizedCacheUsage();
@@ -1223,6 +1287,37 @@ export class SessionState {
         `超过 promptTotal=${promptTotal}。展示口径已钳到 100%，请检查 provider 名与实际协议是否一致` +
         `（anthropic 的 input_tokens 是未命中余量，openai 的 prompt_tokens 含命中）。`,
       { model, provider, hit, write, input, promptTotal },
+    );
+  }
+
+  /**
+   * 已告警过的「模型 × provider 变更」二元组。
+   *
+   * 去重粒度是 `(model, 新 provider)` 而不是 model：同一 model 换回旧族再换出去，
+   * 是**同一个**口径问题（只报一次）；而它在另一个族之间反复横跳也不该每轮刷屏。
+   * 本集合不落盘、不随 resetCounters 清 —— 一个会话内同一件事只说一次。
+   */
+  private warnedProviderSwitches = new Set<string>();
+
+  /**
+   * D6：同一 model 名下检测到 provider 变更时记一次 WARN。
+   *
+   * 为什么**必须**有这条：`stats.provider` 是末次覆盖，而历史累计
+   * `cumulativePromptTokens` 存的是原始 `inputTokens`（语义随 provider 变）。
+   * 换过协议族后两者不同源，命中率会被用新族去归一化旧数据 —— 这个偏差此前
+   * 完全静默，/cost 上只会显示一个看着正常的百分数。
+   *
+   * 为什么去重放在这里而不是渲染路径：本方法由 `updateUsage` 调用，每请求一次；
+   * 放到 `getCacheHitRate` 里会被 cost-bridge / app.ts 的高频读取刷屏（§13 第 4 行同款坑）。
+   */
+  private warnProviderSwitch(model: string, from: string, to: string): void {
+    const key = `${model}\u0000${to}`;
+    if (this.warnedProviderSwitches.has(key)) return;
+    this.warnedProviderSwitches.add(key);
+    getLogger().warn(
+      "SESSION",
+      `模型 "${model}" 的 provider 从 ${from} 变成 ${to}：历史累计 inputTokens 是 ${from} 的原始口径，` +
+        `命中率将按末次口径（${to}）归一化，数值可能偏。本会话的命中率仅供参考，/cost 已标注。`,
     );
   }
 
