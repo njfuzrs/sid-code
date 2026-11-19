@@ -120,15 +120,43 @@ describe("planStaleToolOutputClear：判据", () => {
     const byId = new Map(plan.entries.map((e) => [e.toolUseId, e.replacement]));
     expect(byId.has("t0")).toBe(false);
     expect(byId.get("t1")).toContain("不要为找回内容而重跑");
-    expect(byId.get("t2")).toContain("重新执行该调用");
+    expect(byId.get("t2")).toContain("确实需要原始结果时再重跑");
     expect(byId.get("t2")).toContain("sed -n");
   });
 
-  test("占位带重读指引：read 给出文件路径与精准重读方式", () => {
+  test("占位文案：read 带路径与 tool_use_id，写明「文件没有变化」，不再给 offset 模板", () => {
     const plan = planStaleToolOutputClear(history(reads(30)));
     const r = plan.entries.find((e) => e.toolUseId === "t0")!.replacement;
-    expect(r).toContain('read("src/f0.ts"');
-    expect(r).toContain("offset=");
+    expect(r).toContain('read("src/f0.ts")');
+    expect(r).toContain("tool_use_id=t0");
+    expect(r).toContain("文件没有变化");
+    // 区分「只是回忆」与「要改」：主会话改文件前重读是正当的，不能一律劝阻
+    expect(r).toContain("若只是回忆内容");
+    expect(r).toContain("若要修改这个文件");
+    // PR6 的核心：模板本身在教模型「重读一次」，删掉它
+    expect(r).not.toContain("offset=");
+  });
+
+  test("占位文案：其他只读工具说明「不代表结果变化」并带 tool_use_id", () => {
+    const calls: Call[] = [{ name: "grep", input: { pattern: "foo", path: "src" } }, ...reads(30)];
+    const r = planStaleToolOutputClear(history(calls)).entries.find(
+      (e) => e.toolUseId === "t0",
+    )!.replacement;
+    expect(r).toContain("tool_use_id=t0");
+    expect(r).toContain("不代表结果变化");
+    expect(r).not.toContain("文件没有变化");
+  });
+
+  test("read_many 的 pattern 是 string[]：占位里带上模式列表（不认数组时一个参数都没有）", () => {
+    const calls: Call[] = [
+      { name: "read_many", input: { pattern: ["src/a.ts", "src/b.ts"], path: "src" } },
+      ...reads(30),
+    ];
+    const r = planStaleToolOutputClear(history(calls)).entries.find(
+      (e) => e.toolUseId === "t0",
+    )!.replacement;
+    expect(r).toContain("read_many(pattern=[src/a.ts, src/b.ts])");
+    expect(r).toContain("tool_use_id=t0");
   });
 
   test("一轮并行多个工具调用只算一个工具轮", () => {
