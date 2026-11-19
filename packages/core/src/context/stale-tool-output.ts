@@ -30,7 +30,15 @@ import { isDiscardableTool, isNonDiscardableTool } from "../query/compact/microc
 
 /**
  * K：一条工具结果之后再经过多少个工具轮才算过期。
- * 8 ≈ 一次「读 → 改 → 验证」周期（排查报告 §5.4 第 5 点的初始建议，待 V4 回放校准）。
+ * 8 ≈ 一次「读 → 改 → 验证」周期。
+ *
+ * **2026-11-19 校准过，结论是保持 8，不调大**。11-12 Note 预登记的处置是「重读率上升就
+ * 优先调大 K」，但离线回放（本机 550 个真实主会话，11-01 起）显示调大在成本侧是净亏：
+ * K=12/16/24 的缓存未命中 p95 只比 K=8 少 0.12/0.29/0.45pp，而末态释放 p50 从 36.4%
+ * 直接归零（一半以上会话攒不到 N，整条通道等于关掉）、p95 掉 3–6pp。
+ * 采纳规则「每会话 input token 不劣于 K=8」在 K>8 时结构性不成立，所以这一维不动，
+ * 重读循环交给占位文案去治。数据与论证见 Agent Note
+ * `.agents/notes/implemented/feature/2026-11-19-占位文案改为劝阻重读.md`。
  */
 export const STALE_CLEAR_AFTER_TOOL_ROUNDS = 8;
 
@@ -81,28 +89,65 @@ interface ToolUseMeta {
 function describeInput(input: unknown): string {
   if (!input || typeof input !== "object") return "";
   const obj = input as Record<string, unknown>;
-  for (const k of ["file_path", "path", "command", "pattern", "url", "query"]) {
+  // 顺序即优先级。`pattern` 排在 `path` 前：`read_many` / `grep` 同时带两者时，
+  // 「读/搜什么」才是重跑必须带上的信息，`path` 只是搜索根。
+  for (const k of ["file_path", "pattern", "command", "path", "url", "query"]) {
     const v = obj[k];
     if (typeof v === "string" && v.length > 0) {
       return v.length > 120 ? `${k}=${v.slice(0, 120)}…` : `${k}=${v}`;
+    }
+    // `read_many` 的 `pattern` 是 `string[]`（口径见 `tool/read-many.ts` 的 `searchToolPaths`）。
+    // 不认数组时它被清理后的占位里一个参数都没有，模型连查过什么都不知道。
+    if (Array.isArray(v)) {
+      const parts = v.filter((x): x is string => typeof x === "string" && x.length > 0);
+      if (parts.length === 0) continue;
+      const text = `${k}=[${parts.join(", ")}]`;
+      return text.length > 120 ? `${text.slice(0, 120)}…` : text;
     }
   }
   return "";
 }
 
 /**
+ * 从入参里取「一条」路径。
+ * 数组只认单元素：多元素是 glob 列表，没有单一路径可表达，硬取第一个会编出一条不存在的路径。
+ */
+function pickPath(value: unknown): string | undefined {
+  if (typeof value === "string") return value.length > 0 ? value : undefined;
+  if (Array.isArray(value)) {
+    const strs = value.filter((x): x is string => typeof x === "string" && x.length > 0);
+    return strs.length === 1 ? strs[0] : undefined;
+  }
+  return undefined;
+}
+
+/**
  * 生成占位。可复现工具给「怎么重新拿到」的可执行线索（排查报告 §5.4 第 3 点）；
  * 有副作用的工具重跑会重复副作用，只能保留开头摘要。
  * 返回 null = 不在白名单内（未知 / MCP 工具），原样保留。
+ *
+ * 文案只读那支是 PR6 改的，三处刻意的措辞：
+ *  - **不再给 `offset=..., limit=...` 模板**：模板本身在教模型「重读一次」，而清理之后
+ *    绝大多数情况是「结论已经写下了，只是想再看一眼原文」；
+ *  - **写明「文件没有变化」**：模型看到占位时最常误判成「内容丢了 / 文件被改了」；
+ *  - **区分「只是回忆」与「要改」**：主会话改文件前重读是正当的，不能一律劝阻。
+ * `tool_use_id` 用于和上面的 tool_use 块对上号，省得模型翻历史猜这条结果对应哪次调用。
  */
-function buildReplacement(content: string, meta: ToolUseMeta): string | null {
+function buildReplacement(content: string, toolUseId: string, meta: ToolUseMeta): string | null {
   const desc = describeInput(meta.input);
-  const call = desc ? `${meta.name}(${desc})` : meta.name;
+  // read 有明确路径时用 `read("path")` 形式，比 `read(file_path=path)` 短且一眼认得出
+  const call =
+    meta.name === "read" && meta.filePath
+      ? `read("${meta.filePath}")`
+      : desc
+        ? `${meta.name}(${desc})`
+        : meta.name;
+  const head = `[已过期清理: ${call}，原始 ${content.length} 字符，tool_use_id=${toolUseId}。`;
   if (isDiscardableTool(meta.name, meta.input)) {
     if (meta.filePath && meta.name === "read") {
-      return `[已过期清理: ${call}，原始 ${content.length} 字符。之后已经过多轮工具调用，按需用 read("${meta.filePath}", offset=..., limit=...) 精准重读需要的行段，不要整文件重读。]`;
+      return `${head}这是上下文管理的自动清理，文件没有变化。若只是回忆内容，以你已写下的结论为准，不要重读；若要修改这个文件，只重读要改的那一段。]`;
     }
-    return `[已过期清理: ${call}，原始 ${content.length} 字符。之后已经过多轮工具调用，需要时重新执行该调用即可恢复。]`;
+    return `${head}这是自动清理，不代表结果变化。以你已写下的结论为准；确实需要原始结果时再重跑。]`;
   }
   if (isNonDiscardableTool(meta.name, meta.input)) {
     const head = content.slice(0, NON_DISCARDABLE_SUMMARY_CHARS);
@@ -133,10 +178,10 @@ export function planStaleToolOutputClear(
     lastAssistantIdx = i;
     for (const b of msg.content) {
       if (b.type !== "tool_use") continue;
-      const input = (b.input ?? {}) as { file_path?: unknown; path?: unknown };
-      const fp = typeof input.file_path === "string" ? input.file_path : undefined;
-      const p = typeof input.path === "string" ? input.path : undefined;
-      const filePath = fp ?? p;
+      const input = (b.input ?? {}) as { file_path?: unknown; path?: unknown; pattern?: unknown };
+      // `read_many` 的定位字段是 `pattern: string[]`（口径见 `tool/read-many.ts`），
+      // 只认字符串时它的元信息里一条路径都没有；单元素数组才当路径，多元素是 glob 列表。
+      const filePath = pickPath(input.file_path) ?? pickPath(input.path) ?? pickPath(input.pattern);
       toolUses.set(b.id, { name: b.name, input: b.input, filePath });
       if (filePath && (b.name === "edit" || b.name === "write")) activeFiles.add(filePath);
     }
@@ -185,7 +230,7 @@ export function planStaleToolOutputClear(
       if (options.skipToolUse?.(b.tool_use_id)) continue;
       const meta = toolUses.get(b.tool_use_id);
       if (!meta) continue;
-      const replacement = buildReplacement(b.content, meta);
+      const replacement = buildReplacement(b.content, b.tool_use_id, meta);
       if (replacement === null) continue;
       const savedTokens = estimateTextTokens(b.content) - estimateTextTokens(replacement);
       if (savedTokens <= 0) continue;
