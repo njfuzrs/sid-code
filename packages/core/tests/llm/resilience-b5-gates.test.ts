@@ -75,7 +75,7 @@ function firstDecision(err: unknown): RecoveryAction {
     {
       attempts: [],
       totalRetries: 0,
-      consecutive529: 0,
+      consecutiveOverloaded: 0,
       degradeTried: false,
       startedAt: Date.now(),
     },
