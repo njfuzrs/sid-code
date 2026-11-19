@@ -35,6 +35,7 @@ import {
   ERROR_MARK,
   WARNING_MARK,
   CACHE_MARK,
+  CHANNEL_UNTRUSTED_MARK,
   TPS_MARK,
 } from "../constants/figures.ts";
 
@@ -227,11 +228,18 @@ export function deriveCost(
  */
 export function deriveCacheMetrics(
   cacheHitRate?: number,
+  /**
+   * D5：当前端点的 `cache_read` 是否已知不可信（`SessionState.isChannelUntrusted()`）。
+   * 为真时数字后加 `?`（`↯96%?`）—— **不隐藏数字**：滤掉会让整列消失，用户会以为
+   * 「缓存坏了」，而真相是「这个渠道的数不能信」。标记与数字同一色，靠排版而不是新色相
+   * 表达不确定性（L2.1「状态优先用排版」）。
+   */
+  channelUntrusted = false,
 ): { rate: number; text: string; color: Color } | null {
   if (cacheHitRate === undefined) return null;
   return {
     rate: cacheHitRate,
-    text: `${CACHE_MARK}${cacheHitRate}%`,
+    text: `${CACHE_MARK}${cacheHitRate}%${channelUntrusted ? CHANNEL_UNTRUSTED_MARK : ""}`,
     color: cacheHitRate >= 50 ? theme.status.success : theme.ui.comment,
   };
 }
@@ -508,6 +516,11 @@ export interface StatusLineInput {
    * `undefined` = 尚无命中 → ↯ 列不渲染。**不在本 hook 里重算**，见 `deriveCacheMetrics`。
    */
   cacheHitRate?: number;
+  /**
+   * D5：当前端点 `cache_read` 已知不可信（`SessionState.isChannelUntrusted()`）。
+   * 为真时命中率后加 `?`。由上游透传 core 的判定，**不在 UI 里查登记表**。
+   */
+  cacheChannelUntrusted?: boolean;
   /** true = contextPercent 未经真实 usage 校准（Footer 显示 ~ 前缀） */
   contextEstimated?: boolean;
   /**
@@ -547,6 +560,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     scrollPercent,
     outputTps,
     cacheHitRate,
+    cacheChannelUntrusted,
     totalRequests,
     discardedRequests,
     costFxConverted,
@@ -574,7 +588,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
           : {
               text: `${TOKEN_IN} ${formatLargeNumber(stockInputTokens)}  ${TOKEN_OUT} ${formatLargeNumber(usage.outputTokens)}`,
             },
-      cache: deriveCacheMetrics(cacheHitRate),
+      cache: deriveCacheMetrics(cacheHitRate, cacheChannelUntrusted ?? false),
       tps: deriveTps(outputTps),
       cost: deriveCost(costUSD, costLimit, costFxConverted ?? false),
       // 显示条件与 usage 解耦（deriveContext）：估算有值即显示——打开 TUI / 刚 /clear 时
@@ -616,6 +630,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     scrollPercent,
     outputTps,
     cacheHitRate,
+    cacheChannelUntrusted,
     totalRequests,
     discardedRequests,
     costFxConverted,

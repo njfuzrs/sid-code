@@ -1161,6 +1161,38 @@ describe("TraceCollector", () => {
       // 命中率 = cache_read / cumulative_prompt = 600 / 1000 = 0.6
       expect(meta.session_cache_hit_rate).toBeCloseTo(0.6, 3);
     });
+
+    // D3：无 flow 累计时无法还原「未命中」那一段，命中率必须留 undefined。
+    //
+    // 回归的是旧兜底 `cacheRead / (cacheRead + cacheCreate)`：它的分母漏了全价输入，
+    // 只会在命中与写入之间分配，必然高估。构造：cacheRead=400、cacheCreate=100、
+    // cumulative=0 ⇒ 旧式 = 400/500 = 0.8，而正确口径（400/1000）根本算不出来。
+    test("D3：有缓存数据但无 flow 累计（cumulative=0）时不落偏差命中率，留 undefined", async () => {
+      await fireSessionStart(hookSystem);
+      // 一轮：OpenAI 族 promptTotal = inputTokens，input=0 ⇒ cumulative 累计为 0，
+      // 但 cacheRead/cacheCreate 仍 >0 —— 正是「有缓存数据、无 flow 累计」的形态。
+      await fireModelRound(hookSystem, {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheRead: 400,
+        cacheCreate: 100,
+        provider: "openai",
+        model: "glm-5.2",
+      });
+
+      await hookSystem.fireSessionEndEvent("exit", {
+        total_cumulative_prompt_tokens: 0,
+        total_cache_read_tokens: 400,
+        total_cache_creation_tokens: 100,
+      });
+      const meta = collector.getMetadata()!;
+      // 前置条件成立（否则这条测试测不到目标分支）
+      expect(meta.total_cache_read_tokens).toBe(400);
+      expect(meta.total_cache_creation_tokens).toBe(100);
+      expect(meta.total_cumulative_prompt_tokens).toBe(0);
+      // 关键断言：宁缺毋滥，不给高估的 0.8，也不给 0
+      expect(meta.session_cache_hit_rate).toBeUndefined();
+    });
   });
 
   // ─── UserPromptSubmit ───

@@ -45,6 +45,7 @@ type CostSource = Pick<
   | "getTotalRequests"
   | "getDiscardedRequests"
   | "getCacheHitRate"
+  | "isChannelUntrusted"
 >;
 
 /** 只用到 updateStreaming，避免把整个 StateBridge 契约拖进类型 */
@@ -67,6 +68,9 @@ export function subscribeCostToBridge(
       // 自己的 provider 归一化后加总，与 /cost 同一个数）。UI 层不许再拿 usage + 当前模型
       // 推断的 provider 重算——多模型/跨协议族会话那样算会错。
       cacheHitRate: session.getCacheHitRate(),
+      // D5：命中率照常推，只额外告诉 UI「这个数不可信」（渲染成 `↯96%?`）。
+      // 判据在 core（每轮 updateUsage 之后无条件写），这里不做任何推断。
+      cacheChannelUntrusted: session.isChannelUntrusted(),
       // 每笔入账都重读一次：该轮若刚结束，这里拿到的就是含本轮样本的最新累计均值；
       // 若这轮还没结束（如辅助调用入账），读到的是上一轮的均值，不会倒退成 0。
       outputTps: getOutputTps?.(),

@@ -2412,8 +2412,23 @@ export class TraceCollector {
       // 命中率分母用完整输入基数（含命中+写入+全价），与 /cache 跨会话口径一致
       this.metadata.session_cache_hit_rate = Math.min(1, cacheRead / cacheableBase);
     } else if (cacheRead + cacheCreate > 0) {
-      // 极端兜底：cumulative 缺失但有缓存数据时，用命中/(命中+写入) 近似
-      this.metadata.session_cache_hit_rate = cacheRead / (cacheRead + cacheCreate);
+      // D3：**无 flow 累计 ⇒ 无法还原未命中 ⇒ 宁可 undefined 也不给偏差的近似值**。
+      //
+      // 这里曾经写 `cacheRead / (cacheRead + cacheCreate)`。那个分母漏了「未命中（全价输入）」
+      // 那一段——命中率的分母必须是「命中 + 写入 + 全价输入」的总输入基数（见上一个分支
+      // 与 usage-aggregator 的跨会话口径）。少了全价输入，比值只会在命中与写入之间分配，
+      // 于是**系统性高估**：一次 cacheRead=400 / cacheCreate=100 / 全价=500 的会话，
+      // 旧式算成 400/500 = 80%，真实是 400/1000 = 40%。
+      //
+      // 真实的未命中量只能从 flow 累计（total_cumulative_prompt_tokens）还原——它是逐次调用
+      // 累加的完整输入，而 stock 字段（total_tokens_sent）只是末轮快照，差值不是历史未命中。
+      // 所以 cumulative 缺失时**拿不出**正确分母；给一个偏差的近似值比不给更糟：
+      // 它会被当成真实命中率进轨迹、进聚合、进发布曲线，而错的方向恒定偏乐观。
+      // 与 output_tokens_per_sec / TTFT 的「宁缺毋滥」同一原则。
+      //
+      // 保留这个分支结构（而不是删掉整个 else-if）：分支本身是「有缓存数据但无 flow 累计」
+      // 这个**已识别形态**的落点，显式置 undefined 是刻意的决定，不是遗漏。
+      this.metadata.session_cache_hit_rate = undefined;
     }
 
     // 推断 exit_status

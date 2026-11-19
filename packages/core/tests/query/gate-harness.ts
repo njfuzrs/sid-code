@@ -52,6 +52,13 @@ export interface GateHarnessOptions {
   /** 依次取用的模型响应；用尽后回落到「正常文本收尾」 */
   responses?: AccumulatedResponse[];
   userText?: string;
+  /**
+   * 请求端点（`config.baseURL`）。
+   *
+   * D5 的接线用例需要它：`channelTrust` 的判据是「当前端点的 host」，
+   * 不传就永远是 undefined（unknown），测不出「写进去的是哪个值」。
+   */
+  baseURL?: string;
 }
 
 function makeConfig(): Config {
@@ -122,7 +129,7 @@ export function makeGateHarness(opts: GateHarnessOptions): GateHarness {
       };
 
       const loopConfig: QueryLoopConfig = {
-        config: makeConfig(),
+        config: { ...makeConfig(), ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) },
         ctxMgr,
         toolRegistry: new ToolRegistry(),
         sessionState,

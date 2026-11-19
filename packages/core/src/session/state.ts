@@ -160,6 +160,17 @@ export interface ModelUsageStats {
   peakCostUSD?: number;
   /** 按**空闲折扣价**入账的累计费用（USD，D11）。无分时段政策的模型恒 0。 */
   offpeakCostUSD?: number;
+  /**
+   * D6：本桶被**第二个协议族**写入过（同一 model 名下换过 provider）。
+   *
+   * `cumulativePromptTokens` 存的是**原始** `inputTokens`，语义随 provider 变
+   * （Anthropic = 未命中余量，OpenAI = 含命中的全量 prompt），而 `provider` 字段是
+   * 末次覆盖。换过族之后，历史累计会被用**新的** provider 去归一化 → 命中率算错。
+   *
+   * 这里只留痕 + 告警（方案 C 先止血，§8.3）：口径本身不动，/cost 据此标注
+   * 「本会话换过协议族，命中率按末次口径」。旧快照无此字段（undefined = 没换过）。
+   */
+  providerSwitched?: boolean;
 }
 
 /**
@@ -228,6 +239,18 @@ export class SessionState {
   totalToolDuration: number = 0;
   /** 按模型分开的用量统计 */
   modelUsage: Record<string, ModelUsageStats> = {};
+  /**
+   * D4：已告警过的「缓存三段越界」组合（`model::provider`）。
+   *
+   * 越界是**口径错配**，对同一个 model+provider 组合会持续发生：不按组合去重就是每次
+   * updateUsage 一条 WARN，一个长会话能刷出几千条（和 D18 之前 Footer 刷屏同源）。
+   * 放在 updateUsage 里而不是 getCacheHitRate 里：后者是无参方法、被 cost-bridge 与
+   * Footer 高频只读调用，往里塞写副作用既刷屏又破坏「只读查询」语义。
+   *
+   * 不进会话快照（不参与 hydrate）：它只是本进程的日志去重状态，落盘只会带来跨进程的
+   * 假去重（新进程第一次越界就静默）。
+   */
+  private warnedCacheOverflow = new Set<string>();
   /**
    * 会话级「当前上下文」单值（stock 口径，**归一化 promptTotal**）。
    *
@@ -446,7 +469,19 @@ export class SessionState {
     }
 
     const stats = this.modelUsage[model];
-    stats.provider = prov; // 末次 provider 覆盖（同模型 provider 稳定，覆盖无害）
+    // provider 末次覆盖。**同模型 provider 稳定时覆盖无害**；但同一 model 名换了协议族
+    // （自建网关改后端、或同一别名配了多个端点）时，历史 cumulativePromptTokens 是旧族的
+    // 原始口径，会被新族去归一化 → 命中率算错（D6）。
+    //
+    // 修法取方案 C（§8.3）**先止血**：留痕 + WARN + /cost 标注，口径本身不动
+    // （方案 B 的冻结分段改动面中等，留作后续）。判定只在这里做一次 —— 别挪进
+    // getCacheHitRate：那是渲染路径（cost-bridge / app.ts 高频调用），会刷屏。
+    const prevProvider = stats.provider;
+    if (prevProvider && prevProvider !== prov) {
+      stats.providerSwitched = true;
+      this.warnProviderSwitch(model, prevProvider, prov);
+    }
+    stats.provider = prov;
     // P0-4：记末次端点 host，供账本按渠道标注可信度（只取 host，不留 path/query）
     const host = SessionState.hostOf(baseURL);
     if (host) stats.endpointHost = host;
@@ -543,6 +578,12 @@ export class SessionState {
     // 累加缓存节省（全价假设 − 实际）
     stats.cacheSavingsUSD += this.calculateSavings(model, usage, prov, baseURL);
 
+    // D4：本次 usage 的缓存三段越界 → 记一条 WARN（按 model::provider 去重）。
+    // 钳制本身在 getNormalizedCacheUsage 里做（openai 口径下单次调用 hit+write 可超 prompt），
+    // 这里只负责**让口径错配可见**——钳完是 100%，不告警的话用户永远不知道数据本身是错的。
+    // 判据用未钳制的原始值：钳制后必然不再越界，钳完再判等于永远不告警。
+    this.warnCacheOverflow(model, prov, usage);
+
     // 更新全局统计
     this.totalCostUSD += cost;
     this.totalAPIDuration += durationMs;
@@ -570,6 +611,9 @@ export class SessionState {
     // A7：会话级单值必须随 /clear 归零 —— 新会话没有历史上下文，
     // 留着旧值会让 footer ↑ 显示上一个会话的窗口大小（零值隐藏规则也管不到它）。
     this.mainContextStock = 0;
+    // D5：端点可信度同理 —— /clear 后还没有任何入账，下一个端点是什么还不知道。
+    // 留着旧值会让新会话在第一笔入账之前就带着「不可信」标记（或反之丢掉标记）。
+    this.channelTrust = undefined;
     // D13：逐次明细随计数器一起清（/clear 开新会话，旧会话的轮次分析不该残留）。
     this.requestLog = [];
     // PR7 重修：在途台账也归零。清掉不丢账 —— 还在跑的子代理下一轮会按自己的
@@ -1111,13 +1155,59 @@ export class SessionState {
         },
         stats.provider,
       );
-      total.cacheHitTokens += n.cacheHitTokens;
-      total.cacheWriteTokens += n.cacheWriteTokens;
-      total.uncachedInputTokens += n.uncachedInputTokens;
+      // D4：三段钳制放在这里——**单一事实源**，所有读侧（Footer / /cost / 账本）天然 ≤ 100%。
+      //
+      // 为什么必须钳：openai 口径下 promptTotal = prompt_tokens，而 hit 是 provider 自报的
+      // cacheRead；两者来自不同字段、不同时刻（累加 flow 口径后尤其明显），hit + write > promptTotal
+      // 完全可能发生（换 provider 错配、网关把命中重复计、OpenAI 兼容端 write 概念缺失等）。
+      // 不钳时 uncached 被 `Math.max(0, ...)` 压成 0，但 hit/write 照旧累加，
+      // 于是「uncached + hit + write === promptTotal」恒等式破裂、命中率可以 > 100%。
+      //
+      // 钳制顺序：先 hit 后 write（write 的下限依赖钳后 hit），保证三段仍互斥且非负，
+      // 且超出的部分一律归入 uncached —— 宁可低估命中，也不要展示一个不可能的 120%。
+      // 越界本身在 updateUsage 记一条 WARN（带 model/provider 去重），这里只做纯算术。
+      const hit = Math.min(n.cacheHitTokens, n.promptTotal);
+      const write = Math.min(n.cacheWriteTokens, n.promptTotal - hit);
+      total.cacheHitTokens += hit;
+      total.cacheWriteTokens += write;
+      total.uncachedInputTokens += n.promptTotal - hit - write;
       total.outputTokens += n.outputTokens;
       total.promptTotal += n.promptTotal;
     }
     return total;
+  }
+
+  /**
+   * D5：本会话**当前端点**的渠道可信度，`undefined` = 还没入账过（无端点可查）。
+   *
+   * 为什么要单独一个字段：`stats.endpointHost` 只记 host、没人拿它去查登记表，
+   * 于是「命中率是渠道编造的」这个已知事实在状态栏上完全不可见 —— 同一套系统里
+   * `getCacheHealthAdvice` 已经把 untrusted 渠道排除出统计（它的 `cache_read` 不可信），
+   * 而 Footer 照常显示那些数字，两处对同一批数据给出相反的置信度。
+   *
+   * **写入点必须在 `updateUsage` 里且无条件执行**（`loop.ts` 在 `updateUsage` 之后调
+   * {@link setChannelTrust}），不能放进 `if (breakReport)`：没有断裂的会话恰恰是
+   * 每轮都要显示 Footer 的常态，放进去等于「只有出过问题的会话才拿得到可信度」。
+   *
+   * 注意区分两件事：`readChannelTrustCached()` 是**登记表的读取缓存**（60s TTL，
+   * 避免每轮读盘），不是「本会话的 trust 结论」；本字段才是后者。
+   */
+  channelTrust?: "trusted" | "untrusted" | "unknown";
+
+  /** 写入本会话端点可信度（见 {@link channelTrust}）。只由主循环按当前请求端点调用。 */
+  setChannelTrust(verdict: "trusted" | "untrusted" | "unknown"): void {
+    this.channelTrust = verdict;
+  }
+
+  /**
+   * 当前端点的 `cache_read` 是否**已知不可信**（Footer 据此加 `?` 标记）。
+   *
+   * 只把 `"untrusted"` 当不可信：`unknown`（没探测过）按可信处理，与
+   * `channel-trust.ts` 的 `countsTowardTotals` 同一口径 —— 把没探测过的渠道一律打警示，
+   * 警示会变成噪声、最终被忽略，反而掩盖真正不可信的那一个。
+   */
+  isChannelUntrusted(): boolean {
+    return this.channelTrust === "untrusted";
   }
 
   /**
@@ -1131,6 +1221,11 @@ export class SessionState {
    *
    * `undefined`（而不是 0）用于区分「无缓存数据」和「命中率确实是 0%」：
    * 前者不渲染 ⚡ 列（避免对无缓存模型显示 0% 误导），后者如实显示。
+   *
+   * D5：**这里刻意不按 {@link channelTrust} 过滤**。不可信渠道的 `cache_read` 是编造的，
+   * 但把它滤掉只会让状态栏显示 `undefined`（整列消失），用户会以为「缓存坏了」而不是
+   * 「这个渠道的数不能信」。正确做法是照常出数 + 在渲染层加 `?` 标记（`isChannelUntrusted()`），
+   * `/cost` 里给一行说明。
    */
   getCacheHitRate(): number | undefined {
     const view = this.getNormalizedCacheUsage();
@@ -1158,6 +1253,71 @@ export class SessionState {
       "SESSION",
       `模型 "${model}" 不在定价表中，已用保守兜底价（input $${FALLBACK_PRICING.input}/M、output $${FALLBACK_PRICING.output}/M）估算成本。` +
         `如需精确计费，请在定价表或 availableModels 配置中补充该模型价格。`,
+    );
+  }
+
+  /**
+   * D4：缓存三段越界告警（按 `model::provider` 去重，一个错配组合只报一次）。
+   *
+   * 「越界」= `hit + write > promptTotal`（openai 口径 promptTotal = prompt_tokens，
+   * anthropic 口径 promptTotal = input + hit + write，后者按构造不可能越界）。
+   * 成因几乎都是**口径错配**：anthropic 的 usage 被按 openai 记（input 是不含命中的余量，
+   * 却被当成 prompt_tokens），或网关把命中重复计入。结果就是命中率能算到 120%。
+   *
+   * 只告警不修改记账：原始 token 是 provider 报的，改它等于伪造账单；钳制留在读侧
+   * （getNormalizedCacheUsage）做展示兜底，两者各管各的。
+   *
+   * 日志用三参形式 `warn(category, message, data)` —— 把结构化字段放进 data，
+   * 而不是把对象塞进 message（那会变成 "[object Object]" 且 audit.log 里搜不到字段）。
+   */
+  private warnCacheOverflow(model: string, provider: string, usage: Usage): void {
+    const hit = usage.cacheReadInputTokens ?? 0;
+    const write = usage.cacheCreationInputTokens ?? 0;
+    const input = usage.inputTokens ?? 0;
+    // 按本次 provider 口径算 promptTotal（与 normalizeCacheUsage 同一判据）。
+    const promptTotal = provider === "anthropic" ? input + hit + write : input;
+    if (hit + write <= promptTotal) return;
+
+    const key = `${model}::${provider}`;
+    if (this.warnedCacheOverflow.has(key)) return;
+    this.warnedCacheOverflow.add(key);
+    getLogger().warn(
+      "SESSION",
+      `缓存用量越界：模型 "${model}"（provider=${provider}）本次上报 hit=${hit} + write=${write} ` +
+        `超过 promptTotal=${promptTotal}。展示口径已钳到 100%，请检查 provider 名与实际协议是否一致` +
+        `（anthropic 的 input_tokens 是未命中余量，openai 的 prompt_tokens 含命中）。`,
+      { model, provider, hit, write, input, promptTotal },
+    );
+  }
+
+  /**
+   * 已告警过的「模型 × provider 变更」二元组。
+   *
+   * 去重粒度是 `(model, 新 provider)` 而不是 model：同一 model 换回旧族再换出去，
+   * 是**同一个**口径问题（只报一次）；而它在另一个族之间反复横跳也不该每轮刷屏。
+   * 本集合不落盘、不随 resetCounters 清 —— 一个会话内同一件事只说一次。
+   */
+  private warnedProviderSwitches = new Set<string>();
+
+  /**
+   * D6：同一 model 名下检测到 provider 变更时记一次 WARN。
+   *
+   * 为什么**必须**有这条：`stats.provider` 是末次覆盖，而历史累计
+   * `cumulativePromptTokens` 存的是原始 `inputTokens`（语义随 provider 变）。
+   * 换过协议族后两者不同源，命中率会被用新族去归一化旧数据 —— 这个偏差此前
+   * 完全静默，/cost 上只会显示一个看着正常的百分数。
+   *
+   * 为什么去重放在这里而不是渲染路径：本方法由 `updateUsage` 调用，每请求一次；
+   * 放到 `getCacheHitRate` 里会被 cost-bridge / app.ts 的高频读取刷屏（§13 第 4 行同款坑）。
+   */
+  private warnProviderSwitch(model: string, from: string, to: string): void {
+    const key = `${model}\u0000${to}`;
+    if (this.warnedProviderSwitches.has(key)) return;
+    this.warnedProviderSwitches.add(key);
+    getLogger().warn(
+      "SESSION",
+      `模型 "${model}" 的 provider 从 ${from} 变成 ${to}：历史累计 inputTokens 是 ${from} 的原始口径，` +
+        `命中率将按末次口径（${to}）归一化，数值可能偏。本会话的命中率仅供参考，/cost 已标注。`,
     );
   }
 

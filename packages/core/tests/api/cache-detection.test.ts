@@ -47,6 +47,21 @@ afterAll(async () => {
   }
 });
 
+/**
+ * 按主循环的真实顺序走一轮：**先**请求前快照 `recordPromptState`，**再**响应后
+ * `checkResponse`（loop.ts 的两处调用点）。
+ *
+ * 2026-11-19 D1：`recordPromptState` 不再覆盖基线而是排进 `pendingState`，
+ * `checkResponse` 比较的是「上一轮请求前」vs「本轮请求前」。所以本文件里凡是要
+ * 「两轮之间变了某样东西」的用例，都必须用这个 helper 逐轮驱动 —— 直接连调两次
+ * `checkResponse` 时 pending 为空，检测会（刻意地）什么都不做，那是旧契约下的写法。
+ */
+function runTurn(d: CacheBreakDetector, over: Partial<CacheCheckParams> = {}) {
+  const responseParams = params(over);
+  d.recordPromptState({ ...responseParams, cacheReadTokens: 0 });
+  return d.checkResponse(responseParams);
+}
+
 const TOOLS = [
   { name: "read", description: "read file" },
   { name: "write", description: "write file" },
@@ -85,10 +100,8 @@ describe("CacheBreakDetector 基础", () => {
 describe("归因分析", () => {
   test("system prompt 变化", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(
-      params({ cacheReadTokens: 10000, systemPrompt: "DIFFERENT PROMPT" }),
-    );
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, { cacheReadTokens: 10000, systemPrompt: "DIFFERENT PROMPT" });
     expect(report).not.toBeNull();
     expect(report!.changes.some((c) => c.includes("System prompt"))).toBe(true);
     expect(report!.dropTokens).toBe(40000);
@@ -97,41 +110,37 @@ describe("归因分析", () => {
 
   test("模型变化", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(params({ cacheReadTokens: 5000, model: "claude-opus-4" }));
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, { cacheReadTokens: 5000, model: "claude-opus-4" });
     expect(report!.changes.some((c) => c.includes("模型变化"))).toBe(true);
   });
 
   test("工具新增", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(
-      params({
-        cacheReadTokens: 5000,
-        toolSchemas: [...TOOLS, { name: "bash", description: "run" }],
-      }),
-    );
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, {
+      cacheReadTokens: 5000,
+      toolSchemas: [...TOOLS, { name: "bash", description: "run" }],
+    });
     const toolChange = report!.changes.find((c) => c.includes("工具变化"));
     expect(toolChange).toContain("新增: bash");
   });
 
   test("工具移除", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(params({ cacheReadTokens: 5000, toolSchemas: [TOOLS[0]] }));
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, { cacheReadTokens: 5000, toolSchemas: [TOOLS[0]] });
     const toolChange = report!.changes.find((c) => c.includes("工具变化"));
     expect(toolChange).toContain("移除: write");
   });
 
   test("工具修改（同名但 schema 变了）", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(
-      params({
-        cacheReadTokens: 5000,
-        toolSchemas: [{ name: "read", description: "CHANGED" }, TOOLS[1]],
-      }),
-    );
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, {
+      cacheReadTokens: 5000,
+      toolSchemas: [{ name: "read", description: "CHANGED" }, TOOLS[1]],
+    });
     const toolChange = report!.changes.find((c) => c.includes("工具变化"));
     expect(toolChange).toContain("修改: read");
   });
@@ -139,19 +148,20 @@ describe("归因分析", () => {
   test("TTL 过期（间隔 > 5 分钟）", () => {
     let t = 0;
     const d = new CacheBreakDetector(() => t);
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     t = 6 * 60_000; // 6 分钟后
-    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    const report = runTurn(d, { cacheReadTokens: 5000 });
     expect(report!.changes.some((c) => c.includes("TTL"))).toBe(true);
   });
 
   test("Beta headers 变化（回归：此前主循环恒传 [] 使该归因永不触发）", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000, betaHeaders: [] }));
+    runTurn(d, { cacheReadTokens: 50000, betaHeaders: [] });
     // 会话中途新增 beta header（如首次启用 token-efficient-tools）→ 前缀失效
-    const report = d.checkResponse(
-      params({ cacheReadTokens: 5000, betaHeaders: ["token-efficient-tools-2025-02-19"] }),
-    );
+    const report = runTurn(d, {
+      cacheReadTokens: 5000,
+      betaHeaders: ["token-efficient-tools-2025-02-19"],
+    });
     expect(report).not.toBeNull();
     expect(report!.changes.some((c) => c.includes("Beta headers"))).toBe(true);
   });
@@ -159,9 +169,9 @@ describe("归因分析", () => {
   test("命中下降但状态无变化 → 前缀 hash 未变归因为服务端波动", () => {
     let t = 0;
     const d = new CacheBreakDetector(() => t);
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     t = 1000; // 1s 内，无 TTL 警告
-    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    const report = runTurn(d, { cacheReadTokens: 5000 });
     // P2-1: 改进归因——前缀 hash 未变时明确标注为"服务端缓存波动"
     expect(report!.changes.some((c) => c.includes("服务端缓存波动"))).toBe(true);
     expect(report!.previousPrefixHash).toBeTruthy();
@@ -173,15 +183,15 @@ describe("归因分析", () => {
 describe("reset / format", () => {
   test("reset 后重新当作首次请求", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     d.reset();
-    expect(d.checkResponse(params({ cacheReadTokens: 5000 }))).toBeNull();
+    expect(runTurn(d, params({ cacheReadTokens: 5000 }))).toBeNull();
   });
 
   test("formatCacheBreakReport 单行可读", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(params({ cacheReadTokens: 5000, systemPrompt: "X" }))!;
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, params({ cacheReadTokens: 5000, systemPrompt: "X" }))!;
     const line = formatCacheBreakReport(report);
     expect(line).toContain("%");
     expect(line).toContain("tokens");
@@ -191,9 +201,9 @@ describe("reset / format", () => {
   test("前缀未变 + 紧跟重试 → 标注'重连触发的服务端缓存丢失'", () => {
     const d = new CacheBreakDetector();
     // 首轮建立基线（前缀不变，后续同 systemPrompt/tools）
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     // 次轮命中骤降、前缀不变、本轮发生过重试
-    const report = d.checkResponse(params({ cacheReadTokens: 5000, precededByRetry: true }))!;
+    const report = runTurn(d, { cacheReadTokens: 5000, precededByRetry: true })!;
     const line = formatCacheBreakReport(report);
     expect(line).toContain("前缀未变+紧跟重试");
     expect(line).toContain("重连触发的服务端缓存丢失");
@@ -201,8 +211,8 @@ describe("reset / format", () => {
 
   test("前缀未变 + 无重试 → 标注'纯服务端缓存波动'", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(params({ cacheReadTokens: 5000, precededByRetry: false }))!;
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, { cacheReadTokens: 5000, precededByRetry: false })!;
     const line = formatCacheBreakReport(report);
     expect(line).toContain("前缀未变+无重试");
     expect(line).toContain("纯服务端缓存波动");
@@ -210,11 +220,13 @@ describe("reset / format", () => {
 
   test("前缀已变（本地断裂）时不附加重试标注", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     // systemPrompt 改变 → 前缀 hash 变化 → 属本地断裂，即便发生过重试也不标注重试关联
-    const report = d.checkResponse(
-      params({ cacheReadTokens: 5000, systemPrompt: "CHANGED", precededByRetry: true }),
-    )!;
+    const report = runTurn(d, {
+      cacheReadTokens: 5000,
+      systemPrompt: "CHANGED",
+      precededByRetry: true,
+    })!;
     const line = formatCacheBreakReport(report);
     expect(line).not.toContain("前缀未变");
     expect(line).not.toContain("服务端缓存波动");
@@ -222,8 +234,8 @@ describe("reset / format", () => {
 
   test("precededByRetry 未提供时不附加任何重试标注（向后兼容）", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    const report = d.checkResponse(params({ cacheReadTokens: 5000 }))!;
+    runTurn(d, { cacheReadTokens: 50000 });
+    const report = runTurn(d, { cacheReadTokens: 5000 })!;
     const line = formatCacheBreakReport(report);
     expect(line).not.toContain("紧跟重试");
     expect(line).not.toContain("无重试");
@@ -274,7 +286,54 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
   });
 
   test("工具频繁变化 → 给出定序建议", () => {
-    for (let i = 0; i < 3; i++) recordCacheBreak(rec({ changes: ["工具变化: +foo"] }));
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(rec({ changes: ["工具变化: +foo"], categories: ["tools"] }));
+    }
+    const advice = getCacheHealthAdvice();
+    expect(advice.some((a) => a.includes("工具"))).toBe(true);
+  });
+
+  // ── D5b：判据是 categories，不是 changes 文案 ──
+  //
+  // 下面两条是同一个事实的正反两面，缺一条就守不住「按结构化类别判」这件事：
+  // 只写正向（categories 含 → 触发），改回 changes 子串匹配仍会通过（文案里恰好也有
+  // "System prompt"）；只写反向，判据改成恒不触发也能通过。
+
+  test("D5b：changes 文案里含 'System prompt' 但 categories 不含 → 不给建议", () => {
+    // 文案与类别在 note() 里同处产出，正常不会错位；这条模拟的是「措辞调整 / 旧记录回放」
+    // 之后两者脱节的形态 —— 旧实现的子串匹配恰恰在这种记录上会误判。
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(
+        rec({
+          changes: ["System prompt 变化"],
+          categories: ["cache_policy"], // 结构化类别与本条无关
+        }),
+      );
+    }
+    expect(getCacheHealthAdvice()).toEqual([]);
+  });
+
+  test("D5b：categories 含 system_prompt 但 changes 文案被改写 → 仍给建议", () => {
+    // 文案改成别的措辞（模拟一次无伤大雅的文案重构）：旧的 `includes("System prompt")`
+    // 在这里会**静默失效**，而有了这一条，那种改法会立刻变红。
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(
+        rec({
+          changes: ["系统提示词（system 段）被改写"],
+          categories: ["system_prompt"],
+        }),
+      );
+    }
+    const advice = getCacheHealthAdvice();
+    expect(advice.some((a) => a.includes("system 提示词"))).toBe(true);
+  });
+
+  test("D5b：工具建议读 tools / tool_order 两个类别（后者文案完全不含「变化」二字）", () => {
+    // tool_order 的文案是「工具顺序变化（内容不变但顺序改变）」，旧子串匹配靠
+    // `includes("工具顺序")` 才蒙对；这里把文案换掉、只留类别，守住「读类别」这件事。
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(rec({ changes: ["顺序抖动"], categories: ["tool_order"] }));
+    }
     const advice = getCacheHealthAdvice();
     expect(advice.some((a) => a.includes("工具"))).toBe(true);
   });
@@ -295,7 +354,13 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
   test("untrusted 与 trusted 混合时，占比只按 trusted 算", () => {
     // trusted 里只有 1 条 system 变化 + 1 条工具变化 → 各占 50%，都只有 1 次，不足以给建议
     recordCacheBreak(rec({ channelTrust: "trusted" }));
-    recordCacheBreak(rec({ changes: ["工具变化: +foo"], channelTrust: "trusted" }));
+    // 工具类别的记录必须带 `categories: ["tools"]`：D5b 起判据读结构化类别而不是
+    // `changes` 文案（契约见 `CacheBreakReport.categories`）。这里只补类别，**不改变本用例的
+    // 意图** —— 它测的是「untrusted 记录被排除出分母」，与判据读哪个字段无关。
+    // 旧夹具只给 changes 仍能过，是因为旧实现做子串匹配；按契约该给的是 categories。
+    recordCacheBreak(
+      rec({ changes: ["工具变化: +foo"], categories: ["tools"], channelTrust: "trusted" }),
+    );
     // 再塞 4 条 untrusted 的 system 变化，若没排除就会把 system 占比抬到 5/6 ≥ 50% 且 ≥ 2 次
     for (let i = 0; i < 4; i++) {
       recordCacheBreak(rec({ channelTrust: "untrusted" }));
@@ -313,29 +378,29 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
 describe("G1 suppressNext 抑制机制", () => {
   test("notifyCompaction 抑制下一次检测", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     d.notifyCompaction();
     // 骤降但应被抑制
-    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    const report = runTurn(d, { cacheReadTokens: 5000 });
     expect(report).toBeNull();
   });
 
   test("抑制仅作用一次，下次恢复正常检测", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     d.notifyCompaction();
     // 第一次：被抑制，基线更新为 30000
-    d.checkResponse(params({ cacheReadTokens: 30000 }));
+    runTurn(d, { cacheReadTokens: 30000 });
     // 第二次：无抑制，30000 → 5000 骤降应报告
-    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    const report = runTurn(d, { cacheReadTokens: 5000 });
     expect(report).not.toBeNull();
   });
 
   test("未调用 notify 时正常检测不受影响", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
+    runTurn(d, { cacheReadTokens: 50000 });
     // 不调 notify，直接骤降 → 应检测到
-    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
+    const report = runTurn(d, { cacheReadTokens: 5000 });
     expect(report).not.toBeNull();
   });
 });

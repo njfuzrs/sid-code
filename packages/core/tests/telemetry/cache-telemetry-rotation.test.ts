@@ -196,11 +196,23 @@ describe("归因聚合 ↔ 检测器文案对账", () => {
     };
   }
 
+  /**
+   * 按主循环真实顺序走一轮：请求前快照 → 响应后检测。
+   *
+   * 2026-11-19 D1：`checkResponse` 比较「上一轮请求前」vs「本轮请求前」，
+   * 直接连调两次 `checkResponse` 时 pending 为空，检测器刻意不比较（返回 null）。
+   */
+  function detectorTurn(d: CacheBreakDetector, over: Partial<CacheCheckParams> = {}) {
+    const responseParams = detectorParams(over);
+    d.recordPromptState({ ...responseParams, cacheReadTokens: 0 });
+    return d.checkResponse(responseParams);
+  }
+
   test("前缀未变的服务端波动归入 server_fluctuation，不落 unknown", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(detectorParams());
+    detectorTurn(d);
     // 只降命中、不动 prompt/tools → 前缀 hash 不变 → 检测器输出"服务端缓存波动"
-    const report = d.checkResponse(detectorParams({ cacheReadTokens: 5000 }))!;
+    const report = detectorTurn(d, { cacheReadTokens: 5000 })!;
     expect(report).not.toBeNull();
     emitCacheBreakTelemetry({ ...report, ts: 1_700_000_100, model: "test-model" });
 
@@ -211,11 +223,9 @@ describe("归因聚合 ↔ 检测器文案对账", () => {
 
   test("前缀变化的本地断裂归入已有类别，同样不落 unknown", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(detectorParams());
+    detectorTurn(d);
     // 改 systemPrompt → 前缀 hash 变化，检测器会给出 System prompt 归因
-    const report = d.checkResponse(
-      detectorParams({ cacheReadTokens: 5000, systemPrompt: "CHANGED" }),
-    )!;
+    const report = detectorTurn(d, { cacheReadTokens: 5000, systemPrompt: "CHANGED" })!;
     emitCacheBreakTelemetry({ ...report, ts: 1_700_000_200, model: "test-model" });
 
     const s = summarizeCacheBreakHistory(10);
@@ -235,10 +245,8 @@ describe("归因聚合 ↔ 检测器文案对账", () => {
     let ts = 1_700_001_000;
     for (const [, over] of cases) {
       const d = new CacheBreakDetector();
-      d.checkResponse(detectorParams({ betaHeaders: [] }));
-      const report = d.checkResponse(
-        detectorParams({ cacheReadTokens: 5000, betaHeaders: [], ...over }),
-      );
+      detectorTurn(d, { betaHeaders: [] });
+      const report = detectorTurn(d, { cacheReadTokens: 5000, betaHeaders: [], ...over });
       if (!report) continue;
       emitCacheBreakTelemetry({ ...report, ts: ts++, model: "test-model" });
     }
@@ -251,8 +259,8 @@ describe("归因聚合 ↔ 检测器文案对账", () => {
 
   test("新记录走结构化 categories，不再依赖文案匹配", () => {
     const d = new CacheBreakDetector();
-    d.checkResponse(detectorParams());
-    const report = d.checkResponse(detectorParams({ cacheReadTokens: 5000 }))!;
+    detectorTurn(d);
+    const report = detectorTurn(d, { cacheReadTokens: 5000 })!;
     emitCacheBreakTelemetry({ ...report, ts: 1_700_002_000, model: "test-model" });
 
     const s = summarizeCacheBreakHistory(10);
@@ -304,7 +312,10 @@ describe("P0-3 落盘保真度门禁（默认透传 + 显式剔除）", () => {
       model: "test-model",
       precededByRetry: true,
     };
+    // 走主循环真实顺序：请求前快照 → 响应后检测（2026-11-19 D1 契约）
+    d.recordPromptState({ ...params, cacheReadTokens: 0 });
     d.checkResponse(params);
+    d.recordPromptState({ ...params, cacheReadTokens: 0 });
     return d.checkResponse({ ...params, cacheReadTokens: 5000 })!;
   }
 

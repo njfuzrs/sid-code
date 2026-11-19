@@ -123,6 +123,11 @@ export interface BottomRegionSharedProps {
    * `undefined` = 尚无命中 → Footer 不渲染 ↯ 列。组件不重算，见 Footer 的 prop 注释。
    */
   cacheHitRate?: number;
+  /**
+   * D5：当前端点 `cache_read` 已知不可信 → 命中率后加 `?`。原样透传给 Footer，
+   * 判据在 core，本层不重算。
+   */
+  cacheChannelUntrusted?: boolean;
   /** 会话累计 API 调用次数（状态栏 `⟳ N` 列）。省略 → Footer 不渲染该列。 */
   totalRequests?: number;
   /** 其中作废（重试白烧）的次数，是 totalRequests 的子集。 */
@@ -223,6 +228,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
   cacheSavingsUSD,
   outputTps,
   cacheHitRate,
+  cacheChannelUntrusted,
   totalRequests,
   discardedRequests,
   costLimit,
@@ -349,6 +355,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
         costFxConverted={costFxConverted}
         outputTps={outputTps}
         cacheHitRate={cacheHitRate}
+        cacheChannelUntrusted={cacheChannelUntrusted}
         totalRequests={totalRequests}
         discardedRequests={discardedRequests}
         costLimit={costLimit}

@@ -375,6 +375,7 @@ import {
   recordCacheBreak,
   formatCacheBreakReport,
   notifyCompaction,
+  cancelSuppression,
 } from "../api/cache-detection.ts";
 import {
   MAX_PROMPT_CACHE_TTL_MS,
@@ -3537,7 +3538,9 @@ async function* queryLoopBody(
       }
 
       // ─── G9：请求前快照 prompt 状态（与响应后 checkResponse 配对的两阶段检测） ───
-      // 必须在发送前记录，否则检测器无基线可比，cache break 归因永远为空。
+      // 必须在发送前记录：检测器把它暂存为 pendingState，响应后的 checkResponse 才拿它
+      // 当「本轮实际发出的前缀」，与上一轮的请求前快照比较（2026-11-19 D1：此前这一步
+      // 直接覆盖基线，prev / curr 是同一轮，归因链恒空转）。
       // agentId="main"：主循环源，与子代理（独立上下文）的基线隔离（G10）。
       try {
         recordPromptState({
@@ -3546,6 +3549,9 @@ async function* queryLoopBody(
           toolSchemas: (sendParams.tools ?? []).map((t) => ({ ...t, name: t.name })),
           model: config.model,
           messageCount: sendParams.messages.length,
+          // D2：消息前缀必须进快照，否则 diffMessagePrefix 永远「不可判」，
+          // message_history 归因不可达（历史被原地改写只会落进 server_fluctuation）。
+          messages: sendParams.messages,
           betaHeaders: currentBetaHeaders(config.provider),
           agentId: "main",
         });
@@ -3982,6 +3988,25 @@ async function* queryLoopBody(
       } catch (err: any) {
         perfHandle.end({ model: config.model });
 
+        // ─── D7：请求失败 → 取消尚未消费的 cache-break 抑制 ───
+        // suppressNext 只由 checkResponse 消费；本轮失败时那句不执行，抑制标志会留到
+        // **下一次成功请求**，白抑制一次本不该抑制的检测（compact 后恰好请求失败时必现）。
+        //
+        // 为什么是 cancelSuppression 而不是 reset()：
+        // ① reset() 是 detectors.clear()，清掉**全部 agentId** 的基线；
+        // ② 清完下一轮走「首轮」分支直接跳过检测 —— 不是重置，是丢一次检测机会；
+        // ③ 失败请求的 prompt 极可能已被服务端缓存（缓存写入早于输出），基线必须保留。
+        //
+        // 调用时机刻意放在 catch 里、**不放在 abort 收尾**：abort 收尾说明响应已经拿到
+        // （response 完整），下面会正常走 checkResponse 消费掉抑制；在那里清反而会把
+        // 一次本该被抑制的检测放出来。失败路径含 timeout 重试 / fallback / 未识别错误
+        // 全部出口（throw 在 catch 末尾，不影响本行已执行）。快照失败也不影响主循环。
+        try {
+          cancelSuppression("main");
+        } catch {
+          /* 抑制清理失败绝不影响主循环 */
+        }
+
         // ─── 作废尝试的用量入账（P0-2 C 组）───
         //
         // 放在 catch **最前面**是刻意的：本 catch 有三条 `continue` 重试出口
@@ -4404,6 +4429,24 @@ async function* queryLoopBody(
         usageProvider,
         config.baseURL,
       );
+      // D5：把**当前端点**的渠道可信度写进会话状态，供 Footer 打「数据不可信」标记。
+      //
+      // ⚠️ 必须**无条件**写在这里（紧跟 updateUsage），**不能**挪进下面的
+      // `if (breakReport)` 分支：那里只有「发生了缓存断裂」才走，而 Footer 的标记是
+      // 每轮都要显示的 —— 放进去的后果是「没断裂的会话永远拿不到 trust，正好丢掉
+      // 最需要标记的那批」（不可信渠道恰恰常常显得「没断裂」，因为它的命中数是编的）。
+      //
+      // `readChannelTrustCached()` 是**登记表的读取缓存**（60s TTL，避免每轮读盘），
+      // 不是「本会话的 trust 结论」；结论落进 `sessionState.channelTrust`。
+      // 与下面断裂记录里的 lookupChannelTrust 用同一个入参，两处判定不会漂移。
+      try {
+        const trustHost = SessionState.hostOf(config.baseURL);
+        sessionState.setChannelTrust(
+          lookupChannelTrust(trustHost, readChannelTrustCached()).verdict,
+        );
+      } catch {
+        /* 可信度查询失败绝不影响主循环（登记表损坏时 lookup 本身已回退 unknown） */
+      }
       const thisCost = sessionState.calculateCost(
         config.model,
         response.usage,
