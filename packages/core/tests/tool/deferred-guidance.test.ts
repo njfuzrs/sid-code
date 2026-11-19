@@ -266,11 +266,10 @@ describe.skipIf(systemPolicyExists)("L-5 — 旧工具名经别名回退仍可�
     }
   });
 
-  // ⚠️ 产品缺陷（不在本单元修复范围）：selectTools 在 enabled 判据里用**用户原始名**比
-  // enabledNames，而 enabledNames 来自 tool.name()（现行名）。于是 select:bg_task_get 能解析到
-  // 实例、却落进 disabled 分支，模型看到「以下工具已被策略禁用，无法激活：bg_task_get」——
-  // 别名在 select 路径上实际是失效的。修法要在 tool-search.ts 的 disabled 判据上归一（或改判
-  // 解析后实例的 name()），属于另一个 PR。这里显式 skip 而不是删断言：修好后把 skip 去掉即可。
+  // 曾经的缺陷：selectTools 的 enabled 判据用**用户原始名**比 enabledNames（收的是 name()），
+  // 于是 select:bg_task_get 能解析到实例、却落进 disabled 分支，模型看到「已被策略禁用」。
+  // 已在 tool-search.ts 归一为解析后的 name()；本用例从 test.skip 转为真通过，锁住这条链
+  // （别名在 select 路径上必须真的可用，而不只是 registry.get 能查到）。
   test("tool_search(select:bg_task_get) 能激活真实工具（L-5 端到端）", async () => {
     const registry = buildRegistry();
     const search = new ToolSearchTool(registry);
