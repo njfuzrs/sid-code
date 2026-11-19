@@ -15,6 +15,7 @@ import {
   recordCacheBreak,
   getRecentCacheBreaks,
   checkResponseForCacheBreak,
+  recordPromptState,
 } from "@sid-code/core/api/cache-detection.ts";
 import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
 import { AutoCompactCircuitBreaker } from "@sid-code/core/query/circuit-breaker.ts";
@@ -54,43 +55,53 @@ describe("resetCacheDetection — 缓存检测基线清除", () => {
   });
 
   test("重置后首次 checkResponse 返回 null（无旧基线对比）", () => {
-    // 先建立一个基线
-    checkResponseForCacheBreak({
+    // 先建立一个基线：D1 之后每个真实轮次必须成对调用
+    // （请求前 recordPromptState → 响应后 checkResponseForCacheBreak）。
+    // 只调 check 拿不到本轮请求前快照，按设计直接返回且不建立基线。
+    const baseline = {
       systemPrompt: "You are a helpful assistant.",
       toolSchemas: [{ name: "bash" }],
       model: "opus",
       cacheReadTokens: 10000,
-    });
+    };
+    recordPromptState(baseline);
+    checkResponseForCacheBreak(baseline);
 
     // 重置
     resetCacheDetection();
 
     // 重置后的首次检查应返回 null（无上次基线可对比）
-    const result = checkResponseForCacheBreak({
+    const afterReset = {
       systemPrompt: "Totally different prompt.",
       toolSchemas: [{ name: "read" }],
       model: "opus",
       cacheReadTokens: 500,
-    });
+    };
+    recordPromptState(afterReset);
+    const result = checkResponseForCacheBreak(afterReset);
     expect(result).toBeNull();
   });
 
   test("不重置时，缓存下降会被检测到", () => {
-    // 建立基线（高缓存命中）
-    checkResponseForCacheBreak({
+    // 第一轮：请求前快照 + 响应后检测，建立基线（高缓存命中）
+    const first = {
       systemPrompt: "You are a helpful assistant.",
       toolSchemas: [{ name: "bash" }],
       model: "opus",
       cacheReadTokens: 10000,
-    });
+    };
+    recordPromptState(first);
+    checkResponseForCacheBreak(first);
 
-    // 第二次缓存骤降 + system prompt 变化 → 应检测到中断
-    const result = checkResponseForCacheBreak({
+    // 第二轮：缓存骤降 + system prompt 变化 → 应检测到中断
+    const second = {
       systemPrompt: "Completely different system prompt now.",
       toolSchemas: [{ name: "bash" }],
       model: "opus",
       cacheReadTokens: 500,
-    });
+    };
+    recordPromptState(second);
+    const result = checkResponseForCacheBreak(second);
     // 应该检测到中断（非 null）
     expect(result).not.toBeNull();
   });
