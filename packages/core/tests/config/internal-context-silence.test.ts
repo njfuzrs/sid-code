@@ -31,6 +31,7 @@ import { join } from "path";
 import { generateClaudeMdAttachment } from "@sid-code/core/config/attachments.ts";
 import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
 import { buildSystemPrompt } from "@sid-code/core/config/system-prompt.ts";
+import { estimateTokens } from "@sid-code/core/config/token-utils.ts";
 
 /** 静默语义的判据：出现「请勿…提及」+「复述」即算带条款 */
 function hasSilenceClause(text: string): boolean {
@@ -93,5 +94,24 @@ describe("内部上下文静默条款", () => {
     // 与「错误透明 / 如实告知」相冲突。
     expect(prompt).toContain("不要过度执行");
     expect(prompt).toContain("如实回答");
+  });
+
+  test("§8 体量预算：压缩成果不得回弹（L-3）", () => {
+    // 2026-11-19 L-3：中文 393 → 273 tok、英文 543 → 384（estimateTextTokens 口径）。
+    // 预算取「实测 + ~10% 措辞余量」：再长回去就变红。这段每轮都进上下文，
+    // 长回来的每个 token 都是净成本，所以用 token 而非字符数定预算
+    // （中文 1 字 ≠ 1 token，按字数定会让中英两档不同权）。
+    const zh = buildSystemPrompt({ tools: [] } as any);
+    const zhSection = zh.slice(zh.indexOf("### 8. 不复述"), zh.indexOf("### 9. 输出渲染"));
+    expect(zhSection.length, "前提：确实切到了中文 §8").toBeGreaterThan(100);
+    expect(estimateTokens(zhSection)).toBeLessThan(300);
+
+    const en = buildSystemPrompt({ tools: [], preferredLanguage: "en" } as any);
+    const enSection = en.slice(
+      en.indexOf("### 8. Do not restate"),
+      en.indexOf("### 9. Output rendering"),
+    );
+    expect(enSection.length, "前提：确实切到了英文 §8").toBeGreaterThan(100);
+    expect(estimateTokens(enSection)).toBeLessThan(420);
   });
 });
