@@ -229,6 +229,18 @@ export class SessionState {
   /** 按模型分开的用量统计 */
   modelUsage: Record<string, ModelUsageStats> = {};
   /**
+   * D4：已告警过的「缓存三段越界」组合（`model::provider`）。
+   *
+   * 越界是**口径错配**，对同一个 model+provider 组合会持续发生：不按组合去重就是每次
+   * updateUsage 一条 WARN，一个长会话能刷出几千条（和 D18 之前 Footer 刷屏同源）。
+   * 放在 updateUsage 里而不是 getCacheHitRate 里：后者是无参方法、被 cost-bridge 与
+   * Footer 高频只读调用，往里塞写副作用既刷屏又破坏「只读查询」语义。
+   *
+   * 不进会话快照（不参与 hydrate）：它只是本进程的日志去重状态，落盘只会带来跨进程的
+   * 假去重（新进程第一次越界就静默）。
+   */
+  private warnedCacheOverflow = new Set<string>();
+  /**
    * 会话级「当前上下文」单值（stock 口径，**归一化 promptTotal**）。
    *
    * 这是 footer `↑` / `/cost` 的 `contextNow` 唯一取数源（见 {@link getStockPromptTokens}）。
@@ -542,6 +554,12 @@ export class SessionState {
 
     // 累加缓存节省（全价假设 − 实际）
     stats.cacheSavingsUSD += this.calculateSavings(model, usage, prov, baseURL);
+
+    // D4：本次 usage 的缓存三段越界 → 记一条 WARN（按 model::provider 去重）。
+    // 钳制本身在 getNormalizedCacheUsage 里做（openai 口径下单次调用 hit+write 可超 prompt），
+    // 这里只负责**让口径错配可见**——钳完是 100%，不告警的话用户永远不知道数据本身是错的。
+    // 判据用未钳制的原始值：钳制后必然不再越界，钳完再判等于永远不告警。
+    this.warnCacheOverflow(model, prov, usage);
 
     // 更新全局统计
     this.totalCostUSD += cost;
@@ -1111,9 +1129,22 @@ export class SessionState {
         },
         stats.provider,
       );
-      total.cacheHitTokens += n.cacheHitTokens;
-      total.cacheWriteTokens += n.cacheWriteTokens;
-      total.uncachedInputTokens += n.uncachedInputTokens;
+      // D4：三段钳制放在这里——**单一事实源**，所有读侧（Footer / /cost / 账本）天然 ≤ 100%。
+      //
+      // 为什么必须钳：openai 口径下 promptTotal = prompt_tokens，而 hit 是 provider 自报的
+      // cacheRead；两者来自不同字段、不同时刻（累加 flow 口径后尤其明显），hit + write > promptTotal
+      // 完全可能发生（换 provider 错配、网关把命中重复计、OpenAI 兼容端 write 概念缺失等）。
+      // 不钳时 uncached 被 `Math.max(0, ...)` 压成 0，但 hit/write 照旧累加，
+      // 于是「uncached + hit + write === promptTotal」恒等式破裂、命中率可以 > 100%。
+      //
+      // 钳制顺序：先 hit 后 write（write 的下限依赖钳后 hit），保证三段仍互斥且非负，
+      // 且超出的部分一律归入 uncached —— 宁可低估命中，也不要展示一个不可能的 120%。
+      // 越界本身在 updateUsage 记一条 WARN（带 model/provider 去重），这里只做纯算术。
+      const hit = Math.min(n.cacheHitTokens, n.promptTotal);
+      const write = Math.min(n.cacheWriteTokens, n.promptTotal - hit);
+      total.cacheHitTokens += hit;
+      total.cacheWriteTokens += write;
+      total.uncachedInputTokens += n.promptTotal - hit - write;
       total.outputTokens += n.outputTokens;
       total.promptTotal += n.promptTotal;
     }
@@ -1158,6 +1189,40 @@ export class SessionState {
       "SESSION",
       `模型 "${model}" 不在定价表中，已用保守兜底价（input $${FALLBACK_PRICING.input}/M、output $${FALLBACK_PRICING.output}/M）估算成本。` +
         `如需精确计费，请在定价表或 availableModels 配置中补充该模型价格。`,
+    );
+  }
+
+  /**
+   * D4：缓存三段越界告警（按 `model::provider` 去重，一个错配组合只报一次）。
+   *
+   * 「越界」= `hit + write > promptTotal`（openai 口径 promptTotal = prompt_tokens，
+   * anthropic 口径 promptTotal = input + hit + write，后者按构造不可能越界）。
+   * 成因几乎都是**口径错配**：anthropic 的 usage 被按 openai 记（input 是不含命中的余量，
+   * 却被当成 prompt_tokens），或网关把命中重复计入。结果就是命中率能算到 120%。
+   *
+   * 只告警不修改记账：原始 token 是 provider 报的，改它等于伪造账单；钳制留在读侧
+   * （getNormalizedCacheUsage）做展示兜底，两者各管各的。
+   *
+   * 日志用三参形式 `warn(category, message, data)` —— 把结构化字段放进 data，
+   * 而不是把对象塞进 message（那会变成 "[object Object]" 且 audit.log 里搜不到字段）。
+   */
+  private warnCacheOverflow(model: string, provider: string, usage: Usage): void {
+    const hit = usage.cacheReadInputTokens ?? 0;
+    const write = usage.cacheCreationInputTokens ?? 0;
+    const input = usage.inputTokens ?? 0;
+    // 按本次 provider 口径算 promptTotal（与 normalizeCacheUsage 同一判据）。
+    const promptTotal = provider === "anthropic" ? input + hit + write : input;
+    if (hit + write <= promptTotal) return;
+
+    const key = `${model}::${provider}`;
+    if (this.warnedCacheOverflow.has(key)) return;
+    this.warnedCacheOverflow.add(key);
+    getLogger().warn(
+      "SESSION",
+      `缓存用量越界：模型 "${model}"（provider=${provider}）本次上报 hit=${hit} + write=${write} ` +
+        `超过 promptTotal=${promptTotal}。展示口径已钳到 100%，请检查 provider 名与实际协议是否一致` +
+        `（anthropic 的 input_tokens 是未命中余量，openai 的 prompt_tokens 含命中）。`,
+      { model, provider, hit, write, input, promptTotal },
     );
   }
 
