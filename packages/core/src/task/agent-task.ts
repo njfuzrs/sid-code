@@ -270,6 +270,7 @@ export async function failAgentTask(
   taskId: string,
   error: string,
   notify: boolean = true,
+  stopAction?: string,
 ): Promise<void> {
   // F3-2：残卷写进 `.output`（**必须在 flush 之前**，否则文件里没有它）。
   // 失败任务此前的 `.output` 只有逐轮文本，纯工具轮连一行都没有；而残卷是失败路径上
@@ -320,6 +321,17 @@ export async function failAgentTask(
 
   // 一次取值：此前在模板里调了两次 `summarizeFailure`（正则跑两遍），且将来改一处容易忘另一处。
   const failureReason = summarizeFailure(error);
+  // PR11（X1）补齐：**失败出口同样要带停止原因**。
+  //
+  // 上一轮只给 completed 通道拼了 `describeStopNotice`，于是 success:false 的出口
+  // （循环恢复耗尽、窗口耗尽后总结失败、spawn aborted）在父代理眼里只剩一句
+  // 「执行失败: 工具循环恢复次数耗尽」——它分不清「子代理做不出来」和「被上限/窗口
+  // 截断」。后者父代理接手接着做还有价值，前者重派也是白花；这个区分正是 PR11 的初衷。
+  // 与 completed 通道共用同一个来源（`stop_action`），不在任一侧另造口径。
+  const stopNotice = describeStopNotice(stopAction);
+  const failureSummary = `Agent "${task.description}" 执行失败${
+    failureReason ? `: ${failureReason}` : ""
+  }`;
   enqueueTaskNotification({
     taskId,
     toolUseId: task.toolUseId,
@@ -329,7 +341,7 @@ export async function failAgentTask(
     // （NOTIFICATION_ERROR_MAX_CHARS = 4000，超长时 truncateForNotification 附 output-file 指针）。
     // 此前这里只把 `error.slice(0, 200)` 塞进 summary、`error` 字段压根没传，
     // 于是那 4000 字的通道一直空着，模型只能看到断在半句的残卷开头。
-    summary: `Agent "${task.description}" 执行失败${failureReason ? `: ${failureReason}` : ""}`,
+    summary: stopNotice ? `${failureSummary}（${stopNotice}）` : failureSummary,
     error,
     agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });

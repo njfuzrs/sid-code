@@ -379,8 +379,15 @@ describe("D2 — 空参数连坐（同轮健康 tool_use 不得变孤儿）", ()
 
     expect(write.calls.length).toBe(0);
     expect(result.success).toBe(true);
-    // 3 次重试 + 第 4 次耗尽放行 = 4 次 LLM 调用，绝不是跑满 maxTurns
-    expect(calls.length).toBe(MAX_EMPTY_PARAM_RETRIES + 1);
+    // 3 次重试 + 第 4 次耗尽放行 + 1 次强制收尾总结 = 5 次 LLM 调用，绝不是跑满 maxTurns。
+    //
+    // 第 5 次是 PR11（X1）补齐的：这个出口此前是唯一一条 success:true 却不跑收尾轮的
+    // 非正常出口，交回父代理的只是那句没说清参数的话。契约已变，所以这里的期望从 +1
+    // 改成 +2；下面那条「收尾轮不带 tools」的断言用来区分「多一轮总结」与「多一轮空转」，
+    // 只改数字就分不出这两者。
+    expect(calls.length).toBe(MAX_EMPTY_PARAM_RETRIES + 2);
+    expect(((calls[calls.length - 1] as any).tools ?? []) as unknown[]).toHaveLength(0);
+    // 收尾轮不消耗轮次预算：turns 仍然是 3 次重试 + 1 次耗尽放行
     expect(result.turns).toBe(MAX_EMPTY_PARAM_RETRIES + 1);
     expect(unpairedToolUseIds(result.messages as any)).toEqual([]);
   });

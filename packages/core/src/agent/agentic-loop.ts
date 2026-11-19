@@ -459,6 +459,22 @@ export const LOOP_EXHAUSTED_FINALIZE_PROMPT =
   "请停止调用工具，直接输出你目前已经确认的事实与结论（要具体：文件路径、结论、未完成的点）。";
 
 /**
+ * 「工具参数连续为空」出口的收尾提示词（PR11 / X1 补齐）。
+ *
+ * 这个出口的前提是模型反复发出**参数为空**的 tool_use：它已经陷进「说要调工具、
+ * 但说不出参数」的退化里，再给一轮工具定义只会重复同一件事。所以与其它收尾轮一样
+ * **不下发 tools**，只要求它把已经确认的东西说出来。
+ *
+ * 措辞不写「你出错了」：模型会转去解释或道歉，那一轮 token 就白花了；而这条出口
+ * 之所以值得多花一轮，是因为它此前的 `success: true` 只交回**最后一条** assistant
+ * 文本——往往正是那句没说清参数的话。父代理拿到的是一句断在半路的片段。
+ */
+export const EMPTY_PARAM_FINALIZE_PROMPT =
+  "你连续多轮返回了参数为空的工具调用，无法继续执行工具。请停止调用任何工具，" +
+  "直接用一轮输出你目前已经确认的事实与结论（要具体：文件路径、函数名、行号、结论），" +
+  "并列出还没查完的部分。";
+
+/**
  * 「预算耗尽」出口的收尾提示词（PR7 / D3）。
  *
  * 措辞要点：**这不是任务失败，是账停了**。预算超限与「做不出来」是两件事，不能说成
@@ -1815,6 +1831,22 @@ async function runAgentLoopInner(
         ctxMgr.addMessage({ role: "assistant", content: sanitizedContent });
         retryStats.stopAction = "empty_param_exhausted";
         config.onTurnEnd?.(buildTurnEndInfo());
+        // PR11（X1）补齐：这是此前**唯一一条 `success: true` 却不跑收尾轮**的非正常出口。
+        //
+        // 走到这里 = 模型连续 MAX_EMPTY_PARAM_RETRIES 次发空参数 tool_use，已经陷在
+        // 「说要调工具、但说不出参数」的退化里。此前直接把最后一条 assistant 文本交回去，
+        // 而那句话往往正是没说清参数的那句 —— 父代理拿到的是一句断在半路的片段，却因为
+        // `success: true` 把它当完整结论用。这与 PR11 其它出口（打满 / 被停 / 撞窗口 /
+        // 循环耗尽）的处置不一致，属于清单外的遗漏。
+        //
+        // 放在 `onTurnEnd` 之后：收尾轮不消耗轮次预算（与其它出口同口径），也不该再被
+        // 算作一轮进度。`signal.aborted` 时跳过 —— 用户已经退出，没必要再花一次请求。
+        if (!signal.aborted) {
+          await runFinalizeTurn({
+            prompt: EMPTY_PARAM_FINALIZE_PROMPT,
+            reason: "工具参数连续为空，请求强制总结",
+          });
+        }
         return {
           success: true,
           turns,
