@@ -27,7 +27,7 @@ import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useSession } from "../contexts/SessionContext.tsx";
 import { useLoadingIndicator } from "../hooks/useLoadingIndicator.ts";
-import { useHeldRows } from "../hooks/useHeldRows.ts";
+import { useHeldRows, useHeldRowsPolicy } from "../hooks/useHeldRows.ts";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { CommandInfo } from "../hooks/useSlashCompletion.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
@@ -279,9 +279,18 @@ export const Composer: React.FC<ComposerProps> = ({
     showRawMarkdownIndicator ||
     (showContextUsage && !showLoadingIndicator) ||
     ["always-allow", "dontAsk", "plan", "deny-write"].includes(config.permissionMode);
-  const statusRowMinHeight = useHeldRows(statusRowHasContent ? 1 : 0, !isIdle, {
-    releaseWhenIdle: true,
-  });
+  // 状态行水位：主屏（HeldRowsPolicy.enabled）恒占 1 行——有内容显示内容，无内容留 1 行空白。
+  // 为什么不能按「有内容才占」：回合结束那一帧 spinner 消失，而同一帧的历史新增是
+  // 「流式正文从动态区搬进 Static」（帧高不变，见 MainScreenLayout 动态区注释）。
+  // 水位一放，帧就净矮 1 行；帧已溢出视口时命中 main-screen.ts 的 shrink 判据 →
+  // 2J 3J 整帧重画 → 把用户上翻的位置拉回底部（2026-11-18 用户报障，根因已实测确认）。
+  // 全屏（alt-buffer）布局高度固定、不整帧重画，多占一行只浪费空间，故仍按内容决定。
+  const heldRowsPolicy = useHeldRowsPolicy();
+  const statusRowMinHeight = useHeldRows(
+    heldRowsPolicy.enabled ? 1 : statusRowHasContent ? 1 : 0,
+    !isIdle,
+    { releaseWhenIdle: true },
+  );
 
   // 非空闲时自动关闭帮助
   useEffect(() => {

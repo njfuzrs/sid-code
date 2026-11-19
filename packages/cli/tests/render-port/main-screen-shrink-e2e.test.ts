@@ -297,8 +297,11 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
     section("空闲提示消失");
 
     const round2From = all.length;
-    // 第二轮的 SCRIPT[4] 是兜底 `{ text: "完成。" }`
-    await submit("再来", () => plainSince(round2From).includes("完成。"));
+    // 第二轮的 SCRIPT[4] 是兜底 `{ text: "完成。" }`。
+    // 判据不要求「完成。」连续：流式逐 2 字符出块，而帧 diff 可能在两次块之间插入
+    // 状态行更新（spinner 出现 / 消失），去 CSI 后两字之间会夹进别的字符。
+    // 「完成」只出现在第二轮（第一轮是 todo/bash/30 条总结），足以唯一标识轮次开始。
+    await submit("再来", () => plainSince(round2From).includes("完成"));
     await settle(2000, 60_000);
     section("第二轮");
   } finally {
@@ -413,21 +416,23 @@ describe("主屏长会话端到端：高频交互零重画、画面无空白块"
     // 变异自证：把 `bashResultDisplayMode` 改成恒 `undefined`，本条稳定回到 2；恢复即 3。
     // 失败的 bash（非零退出）不折叠，所以错误输出多的会话不会叠加这条。
     expect(resets["完整一轮"]).toBeLessThanOrEqual(3);
-    // 第二轮允许 1 次：回合结束时状态行（spinner）消失、最终回复并入历史，帧净矮 1 行。
-    // 2026-11-05 之前这里是 0，靠的是状态行把「2s 前就隐藏了的工具完成提示」算成有内容、
-    // 空闲时恒占 1 行空白——用户截图里最后一条消息与输入框之间的空行就是它。
-    // 「界面不留空白」优先于「回合末少一次整帧重画」（用户定），这条重画是每轮至多一次的回合末事件，
-    // 不是高频交互；高频交互仍锁 0（上面的循环）。
-    expect(resets["第二轮"]).toBeLessThanOrEqual(1);
+    // 第二轮锁 0：2026-11-19 起状态行在主屏恒占 1 行（Composer.tsx:290），
+    // 回合结束时 spinner 消失不再让帧变矮，因此没有整帧重画。
+    //
+    // 变更背景（契约变更，不是为凑绿改断言）：此前这里允许 1 次，对应「空闲不留空白」的
+    // 2026-11-05 决策。2026-11-19 用户重新拍板——接受空闲时留 1 行空白，换取流式期间
+    // 视口不被拉回底部。根因（已实测确认）：回合末状态行消失 → 帧净矮 1 行 →
+    // 命中 main-screen.ts 的 shrink 判据（p=85 ≥ H=30）→ `2J 3J` 整帧重画 → 视口回底。
+    expect(resets["第二轮"]).toBe(0);
 
-    // 空闲时提示消失后，最后一条消息与输入框之间只剩历史项自带的 1 行留白
-    // （修复前：1 行占位 + 1 行 gap，挂到下一轮开始；Composer 状态行另多 1 行）
+    // 空闲 2 行留白 = 状态行常驻的 1 行 + 历史项自带的 1 行间距。
+    // 2026-11-19 之前这里锁 1 行（状态行不占位）；该断言随同日决策一并放宽，理由同上。
     const idleView = runs.filter((r) => r.action === "空闲提示消失").at(-1)?.view ?? [];
     const border = idleView.findIndex((l) => /^─{10,}/.test(l));
     expect(border).toBeGreaterThan(0);
     let blanks = 0;
     for (let i = border - 1; i >= 0 && idleView[i] === ""; i--) blanks++;
-    expect({ blanks }, `空闲提示消失后的视口：\n${idleView.join("\n")}`).toEqual({ blanks: 1 });
+    expect({ blanks }, `空闲提示消失后的视口：\n${idleView.join("\n")}`).toEqual({ blanks: 2 });
 
     // 画面：任何一帧视口里都没有空白块
     const worst = runs.reduce((a, b) => (b.run > a.run ? b : a), runs[0]!);
