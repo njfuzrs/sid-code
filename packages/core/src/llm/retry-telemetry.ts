@@ -135,7 +135,15 @@ export interface RetryTelemetryEvent {
   discardedThinkingChars?: number;
   /** 降级目标模型 */
   fallbackModel?: string;
-  /** 查询来源（后台 529 丢弃时） */
+  /**
+   * D2：`fallback` 事件专用——本次切换是由 `onFallbackDecision` 钩子裁决的（ask 模式），
+   * 还是无钩子时直接走 `autoFallback()`（auto 模式）。
+   *
+   * 同样一条 `fallback` 事件，「用户手选的」与「自动切的」事后处置完全不同
+   * （前者说明用户已介入，后者说明链路在自救）。此前两者同形。
+   */
+  viaDecision?: boolean;
+  /** 查询来源（冷却等待 / 冷却探针 / 重试 / 降级等事件共用；主线程 = main_thread，子代理 = agent:*） */
   querySource?: string;
   /**
    * B4：发起方 agent 标识（子代理隔离与归因）。
@@ -194,7 +202,7 @@ export interface RetryTelemetryEvent {
   arrival?: "thrown" | "stream_event";
   /** recovery_give_up：放弃原因（`GiveUpReason` 闭集） */
   giveUpReason?: string;
-  /** recovery_give_up：本次调用总尝试次数 */
+  /** recovery_give_up / fallback：本次调用总尝试次数 */
   attempts?: number;
   /** recovery_give_up：每次尝试的状态码（无则 null） */
   statuses?: (number | null)[];
