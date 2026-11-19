@@ -99,6 +99,43 @@ function checkLargeRuleFiles(cwd: string): CheckItem[] {
 }
 
 /**
+ * D-15：扫全局记忆库里 key 命中已知测试夹具名单的条目（只报告，绝不自动删）。
+ *
+ * 背景：`reference_doc-example.md` 是 `memory.test.ts` 的夹具，2026-08 的测试在补
+ * `SID_CONFIG_DIR` 隔离之前往真实 `~/.sid-code/memory/` 写过它；隔离只堵住了新写入，
+ * 已落盘的那条仍在，且 `MEMORY.md` 每轮全量注入。所以这里报出来，交用户手动清。
+ *
+ * 没有命中**也出 ok 项**：doctor 的用途是"能回答我的环境有没有问题"，
+ * 检查项时有时无会让人以为这一项不存在；恒定的 ok 项才是"它查过了、没问题"。
+ */
+async function checkFixtureMemories(): Promise<CheckItem[]> {
+  try {
+    const { detectFixtureMemories } = await import("@sid-code/core/memory/test-fixture-detect.ts");
+    const hits = await detectFixtureMemories();
+    if (hits.length === 0) {
+      return [
+        {
+          status: "ok",
+          label: "记忆夹具",
+          detail: "全局记忆库无已知测试夹具条目",
+        },
+      ];
+    }
+    // 一条一个 warn：逐条列出 key + 来源 + 路径，用户才能按提示删对文件。
+    // 合成一行会让"删哪一条"变成需要再查一遍的事，而这正是报告存在的意义。
+    return hits.map((h) => ({
+      status: "warn" as const,
+      label: "记忆夹具",
+      detail:
+        `${h.key}（${h.filePath}）疑似测试夹具，来源 ${h.source}。` +
+        `本项只报告不删除；确认后手动删除该文件并从 memory/MEMORY.md 删掉对应行。`,
+    }));
+  } catch (err) {
+    return [{ status: "warn", label: "记忆夹具", detail: `检查失败：${(err as Error).message}` }];
+  }
+}
+
+/**
  * 企业后端通道（§3.4-3）。只读本地，不发网络——要真实探测用 `sid-code auth status --verify`。
  * 没配 backend.url 的个人用户不报 warn：没有后端照常工作。已登录却没配才是 warn。
  */
@@ -437,6 +474,9 @@ const mod: LocalCommandModule = {
 
     // P2-2：规则文件体积告警（只告警不截断，对齐 CC doctorContextWarnings）
     items.push(...checkLargeRuleFiles(ctx.cwd));
+
+    // D-15：全局记忆库里的测试夹具残留（只报告，删除交用户）
+    items.push(...(await checkFixtureMemories()));
 
     // 组装报告：字形靠颜色/形状区分，标签左对齐成列
     const labelWidth = Math.max(...items.map((i) => i.label.length));

@@ -1,7 +1,7 @@
 /**
  * TaskGetTool（工具名 task_get）— 查询结构化任务清单单条详情
  * 对标 claude-code TaskGet：返回 subject/description/status/blocks/blockedBy/owner。
- * 与后台任务查询（bg_task_get）是两个不同语义族。
+ * 与后台任务查询（task_output）是两个不同语义族。
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
@@ -18,8 +18,11 @@ const taskGetSchema = lazySchema(() =>
 export class StructuredTaskGetTool implements Tool {
   readonly zodSchema = taskGetSchema();
   readonly shouldDefer = true;
+  // 工具名必须是现行名：bg_task_get 已于 D5/T8 并入 task_output（registry 别名表只是历史兼容），
+  // guidance 里教旧名会让模型「见过名字、没见过 schema」，生成阶段坍缩成前缀相近的真实工具。
+  // 由 tests/tool/deferred-guidance.test.ts 的工具名对账门禁守住。
   readonly guidance =
-    "查结构化清单里某条任务的详情 / 上下游依赖时用（后台任务用 bg_task_get，不是这个）。";
+    "查结构化清单里某条任务的详情 / 上下游依赖时用（后台任务用 task_output，不是这个）。";
   readonly searchHint = "structured task list get detail blockedBy 结构化 任务 清单 查询 详情 依赖";
   readonly exemptFromLoopDetection = true;
 
@@ -28,7 +31,7 @@ export class StructuredTaskGetTool implements Tool {
   }
 
   description(): string {
-    return "查询结构化任务清单中某个任务的完整详情：subject/description/status/owner，以及它 blocks（下游）和 blockedBy（上游未完成依赖）。注意：这是结构化清单，不是后台任务（后者用 bg_task_get）。";
+    return "查询结构化任务清单中某个任务的完整详情：subject/description/status/owner，以及它 blocks（下游）和 blockedBy（上游未完成依赖）。注意：这是结构化清单，不是后台任务（后者用 task_output）。";
   }
 
   inputSchema(): Record<string, unknown> {

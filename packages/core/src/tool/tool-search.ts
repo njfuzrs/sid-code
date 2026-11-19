@@ -171,7 +171,10 @@ export class ToolSearchTool implements Tool {
         notFound.push(name);
         continue;
       }
-      if (!enabledNames.has(name)) {
+      // 用**解析后的现行名**比对：name 可能是别名（如 select:bg_task_get），
+      // 而 enabledNames 收的是各工具 name()。拿原始名比对会让别名的工具
+      // 一律落进 disabled 分支，模型看到「已被策略禁用」——实际它好好活着。
+      if (!enabledNames.has(tool.name())) {
         disabled.push(name);
         continue;
       }

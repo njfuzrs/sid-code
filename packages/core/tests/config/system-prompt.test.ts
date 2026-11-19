@@ -144,7 +144,9 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("<git-status>");
     expect(prompt).toContain("Current branch:");
     // 防死锁哨兵：git-status 块必须带"启动快照、不会更新"的仲裁锚点（对标 CC）。
-    expect(prompt).toContain("captured when this session started");
+    // L-4（2026-11-19）把快照说明句按语言分档，zh 档的锚点已是中文——断言跟着
+    // **实际渲染的那一档**走，否则会让「编译自修复之前」的误判反过来变成测试假红。
+    expect(prompt).toContain("本快照拍摄于本次会话启动时");
   });
 
   // 2026-10-30 改：gitStatus 从静态区挪到**动态区**（原为 P0-1 的 stable 标记）。

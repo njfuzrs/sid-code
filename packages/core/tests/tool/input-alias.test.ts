@@ -269,7 +269,13 @@ describe("D3：废弃参数旧名 → 协议字段（schema 已删，兼容靠�
 
   test("bash：is_background 改名为 run_in_background", () => {
     const tool = new BashTool() as unknown as LegacyTool;
-    const v = validateToolInput(tool, { command: "echo hi", is_background: true });
+    // D-08 起 description 是必填（它会显示在用户审批里），别名用例要先过必填校验
+    // 才能验到改名那一层。补参数不改变本条要锁的东西：旧名被改写成协议字段。
+    const v = validateToolInput(tool, {
+      command: "echo hi",
+      description: "打印 hi",
+      is_background: true,
+    });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
     expect((v.data as { run_in_background?: boolean }).run_in_background).toBe(true);

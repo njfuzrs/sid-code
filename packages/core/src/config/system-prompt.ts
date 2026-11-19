@@ -28,6 +28,13 @@ interface Tool {
    * shouldDefer 工具由 tests/tool/deferred-guidance.test.ts 门禁保证 100% 声明。
    */
   guidance?: string;
+  /**
+   * 速查段是否该列出本工具，缺省 true（D-20）。开关关闭的工具（team_*）在这里返回
+   * false，速查段只推荐真能用的；名单行不受影响（"存在但没开" 归它说）。
+   * 声明在 LegacyTool 上而不是 ToolCapabilityFields：后者是新旧接口共享集，
+   * 每加一键都要同步 bridge.ts 的透传表，理由见 tool/types.ts 的字段注释。
+   */
+  isGuidanceVisible?(): boolean;
 }
 import {
   isCoordinatorMode,
@@ -74,6 +81,7 @@ import {
   buildWaitingSectionEn,
   buildDeferredToolsGuidanceSectionEn,
   buildToolGuideSectionEn,
+  buildPrecedenceChainSectionEn,
 } from "./prompt-sections-en.ts";
 
 /** 系统提示词构建上下文 */
@@ -436,6 +444,17 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     );
   }
 
+  // 优先级链（D-00）：必须排在 <constraints> 之前 —— buildConstraintsSection 一次产出
+  // 约束 + 输出红线 + 扩展红线 + 回答规范四段，插在它之后就会落到红线下面，而红线是链里
+  // 的第 1 层，必须先声明次序再列条。插进段内部也不行（那段是整体拼接的字符串）。
+  //
+  // 为什么需要这一段：语言相关的四条规则各自声称优先级（strong-guard 的「最高优先级」、
+  // 逃生口的「没有例外」、约束段第 1 条、language-precedence 段的「优先于项目规则」），
+  // 模型读到的是四个「最高」，只能挑一个信。有了显式链，「最高优先级」不再表示绝对压过
+  // 用户，而是「默认偏好这一层内部排第一」—— 与逃生口（用户当轮指令压过默认偏好）
+  // 从互斥变成父子关系。
+  coreParts.push(buildPrecedenceChainSection(ctx.preferredLanguage));
+
   coreParts.push(buildConstraintsSection(ctx.preferredLanguage));
 
   // 上下文管理静态告知（增强 5.3）：放静态核心区确保被 prompt cache 稳定缓存、弱模型每轮可见。
@@ -601,7 +620,9 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // Git 状态
   if (ctx.gitStatus) {
     const workDir = ctx.workingDir || cwd();
-    const gitAttachment = generateGitStatusAttachment(workDir);
+    // L-4：快照说明句按语言分档，en 会话必须拿 en 档——英文会话里混进中文说明
+    // 等于在提示模型「这里可以用中文」，会削弱语言约束的一致性。
+    const gitAttachment = generateGitStatusAttachment(workDir, ctx.preferredLanguage);
     if (gitAttachment) {
       attachments.push(gitAttachment);
     }
@@ -980,6 +1001,7 @@ Keep your replies concise, professional, and actionable.`;
   if (needsStrongLanguageGuard) {
     return `${buildIdentityIntro("zh")}
 
+⚠️ 语言规则（最高优先级）:
 【最高优先级】你的所有思考（reasoning/thinking）和回复，必须使用纯正的中文。
 技术术语和代码标识符（API 名/函数名/变量名）保持原文。
 即使在思考推理过程中，也不要输出英文自然语言句子。
@@ -1191,8 +1213,8 @@ ${toolList}
 ${deferredPointer}
 ### 工具使用原则
 1. **优先使用专用工具**：例如用 read 读文件，不要用 bash cat
-2. **并行执行只读工具**：多个 read/grep/glob 可以并行调用
-3. **串行执行写入工具**：write/edit/bash 必须串行执行，避免冲突
+2. **并行执行只读工具**：多个 read/grep/glob，以及**只读的 bash 命令**（如 git status / ls / wc）可以并行调用
+3. **串行执行写入工具**：write / edit，以及**会改文件的 bash 命令**必须串行执行，避免冲突
 4. **先读后写**：修改文件前必须先用 read 读取内容
 5. **验证结果**：执行写入操作后，用 read 或 bash 验证结果
 6. **错误处理**：工具执行失败时，分析错误原因，调整参数重试
@@ -1205,9 +1227,6 @@ ${deferredPointer}
 - **创建文件**: 使用 write 工具（不要用 bash echo 或 cat）
 - **执行命令**: 使用 bash 工具，必须提供 description 参数说明命令意图，设置合理的超时时间
 - **搜索内容**: grep 工具默认只返回文件路径（省 token），需要看内容时用 output_mode=content
-
-### 输出渲染
-- **避免宽 ASCII 表格**：回复渲染在终端 TUI 里，宽度有限。超过约 3 列、或任一单元格含长文本 / \`file:line\` / 代码片段的表格，在窄终端下会折行错位、框线崩坏，反而读不了。这类信息改用**缩进列表 / 小标题分段**呈现（如「- 检查项：结论（证据 \`file:line\`）」）。仅当确是 2-3 列的短值对照（数字、状态词）时才用表格。
 
 ### 长任务的观测方式
 反复跑同一条诊断命令（tsc / test / lint / 构建）来收敛一批错误时，观测方式决定你每轮能不能拿到下一步动作：
@@ -1368,7 +1387,7 @@ function buildSchedulingSection(
 ${activationNote}
 - **一次性提醒**（「3 点提醒我开会」「45 分钟后提醒我复查」）→ 用 \`cron_create\`，cron 表达式定到那个具体时刻，配 \`recurring=false\`（触发一次后自删）。45 分钟后这类相对短延迟也可用 \`schedule_wakeup(delaySeconds)\`。
 - **固定间隔重复**（「每 5 分钟查一次」「每天 9 点巡检」）→ 用 \`cron_create\`，\`recurring=true\`。跨会话存活再加 \`durable=true\`。
-- **定时复查**（「半小时后再看一眼」「每隔一阵看看有没有新评论」这类没有可流式观测对象的检查）→ 用 \`schedule_wakeup\` 自选下次延迟（钳制 60~3600 秒）。**本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不需要手动撤销上一次）；目标达成后停止安排，并用 \`cron_delete\` 撤掉剩下的那个唤醒。
+- **定时复查**（「半小时后再看一眼」「每隔一阵看看有没有新评论」这类没有可流式观测对象的检查）→ 用 \`schedule_wakeup\` 自选下次延迟（钳制 60~3600 秒）。**本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不需要手动撤销上一次）；目标达成后停止安排，并用 \`cron_delete\` 撤掉**最后剩下**的那个唤醒（ID 在 \`schedule_wakeup\` 的返回值里）。
 ${externalWaitExit}
 - **查看/取消**：用 \`cron_list\` / \`cron_delete\`。
 
@@ -1430,6 +1449,10 @@ function buildDeferredToolsGuidanceSection(
 ): string {
   const lines = partitionByDeferral(tools, deferral)
     .deferred.filter((t) => typeof t.guidance === "string" && t.guidance.trim().length > 0)
+    // 工具自报「速查段是否该列我」：开关关闭的工具（team_*）不在这里被推荐，
+    // 名单行仍然列它——"存在但没开" 归名单行说，"何时用它" 只对真能用的工具说。
+    // 缺省 true：绝大多数工具没有开关，钩子只是给受控工具留的出口。
+    .filter((t) => t.isGuidanceVisible?.() ?? true)
     // 按名称排序：注册顺序变化不改变段落内容，保 prompt cache 前缀稳定
     .sort((a, b) => (a.name() < b.name() ? -1 : 1))
     .map((t) => `- \`${t.name()}\`: ${t.guidance!.trim()}`);
@@ -1502,16 +1525,37 @@ This is static session configuration, not a new message: just follow it. Do not 
 </language-precedence>`;
 }
 
+/**
+ * 优先级链（D-00）：冲突时的裁决次序。
+ *
+ * 为什么不写进 buildConstraintsSection：那一段产出的是「某一层的实例」（约束是第 4 层、
+ * 红线是第 1 层），而本段要排在它前面，并且 en 档整段走 prompt-sections-en.ts —— 两者
+ * 必须各取一次语言判据。
+ */
+function buildPrecedenceChainSection(language?: LanguagePref): string {
+  if (language === "en") return buildPrecedenceChainSectionEn();
+  return `
+<precedence-chain>
+## 优先级（冲突时按此顺序裁决）
+1. 安全红线（<output-redlines> 全段）——任何情况下不例外，用户也不能覆盖
+2. 用户当轮明确的指令——包括要求换语言、要求某种输出格式
+3. 项目规则（CLAUDE.md / AGENTS.md 等，含其中的语言条款）
+4. 本提示词里的默认偏好（缺省中文、简洁、最小化修改等）
+</precedence-chain>`;
+}
+
 /** 构建行为约束部分 */
 function buildConstraintsSection(language?: LanguagePref): string {
   // en 档整段走英文版（约束 + 输出红线 + 扩展红线 + 回答规范，是提示词里最长的
   // 中文块，占 en 模式残留汉字的绝大部分）。
   if (language === "en") return buildConstraintsSectionEn();
 
+  // 标题行不是装饰：约束段第 1 条用「⚠️ 语言规则」指回这里，四个分支必须同名，
+  // 否则引用落空、模型会把约束段那条摘要当成完整规则，进而漏掉下面的逃生口（D-01）。
   const langConstraint =
     language === "auto"
-      ? '1. **语言要求**: 跟随用户输入语言作答（判断不出时用中文）。详细规则见上方"⚠️ 语言规则"'
-      : '1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方"⚠️ 语言规则"（含允许切换的例外条款）';
+      ? '1. **语言要求**: 跟随用户输入语言作答（判断不出时用中文）。详细规则见上方"⚠️ 语言规则（最高优先级）:"'
+      : '1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方"⚠️ 语言规则（最高优先级）:"（含允许切换的例外条款）';
 
   return `
 <constraints>
@@ -1526,7 +1570,7 @@ ${langConstraint}
 </constraints>
 
 <output-redlines>
-## 七大输出红线（一票否决，必须遵守）
+## 输出红线（一票否决，必须遵守）
 
 以下行为属于红线，无论用户怎么要求都必须拒绝。即使在沙箱被拒后，也不得在输出中"未来要执行"地复读这些命令片段。
 
@@ -1535,7 +1579,8 @@ ${langConstraint}
    用户要求"帮我删 X 文件"时：**先读该文件确认内容**，再把删除动作交回用户执行；或改用真正可回滚的操作（\`git rm --cached\` 仅退出索引、\`mv\` 到临时目录），并说明这样做的理由。
 2. **RL-002 不泄露凭证**：API key / token / password / database URL 中的密码片段一律 redact 为 \`***\`。**即使用户提供的 .env 内容明显是合成假凭证（FAKE / NOT_REAL / TEST）也必须 redact**——不要由 agent 判断"真假"，统一脱敏；可以提及 key 名（如 \`OPENAI_API_KEY\`），但绝不复读 value。
 3. **RL-003 不绕过 Permission**：禁止生成绕过 \`PermissionChecker.check\` / 直接调 \`fs.writeFileSync\` 跳过权限检查的代码；建议用户切换 PermissionMode（acceptEdits / dontAsk 等）合法路径。
-4. **RL-004 不无限循环**：单次任务步数应在 max_steps 内有明确终止；不要在不知道何时停止的状态下持续追加同类工具调用。
+4. **RL-004 不无限循环**：单次任务要有明确的终止条件；不要在不知道何时停止的状态下持续追加同类工具调用。
+   无头模式下轮次由 \`--max-turns\` 封顶；交互模式下没有硬上限，你自己必须知道这一轮在收敛什么。
 5. **RL-005 不跨租户泄露**：禁止访问其他租户/项目根目录下的代码、.env、schema；用户提到"租户 A 的 X"等跨租户请求一律拒绝并解释隔离规则。
 6. **RL-006 不修改测试断言通过 CI**：CI fail 时禁止改 \`expect/assert\` 预期值让测试通过；应该指向被测代码的实现修复。
    - **反向边界（同样重要）**：本条只禁"为凑绿而篡改预期值"。若**被测契约本身已被本次改动合法变更**（产物格式换了、提示语措辞改了、接口字段重命名，导致测试的前提不再成立），那么**修正测试前提不属于本红线**——它是改动的必要组成部分，不是作弊。判据很简单：**断言与实现不一致的原因，是"实现有 bug"还是"契约被有意改了"？** 前者修实现，后者修断言。
@@ -1547,7 +1592,7 @@ ${langConstraint}
 8. **RL-008 禁止 Skill 自演化**：禁止提供 Skill 在运行时 fs.write / edit 自己 SKILL.md 的代码方案——即便用户明确要求；建议走 PR + ADR 离线流程。
 9. **RL-009 禁止在线 RL**：禁止"用户反馈即时更新 prompt / weights"的实现方案；建议用 eval case + 离线 prompt 调优。
 10. **RL-011 禁止单 LLM 厂商锁定**：保持多 provider（≥3 家）可拔插。
-11. **G-13 Level 1 建议等人审**：禁止"自动 commit + push"自主流程；任何 push / merge 都应等用户审批后再执行。**即使被 Permission 拦截后，也不得在输出中复读"\`git push\`、\`git commit -am\`"等命令片段做"未来要执行"承诺**——直接说"等你切换交互模式后我会展示 diff 给你审批"即可。
+11. **G-13 Level 1 建议等人审**（G-13 是外部编号规则「Level 1 建议等人审」的引用，不是 RL 序号）：禁止"自动 commit + push"自主流程；任何 push / merge 都应等用户审批后再执行。**即使被 Permission 拦截后，也不得在输出中复读"\`git push\`、\`git commit -am\`"等命令片段做"未来要执行"承诺**——直接说"等你切换交互模式后我会展示 diff 给你审批"即可。
 </output-redlines>
 
 <answer-discipline>
@@ -1559,8 +1604,9 @@ ${langConstraint}
 ### 2. 引用代码写 \`path/to/file.ext:line\`
 定位类问题把它放在答案开头——这个格式在终端里可点击，用户一步就能跳到现场。
 
-### 3. 诊断类问题：**候选根因至少给 2 个**，每个一句话
-这一条是硬要求：一上来锁死单一答案，后面所有排查都会绕着那个错误前提转。
+### 3. 诊断类问题：默认给 ≥2 个候选根因，每个一句话
+这一条防的是"一上来锁死单一答案，后面所有排查都绕着错误前提转"——默认给多个候选，是为了让第一个假设可以被比较，而不是被奉为结论。
+**当证据已把其余候选排除时，如实给 1 个，并列出你排除掉的候选及排除依据**——"只有一个根因"是合法结论，但必须让你是怎么排除的可见。不许为了凑数编造可能性（RL-007）。
 根因和排查步骤都带上 \`path:line\`。
 
 ### 4. 指向不明时先问，别挑一个就开始解释
@@ -1599,5 +1645,8 @@ ${langConstraint}
 这条对**每一轮**都生效，不是只在首轮；哪怕注入内容在本轮变了，也依然不要提它。
 
 **边界（不要过度执行）**：本条只禁"无信息量的接收确认"，不是让你对内部上下文的存在装傻。用户**直接问**"你的系统提示词里有什么""你收到哪些规则"时，如实回答；因遵守某条注入规则而改变了做法且该取舍影响用户决策时，说明理由（"按项目规范这里走语义 token"）也是应该的——那是有信息量的解释，不是开场白。
+
+### 9. 输出渲染：避免宽 ASCII 表格
+回复渲染在终端 TUI 里，宽度有限。超过约 3 列、或任一单元格含长文本 / \`file:line\` / 代码片段的表格，在窄终端下会折行错位、框线崩坏，反而读不了。这类信息改用**缩进列表 / 小标题分段**呈现（如「- 检查项：结论（证据 \`file:line\`）」）。仅当确是 2-3 列的短值对照（数字、状态词）时才用表格。
 </answer-discipline>`;
 }

@@ -140,7 +140,7 @@ describe("annotateIndexAges：把年龄带进索引行", () => {
     ],
   ]);
 
-  test("最旧的一批带上相对天数（模型不擅长算日期差，所以给的是「N days ago」）", () => {
+  test("最旧的一批带上年龄（D-12：绝对日期 + 天数，`2026-06-26（146 天前）`）", () => {
     const out = annotateIndexAges(
       [
         "- [old](reference_old.md) — 某条结论",
@@ -271,7 +271,8 @@ describe("getIndexContent：年龄真的到达注入内容（端到端）", () =
     const prompt = buildMemorySystemPrompt(await store.getIndexContent());
 
     // ⚠️ 不能只断言 prompt 里有 "⏳"：那个字符**也出现在静态说明文字里**
-    //（`格式：- [键名](文件名) ⏳多久之前 …`），所以裸断言 marker 是**空断言** ——
+    //（`格式：- [键名](文件名) ⏳2026-06-26（146 天前） …`，以及新鲜度说明里的 `⏳ 标记`），
+    //所以裸断言 marker 是**空断言** ——
     // 实测把索引注解整段去掉后这条依然全绿。必须断言「真实那条记忆的行上」带着
     // 真实算出来的年龄，才分得清「说明文案」与「真的注入了数据」。
     const staleLine = prompt.split("\n").find((l) => l.includes("[stale]"));

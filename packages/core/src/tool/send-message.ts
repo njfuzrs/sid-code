@@ -83,8 +83,11 @@ export class SendMessageTool implements Tool {
   readonly zodSchema = sendMessageSchema();
   /** 长尾工具:代理间消息低频使用,延迟加载,由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  // 这里必须写现行工具名 team_message：`teamMessage` 是内部变量名，工具全集里没有这个
+  // 名字且没有别名兜底，模型照着它会去 tool_search(select:teamMessage) 精确落空。
+  // 由 tests/tool/deferred-guidance.test.ts 的「驼峰变体」门禁守住（正则只抽 snake_case，抓不到驼峰）。
   readonly guidance =
-    "给一个在跑的后台 Agent 发追加指令 / 提问（不用等它跑完）时用；teamMessage 是发给团队成员的，不是这个。";
+    "给一个在跑的后台 Agent 发追加指令 / 提问（不用等它跑完）时用；team_message 是发给团队成员的，不是这个。";
   readonly searchHint = "send message agent communication resume 发送 消息 代理 通信 恢复 续传";
   /** P2-3：分派/通信类工具，每次发给不同代理、内容天然不同，豁免循环检测 */
   readonly exemptFromLoopDetection = true;

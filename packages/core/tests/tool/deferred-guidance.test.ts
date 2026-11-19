@@ -40,6 +40,10 @@ import { TeamCreateTool } from "../../src/tool/team-create.ts";
 import { TeamMessageTool } from "../../src/tool/team-message.ts";
 import { NotebookEditTool } from "../../src/tool/notebook-edit.ts";
 import { WorkflowTool } from "../../src/tool/workflow.ts";
+import { ToolSearchTool } from "../../src/tool/tool-search.ts";
+// 旧名（别名）清单：D-04 门禁要放行它，L-5 用例锁住 registry.get 确实能解析它。
+// 用 RETIRED_INTERNAL_TOOL_NAMES 的键而不是抄一份字面量：别名表加了新条目时这里自动跟上。
+import { RETIRED_INTERNAL_TOOL_NAMES } from "../../src/tool/tool-name-aliases.ts";
 
 // 系统级 managed-settings.json 会盖掉 SID_CONFIG_DIR 下那份；存在时跳过而不是假绿
 // （与 waiting-capability-policy.test.ts 同一处理）。
@@ -114,6 +118,191 @@ function registerAllBuiltinDeferred(registry: Registry): void {
   registry.register(new WorkflowTool({} as never, {} as never));
   registry.register(new MonitorTool());
 }
+
+/**
+ * D-04：guidance 里提到的工具名必须真实存在（跨工具对账）。
+ *
+ * 为什么需要：只验证「guidance 非空」时，`bg_task_get`（已并入 task_output）和
+ * `teamMessage`（内部变量名）这种过期名字能无限次复发且 CI 恒绿。危害不是笔误——
+ * 模型「知道名字却从没见过 schema」时，生成阶段会坍缩成前缀相近的真实工具
+ * （deferred-tool-view.ts 文件头记的事故：enter_worktree → enter_plan_mode）。
+ *
+ * 判定口径（两条并行，覆盖两种形态）：
+ *   1. snake_case 标识符：正则抽出来，必须在「可解析名集合」里；
+ *   2. 驼峰变体：工具名去掉下划线后全小写归一，guidance 里任何词归一后撞上某个工具名
+ *      （但字面不是那个工具名）就报错。`teamMessage` 这种驼峰正则抓不到，只能靠这条。
+ *
+ * 可解析名集合 = 内置延迟工具名 ∪ aliases 键 ∪ REGISTRY_EXTERNAL_VALID_NAMES。
+ * **别名必须放行**：bg_task_get 是合法的历史兼容（registry.get 会回退解析），
+ * 拦掉它等于逼人下次直接把门禁删了。别名回退本身由下文 L-5 用例锁住——
+ * 否则哪天回退被重构掉，这里的放行就变成了错放。
+ */
+describe.skipIf(systemPolicyExists)("D-04 — guidance 提到的工具名必须真实存在", () => {
+  /**
+   * 注册表外的合法工具名白名单。
+   *
+   * 这些工具在真实 CLI 启动时由 cli.ts 注册（guidance 里提到它们是合理的），
+   * 但 registerAllBuiltinDeferred 只构造 17 个延迟工具，注册表里查不到。
+   * 只收「导航型」工具——guidance 里出现它是为了指路；不收任何参数名 / 状态词，
+   * 参数名走后面的非工具词白名单。
+   */
+  const REGISTRY_EXTERNAL_VALID_NAMES: ReadonlyArray<string> = [
+    "sub_agent",
+    "todo_write",
+    "tool_search",
+  ];
+
+  /**
+   * 非工具词白名单（形如 snake_case 但不是工具名）。
+   *
+   * 每条都要写清「为什么不是工具」——否则下一个人会看不懂为什么它能豁免，
+   * 然后往里塞真正该报错的名字。命中项加进这个名单之前，先确认它不会长成一个工具。
+   */
+  const NON_TOOL_WORDS: ReadonlySet<string> = new Set([
+    "in_progress", // 任务状态值（todo 的三态之一），不是工具
+    "to_json", // 泛指「转成 JSON」的动作描述，不是工具
+    "task_id", // task_get / task_output 的入参名，不是工具
+    "skill", // 驼峰检查的归一目标：Skill 工具的 skill 参数名，不是工具名
+  ]);
+
+  /** guidance 文本 → snake_case 标识符（取捕获组，不靠 lookbehind，兼容性更稳） */
+  function extractSnakeIdents(text: string): string[] {
+    const re = /(^|[^A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+/g;
+    return [...text.matchAll(re)].map((m) => m[0].slice(m[1].length));
+  }
+
+  /** guidance 文本 → 归一后撞上工具名的驼峰/大小写变体（返回 "写法 → 真实名"） */
+  function findCamelVariants(
+    text: string,
+    normalizedToolNames: ReadonlyMap<string, string>,
+  ): string[] {
+    const out: string[] = [];
+    for (const m of text.matchAll(/[A-Za-z][A-Za-z0-9]*/g)) {
+      const word = m[0];
+      const real = normalizedToolNames.get(word.replace(/_/g, "").toLowerCase());
+      if (real && real !== word) out.push(`${word}（应为 ${real}）`);
+    }
+    return out;
+  }
+
+  test("guidance 里不存在「不存在的工具名」或「工具名的驼峰变体」", () => {
+    const registry = new Registry();
+    registerAllBuiltinDeferred(registry);
+
+    const existing = new Set<string>(registry.all().map((t) => t.name()));
+    const resolvable = new Set<string>([
+      ...existing,
+      ...Object.keys(RETIRED_INTERNAL_TOOL_NAMES),
+      ...REGISTRY_EXTERNAL_VALID_NAMES,
+    ]);
+    // 归一表只从「真实存在的工具名」建：别名不该建表，否则会把旧名当成正确写法
+    const normalized = new Map<string, string>();
+    for (const n of existing) normalized.set(n.replace(/_/g, "").toLowerCase(), n);
+
+    const problems: string[] = [];
+    for (const t of registry.all()) {
+      const g = t.guidance;
+      if (typeof g !== "string" || g.trim() === "") continue;
+      for (const ident of extractSnakeIdents(g)) {
+        if (NON_TOOL_WORDS.has(ident)) continue;
+        if (!resolvable.has(ident)) {
+          problems.push(`${t.name()} 的 guidance 提到了不存在的工具名 "${ident}"`);
+        }
+      }
+      for (const variant of findCamelVariants(g, normalized)) {
+        problems.push(`${t.name()} 的 guidance 用了工具名的驼峰变体 "${variant}"`);
+      }
+    }
+
+    expect(
+      problems,
+      "guidance 里的工具名必须是现行名：旧名要么走 aliases 登记（合法兼容），要么改掉。\n" +
+        "驼峰写法（如 teamMessage）没有别名兜底，tool_search 精确匹配必然落空。",
+    ).toEqual([]);
+  });
+
+  test("门禁自身有效：驼峰检测能抓到 teamMessage，snake 检测能抓到不存在的名字", () => {
+    // 防「恒绿门禁」：断言上面那两个提取器真的会命中错误形态，
+    // 否则哪天正则写歪了，主用例照样全绿但什么都没查。
+    expect(extractSnakeIdents("后台任务用 task_output，不是这个")).toEqual(["task_output"]);
+    expect(extractSnakeIdents("teamMessage 是发给团队成员的")).toEqual([]);
+    // 键必须已归一（去下划线全小写）——建表口径见主用例，写成 ["team_message", ...] 会让它恒绿
+    const normalized = new Map([["teammessage", "team_message"]]);
+    expect(findCamelVariants("teamMessage 是发给团队成员的", normalized)).toEqual([
+      "teamMessage（应为 team_message）",
+    ]);
+    expect(findCamelVariants("用 team_message 发", normalized)).toEqual([]);
+  });
+});
+
+/*
+ * L-5：锁住「别名回退」这条行为，否则 D-04 对 bg_task_get 的放行就是错放。
+ *
+ * 口径：selectTools（tool-search.ts:169）走 registry.get()，registry.get()（registry.ts:339）
+ * 精确未命中时回退查 aliases（bg_task_get → task_output）。这条链断掉时不会有任何东西报错——
+ * 只有模型按 guidance 教的旧名调 tool_search(select:bg_task_get) 时静默落空，
+ * 而 D-04 门禁仍认为 bg_task_get「可解析」，放它过去。所以必须单独锁住。
+ */
+describe.skipIf(systemPolicyExists)("L-5 — 旧工具名经别名回退仍可解析（select: 路径）", () => {
+  function buildRegistry(): Registry {
+    const registry = new Registry();
+    registerAllBuiltinDeferred(registry);
+    return registry;
+  }
+
+  test("registry.get('bg_task_get') 解析到 task_output 实例（精确未命中 → 查 aliases）", () => {
+    const registry = buildRegistry();
+    const output = registry.get("task_output");
+    expect(output).toBeDefined();
+    expect(registry.get("bg_task_get")).toBe(output);
+  });
+
+  test("别名表里每个旧名都能被 get() 解析到已 registered 的现行名", () => {
+    const registry = buildRegistry();
+    for (const [oldName, currentName] of Object.entries(RETIRED_INTERNAL_TOOL_NAMES)) {
+      const current = registry.get(currentName);
+      if (!current) continue; // 该现行工具不在本用例的 17 个延迟工具集里，跳过
+      expect(registry.get(oldName), `别名 ${oldName} → ${currentName} 回退失效`).toBe(current);
+    }
+  });
+
+  // ⚠️ 产品缺陷（不在本单元修复范围）：selectTools 在 enabled 判据里用**用户原始名**比
+  // enabledNames，而 enabledNames 来自 tool.name()（现行名）。于是 select:bg_task_get 能解析到
+  // 实例、却落进 disabled 分支，模型看到「以下工具已被策略禁用，无法激活：bg_task_get」——
+  // 别名在 select 路径上实际是失效的。修法要在 tool-search.ts 的 disabled 判据上归一（或改判
+  // 解析后实例的 name()），属于另一个 PR。这里显式 skip 而不是删断言：修好后把 skip 去掉即可。
+  test("tool_search(select:bg_task_get) 能激活真实工具（L-5 端到端）", async () => {
+    const registry = buildRegistry();
+    const search = new ToolSearchTool(registry);
+    const result = await search.execute({ query: "select:bg_task_get" });
+    expect(result.isError).toBe(false);
+    expect(result.output).not.toContain("未找到");
+    // 曾被 enabled 判据用「用户原始名」比对而误判成「已被策略禁用」，
+    // 模型于是拿不到一个其实好好活着的工具。判据已改用解析后的现行名。
+    expect(result.output).not.toContain("已被策略禁用");
+    expect(result.output).toContain("bg_task_get");
+    // 激活集合存现行名，所以旧名与新名查出来都是「已激活」——它们是同一个实例
+    expect(registry.isActivated("bg_task_get")).toBe(true);
+    expect(registry.isActivated("task_output")).toBe(true);
+    // 真正该延迟的工具没被顺带激活（别名回退不能变成通配）
+    expect(registry.isActivated("monitor")).toBe(false);
+  });
+
+  test("registry.activateTool('bg_task_get') 认别名，且激活态按现行名记录", () => {
+    const registry = buildRegistry();
+    // activateTool 经 get() 解析，旧名能拿到 task_output 实例并判为延迟 → 返回 true。
+    // 激活集合按**现行名**记录，所以随后 isToolDeferred(task_output) 必须转 false
+    // ——存旧名会让「激活了却仍然不可见」，那正是 L-5 端到端失效的根因。
+    expect(registry.activateTool("bg_task_get")).toBe(true);
+    expect(registry.isActivated("task_output")).toBe(true);
+    expect(registry.isDeferred("task_output")).toBe(false);
+  });
+
+  test("真正不存在的名字不会被别名兜住（别名表不能变成通配）", () => {
+    const registry = buildRegistry();
+    expect(registry.get("foo_bar_baz")).toBeUndefined();
+  });
+});
 
 /** 提取 <deferred-tools-guidance> 段（不存在返回空串，调用方断言非空） */
 function guidanceSection(prompt: string): string {
@@ -225,6 +414,18 @@ describe.skipIf(systemPolicyExists)("<deferred-tools-guidance> 段 — 系统提
     return buildSystemPrompt({ tools: registry.enabled() as never });
   }
 
+  /**
+   * 速查段里**应当出现**的工具：排除 isGuidanceVisible 返回 false 的（D-20）。
+   *
+   * 为什么要在这里收口而不是把 team_* 从 EXPECTED_DEFERRED_FILES 删掉：上游门禁
+   * （guidance 覆盖率）按「全部内置 shouldDefer 工具」收口，team_* 仍必须有 guidance——
+   * 开关打开时要能立刻进速查段。本文件的这两个用例断言的是「速查段行数 == 可见延迟工具数」，
+   * 不可见的那些本来就不该有行，用同一个钩子算期望集才不会把正确行为判成漏渲染。
+   */
+  function visibleDeferredTools(registry: Registry) {
+    return registry.getEnabledDeferredTools().filter((t) => t.isGuidanceVisible?.() ?? true);
+  }
+
   test("真实入口：段落出现，行数 == 内置延迟工具数", () => {
     const prompt = buildPrompt();
     const sec = guidanceSection(prompt);
@@ -232,7 +433,7 @@ describe.skipIf(systemPolicyExists)("<deferred-tools-guidance> 段 — 系统提
     const registry = new Registry();
     registerAllBuiltinDeferred(registry);
     const rows = sec.match(/^- `/gm) ?? [];
-    expect(rows.length).toBe(registry.getEnabledDeferredTools().length);
+    expect(rows.length).toBe(visibleDeferredTools(registry).length);
   });
 
   test("段落里每个内置延迟工具名都出现（真实构造，非手搓清单）", () => {
@@ -241,7 +442,7 @@ describe.skipIf(systemPolicyExists)("<deferred-tools-guidance> 段 — 系统提
     const prompt = buildSystemPrompt({ tools: registry.enabled() as never });
     const sec = guidanceSection(prompt);
     expect(sec).not.toBe("");
-    for (const t of registry.getEnabledDeferredTools()) {
+    for (const t of visibleDeferredTools(registry)) {
       expect(sec).toContain(`- \`${t.name()}\`:`);
     }
   });

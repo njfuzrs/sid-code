@@ -37,8 +37,12 @@ interface CheckResult {
  * (那是治标),而是"快照里根本没有净/脏状态,唯一来源是实时 git status"(治本)。
  */
 const GIT_STATUS_ANCHOR_MARKERS = [
-  "captured when this session started",
-  "will not refresh as the session goes on",
+  // 用中文档锚点：本函数调用 generateGitStatusAttachment(process.cwd()) 不传 language，
+  // 走的是默认 zh 档。L-4（2026-11-19）把快照首句按语言分档后，原先的三条英文锚点
+  // 只剩「未包含在此快照中」还在中文档里，另外两条会让自检对健康二进制误报
+  // 「编译自修复之前」。锚点要跟**实际渲染的那一档**同源。
+  "本快照拍摄于本次会话启动时",
+  "不会随会话进行而刷新",
   "未包含在此快照中",
 ];
 

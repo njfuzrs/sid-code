@@ -54,10 +54,10 @@ import { BACKGROUND_RECEIPT_NOTICE } from "../task/background-receipt.ts";
 const bashSchema = lazySchema(() =>
   z.object({
     command: z.string().describe("要执行的 shell 命令"),
-    description: z
-      .string()
-      .optional()
-      .describe("用自然语言描述这条命令要做什么（会显示给用户审批）"),
+    // 必填：description() / usageGuide() 都写「必须提供」，而它确实会显示给用户审批（HITL 体验的一部分）。
+    // 提示词说「必须」而 schema 判 optional，是在教一个不存在的约束——模型一旦发现可以不写，
+    // 对提示词里其它「必须」的信任度会跟着下降（D-08）。.min(1) 同时拒掉空串。
+    description: z.string().min(1).describe("用自然语言描述这条命令要做什么（会显示给用户审批）"),
     timeout: z
       .number()
       .optional()

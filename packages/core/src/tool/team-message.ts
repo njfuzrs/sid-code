@@ -14,6 +14,10 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getTeamMemberContext } from "../swarm/team-context.ts";
+// 开关的权威实现住在 team-create.ts（与 team_create 的注册/执行闸门同源）。
+// 这里刻意不复制一份 env 判断：两份取值口径一旦分叉，会出现「名单说未启用、速查段
+// 却照常推荐」的 D-20 原样缺陷。
+import { isAgentTeamsEnabled } from "./team-create.ts";
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -52,6 +56,12 @@ export class TeamMessageTool implements Tool {
   readonly shouldDefer = true;
   readonly guidance =
     "给同团队的其他成员或团队负责人发消息（协调/同步进度）时用；后台 Agent 用 send_message，不是这个。";
+  /**
+   * 开关关闭时不进速查段（D-20）：本工具的 description / guidance 都不感知
+   * isAgentTeamsEnabled，teams 没开时它既不可用、描述里也不说未启用——速查段若照常
+   * 列出，模型会激活一个只能吃错误的工具。名单行仍保留，可发现性不受影响。
+   */
+  readonly isGuidanceVisible = () => isAgentTeamsEnabled();
   readonly searchHint = "team message teammate peer mailbox 团队 成员 消息 通信 协商";
   /** 分派/通信类工具：每次发给不同对象、内容天然不同，豁免循环检测（与 send_message 同款） */
   readonly exemptFromLoopDetection = true;

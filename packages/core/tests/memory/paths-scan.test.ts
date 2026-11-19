@@ -243,9 +243,17 @@ describe("freshness — 新鲜度", () => {
   });
 
   test("memoryAge 人类可读", () => {
-    expect(memoryAge(now, now)).toBe("today");
-    expect(memoryAge(now - day, now)).toBe("yesterday");
-    expect(memoryAge(now - 5 * day, now)).toBe("5 days ago");
+    // D-12（2026-11-19）：格式改成「绝对日期（N 天前）」，today/yesterday 也改成中文。
+    // 日期按本地时区取，所以期望值由同一个 now 派生，不写死字符串。
+    const ymd = (ms: number) => {
+      const d = new Date(ms);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+        d.getDate(),
+      ).padStart(2, "0")}`;
+    };
+    expect(memoryAge(now, now)).toBe(`${ymd(now)}（今天）`);
+    expect(memoryAge(now - day, now)).toBe(`${ymd(now - day)}（昨天）`);
+    expect(memoryAge(now - 5 * day, now)).toBe(`${ymd(now - 5 * day)}（5 天前）`);
   });
 
   test("buildFreshnessWarning 1 天内返回 null", () => {

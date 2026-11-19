@@ -236,6 +236,17 @@ export interface SessionIndexEntry {
   };
 
   /**
+   * D-07：回答规范 #8「接收确认开场白」的分子/分母（collector 自持计数，判据见
+   * `collector.ts` 的 `detectAckOpener`，**只度量不干预**）。
+   *
+   * 成对落盘：分母 `ack_opener_total_turns` = 本轮恰有一条 assistant 文本块的轮次数
+   * （零文本 / 多段文本的轮次既谈不上开场白、也不该被算成"没有开场白"）。
+   * **两个键都不存在 = 没有可判定轮次**，不是「0 个开场白」（缺失 ≠ 0）。
+   */
+  ack_opener_turns?: number;
+  ack_opener_total_turns?: number;
+
+  /**
    * S1 L1：跑过工具后以短文本收尾的 end_turn 次数（digest `EndTurnShape` 口径）。
    * 有值才写：只有跑过 digest 的 SessionEnd 路径给得出；键不存在 = 旧版本行或没跑 digest，不是 0。
    * 分母 `end_turn_n` 一起写死（铁律 3：分母比分子重要）。
@@ -468,6 +479,9 @@ export function buildSessionIndexEntry(
     /** S1 L1：传了才落盘（见 SessionIndexEntry.short_text_end_turns） */
     short_text_end_turns?: number;
     end_turn_n?: number;
+    /** D-07：成对传了才落盘（缺失 = 没有可判定轮次，见 SessionIndexEntry.ack_opener_turns） */
+    ack_opener_turns?: number;
+    ack_opener_total_turns?: number;
     /** R9：传了才落盘（见 SessionIndexEntry.wait；键不存在 ≠ 0 次重复等待） */
     wait?: SessionIndexEntry["wait"];
     perf?: {
@@ -513,6 +527,14 @@ export function buildSessionIndexEntry(
     ...(typeof extra.is_audit === "boolean" ? { is_audit: extra.is_audit } : {}),
     ...(extra.short_text_end_turns !== undefined
       ? { short_text_end_turns: extra.short_text_end_turns, end_turn_n: extra.end_turn_n ?? 0 }
+      : {}),
+    // D-07：成对落盘。分母为 0/缺失时两键都不写 —— 与 wait 同一条「缺失 ≠ 0」规则：
+    // 落 `{turns: 0, total: 0}` 会让消费侧把这个会话算进分母（0/0 无定义）。
+    ...(typeof extra.ack_opener_total_turns === "number" && extra.ack_opener_total_turns > 0
+      ? {
+          ack_opener_turns: extra.ack_opener_turns ?? 0,
+          ack_opener_total_turns: extra.ack_opener_total_turns,
+        }
       : {}),
     // R9：同上「有值才写」。全部字段都是 undefined 时整个键不落 ——
     // 消费侧（北极星）用「有 wait 键的会话数」当分母，落一个空对象会让分母虚高。

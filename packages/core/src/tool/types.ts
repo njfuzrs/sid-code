@@ -609,6 +609,25 @@ export interface LegacyTool extends ToolCapabilityFields {
   isEnabled?(): boolean;
   usageGuide?(): string;
   /**
+   * 速查段（<deferred-tools-guidance>）是否该列出本工具——缺省视为 true（D-20）。
+   *
+   * 为什么需要：`guidance` 是静态字符串，而工具的**可用性**可以随开关变化（如
+   * team_create / team_message 受 SID_ENABLE_AGENT_TEAMS 控制）。开关关闭时若不隐藏，
+   * 速查段会照常推荐一个调用必吃「当前未启用」错误的工具，模型白烧一次 tool_search
+   * 激活 + 一次失败调用。名单行（<available-deferred-tools>）**不受此钩子影响**：
+   * 保留它就是在告诉模型「这个能力存在但没开」，那是可发现性，不是推荐。
+   *
+   * 为什么不放进 ToolCapabilityFields：那是**两个接口共享**的字段集，每加一个键都要同步
+   * bridge.ts 的 FORWARDED_KEYS（编译期穷举，漏加 tsc 报错）。而本钩子的唯一消费方是
+   * 系统提示词，它读的正是 registry 里存的 LegacyTool，新版接口经 toLegacyTool 注册时
+   * 却不会转发它——放共享字段等于声明了一个「新接口工具写了也静默不生效」的假契约。
+   *
+   * ⚠️ 缓存约束：本钩子在静态前缀里被求值，实现必须只读**会话内不变**的配置
+   * （如进程启动时的 env）。若将来变成运行时可切换，必须重新评估 prompt cache 击穿
+   * （见 deferred-tool-view.ts 文件头）。
+   */
+  isGuidanceVisible?(): boolean;
+  /**
    * 工具自身的额外权限逻辑（passthrough 语义）。
    * 接口未强制，但 checker.ts Step 5.5 以鸭子类型调用；read/write/edit/bash 等已实现。
    */

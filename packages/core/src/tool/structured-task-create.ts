@@ -1,7 +1,7 @@
 /**
  * TaskCreateTool（工具名 task_create）— 新建结构化任务清单条目
  * 对标 claude-code TaskCreate：带依赖关系与归属的持久化 TODO 系统，服务多 agent 派活。
- * 与后台任务（bg_task_get/bg_task_list）是两个不同语义族。
+ * 与后台任务（task_output/task_list）是两个不同语义族。
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";

@@ -116,3 +116,25 @@ describe("N2：排完唤醒要结束本轮（否则唤醒永远排队）", () =>
     expect(description).toContain("结束本轮");
   });
 });
+
+describe("D-09：两处 cron_delete 表述各管一个场景，限定语必须留在同一句里", () => {
+  // 「再次调用本工具时不需要先 cron_delete」与「收尾时用 cron_delete 撤掉最后一个」
+  // 各自正确，但限定语一旦被删掉，模型只看到「不需要 cron_delete」与「用 cron_delete」
+  // 并列，会把两句读成互相否定。所以锁的不是「出现过某个词」，而是**两者同一句**。
+  it("「不需要 cron_delete」必须与「再次调用」出现在同一句里", () => {
+    const description = new ScheduleWakeupTool().description();
+    // 按中英文句末标点与换行切句，再看是否存在同时含两段关键词的单句
+    const sentences = description.split(/(?<=[。！？；!?;\n])/);
+    const covering = sentences.filter(
+      (s) => s.includes("再次调用") && s.includes("不需要") && s.includes("cron_delete"),
+    );
+    expect(covering.length).toBe(1);
+  });
+
+  it("返回值里的 cron_delete 说的是收尾场景（补了「不再续排」限定，且保留原语义）", async () => {
+    const tool = new ScheduleWakeupTool();
+    const res = await tool.execute({ delay_seconds: 120, prompt: "检查 CI" });
+    expect(res.output).toContain("不再续排");
+    expect(res.output).toMatch(/用 cron_delete [0-9a-f]+ 取消/);
+  });
+});

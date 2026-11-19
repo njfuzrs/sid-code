@@ -82,8 +82,34 @@ describe("generateGitStatusAttachment", () => {
     // 保留分支信息（动态区下每轮刷新，worktree 内也正确）。
     expect(attachment!.content).toContain("Current branch:");
     // 首行仍显式声明"这是启动快照、不会更新"（弱模型的锚点）。
-    expect(attachment!.content).toContain("captured when this session started");
-    expect(attachment!.content).toContain("will not refresh as the session goes on");
+    // L-4：缺省（中文优先）档的首句已中文化，与后面那句中文说明自然衔接；
+    // 锚点本身没丢——只是换用中文字面表达，防「净/脏」死循环的语义仍在（见下条断言）。
+    expect(attachment!.content).toContain("固定快照");
+    expect(attachment!.content).toContain("不会随会话进行而刷新");
+    // 中英混排的措辞（L-4 要消灭的形态）不许回来。
+    expect(attachment!.content).not.toContain("It is frozen");
+  });
+
+  // L-4：文案跟随语言档。en 档必须整段英文——中文说明句混进 en 档等于在告诉模型
+  // 「这里可以用中文」，与 system-prompt.ts buildEnvironmentSection 的同一理由。
+  // 同时守住防御性设计：en 档同样要有「实时 git status」「别拿快照判断未提交改动」两句，
+  // 它们不是措辞而是锚点，翻译时不许丢。
+  test("★en 档整段英文，且保留实时状态与未提交改动的防御性引导（L-4）", () => {
+    clearGitStatusCache();
+    const attachment = generateGitStatusAttachment(process.cwd(), "en");
+    expect(attachment).not.toBeNull();
+    const content = attachment!.content;
+    expect(content).toContain("captured when this session started");
+    expect(content).toContain("will not refresh as the session goes on");
+    expect(content).toContain("run `git status`");
+    expect(content).toContain("uncommitted changes");
+    // 不许混进中文说明句（中英中混排正是 L-4 的缺陷）。
+    expect(content).not.toContain("未包含在此快照中");
+    expect(content).not.toContain("当前分支也可能已经变了");
+    // 缓存键含语言：紧接着要中文档不能命中 en 档的缓存结果。
+    const zhAttachment = generateGitStatusAttachment(process.cwd());
+    expect(zhAttachment!.content).toContain("未包含在此快照中");
+    expect(zhAttachment!.content).not.toContain("It is frozen");
   });
 
   // H2（CG-3）：分支**也会**变，且来源不止本会话的 git 写命令。

@@ -337,7 +337,13 @@ describe("P2-10: 后台参数统一到 Task 系统", () => {
   it("is_background（旧名）经别名层改名后仍返回 task_id，不再是旧 PID 格式", async () => {
     const { clearAllTasks } = await import("@sid-code/core/task/index.ts");
     const bash = new BashTool();
-    const validation = validateToolInput(bash, { command: "echo hi", is_background: true });
+    // D-08 之后 description 是必填：本用例验的是「旧名 is_background 经别名层改名」，
+    // 补上 description 只是让输入先过必填校验，断言意图（返回 task_id）不变。
+    const validation = validateToolInput(bash, {
+      command: "echo hi",
+      description: "打印 hi",
+      is_background: true,
+    });
     expect(validation.ok).toBe(true);
     if (!validation.ok) return;
     const result = await bash.execute(validation.data as Record<string, unknown>);
@@ -434,5 +440,43 @@ describe("usageGuide 不得引导模型用已废弃参数", () => {
     const { TaskStopTool } = await import("@sid-code/core/tool/task-stop.ts");
     expect(new TaskOutputTool().name()).toBe("task_output");
     expect(new TaskStopTool().name()).toBe("task_stop");
+  });
+});
+
+// D-08：schema 与提示词不同源。
+// description() 与 usageGuide() 都写「必须提供 description 参数」，而 schema 曾是
+// `.optional()`——提示词在教一个 schema 里不存在的约束。模型一旦发现它可以不写，
+// 对提示词里其它「必须」的信任度会跟着下降。改法：`.min(1)` 必填（它显示给用户审批，
+// 属于 HITL 体验，不该省）。这里守住「真链路（validateToolInput → zodSchema）会拒绝」，
+// 而不是只断言 JSON Schema 里的 required 数组——后者绕过 zod 的 .min(1) 语义。
+describe("D-08: description 是必填参数（与提示词一致）", () => {
+  const bash = new BashTool();
+
+  it("缺 description 时被 schema 拒绝，且错误指向 description", () => {
+    const validation = validateToolInput(bash, { command: "echo hi" });
+    expect(validation.ok).toBe(false);
+    if (validation.ok) return;
+    expect(validation.message).toContain("description");
+  });
+
+  it("description 为空串时同样被拒绝（.min(1) 而非仅 required）", () => {
+    const validation = validateToolInput(bash, { command: "echo hi", description: "" });
+    expect(validation.ok).toBe(false);
+  });
+
+  it("description 为 null 时不被静默当成「未提供」而放行", () => {
+    // nullish 归一层只把 optional 字段上的 null 翻译成「未提供」；必填字段必须原样交给 zod 报错
+    const validation = validateToolInput(bash, { command: "echo hi", description: null });
+    expect(validation.ok).toBe(false);
+  });
+
+  it("带上 description 时校验通过", () => {
+    const validation = validateToolInput(bash, { command: "echo hi", description: "打印 hi" });
+    expect(validation.ok).toBe(true);
+  });
+
+  it("生成的 LLM 侧 JSON Schema 把 description 列进 required", () => {
+    const schema = new BashTool().inputSchema() as { required?: string[] };
+    expect(schema.required).toContain("description");
   });
 });

@@ -71,11 +71,37 @@ export const INDEX_DESC_MAX_LEN = 40;
  *
  * 按 code point 切而不是 `slice`：索引含 ⭐⚠️🌐⚡，`slice` 可能把代理对切成半个字符
  * （与 `buildTruncatedIndex` ③ 避免的事故同源）。
+ *
+ * 截断时两件事必须同时做（D-18，2026-11-19）：
+ * - **补 `…`**：让读者一眼分辨「原文就到这里」与「后面还有」——旧实现切在冒号上时
+ *   （`（从横评中提炼）：`）看起来像一句完整的话；
+ * - **退到反引号对之外**：索引进 system prompt 后被当 Markdown 解析，半个代码片段
+ *   （`` `docs ``）会和同段别的反引号错配，把大段正常文本吞进 inline code。
+ *
+ * 代价点破：每行多 1 个字符（`…`），当前索引约 101 条 ⇒ 多约 101 字符 ≈ 25 tok，
+ * 相对 25KB 字节预算可忽略。换到的是一份不会被误读、也不会误导解析的索引。
  */
 export function truncateIndexDesc(desc: string): string {
   if (!desc) return "";
   const chars = Array.from(desc);
-  return chars.length > INDEX_DESC_MAX_LEN ? chars.slice(0, INDEX_DESC_MAX_LEN).join("") : desc;
+  if (chars.length <= INDEX_DESC_MAX_LEN) return desc;
+  // 先给 `…` 留一格，长度才可能不超上限
+  let cut = INDEX_DESC_MAX_LEN - 1;
+  // 用显式循环数反引号，不用 `head.match(/`/g)`：一次遍历同时拿到「个数」与
+  // 「最后一个的位置」，正则要跑两趟，且两套遍历对「字符」的理解容易漂移
+  // （chars 已按 code point 切开，正则按 UTF-16 单元）。
+  let tickCount = 0;
+  let lastTick = -1;
+  for (let i = 0; i < cut; i++) {
+    if (chars[i] === "`") {
+      tickCount++;
+      lastTick = i;
+    }
+  }
+  // 只对落在**后半段**的反引号退回：退到它之前会把描述砍掉一半以上，
+  // 那种情况下宁可留着（半个代码片段的危害小于索引条目失去信息量）。
+  if (tickCount % 2 === 1 && lastTick > cut / 2) cut = lastTick;
+  return chars.slice(0, cut).join("") + "…";
 }
 
 /** 索引表头（两行）。不占条目配额 —— 这正是 ① 修的东西。 */
