@@ -7,6 +7,7 @@
  *  - opts.schema → SubAgentTask.schema(M2 结构化输出,返回已校验对象而非文本);
  *  - opts.isolation === 'worktree' → 建临时 worktree,SubAgentTask.cwd 指向它,跑完按
  *    fail-closed 清理(无改动删,有改动留)(M4 真并行);建不起来直接抛错,不降级到主仓(W21);
+ *    创建期 setupWarnings 除落日志外还拼进 prompt，让子代理知道自己环境有问题;
  *  - opts.agentType → SubAgentTask.type(自定义子代理类型);
  *  - 把 usage 回灌 budget(M6 成本归集)。
  *
@@ -26,6 +27,24 @@ import { WorktreeManager, findGitRootForAgent } from "../worktree/manager.ts";
 import { getCwd } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
 import { UsageSinkTicket } from "../llm/billing-sink.ts";
+
+/**
+ * 把 worktree 创建期告警拼进子代理 prompt。
+ *
+ * 无告警时**逐字节返回原 prompt**：无条件拼接会让所有既有 prompt 多一段后缀，
+ * 连带改变子代理看到的任务（也改变行为与任何按 prompt 做的比对）。
+ */
+function withWorktreeWarnings(prompt: string, warnings: string[]): string {
+  if (warnings.length === 0) return prompt;
+  const lines = warnings.map((w) => `- ${w}`);
+  return [
+    prompt,
+    "",
+    "[Worktree 环境告警]",
+    ...lines,
+    "请先修复或规避上述环境问题；无法修复时在最终结果里明确报告，不要把环境导致的失败归因于你的改动。",
+  ].join("\n");
+}
 
 /** SubAgentRunner 构造选项 */
 export interface SubAgentRunnerOptions {
@@ -78,6 +97,10 @@ export class SubAgentRunner implements AgentRunner {
     // 1) worktree 隔离(可选,贵)
     let cwd: string | undefined;
     let worktreeCleanup: (() => Promise<void>) | undefined;
+    // 创建期告警。提升到 run() 作用域是为了能拼进 prompt —— 只在 if 块里 log.warn
+    // 等于「子代理不知道自己环境坏了」：实测 4 个并行 agent 在缺 @sid-code/tui 的
+    // worktree 里把源码和测试都写完，直到 pre-commit 报 Cannot find module 才反推。
+    let setupWarnings: string[] = [];
     if (opts?.isolation === "worktree") {
       const gitRoot = findGitRootForAgent(getCwd());
       if (gitRoot) {
@@ -87,8 +110,10 @@ export class SubAgentRunner implements AgentRunner {
         try {
           const session = await manager.create(slug);
           cwd = session.worktreePath;
-          // 创建期告警(依赖不一致/DB):workflow 子代理无输出通道,落日志避免静默丢失
-          for (const w of session.setupWarnings ?? []) {
+          // 创建期告警(依赖不一致/DB):除落日志外还要拼进子代理 prompt(见下方 withWarnings),
+          // 否则子代理在坏环境里干活,只能等到提交阶段报 Cannot find module 才反推。
+          setupWarnings = session.setupWarnings ?? [];
+          for (const w of setupWarnings) {
             log.warn("WORKFLOW", `worktree ${slug} 告警: ${w.split("\n")[0]}`);
           }
           worktreeCleanup = async () => {
@@ -155,7 +180,7 @@ export class SubAgentRunner implements AgentRunner {
         {
           type: agentType,
           description: ctx.label,
-          prompt,
+          prompt: withWorktreeWarnings(prompt, setupWarnings),
           model: opts?.model, // executeInner 内再次优先用它
           schema: opts?.schema, // M2: 结构化输出
           cwd, // M4: worktree 真并行
@@ -191,9 +216,22 @@ export class SubAgentRunner implements AgentRunner {
         try {
           return JSON.parse(result.output);
         } catch {
-          // 理论上 StructuredOutput 工具已保证是合规 JSON;解析失败兜底返回原文
-          log.warn("WORKFLOW", `[${ctx.label}] schema 输出非 JSON,返回原文`);
-          return result.output;
+          // schema 校验只在 sub-agent 的 StructuredOutput 工具里做，而该工具只在
+          // 「进过 StructuredOutput 重试轮次」时才被强制调用：模型直接吐文本、或文本兜底
+          // 解析失败时，output 是**原文**（sub-agent.ts 的 finalOutput = rawText），不是 JSON。
+          //
+          // 这时必须返回 null 而不是原文：返回字符串会让 runtime 的 parallel/pipeline 把
+          // 「失败」当成「成功的结果」——编排脚本 `r.status === "done"` 对字符串静默得到
+          // undefined，汇总静默漏掉一个单元。返回 null 才是 sub-agent.ts 约定的
+          // 「返回值被上游视为 null（编排器可判定失败）」，与本函数上一分支（重试耗尽
+          // output 为空 → null）同口径。
+          //
+          // 但「弃用」不等于「丢掉证据」：原文片段进日志，否则非 JSON 输出事后完全没有痕迹。
+          log.warn(
+            "WORKFLOW",
+            `[${ctx.label}] schema 输出非 JSON，按失败返回 null。原文片段: ${result.output.slice(0, 500)}`,
+          );
+          return null;
         }
       }
       return result.output;

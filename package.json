@@ -41,6 +41,8 @@
     "trace:integrity": "bun run scripts/trace-integrity.ts",
     "catalog:coverage": "bun run scripts/catalog-coverage.ts",
     "pr-batch": "bash scripts/pr-batch.sh",
+    "worktree:preflight": "bun run scripts/worktree-batch-preflight.ts",
+    "workflow:audit": "bun run scripts/workflow-delivery-audit.ts",
     "pr:merge-chain": "bash scripts/pr-merge-chain.sh",
     "lint": "oxlint packages tests scripts evals website plugins",
     "lint:fix": "oxlint packages tests scripts evals website plugins --fix",

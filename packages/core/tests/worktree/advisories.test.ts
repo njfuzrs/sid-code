@@ -100,6 +100,80 @@ describe("checkDependencyConsistency：monorepo 子包 node_modules", () => {
   });
 });
 
+describe("checkDependencyConsistency：workspace 依赖可解析性（A2）", () => {
+  /** 在 worktree 里造一个 monorepo：packages/cli 依赖 @sid-code/tui（workspace:*） */
+  function seedMonorepo(): void {
+    mkdirSync(join(wt, "packages/cli"), { recursive: true });
+    writeFileSync(
+      join(wt, "packages/cli/package.json"),
+      JSON.stringify({
+        name: "@sid-code/cli",
+        dependencies: { "@sid-code/tui": "workspace:*", zod: "^3.0.0" },
+      }),
+    );
+  }
+
+  /** 造 root node_modules 目录（并标记为 symlink 自主仓） */
+  function seedRootModules(): string {
+    const nm = join(wt, "node_modules");
+    mkdirSync(nm, { recursive: true });
+    return nm;
+  }
+
+  it("根 node_modules 是软链 + lockfile 一致 + 缺 workspace 依赖 → 告警（真阳性）", () => {
+    writeFileSync(join(main, "bun.lock"), "same\n");
+    writeFileSync(join(wt, "bun.lock"), "same\n"); // lockfile 一致：旧逻辑完全静默
+    seedMonorepo();
+    seedRootModules(); // 存在但没有 @sid-code/tui
+
+    const w = checkDependencyConsistency(wt, main, ["node_modules"]);
+    expect(w).not.toBeNull();
+    expect(w).toContain("@sid-code/tui");
+    // 修复命令必须指到主仓，并给出对应包目录名
+    expect(w).toContain(join(main, "node_modules", "@sid-code/tui"));
+    expect(w).toContain("ln -sfn ../../packages/tui");
+  });
+
+  it("workspace 依赖通过 <wt>/node_modules 可解析 → 不告警（零噪音：根 hoist 路径）", () => {
+    writeFileSync(join(main, "bun.lock"), "same\n");
+    writeFileSync(join(wt, "bun.lock"), "same\n");
+    seedMonorepo();
+    const nm = seedRootModules();
+    mkdirSync(join(nm, "@sid-code/tui"), { recursive: true });
+    expect(checkDependencyConsistency(wt, main, ["node_modules"])).toBeNull();
+  });
+
+  it("workspace 依赖通过包内 node_modules 可解析 → 不告警（零噪音：包内路径）", () => {
+    writeFileSync(join(main, "bun.lock"), "same\n");
+    writeFileSync(join(wt, "bun.lock"), "same\n");
+    seedMonorepo();
+    seedRootModules(); // 根没有 tui
+    mkdirSync(join(wt, "packages/cli/node_modules/@sid-code/tui"), { recursive: true });
+    expect(checkDependencyConsistency(wt, main, ["node_modules"])).toBeNull();
+  });
+
+  it("整棵 node_modules 不存在 → 只报一条「未安装依赖」，不逐个列包名", () => {
+    writeFileSync(join(main, "bun.lock"), "same\n");
+    writeFileSync(join(wt, "bun.lock"), "same\n");
+    seedMonorepo();
+    // 不建 wt/node_modules
+
+    const w = checkDependencyConsistency(wt, main, ["node_modules"]);
+    expect(w).not.toBeNull();
+    expect(w).toContain("未安装依赖");
+    expect(w).not.toContain("@sid-code/tui");
+    expect(w).not.toContain("ln -sfn");
+  });
+
+  it("没有 symlink 根 node_modules → 不做可解析性检查（worktree 自己的安装可靠）", () => {
+    writeFileSync(join(main, "bun.lock"), "same\n");
+    writeFileSync(join(wt, "bun.lock"), "same\n");
+    seedMonorepo();
+    seedRootModules(); // node_modules 在，但没被 symlink（symlinkedDirs 为空）
+    expect(checkDependencyConsistency(wt, main, [])).toBeNull();
+  });
+});
+
 describe("checkDatabaseUsage", () => {
   it("无 DB 标记 → 不告警", () => {
     expect(checkDatabaseUsage(wt)).toBeNull();
