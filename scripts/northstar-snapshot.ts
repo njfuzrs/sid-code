@@ -291,6 +291,27 @@ export interface NorthstarSnapshot {
      */
     rateCountingUndetectedAsClean: number | null;
   };
+  /**
+   * 回答规范（**辅助口径，不是任何方向的主指标**）。
+   *
+   * 为什么不进「更快 / 更省 / 更准 / 更安全」：它不是会话自身的效率或安全属性，
+   * 而是 system prompt 某一条行为规范（#8 不写接收确认开场白）是否真的在生效。
+   * 硬塞进四维会污染那四条曲线的口径；单独一格既能看趋势、也不冒充主指标。
+   *
+   * 取数：`session-index.jsonl` 的 `ack_opener_turns` / `ack_opener_total_turns`
+   * （collector 自持计数）。分母口径见该字段注释：只含「本轮恰有一条 assistant 文本块」
+   * 的真可判定轮次。旧版本行没有这两个键 → 不进分母（缺失 ≠ 0）。
+   */
+  answerDiscipline: {
+    /** 接收确认开场白率 = Σ分子 ÷ Σ分母。分母为 0 时 null（不是 0%） */
+    ack_opener_rate: Metric;
+    /** Σ 分子：命中开场白的轮次 */
+    ack_opener_turns: number;
+    /** Σ 分母：可判定的轮次 */
+    ack_opener_total_turns: number;
+    /** 带这两个字段的会话行数。为 0 = 窗口内全是 D-07 之前的版本，不是「没开场白」 */
+    sessions_with_field: number;
+  };
   /** 一致性断言结果。任一条失败说明某侧漏采，是真缺陷 */
   assertions: Array<{ name: string; ok: boolean; detail: string }>;
 }
@@ -503,6 +524,15 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
     conflictBlocked += cf.by_action.blocked ?? 0;
   }
 
+  // ── 回答规范 · D-07（辅助口径）──
+  // 分子分母都按轮次求和（不是各会话比例的平均 —— 后者让一个 3 轮会话与一个 300 轮
+  // 会话等权）。键不存在的旧版本行不进分母（缺失 ≠ 0，与 permission / wait 同一条规则）。
+  const withAckOpener = index.filter(
+    (e) => typeof e.ack_opener_total_turns === "number" && e.ack_opener_total_turns > 0,
+  );
+  const ackOpenerTurns = withAckOpener.reduce((a, e) => a + (e.ack_opener_turns ?? 0), 0);
+  const ackOpenerTotalTurns = withAckOpener.reduce((a, e) => a + e.ack_opener_total_turns!, 0);
+
   // ── 底座 ──
   //
   // X3-16：防线触发率的分母**限定在审计核查类任务**（`northstar/README.md` 的规定），
@@ -660,6 +690,17 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
         "ratio",
       ),
       conflict_sessions_with_field: withConflict.length,
+    },
+    answerDiscipline: {
+      ack_opener_rate: metric(
+        ackOpenerTotalTurns > 0 ? ackOpenerTurns / ackOpenerTotalTurns : null,
+        ackOpenerTotalTurns,
+        `${IDX}:ack_opener_turns ÷ ack_opener_total_turns（只计本轮恰有一条 assistant 文本块的轮次）`,
+        "ratio",
+      ),
+      ack_opener_turns: ackOpenerTurns,
+      ack_opener_total_turns: ackOpenerTotalTurns,
+      sessions_with_field: withAckOpener.length,
     },
     foundation: {
       // 口径变了 source 串必须跟着变（仓库硬规矩）：旧串 `${IDX}:defense_triggered`
@@ -861,6 +902,9 @@ const COMPARE_KEYS: Array<[string, (s: NorthstarSnapshot) => Metric | undefined]
   ["更安全 · 冲突误报率代理", (s) => s.safer?.conflict_false_positive_proxy],
   ["底座 · 防线触发率", (s) => s.foundation.defense_trigger_rate],
   ["底座 · 轨迹损坏率", (s) => s.foundation.traj_corrupt_rate],
+  // D-07：辅助口径也进版本对比（它要回答「这次改动之后开场白变少了吗」）。
+  // 可选链——旧快照 JSON 没有这一格。
+  ["辅助 · 接收确认开场白率", (s) => s.answerDiscipline?.ack_opener_rate],
 ];
 
 /** 旧快照缺某个指标时的占位：value=null 渲染为 —，n=0 必然触发样本不足护栏 */
@@ -1078,6 +1122,21 @@ export function renderSnapshot(s: NorthstarSnapshot): string {
   }
   L.push("");
 
+  // D-07：回答规范是**辅助口径**，单独成一格且标题写明「不是主指标」——
+  // 混进上面四维会让那四条曲线的口径失真。带字段行数为 0 时明说成因（旧版本行），
+  // 否则「0 行」读起来像「一条开场白都没有」。
+  L.push("回答规范（辅助口径 · 不是任何方向的主指标）:");
+  L.push(row("接收确认开场白率", s.answerDiscipline.ack_opener_rate));
+  if (s.answerDiscipline.sessions_with_field === 0) {
+    L.push("  （无带 ack_opener 字段的会话：窗口内的行由 D-07 埋点之前的版本产生，属预期）");
+  } else {
+    L.push(
+      `  分子 ${s.answerDiscipline.ack_opener_turns} 轮开场白 / ` +
+        `分母 ${s.answerDiscipline.ack_opener_total_turns} 个可判定轮次（system prompt #8）`,
+    );
+  }
+  L.push("");
+
   L.push("底座（可度量）:");
   L.push(row("防线触发率", s.foundation.defense_trigger_rate));
   L.push(row("轨迹损坏率", s.foundation.traj_corrupt_rate));
@@ -1161,6 +1220,11 @@ export function renderMarkdown(s: NorthstarSnapshot): string {
   if (s.safer.conflict_count) L.push(r("更安全", "并发冲突计数", s.safer.conflict_count));
   L.push(r("底座", "防线触发率", s.foundation.defense_trigger_rate));
   L.push(r("底座", "轨迹损坏率", s.foundation.traj_corrupt_rate));
+  // D-07：可选字段（旧快照 JSON 没有这一格）—— 有值才落一行，避免把
+  // 「该版本没这指标」写成「开场白率 0%」。
+  if (s.answerDiscipline.sessions_with_field > 0) {
+    L.push(r("辅助", "接收确认开场白率", s.answerDiscipline.ack_opener_rate));
+  }
   L.push("");
   // 生成块里也必须带排除量：这块会被贴进 markdown 长期留存，只留一个裸百分比的话，
   // 将来读它的人无从知道分母里少了哪一批会话（而少掉的正是崩溃会话那批）。
@@ -1515,6 +1579,57 @@ export function selfTest(): string[] {
     // 含存量口径必须**明显更低** —— 若两者相等说明排除没接上（这正是对照值存在的理由）
     errors.push(
       `反向自证：含存量口径应低于干净口径，实得 ${incl} vs ${dirty.cheaper.cache_hit_rate.value}`,
+    );
+  }
+
+  // D-07（辅助口径）：开场白率。合成行不带 ack_opener 字段 → 分母 0、rate 为 null，
+  // 绝不能落成 0%（「该版本没这指标」与「0 个开场白」是两件事）。
+  if (snap.answerDiscipline.ack_opener_rate.value !== null) {
+    errors.push(
+      `无 ack_opener 字段时开场白率应为 null，实得 ${snap.answerDiscipline.ack_opener_rate.value}`,
+    );
+  }
+  if (snap.answerDiscipline.sessions_with_field !== 0) {
+    errors.push(
+      `无 ack_opener 字段的会话数应为 0，实得 ${snap.answerDiscipline.sessions_with_field}`,
+    );
+  }
+  // 反向自证：掺两行带计数的行 → 分子分母按轮次求和，且键缺失行不进分母。
+  const ack = buildSnapshot({
+    data: {
+      index: [
+        mkIndex(0, { ack_opener_turns: 3, ack_opener_total_turns: 10 }),
+        mkIndex(1, { ack_opener_turns: 1, ack_opener_total_turns: 6 }),
+        // 键缺失（D-07 之前的版本行）→ 不进分母
+        mkIndex(2),
+      ],
+      ledger,
+    },
+    denominators,
+    appVersion: "0.1.600",
+    now,
+  });
+  if (
+    ack.answerDiscipline.ack_opener_turns !== 4 ||
+    ack.answerDiscipline.ack_opener_total_turns !== 16
+  ) {
+    errors.push(
+      `反向自证：开场白分子/分母期望 4/16，实得 ${ack.answerDiscipline.ack_opener_turns}/${ack.answerDiscipline.ack_opener_total_turns}`,
+    );
+  }
+  if (
+    ack.answerDiscipline.ack_opener_rate.value === null ||
+    Math.abs(ack.answerDiscipline.ack_opener_rate.value - 4 / 16) > 1e-9
+  ) {
+    errors.push(`反向自证：开场白率期望 0.25，实得 ${ack.answerDiscipline.ack_opener_rate.value}`);
+  }
+  if (ack.answerDiscipline.ack_opener_rate.n !== 16) {
+    // n 必须是**可判定轮次数**，不是会话数、也不是索引行数 —— 虚报 n 会绕过样本不足护栏
+    errors.push(`反向自证：开场白率 n 期望 16，实得 ${ack.answerDiscipline.ack_opener_rate.n}`);
+  }
+  if (ack.answerDiscipline.sessions_with_field !== 2) {
+    errors.push(
+      `反向自证：带 ack_opener 字段的会话数期望 2，实得 ${ack.answerDiscipline.sessions_with_field}`,
     );
   }
 

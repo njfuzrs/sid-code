@@ -31,6 +31,14 @@ const mod: LocalCommandModule = {
     const value = renderContextReport(report, {
       color: stdout.isTTY === true,
       width: stdout.columns ?? 80,
+      // D-07：回答规范 #8 的行为观测（接收确认开场白比例）。取数源是 collector 自持的
+      // 一对计数，不是 ContextReport 的一部分 —— 它不改任何 token 账，只是同一面板上的
+      // 一个观测位。轨迹采集关闭时 collector 不存在，整节不画（缺失 ≠ 0 个开场白）。
+      ...(ctx.traceCollector
+        ? {
+            ackOpener: ctx.traceCollector.getAckOpenerStats(),
+          }
+        : {}),
     });
 
     return { type: "text", value };

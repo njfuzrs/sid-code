@@ -359,6 +359,23 @@ export interface TraceMetadata {
   /** 模型调用重试次数累计（RetryTelemetry type=retry） */
   model_retry_count: number;
 
+  // ── 回答规范 #8：接收确认开场白（D-07，只度量不干预） ──
+  /**
+   * 以「接收确认开场白」开头的轮次数（分子）。判据见 collector 的 `AckOpenerCounter`：
+   * **只看本轮 assistant 的第一条文本块**，正文中间出现不算；只计主循环轮次。
+   *
+   * 为什么需要它：system prompt 的 #8 段自称「对每一轮都生效，且这类开场白会自我强化」，
+   * 但此前全仓没有任何度量 —— 一个会自我强化又无法观测的行为，退化时无从发现。
+   */
+  ack_opener_turns?: number;
+  /**
+   * 分母：**真正可判定**的主循环轮次数（本轮恰有一条 assistant 文本块）。
+   *
+   * 不拿 total_api_calls 当分母：多步轮次里 assistant 可能只有 tool_use、零文本，
+   * 那种轮次既谈不上「开场白」也不该被算成「没有开场白」，混进分母会稀释比例。
+   */
+  ack_opener_total_turns?: number;
+
   // ── 缺口分析三/四类·派生比率（SessionEnd 一次性算） ──
   /**
    * 输出/输入 token 比（缺口分析三类）。输出单价是输入的 3–8×，此比率上涨说明成本结构恶化。
@@ -625,6 +642,9 @@ export interface TrajectoryMetaOutput {
   output_input_ratio?: number;
   /** 缺口分析四类：本会话缓存命中率 */
   session_cache_hit_rate?: number;
+  /** D-07：接收确认开场白的分子/分母（缺失 = 没有可判定轮次，不是 0 个开场白） */
+  ack_opener_turns?: number;
+  ack_opener_total_turns?: number;
 
   // 辅助 LLM 调用统计（影子调用）
   side_api_calls?: number;
@@ -1224,6 +1244,14 @@ export function buildTrajectory(
       : {}),
     ...(metadata.session_cache_hit_rate !== undefined
       ? { session_cache_hit_rate: metadata.session_cache_hit_rate }
+      : {}),
+    // D-07：接收确认开场白计数成对落盘。分母为 0（无可判定轮次）时整个键不写 ——
+    // 0/0 写出来会被读成「没有一个开场白」，而真相是「这一场没有可判定的整段文本回复」。
+    ...(metadata.ack_opener_total_turns
+      ? {
+          ack_opener_turns: metadata.ack_opener_turns ?? 0,
+          ack_opener_total_turns: metadata.ack_opener_total_turns,
+        }
       : {}),
     exit_status: exitStatus,
     // F1：只在真是预算硬停时写来源。无条件写会让每份轨迹多一个 undefined 键。

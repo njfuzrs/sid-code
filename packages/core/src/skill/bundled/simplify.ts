@@ -40,7 +40,10 @@ export function registerSimplifySkill(): void {
   registerBundledSkill({
     name: "simplify",
     description: "审查已修改的代码，检查复用性、质量和效率问题，然后修复发现的问题",
-    whenToUse: "当用户说 'review'、'simplify'、'检查代码'、'清理代码' 时",
+    // 触发词不能含 'review'：review Skill 占用该词更自然，而 simplify 会改文件，
+    // 用户说「review 这个 PR」时若两个都命中，模型可能只是"看看"却把代码改了（D-19）。
+    // 独占词集合两两不交由 tests/skill/bundled-trigger-exclusivity.test.ts 兜底。
+    whenToUse: "当用户说 'simplify'、'简化'、'清理代码'、'精简'、'去掉重复' 时",
     // 免确认规则（对齐 CC）；裸 bash/edit/write 不列——那等于整段放行，写操作按主会话权限模式判定
     allowedTools: ["read", "grep", "glob", "sub_agent"],
     context: "fork",

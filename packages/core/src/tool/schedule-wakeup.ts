@@ -79,7 +79,9 @@ export class ScheduleWakeupTool implements Tool {
   - **唤醒只在本轮结束、会话空闲后才会触发**：排完不要留在本轮继续查询——那只会推迟它。
     没有别的事就告诉用户你在等什么，然后结束本轮。
   - **本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不会叠加）。
-  因此不需要手动 cron_delete 上一次的唤醒。
+    **再次调用本工具时**，上一次的唤醒会被自动替换，不需要先 cron_delete 它。
+    （收尾场景是另一回事：目标达成后不再续排时，要靠 cron_delete 撤掉最后剩下的那一个，
+    ID 见本工具返回值。两句不矛盾，区别只在「还要不要续排」。）
   - 固定节奏的循环任务请改用 cron_create。
 
   取舍提示：prompt 缓存 TTL 约 5 分钟。睡过 300s 会付一次缓存 miss，
@@ -209,7 +211,9 @@ export class ScheduleWakeupTool implements Tool {
     return {
       output:
         `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${replacedNote}${supersededNote}${reasonNote}\n` +
-        `目标达成后若不再需要，用 cron_delete ${task.id} 取消。\n` +
+        // 与描述里「再次调用时自动替换、不需要 cron_delete」是两件事：这里说的是收尾
+        // （不再续排）。补一句场景限定，避免模型把两句读成互相否定（D-09）。
+        `目标达成后若不再续排（不再需要这个唤醒），用 cron_delete ${task.id} 取消。\n` +
         // R3 修法 2：写清「此刻有没有待送达通知、上一条已送达的是谁」。唤醒全程不产生
         // 后台进程，模型更容易把上一轮的旧通知误当成这次唤醒的结果——回执里直接给事实。
         `${describeBackgroundWaitFact()}\n` +

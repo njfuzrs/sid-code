@@ -41,6 +41,33 @@ export interface RenderContextReportOptions {
   /** 终端列数。窄列（<80，与 /perf 的 NARROW_WIDTH 同值）去掉「还剩」列与进度条百分比。 */
   width: number;
   color: boolean;
+  /**
+   * D-07：本会话「接收确认开场白」计数（collector 自持，`getAckOpenerStats()`）。
+   *
+   * 为什么走**选项**而不是 `ContextReport` 字段：`/context` 的取数层是
+   * `buildContextReport(ctxMgr, …)`，它的唯一数据源是 ContextManager + 会话快照，
+   * 拿不到 collector；而这个数也不是「上下文用量」的一部分（它不改任何 token 账）。
+   * 塞进 report 会让「取数层只读 ctxMgr」的契约破掉。未注入（headless 测试 / 轨迹采集关闭）
+   * 时整节不画 —— 缺失 ≠ 0 个开场白。
+   */
+  ackOpener?: { turns: number; totalTurns: number };
+}
+
+/**
+ * D-07：开场白行的措辞（渲染层只做格式化，比例在 {@link renderContextReport} 里按
+ * 分子÷分母算一次 —— 这不属于「重算指标」：两个都是 collector 直接给的原始计数，
+ * 除法是显示所必需，与 `percentOfUsed` 那种取数层口径不是一回事）。
+ */
+function renderAckOpenerRow(
+  ack: { turns: number; totalTurns: number },
+  p: ReturnType<typeof createPainter>,
+): string {
+  const ratio = ack.totalTurns > 0 ? `${Math.round((ack.turns / ack.totalTurns) * 100)}%` : "—";
+  return (
+    `  ${p.secondary(padEndWidth("接收确认开场白", 16))}  ` +
+    `${padStartWidth(`${fmtInt(ack.turns)}/${fmtInt(ack.totalTurns)}`, 9)}` +
+    `  ${padStartWidth(ratio, 5)}`
+  );
 }
 
 /** 窄列阈值，与 `/perf` 的 `NARROW_WIDTH` 同一个值。 */
@@ -434,6 +461,20 @@ export function renderContextReport(r: ContextReport, opts: RenderContextReportO
         "CLAUDE.md 正文、召回记忆、会话记忆",
       );
     }
+  }
+
+  // ── 回答规范（D-07）：只展示，不给提示 ──
+  //
+  // 不进「提示」区：提示区是「你能做点什么」的可行动项，而这一行是**行为观测**——
+  // 系统提示词 #8 要求每轮都不写接收确认开场白，用户改不了它，只能看它退没退步。
+  // 不画进度条：这类计数不是容量指标，条形图会让人误以为它有阈值。
+  if (opts.ackOpener && opts.ackOpener.totalTurns > 0) {
+    lines.push("");
+    lines.push(
+      p.accent("回答规范") +
+        p.secondary("（#8 不写接收确认开场白 · 本轮首条文本判定 · 只度量不干预）"),
+    );
+    lines.push(renderAckOpenerRow(opts.ackOpener, p));
   }
 
   // ── 提示（最多 3 条，每条都能指到一个字段与一个阈值）──

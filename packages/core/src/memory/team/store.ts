@@ -188,8 +188,9 @@ export async function listTeamMemoryFiles(dir: string): Promise<string[]> {
 }
 
 /**
- * 给团队索引行补「多久之前」（缺陷 9 ③）。私有侧 `annotateIndexAges` 按 key 查
- * `updatedAt`；团队记忆没有内存条目，按索引行里的链接（相对路径）取文件 mtime。
+ * 给团队索引行补「多久之前」（缺陷 9 ③）。年龄格式与私有侧同源（`memoryAge()`，
+ * D-12 起是 `YYYY-MM-DD（N 天前）`）。私有侧 `annotateIndexAges` 按 key 查 `updatedAt`；团队记忆没有内存条目，
+ * 按索引行里的链接（相对路径）取文件 mtime。
  */
 async function annotateTeamIndexAges(dir: string, text: string): Promise<string> {
   const now = Date.now();

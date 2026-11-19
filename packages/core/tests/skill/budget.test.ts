@@ -86,7 +86,10 @@ describe("generateSkillListing", () => {
   test("生成 system-reminder 包裹的列表", () => {
     const out = generateSkillListing([entry("a", "描述A")]);
     expect(out).toContain("<system-reminder>");
-    expect(out).toContain("skill 工具");
+    // D-05：工具名是 Skill（大写）。旧文案写「skill 工具」，与同名的 skill 参数
+    // 混读，也把工具名指错了。这里同时锁住旧写法不再回来。
+    expect(out).toContain("Skill 工具");
+    expect(out).not.toContain("skill 工具");
     expect(out).toContain("- a: 描述A");
     expect(out).toContain("</system-reminder>");
   });

@@ -669,8 +669,10 @@ export class Registry {
   /** 标记工具为可延迟加载（ToolSearch 运行时使用） */
   markDeferred(toolName: string): void {
     this.deferredTools.add(toolName);
-    // 重新延迟时清除激活态，保证语义一致（再次延迟意味着撤回此前的调出）
-    this.activatedTools.delete(toolName);
+    // 重新延迟时清除激活态，保证语义一致（再次延迟意味着撤回此前的调出）。
+    // 激活态存的是现行名，这里同样归一化，否则用旧名撤回会留下幽灵激活态。
+    const tool = this.get(toolName);
+    this.activatedTools.delete(tool ? tool.name() : toolName);
   }
 
   /** 取消延迟标记 */
@@ -689,7 +691,10 @@ export class Registry {
     const tool = this.get(toolName);
     if (!tool) return false;
     if (!this.isToolDeferred(tool)) return false; // 本就可见，无需激活
-    this.activatedTools.add(toolName);
+    // 存**现行名**而不是传入名：isToolDeferred 用 tool.name() 查激活态，存旧名
+    // 会让别名激活永远查不到——`select:bg_task_get` 就是这样激活后仍被判为
+    // 「未激活的延迟工具」的（L-5 的端到端用例此前只能 test.skip）。
+    this.activatedTools.add(tool.name());
     // 激活改变了「实际发送的工具集合」——本工具从此进 activeDefinitions()，
     // 它的 schema 开始真实占用上下文。订阅方（app.ts）据此重算 toolSchemaTokens +
     // 推送状态栏占用；漏了这一步，估算会停在对延迟工具的排除口径上，持续偏低。
@@ -699,7 +704,9 @@ export class Registry {
 
   /** 工具当前是否已被运行时激活 */
   isActivated(toolName: string): boolean {
-    return this.activatedTools.has(toolName);
+    // 与 activateTool 同理归一化：集合里存的是现行名，用旧名查要让别名回退链兜住
+    const tool = this.get(toolName);
+    return this.activatedTools.has(tool ? tool.name() : toolName);
   }
 
   /** 检查工具是否为延迟加载（字段 + 名单双来源） */

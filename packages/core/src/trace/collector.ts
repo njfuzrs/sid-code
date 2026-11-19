@@ -478,6 +478,13 @@ export class TraceCollector {
   /** SessionStart 时的权限配置形态，随 session-index 落盘（影响面分母） */
   private permissionConfig: PermissionConfigShape | undefined;
   private readonly editFirstTry = new EditFirstTryTracker();
+  /**
+   * D-07：本会话「接收确认开场白」的分子/分母（回答规范 #8 的可观测信号）。
+   * 与 editFirstTry 同型 —— collector 自持的计数事实，两条 session-index 写入路径照给，
+   * 崩溃会话的样本因此不丢（不像要等 digest 的 real_errors）。
+   */
+  private ackOpenerTurns = 0;
+  private ackOpenerTotalTurns = 0;
 
   // ── B9（PR-7）：会话级并发冲突累加器（口径见 decision-metrics.ts ConflictStats）──
   private conflictStats: ConflictStats = emptyConflictStats();
@@ -785,6 +792,9 @@ export class TraceCollector {
     this.editFirstTry.reset();
     // B9（PR-7）同理：冲突累加器也不能跨会话串
     this.conflictStats = emptyConflictStats();
+    // D-07：开场白计数同上 —— /clear 或 resume 开新会话，上个会话的比例不能串过来
+    this.ackOpenerTurns = 0;
+    this.ackOpenerTotalTurns = 0;
 
     // 修复问题一：-c/--resume 续接同一 trajectory 目录，而非每次恢复都新建。
     // input.resumed_from 是被恢复会话的旧 id；resume 时用它作 trajectory session_id，
@@ -1646,6 +1656,9 @@ export class TraceCollector {
     this.metadata.total_cache_read_tokens += cacheRead;
     this.metadata.total_cache_creation_tokens += cacheCreate;
     this.metadata.total_api_calls += 1;
+    // D-07：回答规范 #8 的「接收确认开场白」计数。挂在 AfterModel（每轮一次）而不是
+    // pair 收尾之后，是为了让崩溃会话与未落盘的重试轮都不丢样本；判据见 countAckOpener。
+    this.countAckOpener(contentBlocks);
     // 缺口分析二类：reasoning token 累计（flow，仅 OpenAI 族 >0）
     this.metadata.total_reasoning_tokens += reasoningTokens;
     // 缺口分析五类：上下文占用峰值（取各轮最大值——最接近溢出的时刻最有预警价值）+ 逐轮趋势序列
@@ -3033,12 +3046,31 @@ export class TraceCollector {
           permission_config: this.permissionConfig,
           edit_first_try: this.editFirstTry.stats(),
           conflict: this.conflictStats,
+          // D-07：collector 自持的计数事实，权威行与增量行给同一个（见 flushSessionIndexIncremental）
+          ...this.ackOpenerIndexFields(),
           perf: { ...this.perfIndexFields(), gen_p95: m?.gen_p95, gen_n: m?.gen_n },
         }),
       );
     } catch (err: any) {
       getLogger().warn("TRACE", `写 session-index 失败（不影响退出）: ${err?.message ?? err}`);
     }
+  }
+
+  /**
+   * D-07：把开场白计数摊成 session-index 的两个字段（两条写入路径共用，防漂移）。
+   *
+   * 分母为 0 时整块不给键：0/0 落成一个 ratio 会被读成「没有开场白」，而真相是
+   * 「这一场没有一个可判定的整段文本回复」。缺失 ≠ 0，与 permission / wait 同一条三态规则。
+   */
+  private ackOpenerIndexFields(): {
+    ack_opener_turns?: number;
+    ack_opener_total_turns?: number;
+  } {
+    if (this.ackOpenerTotalTurns === 0) return {};
+    return {
+      ack_opener_turns: this.ackOpenerTurns,
+      ack_opener_total_turns: this.ackOpenerTotalTurns,
+    };
   }
 
   /**
@@ -3404,6 +3436,8 @@ export class TraceCollector {
             edit_first_try: this.editFirstTry.stats(),
             // B9（PR-7）：冲突累加同为 collector 自持事实，增量行照给（崩溃会话不丢样本）
             conflict: this.conflictStats,
+            // D-07 同理：开场白计数是 collector 自持事实，增量行照给
+            ...this.ackOpenerIndexFields(),
             // 增量行同样给：这几项是 collector 自己累计的事实（gen_p95 要 digest，留给权威行）
             perf: this.perfIndexFields(),
           },
@@ -3654,6 +3688,53 @@ export class TraceCollector {
    */
   recordStructuredOutputDelivered(): void {
     this.hitStructuredOutputDelivered = true;
+  }
+
+  /**
+   * D-07：读本会话「接收确认开场白」计数（供 /context 与测试；索引落盘走同一对字段）。
+   *
+   * 为什么 /context 要经 collector 现读而不是从 SessionState 拿：这个计数唯一定义点
+   * 就是本模块（判据在 {@link detectAckOpener}），second 份实现在 UI 侧只会在两处漂移。
+   */
+  getAckOpenerStats(): { turns: number; totalTurns: number } {
+    return { turns: this.ackOpenerTurns, totalTurns: this.ackOpenerTotalTurns };
+  }
+
+  /**
+   * D-07：回答规范 #8 的分子/分母累加（**只度量，不干预** —— 不拦截、不改写任何输出）。
+   *
+   * 判据只有一条硬约束：**本轮 assistant 的第一条文本块**。为什么是"第一条"而不是"任一
+   * 块"：正文中间出现「已阅读 CLAUDE.md」是正常的陈述（比如在解释自己读了什么），
+   * 只有开头的接收确认才是 #8 要禁的噪音。宽一格就会把大量正常回复计进来，
+   * 比例虚高之后没人再看这个数。
+   *
+   * 分母只收"本轮恰有一条文本块"的轮次：
+   * - 零文本块（纯 tool_use）谈不上开场白，算进分母会被稀释；
+   * - 两条以上文本块（text → tool_use → text）的首块通常只是"我先读交接文档。"这类
+   *   短提示，与 #8 想禁的整段接收确认不同型，混进来同样会扭曲比例。
+   *
+   * 不额外判主循环：BeforeModel/AfterModel 只有主循环与"强制总结轮"会 fire
+   * （forked 路径刻意不走 hook 链，见 forked-agent.ts），两者都是模型面对 system prompt
+   * 的真实回复，都该被 #8 约束。
+   *
+   * 只看前 200 字符：开场白的最长形态是"已收到，已阅读 CLAUDE.md、AGENTS.md、…
+   * （列举十几份文档）"，句号可能落在很后面；但把整块正文都扫会引入误判面，
+   * 200 字符足够覆盖开头的确认语。
+   */
+  private countAckOpener(contentBlocks: unknown[]): void {
+    try {
+      const texts = contentBlocks
+        .filter((b): b is { type: "text"; text: string } => {
+          const blk = b as { type?: unknown; text?: unknown };
+          return blk?.type === "text" && typeof blk.text === "string";
+        })
+        .map((b) => b.text);
+      if (texts.length !== 1) return;
+      this.ackOpenerTotalTurns += 1;
+      if (detectAckOpener(texts[0]!)) this.ackOpenerTurns += 1;
+    } catch {
+      // 采集永不阻塞主循环：计数失败只丢这一轮样本，不影响轨迹其余部分
+    }
   }
 
   // ─── 异常路径诊断信号（§3.1 errors.jsonl）───
@@ -4029,4 +4110,56 @@ export function capUserPromptForMetadata(prompt: string): string {
     prompt.slice(0, USER_PROMPT_METADATA_MAX_CHARS) +
     `…[已截断：原长 ${prompt.length} 字符，全文见 history]`
   );
+}
+
+// ─────────────────────────── D-07：接收确认开场白 ───────────────────────────
+
+/**
+ * 「接收确认开场白」的 A 段词表（回答规范 #8 列举的四种）。
+ *
+ * 刻意不直接收 `收到`：用户发来一段话后回一句"收到"是正常应答，不是复述注入上下文。
+ * 它只在 B 段、且紧跟一个注入文档名时才计数（见 {@link detectAckOpener}）。
+ */
+const ACK_OPENER_TOKENS = ["已收到", "已阅读", "已载入", "收到了"];
+
+/** 只扫前 200 字符：开场白可能在这之后继续列举文档，但把整块正文都扫会引入误判面。 */
+const ACK_OPENER_SCAN_CHARS = 200;
+
+/** B 段的「注入文档名」特征：仓库里真实会被注入的规则文档形态。 */
+const DOC_NAME_RE = /(?:CLAUDE|AGENTS|[A-Za-z0-9_-]+\.md)\b|规则文档|项目规则/;
+
+/**
+ * 判定「这条 assistant 首块文本是不是接收确认开场白」。
+ *
+ * ## 为什么判据这么保守
+ *
+ * 这是**只度量不干预**的口径：误报不会拦任何输出，但会把这个比例变成噪声 ——
+ * 一个虚高的数没人会再看，指标就白建了。所以只在两种形态下判命中：
+ *
+ * 1. **A 段**：文本（去掉前导空白、`**` 加粗、列表符号）以词表任一词开头。
+ *    覆盖「已收到，已阅读 CLAUDE.md」这类标准形态。
+ * 2. **B 段**：以「收到」开头，**紧跟**一个分隔符（`，,。.!！:：` 或空白），其后第一段
+ *    内容含注入文档名特征（`CLAUDE.md` / `AGENTS.md` / `*.md` / 「规则文档」）。
+ *    覆盖「收到，已阅读 CLAUDE.md 与 AGENTS.md」这种把词表词放在逗号后面的变体。
+ *    **单独的「收到，我看一下」不算** —— 那是正常应答，不是 #8 要禁的复述。
+ *
+ * 判的是「首块文本的**开头**」：正文中间出现「已阅读 CLAUDE.md」是正常陈述
+ * （在解释自己读了什么），不属于开场白。
+ */
+export function detectAckOpener(text: string): boolean {
+  // 去掉前导空白与列表记号，「**收到**，…」「- 已收到…」都该被识别
+  const head = text.replace(/^\s+/, "").replace(/^[-*+]\s+/, "");
+  const bare = head.replace(/^\*\*([\s\S]*?)\*\*/, "$1");
+  const window = bare.slice(0, ACK_OPENER_SCAN_CHARS);
+
+  // A 段：以词表任一词开头
+  if (ACK_OPENER_TOKENS.some((t) => window.startsWith(t))) return true;
+
+  // B 段：「收到」+ 分隔符 + 紧随其后的注入文档名
+  if (window.startsWith("收到")) {
+    const rest = window.slice(2).replace(/^[，,。.!！:：\s]+/, "");
+    const firstClause = rest.split(/[，,。.!！;；\n]/)[0] ?? "";
+    if (firstClause.length > 0 && DOC_NAME_RE.test(firstClause)) return true;
+  }
+  return false;
 }

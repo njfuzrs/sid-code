@@ -6,6 +6,7 @@
 import { execFileSync } from "child_process";
 import { getLogger } from "../debug/logger.ts";
 import { generateSkillListing, type SkillListingEntry } from "../skill/budget.ts";
+import type { LanguagePref } from "./prompt-lang.ts";
 
 /** 附件类型 */
 export interface Attachment {
@@ -212,11 +213,17 @@ ${content}
   };
 }
 
-/** Git 状态缓存（TTL 30 秒，覆盖用户输入期间的预取窗口） */
+/**
+ * Git 状态缓存（TTL 30 秒，覆盖用户输入期间的预取窗口）。
+ *
+ * 缓存键含 `language`：文案跟随语言档（见 generateGitStatusAttachment 的 language 参数），
+ * 只按 workingDir 缓存的话，会话内 `/language en` 切换后会先拿到上一档的旧文案直到 TTL 过期。
+ */
 let gitStatusCache: {
   result: SystemPromptAttachment | null;
   timestamp: number;
   workingDir: string;
+  language: LanguagePref | undefined;
 } | null = null;
 const GIT_STATUS_CACHE_TTL = 30_000;
 
@@ -250,14 +257,21 @@ function runGit(args: string[], workingDir: string, timeout = 5000): string {
  * 生成 Git 状态附件
  * 执行 git status --short 获取当前仓库状态
  * 带模块级缓存，预取和正式调用共享结果
+ *
+ * @param language 输出语言档；文案跟随它（en 档走英文，其余含 undefined 走中文）。
+ *   缺省 undefined = 中文优先，与 prompt-lang.ts「缺省等价 zh」的口径一致，也保持既有调用方零改动。
  */
-export function generateGitStatusAttachment(workingDir: string): SystemPromptAttachment | null {
+export function generateGitStatusAttachment(
+  workingDir: string,
+  language?: LanguagePref,
+): SystemPromptAttachment | null {
   const log = getLogger();
 
   // 命中缓存
   if (
     gitStatusCache &&
     gitStatusCache.workingDir === workingDir &&
+    gitStatusCache.language === language &&
     Date.now() - gitStatusCache.timestamp < GIT_STATUS_CACHE_TTL
   ) {
     log.debug("ATTACHMENT", "Git 状态命中缓存");
@@ -315,17 +329,28 @@ export function generateGitStatusAttachment(workingDir: string): SystemPromptAtt
     //
     // 注:`git status` 已不再采集(PR-D)——它从不进快照文本,采了只是付首帧前的同步 fork 成本。
 
+    // H2（CG-3）：分支同样会变，且变的不只是「本会话的 git 写命令」这一个来源。
+    // 本仓的标准流程是 worktree-xxx 改名成 fix/xxx，外部进程（IDE、另一个会话）也会切分支，
+    // 光靠「快照是启动时拍的」这句话，模型不足以推断出下面那行 Current branch 可能已过期。
+    // CG-6 会在本会话 bash 执行 git 写命令后比对前后分支（外部进程改的分支检测不到，见后续规划 §2.4 边界），
+    // 在那之前这行声明就是唯一的口径来源。
+    //
+    // 首句为什么分语言（L-4）：这一块的标签行（Current branch / Main branch / Git user）
+    // 本来就是英文，只有说明句是中文，原先首句是英文、后面直接接中文，同一行里中英混排
+    // 读起来像拼接事故。en 档若写成中文说明句，等于在告诉模型"这里可以用中文"——与
+    // system-prompt.ts buildEnvironmentSection 的同一结论一致（削弱语言约束的一致性）。
+    // 两档都必须保留三件事：这是启动快照/不会刷新、文件状态不在快照里需实时 `git status`、
+    // 不要拿快照判断有无未提交改动——这三句是防「净/脏」死循环的锚点，不只是措辞。
     const lines: string[] = [
-      // 首行=显式声明这是启动快照,并**引导**模型:工作区文件状态未包含在此,需实时获取。
-      "Git snapshot captured when this session started. It is frozen and will not refresh as the session goes on. " +
-        "工作区文件状态(哪些文件被修改/新增/删除)未包含在此快照中(会随对话变化);" +
-        "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。" +
-        // H2（CG-3）：分支同样会变，且变的不只是「本会话的 git 写命令」这一个来源。
-        // 本仓的标准流程是 worktree-xxx 改名成 fix/xxx，外部进程（IDE、另一个会话）也会切分支，
-        // 光靠「快照是启动时拍的」这句话，模型不足以推断出下面那行 Current branch 可能已过期。
-        // CG-6 会在本会话 bash 执行 git 写命令后比对前后分支（外部进程改的分支检测不到，见后续规划 §2.4 边界），
-        // 在那之前这行声明就是唯一的口径来源。
-        "当前分支也可能已经变了,以 `git branch --show-current` 为准,不要直接引用下面的 Current branch。",
+      language === "en"
+        ? "Git snapshot captured when this session started. It is frozen and will not refresh as the session goes on. " +
+          "Working-tree file states (which files were modified/added/deleted) are not part of this snapshot (they change as the conversation goes on); " +
+          "run `git status` when you need the live state, and do not use this snapshot to judge whether the working tree has uncommitted changes. " +
+          "The current branch may also have changed: take `git branch --show-current` as the source of truth instead of the Current branch line below."
+        : "本快照拍摄于本次会话启动时,是固定快照,不会随会话进行而刷新。" +
+          "工作区文件状态(哪些文件被修改/新增/删除)未包含在此快照中(会随对话变化);" +
+          "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。" +
+          "当前分支也可能已经变了,以 `git branch --show-current` 为准,不要直接引用下面的 Current branch。",
       `Current branch: ${branch}`,
     ];
     if (mainBranch) lines.push(`Main branch (default PR target): ${mainBranch}`);
@@ -353,12 +378,12 @@ export function generateGitStatusAttachment(workingDir: string): SystemPromptAtt
     };
 
     // 写入缓存
-    gitStatusCache = { result, timestamp: Date.now(), workingDir };
+    gitStatusCache = { result, timestamp: Date.now(), workingDir, language };
     return result;
   } catch {
     log.debug("ATTACHMENT", "非 Git 仓库或 git 命令不可用，跳过 Git 状态附件");
     const result = null;
-    gitStatusCache = { result, timestamp: Date.now(), workingDir };
+    gitStatusCache = { result, timestamp: Date.now(), workingDir, language };
     return result;
   }
 }

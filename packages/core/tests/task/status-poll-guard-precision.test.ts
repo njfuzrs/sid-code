@@ -528,7 +528,12 @@ describe("D14 原始输出：首行说明不破坏 P1 的归一化", () => {
       const deps = makeDeps(bash);
       let third = "";
       for (let i = 0; i < 3; i++) {
-        const { results } = await executeTools([use(`u${i}`, "bash", { command: cmd })], deps);
+        // D-08 起 bash 的 description 是必填（它会显示在审批面板），走 tool-executor
+        // 的用例必须先过 schema 校验，否则拿到的是参数校验失败、断言不到拦截回执。
+        const { results } = await executeTools(
+          [use(`u${i}`, "bash", { command: cmd, description: "查询 PR 662 的检查状态" })],
+          deps,
+        );
         const block = results.find((b) => b.type === "tool_result") as any;
         expect(block).toBeDefined();
         if (i === 2) third = String(block.content);

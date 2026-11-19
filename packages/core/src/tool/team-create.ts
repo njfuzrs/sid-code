@@ -70,6 +70,12 @@ export class TeamCreateTool implements Tool {
   readonly shouldDefer = true;
   readonly guidance =
     "创建多代理团队（成员各自领任务并行/隔离执行）时用；一次性分治用 sub_agent 并行调用就够了，不必建团队。";
+  /**
+   * 开关关闭时不进速查段（D-20）：guidance 是静态字符串，感知不到 isAgentTeamsEnabled，
+   * 照常列出就是把一个调用必吃「当前未启用」的工具当正常工具推荐。
+   * 名单行仍保留（关闭时工具仍注册），由 description() 的「当前未启用」承担告知。
+   */
+  readonly isGuidanceVisible = () => isAgentTeamsEnabled();
   readonly searchHint = "team swarm multi-agent collaboration 团队 多代理 协作";
   /** 权限检查器（子代理 dontAsk 语义，由主会话注入） */
   private permissionChecker?: import("../permission/types.ts").Checker;

@@ -125,11 +125,67 @@ describe("C3-A：索引行描述上限把字节预算还给可见条数", () => 
   test("超长描述截到上限，短描述原样保留", () => {
     const long = "这是一条足够长的中文摘要".repeat(10); // 130 字符
     const cut = truncateIndexDesc(long);
+    // D-18：`…` 占一格，所以结果是「39 个原字符 + …」。上限本身不动：
+    // 截断后的描述仍然不超过 INDEX_DESC_MAX_LEN 个 code point。
     expect(Array.from(cut).length).toBe(INDEX_DESC_MAX_LEN);
-    expect(cut).toBe(Array.from(long).slice(0, INDEX_DESC_MAX_LEN).join(""));
+    expect(cut).toBe(
+      Array.from(long)
+        .slice(0, INDEX_DESC_MAX_LEN - 1)
+        .join("") + "…",
+    );
 
     expect(truncateIndexDesc("短摘要")).toBe("短摘要");
     expect(truncateIndexDesc("")).toBe("");
+  });
+
+  test("D-18：超长描述以 `…` 结尾，读者能分辨「被截断」而非「原文结束」", () => {
+    const long = "这是一条足够长的中文摘要".repeat(10); // 130 字符
+    const cut = truncateIndexDesc(long);
+    expect(cut.endsWith("…")).toBe(true);
+    // 恰好等于上限（40）的描述不截断，也就不该多出 `…`
+    const exact = "a".repeat(INDEX_DESC_MAX_LEN);
+    expect(truncateIndexDesc(exact)).toBe(exact);
+    expect(truncateIndexDesc(exact).endsWith("…")).toBe(false);
+  });
+
+  test("D-18：超长描述里反引号未闭合时，退到反引号之前，输出反引号成对", () => {
+    // 唯一的反引号落在第 21 个字符：在 39 字符切口之内，且位于**后半段**——判据是
+    // `lastTick > cut / 2`，落在前半段的反引号按设计不退回（退到它之前会把描述砍掉
+    // 一半以上，见下一条「太靠前」用例）。旧实现直接切在 40，产出
+    // `` …`docs/xxx `` 这种半截代码片段。后面的 x/y 用 repeat 写，长度一眼可数。
+    const desc = "用户明确要求不要把缺陷文档主动移动" + "xxxx`" + "y".repeat(26);
+    expect(Array.from(desc).length).toBeGreaterThan(INDEX_DESC_MAX_LEN);
+    const cut = truncateIndexDesc(desc);
+    expect(cut.endsWith("…")).toBe(true);
+    // 用 Array.from 过滤而不是正则：反引号是 ASCII，这里只为把「数反引号」写成
+    // 与实现同一个口径（code point），避免两处对「字符」的理解漂移。
+    const ticks = Array.from(cut).filter((ch) => ch === "`").length;
+    expect(ticks % 2).toBe(0); // 成对
+    expect(ticks).toBe(0); // 这里只有那一个反引号，应被整个退掉
+    // 退到反引号之前，不是退成空串
+    expect(cut.startsWith("用户明确要求")).toBe(true);
+  });
+
+  test("D-18：反引号已闭合（成对）时不退，只补 `…`", () => {
+    // 反引号对落在前 10 个字符内（成对且靠前），其后一路到 40 都没有反引号
+    const desc =
+      "先看 `a` 再改，然后继续写很多很多很多很多很多的正文还要更长一点" + "尾巴还要继续写下去";
+    const cut = truncateIndexDesc(desc);
+    expect(cut.endsWith("…")).toBe(true);
+    expect((cut.match(/`/g) ?? []).length % 2).toBe(0);
+    expect(cut).toBe(
+      Array.from(desc)
+        .slice(0, INDEX_DESC_MAX_LEN - 1)
+        .join("") + "…",
+    );
+  });
+
+  test("D-18：反引号出现得太靠前时宁可留半个片段，也不交出一条几乎空的描述", () => {
+    // 反引号在位置 5，退到它之前只剩 5 个字符 → 信息量太低，保留原切口
+    const desc = "abcde`fghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    const cut = truncateIndexDesc(desc);
+    expect(cut.endsWith("…")).toBe(true);
+    expect(Array.from(cut).length).toBe(INDEX_DESC_MAX_LEN);
   });
 
   test("按 code point 截断，不切坏代理对（索引里含 ⭐⚠️🌐⚡）", () => {
@@ -137,8 +193,11 @@ describe("C3-A：索引行描述上限把字节预算还给可见条数", () => 
     // 40 个 emoji 占 80 个 code unit，会被切在第 20 个 emoji 之后/中间。
     const emojis = "⚠️".repeat(30); // 每个是 2 个 code point（⚠ + 变体选择符）
     const cut = truncateIndexDesc(emojis);
-    // 不产生孤立代理项
+    // 不产生孤立代理项（含 `…` 也不能破坏这一点）
     expect(cut.includes("\uFFFD")).toBe(false);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(cut)).toBe(
+      false,
+    );
     // 每个保留的字符都能再切出同样的码点序列
     expect(Array.from(cut).length).toBe(INDEX_DESC_MAX_LEN);
   });

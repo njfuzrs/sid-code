@@ -465,3 +465,125 @@ describe("P2-2 internal_en 标签处理", () => {
     expect(extractInternalEnTags("")).toEqual({ thinking: "", text: "" });
   });
 });
+
+// ============================================================
+// D-00 / D-01：优先级链与语言段引用的指向
+// ============================================================
+
+/** 语言相关四条例各自的自述级别（见 D-00 缺陷表）。 */
+const LANGUAGE_BRANCHES = [
+  { name: "auto", language: "auto" as const, model: PLAIN_MODEL },
+  { name: "标准 zh", language: "zh" as const, model: PLAIN_MODEL },
+  { name: "strong-guard", language: "zh" as const, model: DRIFT_MODEL },
+  { name: "en", language: "en" as const, model: PLAIN_MODEL },
+];
+
+describe("D-00 优先级链", () => {
+  for (const language of ["zh", "en"] as const) {
+    test(`${language} 档：<precedence-chain> 排在 <output-redlines> 与 <constraints> 之前`, () => {
+      // 四条语言规则各自声称「最高」，靠这一段裁决次序。位置是这段的全部意义所在：
+      // 红线是第 1 层、约束是第 4 层的实例，链必须在两者之前声明。
+      // 只判"存在"会漏掉"插进红线之后"这种最可能的错法，所以用 indexOf 比位置。
+      const text = build({ language });
+      const chainIdx = text.indexOf("<precedence-chain>");
+      const redlinesIdx = text.indexOf("<output-redlines>");
+      const constraintsIdx = text.indexOf("<constraints>");
+
+      // 前提自证：三个段都得真的在，否则 -1 参与比较会给出无意义的通过/失败
+      expect(chainIdx).toBeGreaterThan(-1);
+      expect(redlinesIdx).toBeGreaterThan(-1);
+      expect(constraintsIdx).toBeGreaterThan(-1);
+
+      expect(chainIdx, "优先级链必须在 <output-redlines> 之前").toBeLessThan(redlinesIdx);
+      expect(chainIdx, "优先级链必须在 <constraints> 之前").toBeLessThan(constraintsIdx);
+    });
+  }
+
+  for (const language of ["zh", "en"] as const) {
+    test(`${language} 档：四层次序符合「红线 → 用户当轮 → 项目规则 → 默认偏好」`, () => {
+      // 只判"四层都在"不够：第 2/3 层对调后每层文字都还在，位置断言也照样通过。
+      // 而这两层正是本缺陷的冲突点（用户当轮要求换语言 vs CLAUDE.md 的语言条款），
+      // 次序一反，模型就会被引向项目规则、把用户的换语言请求拒掉。所以按层号取条目比次序。
+      const text = build({ language });
+      const section = text.slice(
+        text.indexOf("<precedence-chain>"),
+        text.indexOf("</precedence-chain>"),
+      );
+      const order = section
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => /^[1-4]\.\s/.test(l));
+      expect(order.length, "优先级链应恰好 4 层").toBe(4);
+
+      const needles: Array<[RegExp, string]> =
+        language === "en"
+          ? [
+              [/Safety redlines/i, "<output-redlines>"],
+              [/explicit instruction in the current turn/i, "用户当轮"],
+              [/Project rules/i, "项目规则"],
+              [/Default preferences/i, "默认偏好"],
+            ]
+          : [
+              [/安全红线/, "安全红线"],
+              [/用户当轮/, "用户当轮"],
+              [/项目规则/, "项目规则"],
+              [/默认偏好/, "默认偏好"],
+            ];
+      needles.forEach(([re, label], i) => {
+        expect(
+          re.test(order[i]!),
+          `优先级链第 ${i + 1} 层应是「${label}」，实际是「${order[i]}」—— ` +
+            `第 2/3 层对调会让项目规则压过用户当轮的语言要求`,
+        ).toBe(true);
+      });
+    });
+  }
+
+  test("四层各自的裁决对象都在：红线 / 用户当轮指令 / 项目规则 / 默认偏好", () => {
+    // 顺序之外还要有内容——一个空壳 <precedence-chain> 也能通过上面那条位置断言。
+    const zh = build({ language: "zh" });
+    for (const needle of ["安全红线", "用户当轮", "项目规则", "默认偏好"]) {
+      expect(zh, `优先级链缺少「${needle}」这一层`).toContain(needle);
+    }
+    const en = build({ language: "en" });
+    for (const needle of [
+      "Safety redlines",
+      "explicit instruction in the current turn",
+      "Project rules",
+      "Default preferences",
+    ]) {
+      expect(en, `英文优先级链缺少「${needle}」这一层`).toContain(needle);
+    }
+  });
+});
+
+describe("D-01 语言段的悬空引用", () => {
+  /** 从提示词里抽出身份段语言标题（`⚠️ 语言规则…:` / `⚠️ LANGUAGE RULES…:` 那一行）。 */
+  function languageHeadingOf(prompt: string): string {
+    const line = prompt
+      .split("\n")
+      .find((l) => l.startsWith("⚠️ 语言规则") || l.startsWith("⚠️ LANGUAGE RULES"));
+    expect(line, "身份段缺少语言规则标题（D-01 的缺口正是强约束分支没有标题）").toBeDefined();
+    return line!.trim();
+  }
+
+  for (const branch of LANGUAGE_BRANCHES) {
+    test(`${branch.name} 档：约束段引用的语言标题确实作为标题存在`, () => {
+      // 判据是「引用的标题 ∈ 实际标题集合」，不是 toContain 任意片段：
+      // 约束段写「见上方"⚠️ 语言规则"」，而这个标题在 strong-guard 分支里根本不存在，
+      // 指针落空后模型会把约束段那条摘要当成完整规则，漏掉下面的逃生口。
+      const prompt = build({ language: branch.language, model: branch.model });
+      const heading = languageHeadingOf(prompt);
+
+      const section = prompt.slice(
+        prompt.indexOf("<constraints>"),
+        prompt.indexOf("</constraints>"),
+      );
+      const ref = section.match(/"([^"]+)"/)?.[1];
+      expect(ref, `${branch.name} 档：约束段第 1 条没有引用上方语言段`).toBeDefined();
+      expect(ref, `${branch.name} 档：引用的「${ref}」不是实际存在的标题「${heading}」`).toBe(
+        heading,
+      );
+    });
+  }
+});

@@ -12,6 +12,10 @@
  */
 
 import { emitSkillDegradation } from "./telemetry.ts";
+// 工具名引用常量而不是写字面量：小写 `skill` 在本仓还有第二个含义（executor.ts 里
+// `allow: ["Skill"]` 是技能名通配符），两义混写会让模型分不清「工具名」与「技能名」。
+// 这里只取 `SKILL_TOOL_NAME`，不 import meta-tool 的其余导出，避免把 Skill 执行链拖进摘要渲染路径。
+import { SKILL_TOOL_NAME } from "./meta-tool.ts";
 
 /** Skill 摘要预算占上下文窗口的比例（1%） */
 export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01;
@@ -166,7 +170,7 @@ export function generateSkillListing(
   const listing = formatCommandsWithinBudget(commands, contextWindowTokens);
   if (!listing) return null;
   return `<system-reminder>
-以下 Skills 可通过 skill 工具调用（按名称指定 skill 参数即可）：
+以下 Skills 可通过 ${SKILL_TOOL_NAME} 工具调用（按名称指定 skill 参数即可）：
 
 ${listing}
 </system-reminder>`;
