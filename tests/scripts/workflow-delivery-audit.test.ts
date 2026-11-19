@@ -254,6 +254,10 @@ describe("脚本端到端：退出码与 --export-dir", () => {
   const run = (args: string[], cwd: string) => {
     const r = Bun.spawnSync(["bun", "run", SCRIPT, ...args], {
       cwd,
+      // Bun 子进程不继承运行时的 process.env：不显式传会把 preload 设的 SID_CONFIG_DIR 丢掉，
+      // 子进程就会写用户真实的 ~/.sid-code/。门禁见
+      // tests/build/test-isolation-preload-wiring.test.ts。
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });
