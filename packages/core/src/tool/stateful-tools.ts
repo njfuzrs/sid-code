@@ -12,7 +12,7 @@
 
 import type { LegacyTool as Tool } from "./types.ts";
 import { FileReadTracker } from "./file-read-tracker.ts";
-import { ReadTool } from "./read.ts";
+import { ReadHistory, ReadTool } from "./read.ts";
 import { EditTool } from "./edit.ts";
 import { ReadManyTool } from "./read-many.ts";
 import { WriteTool } from "./write.ts";
@@ -46,10 +46,15 @@ export function createStatefulTools(
   tracker: FileReadTracker,
   isPathHidden?: (absPath: string) => boolean,
 ): Tool[] {
-  const readMany = new ReadManyTool(tracker);
+  // R1：read 与 read_many 共用一份读窗口登记，否则「先 read_many 再 read 同一文件」
+  // 这类重复读在 ReadHint 事件与重复读提示里完全看不见（方案 20261116 §4.5）。
+  // 每次调用新建一份：主代理与子代理各自持有（子代理会用独立 tracker 重新调用本工厂），
+  // 不会跨作用域污染。
+  const readHistory = new ReadHistory();
+  const readMany = new ReadManyTool(tracker, undefined, readHistory);
   if (isPathHidden) readMany.setPathHiddenFilter(isPathHidden);
   return [
-    new ReadTool(tracker),
+    new ReadTool(tracker, readHistory),
     new EditTool(tracker),
     readMany,
     new WriteTool(tracker),

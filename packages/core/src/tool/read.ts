@@ -373,7 +373,7 @@ const readSchema = lazySchema(() =>
 );
 
 /** 发现 4：单文件读取历史（一次读取的行窗口 + 是否整文件可覆盖），用于"重复窄读"引导。 */
-interface ReadWindow {
+export interface ReadWindow {
   startLine: number; // 1-based 起始行
   endLine: number; // 含
   totalLines: number;
@@ -433,63 +433,28 @@ const READ_HISTORY_PER_FILE_CAP = 12;
 /** 发现 4：读历史最多跟踪的文件数（LRU 粗粒度，防大会话内存膨胀）。 */
 const READ_HISTORY_FILES_CAP = 64;
 
-export class ReadTool implements Tool {
-  private stateCache: FileStateCache | null;
-  private tracker: FileReadTracker | null;
+/**
+ * 发现 4：读窗口登记 + 「重复窄读」提示（read / read_many 共用一份，R1）。
+ *
+ * 这段逻辑原先是 `ReadTool` 的私有字段。`read_many` 也是读文件入口（按 glob 展开后逐文件读），
+ * 但它不经过 ReadTool 实例，于是「先 read_many 再 read 同一文件」这类重复读在 ReadHint 事件
+ * 与重复读提示里都是瞎的（方案 20261116 §4.5 R1 / §6 PR8）。抽成独立类后由
+ * `createStatefulTools` 给两个工具注入**同一个实例**——主代理与子代理仍各持一组
+ * （子代理重建工具时会得到自己那份），隔离口径不变；直接 `new ReadTool()` 的调用方
+ * 也各自持有一份，不跨会话泄漏。
+ *
+ * 只做**非阻塞提示**,绝不拦截(read 是安全只读操作,拦截会误伤合法的定向复查),对齐记忆
+ * `write-truncation-opt-triple-review` 里"回注通道只提醒不强制"的定调。
+ */
+export class ReadHistory {
   /** 发现 4：file_path → 近期读窗口列表。纯效率引导用，不影响读取结果。 */
-  private readHistory = new Map<string, ReadWindow[]>();
-
-  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
-  readonly zodSchema = readSchema();
+  private history = new Map<string, ReadWindow[]>();
 
   /**
-   * 呈现档位 `"compact"`：读文件是真实工作内容，但一次 read 常常几百行，默认铺满屏幕
-   * 会把主屏历史的可用行数吃掉（长会话上翻看不全的主因，见
-   * docs-research/bugfixes/…TUI主屏历史被截断 方案）。默认折成零行正文、标题行给
-   * 「N 行」，按 ctrl+o 与普通工具走同一套阶梯展开——正文始终留在
-   * `resultDisplay.content` 里，没丢。
-   */
-  readonly resultDisplayMode = "compact" as const;
-
-  /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
-  jitAffectedPaths(input: unknown): string[] {
-    return pickPaths(input, "file_path");
-  }
-
-  /**
-   * 构造函数兼容两种 tracker 类型：
-   * - FileReadTracker（旧版，用于 createStatefulTools 工厂和测试）
-   * - FileStateCache（新版，LRU + 内容比对）
-   *
-   * 通过鸭子类型判断：FileStateCache 有 set() 方法，FileReadTracker 有 markAsRead() 方法。
-   */
-  constructor(trackerOrCache?: FileReadTracker | FileStateCache) {
-    if (!trackerOrCache) {
-      this.stateCache = null;
-      this.tracker = null;
-    } else if ("set" in trackerOrCache && typeof trackerOrCache.set === "function") {
-      // FileStateCache
-      this.stateCache = trackerOrCache as FileStateCache;
-      this.tracker = null;
-    } else {
-      // FileReadTracker
-      this.tracker = trackerOrCache as FileReadTracker;
-      this.stateCache = null;
-    }
-  }
-
-  readOnly(): boolean {
-    return true;
-  }
-
-  /**
-   * 发现 4：记录本次读窗口并生成"重复窄读"非阻塞引导（不改读取结果，只在 output 末尾追加提示）。
+   * 记录本次读窗口并生成"重复窄读"非阻塞引导（不改读取结果，只在 output 末尾追加提示）。
    *
    * 背景：弱模型对大文件常做几十次 `limit=10~60` 的窄窗读、反复重读同一区域(实证单文件 33 次)。
    * read 是纯只读工具,重复读不报错、无引导,模型缺乏"停止重读"的外部信号 → 拉长步数 + 推高 token。
-   *
-   * 只做**非阻塞提示**,绝不拦截(read 是安全只读操作,拦截会误伤合法的定向复查),对齐记忆
-   * `write-truncation-opt-triple-review` 里"回注通道只提醒不强制"的定调。
    *
    * 只保留「重复读」一类：同文件近期读 ≥ 阈值次且本次窗口与历史高度重叠 → 提示复用已读内容。
    * **原先还有第二类「读太窄」（首次读不大的文件却传小 limit → 提示可一次整读），2026-11-16
@@ -497,19 +462,19 @@ export class ReadTool implements Tool {
    * 模型根本没再读该文件（提示打在"只需要这一段"的定向读场景上，属时机错配，不是模型不听话），
    * 而真正同段重复读只占 5.6% —— 这类场景已由「重复读」提示覆盖。数据见
    * `.agents/notes/implemented/simplification/2026-11-16-关掉narrow-first读提示.md`。
-   * 返回追加到 output 的提示串(可为空)。
+   *
+   * @param filePath 读到的文件绝对路径（read 与 read_many 都先 normalizeToolPath，同一文件才对得上）
+   * @param win 本次读到的行窗口
+   * @param fileTokens 整文件 token 估算（惰性：只在要给「整读」建议时才算）
+   * @returns 追加到 output 的提示串(可为空)
    */
-  private recordReadAndBuildHint(
-    filePath: string,
-    win: ReadWindow,
-    fileTokens: () => number,
-  ): string {
+  record(filePath: string, win: ReadWindow, fileTokens: () => number): string {
     // 「建议一次整读」必须同时看行数和体量：只看行数时，199 行 / 234KB 的生成文件
     // 也会被鼓励整读（会话 20261018-224823-dbc19982 实例），整读又会撞 token 上限。
     // 惰性：整文件估算只在要给「整读」建议时才算，常规读取路径不付这笔开销。
     const fitsInOneReadByTokens = () => fileTokens() <= resolveMaxOutputTokens();
     // 取本文件历史(在追加本次之前),用于判定重叠/重复
-    const prior = this.readHistory.get(filePath) ?? [];
+    const prior = this.history.get(filePath) ?? [];
 
     // 与历史窗口的重叠比例(本次窗口有多少行此前已读过)
     const winLen = Math.max(1, win.endLine - win.startLine + 1);
@@ -524,11 +489,11 @@ export class ReadTool implements Tool {
 
     // 追加本次窗口到历史(带每文件/文件数上限,LRU 粗回收)
     const updated = [...prior, win].slice(-READ_HISTORY_PER_FILE_CAP);
-    this.readHistory.delete(filePath); // 删后重插 → 维持插入序,近用在尾
-    this.readHistory.set(filePath, updated);
-    if (this.readHistory.size > READ_HISTORY_FILES_CAP) {
-      const oldest = this.readHistory.keys().next().value;
-      if (oldest !== undefined) this.readHistory.delete(oldest);
+    this.history.delete(filePath); // 删后重插 → 维持插入序,近用在尾
+    this.history.set(filePath, updated);
+    if (this.history.size > READ_HISTORY_FILES_CAP) {
+      const oldest = this.history.keys().next().value;
+      if (oldest !== undefined) this.history.delete(oldest);
     }
 
     const readCount = updated.length;
@@ -559,6 +524,60 @@ export class ReadTool implements Tool {
 
     // 用独特标记前缀(READ_EFFICIENCY_HINT_MARK)包裹,便于 loop-detection 精确剥离,不污染内容签名。
     return hints.length ? `${READ_EFFICIENCY_HINT_MARK}${hints.join(" ")}]` : "";
+  }
+}
+
+export class ReadTool implements Tool {
+  private stateCache: FileStateCache | null;
+  private tracker: FileReadTracker | null;
+  /** 发现 4：读窗口登记（与 read_many 共享同一实例，见 ReadHistory 注释）。 */
+  private readHistory: ReadHistory;
+
+  /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
+  readonly zodSchema = readSchema();
+
+  /**
+   * 呈现档位 `"compact"`：读文件是真实工作内容，但一次 read 常常几百行，默认铺满屏幕
+   * 会把主屏历史的可用行数吃掉（长会话上翻看不全的主因，见
+   * docs-research/bugfixes/…TUI主屏历史被截断 方案）。默认折成零行正文、标题行给
+   * 「N 行」，按 ctrl+o 与普通工具走同一套阶梯展开——正文始终留在
+   * `resultDisplay.content` 里，没丢。
+   */
+  readonly resultDisplayMode = "compact" as const;
+
+  /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "file_path");
+  }
+
+  /**
+   * 构造函数兼容两种 tracker 类型：
+   * - FileReadTracker（旧版，用于 createStatefulTools 工厂和测试）
+   * - FileStateCache（新版，LRU + 内容比对）
+   *
+   * 通过鸭子类型判断：FileStateCache 有 set() 方法，FileReadTracker 有 markAsRead() 方法。
+   *
+   * @param readHistory 与 read_many 共享的读窗口登记（R1）。缺省自建一份：直接 new 的调用方
+   *   之间互相隔离（不跨会话泄漏），只有 `createStatefulTools` 会把同一实例注入 read 与 read_many。
+   */
+  constructor(trackerOrCache?: FileReadTracker | FileStateCache, readHistory?: ReadHistory) {
+    this.readHistory = readHistory ?? new ReadHistory();
+    if (!trackerOrCache) {
+      this.stateCache = null;
+      this.tracker = null;
+    } else if ("set" in trackerOrCache && typeof trackerOrCache.set === "function") {
+      // FileStateCache
+      this.stateCache = trackerOrCache as FileStateCache;
+      this.tracker = null;
+    } else {
+      // FileReadTracker
+      this.tracker = trackerOrCache as FileReadTracker;
+      this.stateCache = null;
+    }
+  }
+
+  readOnly(): boolean {
+    return true;
   }
 
   /** 只读工具：无权限意见，交给权限系统决定 */
@@ -822,7 +841,7 @@ export class ReadTool implements Tool {
 
       // 发现 4：记录读窗口 + 追加"重复窄读"非阻塞引导（失败不影响读取结果）。
       try {
-        output += this.recordReadAndBuildHint(
+        output += this.readHistory.record(
           filePath,
           { startLine: offset, endLine: endIdx, totalLines },
           () => estimateTextTokens(text),

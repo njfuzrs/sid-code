@@ -339,6 +339,32 @@ function bufferPaste(keypressHandler: KeypressHandler): KeypressHandler {
 
 // ── 原始数据 → 按键事件解析器 ──
 
+/** CSI 参数字符：数字，或 kitty 用来分隔候选码点 / 事件类型 / 关联文本的 `:` */
+function isCsiParamChar(c: string): boolean {
+  return (c >= "0" && c <= "9") || c === ":";
+}
+
+/**
+ * 把 kitty CSI-u 的 `:` 分隔参数规范化成旧的 `;` 形态，只保留每个 `;` 段的
+ * 第一段（主码点 / modifier），其余（候选码点、事件类型、关联文本）丢弃。
+ *
+ * 例：`38:55;2u` → `38;2u`（主码点 38=`&`）；`38;2;38:55u` → `38;2;38u`。
+ * 不规范化会让 CSI-u 正则匹配失败：主字符丢失，剩余参数逐字符漏进输入框
+ * （方案文档 §6.1 实测 `\x1b[38:55;2u` → `&` 丢 + `55;2u` 漏入）。
+ */
+function normalizeCsiParams(cmd: string): string {
+  if (!cmd.includes(":")) return cmd;
+  const hasTerminator = /[~^$u]$/.test(cmd);
+  const terminator = hasTerminator ? cmd.slice(-1) : "";
+  const body = hasTerminator ? cmd.slice(0, -1) : cmd;
+  return (
+    body
+      .split(";")
+      .map((part) => part.split(":")[0] ?? "")
+      .join(";") + terminator
+  );
+}
+
 export function createDataListener(keypressHandler: KeypressHandler) {
   const parser = emitKeys(keypressHandler);
   parser.next();
@@ -488,7 +514,10 @@ function* emitKeys(keypressHandler: KeypressHandler): Generator<void, void, stri
 
         const cmdStart = sequence.length - 1;
 
-        while (ch >= "0" && ch <= "9") {
+        // kitty CSI-u 参数允许 `:` 分隔（候选码点 / 事件类型 / 关联文本）。
+        // 采集时必须一并向后吃，否则 `\x1b[38:55;2u` 会在 `:` 处截断，
+        // 剩余 `55;2u` 逐字符漏进输入框（方案文档 §6.1）。
+        while (isCsiParamChar(ch)) {
           ch = yield;
           sequence += ch;
         }
@@ -497,7 +526,7 @@ function* emitKeys(keypressHandler: KeypressHandler): Generator<void, void, stri
           while (ch === ";") {
             ch = yield;
             sequence += ch;
-            while (ch >= "0" && ch <= "9") {
+            while (isCsiParamChar(ch)) {
               ch = yield;
               sequence += ch;
             }
@@ -520,7 +549,7 @@ function* emitKeys(keypressHandler: KeypressHandler): Generator<void, void, stri
           sequence += ch;
         }
 
-        const cmd = sequence.slice(cmdStart);
+        const cmd = normalizeCsiParams(sequence.slice(cmdStart));
         let match;
 
         if ((match = /^(\d+)(?:;(\d+))?(?:;(\d+))?([~^$u])$/.exec(cmd))) {

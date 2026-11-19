@@ -27,6 +27,19 @@ import {
 import { MEASURED_PROGRESS_KEY } from "../query/measured-progress.ts";
 import { TODO_REWORK_KEY } from "../query/todo-rework.ts";
 
+/**
+ * PR7 重修（D3-2）：一条**在途**用量的登记内容（见 `SessionState.inFlightUsage`）。
+ *
+ * `usage` 是**累计**值（该子代理到此刻为止的总量），不是单轮增量：调用方
+ * （`agent/agentic-loop.ts`）本来就在维护 `totalUsage`，两边各累加一份必然漂移。
+ */
+export interface InFlightUsageEntry {
+  model: string;
+  /** 计价用的 provider 名；缺省时按模型名推断（与 `updateUsage` 同一条回退）。 */
+  provider?: string;
+  usage: Usage;
+}
+
 /** 单个模型的用量统计 */
 export interface ModelUsageStats {
   /**
@@ -260,6 +273,24 @@ export class SessionState {
   private sessionData = new Map<string, any>();
   /** 用户配置的模型列表（携带定价 + provider 信息），用于定价/inferProvider 优先使用 */
   private availableModels: PricingModelEntry[] = [];
+  /**
+   * PR7 重修（D3-2）：**在途用量**台账 —— 已发生、但还没经 `usage-sink` 入账的子代理用量。
+   *
+   * 为什么需要这张表：子代理的成本原先只在**执行结束后**由 `agent/usage-sink.ts`
+   * 入账一次，于是预算闸在子代理运行期间读到的永远是「它开始之前」的数字。
+   * G3 的 C4 实测（方案 §8.11）：$0.015 的预算下子代理跑了 33 轮、烧掉 $0.0441
+   * ——预算的 3.0 倍——才自然结束，撞闸的反而是父会话的下一轮。
+   * 判据要「超限即停」，就必须看得见在途用量。
+   *
+   * 为什么不直接把在途量 `updateUsage` 掉（改成每轮入账）：那会把会计口径从
+   * 「已结算」改成「已发生」——`SubagentCost` 事件与 `total_cost_usd` 的对账关系
+   * 随之改变（轨迹里会出现「总额已含子代理、但子代理成本事件还没发」的窗口）。
+   * 那是口径变更，不是修 D3。这里只多开一个**预算判据专用**的读口。
+   *
+   * key 是子代理 id：并发子代理各占一条，判据读全体之和。只算「自己这一份」
+   * 会让 n 个并发子代理各花到预算上限（n 倍超支）。
+   */
+  private inFlightUsage = new Map<string, InFlightUsageEntry>();
   /**
    * 缺口7：会话累计轮次（**不随用户消息重置**）。
    *
@@ -541,6 +572,9 @@ export class SessionState {
     this.mainContextStock = 0;
     // D13：逐次明细随计数器一起清（/clear 开新会话，旧会话的轮次分析不该残留）。
     this.requestLog = [];
+    // PR7 重修：在途台账也归零。清掉不丢账 —— 还在跑的子代理下一轮会按自己的
+    // 累计用量重新登记，而「已入账」那部分本来就在 totalCostUSD 之外单独存。
+    this.inFlightUsage.clear();
   }
 
   /**
@@ -802,6 +836,61 @@ export class SessionState {
    */
   getEffectiveTotalCostUSD(): number {
     return this.totalCostUSD + this.sideCostUSD;
+  }
+
+  /**
+   * PR7 重修（D3-2）：登记一个在途子代理的**累计**用量（覆盖写，不是累加）。
+   *
+   * 只在「配了预算」的会话里被调用：注入方（`cli/app.ts`）不配预算时根本不装上报器，
+   * 循环里 `onInFlightUsage` 是 undefined，整段逻辑不存在 —— 与 PR7 原判据
+   * 「只对配了预算的用户生效」保持一致。
+   *
+   * 覆盖写而不是累加：调用方每轮传的是它自己的 `totalUsage`（累计），
+   * 两边各自累加一份会在重试 / 续写轮上错账，且无从对账。
+   */
+  setInFlightUsage(key: string, entry: InFlightUsageEntry): void {
+    this.inFlightUsage.set(key, entry);
+  }
+
+  /**
+   * PR7 重修（D3-2）：子代理结束（成功 / 失败 / 中止 / 抛异常）时清掉它那一条。
+   *
+   * ⚠️ 漏清的后果不是「少算钱」而是**多算钱且永久持续**：这个数会被每一轮预算判据
+   * 累加进去，而子代理早已结束、那笔钱也已由 `usage-sink` 入账 —— 两边叠加会让用户
+   * 在根本没花那么多的时候被拦停。所以清理必须挂在覆盖所有出口的 finally 上
+   * （`sub-agent.ts` 的 `execute` / `executeCustom` 各自那一处）。
+   */
+  clearInFlightUsage(key: string): void {
+    this.inFlightUsage.delete(key);
+  }
+
+  /**
+   * PR7 重修（D3-2）：在途成本（美元）。
+   *
+   * 按 {@link calculateCost} **同一套公式现算**，不在这里另存金额：金额一旦存下来，
+   * 分时段定价（D11）、端点精确价、兜底价这些口径就会在这里长成第二份实现。
+   */
+  getInFlightCostUSD(): number {
+    let total = 0;
+    for (const entry of this.inFlightUsage.values()) {
+      total += this.calculateCost(entry.model, entry.usage, entry.provider);
+    }
+    return total;
+  }
+
+  /**
+   * PR7 重修（D3-2）：**预算判据专用**的总花费 = 已入账 + 在途。
+   *
+   * 与 {@link getEffectiveTotalCostUSD} 并列、而不是改它：后者是展示与对账口径
+   * （footer 费用列、`/cost`、轨迹 `total_cost_usd`），那里子代理成本由 `usage-sink`
+   * 在结束时一次性入账，语义是「一笔已结算的钱」；预算闸要的是「此刻已经发生的钱」。
+   * 两个口径各自保持单一，混成一个会让展示层在子代理运行期间跳动、轨迹对账出现窗口。
+   *
+   * 命中判据仍由 `query/loop.ts` 的 `checkPreRequestBudgetStop` 唯一实现，
+   * 本方法只负责把「已花多少」这个输入补齐 —— 主循环与子代理因此读同一个数。
+   */
+  getBudgetEffectiveCostUSD(): number {
+    return this.getEffectiveTotalCostUSD() + this.getInFlightCostUSD();
   }
 
   /**

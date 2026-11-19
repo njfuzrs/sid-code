@@ -22,6 +22,8 @@ import { searchToolPaths } from "./jit-affected-paths.ts";
 import { isBinaryContent, BINARY_CHECK_WINDOW } from "./binary-detect.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
+import { ReadHistory } from "./read.ts";
+import { estimateTextTokens } from "../context/token.ts";
 
 /** 每文件最大行数 */
 const MAX_LINES_PER_FILE = 400;
@@ -134,6 +136,12 @@ export class ReadManyTool implements Tool {
    * 命中的文件从批量读取结果剔除，对齐 glob/ls/grep。
    */
   private isPathHidden?: (absPath: string) => boolean;
+  /**
+   * R1：读窗口登记。与 `read` 共享同一个实例（由 `createStatefulTools` 注入），
+   * 否则「先 read_many 再 read 同一文件」这类重复读在 ReadHint 事件与提示里完全看不见
+   * （方案 20261116 §4.5 R1）。缺省自建一份，直接 new 的调用方之间仍互相隔离。
+   */
+  private readHistory: ReadHistory;
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = readManySchema();
@@ -166,8 +174,10 @@ export class ReadManyTool implements Tool {
   constructor(
     trackerOrCache?: FileReadTracker | FileStateCache,
     isPathHidden?: (absPath: string) => boolean,
+    readHistory?: ReadHistory,
   ) {
     this.isPathHidden = isPathHidden;
+    this.readHistory = readHistory ?? new ReadHistory();
     if (!trackerOrCache) {
       this.stateCache = null;
       this.tracker = null;
@@ -351,11 +361,32 @@ export class ReadManyTool implements Tool {
             // 忽略 stat 失败
           }
 
+          // R1：登记本次读窗口（与 read 同一口径）。read_many 也是读文件入口，
+          // 不登记的话「先 read_many 再 read 同一文件」在 ReadHint 事件与重复读提示里完全看不见。
+          // 空文件不登记：read 对空文件提前返回、不产生提示，这里对齐同一口径。
+          let hint = "";
+          if (text.length > 0) {
+            try {
+              hint = this.readHistory.record(
+                filePath,
+                {
+                  startLine: 1,
+                  endLine: Math.max(1, Math.min(lines.length, MAX_LINES_PER_FILE)),
+                  totalLines: lines.length,
+                },
+                () => estimateTextTokens(text),
+              );
+            } catch {
+              /* 引导是锦上添花，绝不阻断读取 */
+            }
+          }
+
           return {
             filePath: filePath.replace(searchPath + "/", ""),
             content: fileContent,
             truncated,
             totalLines: lines.length,
+            hint,
           };
         }),
       );
@@ -393,7 +424,8 @@ export class ReadManyTool implements Tool {
           ? `\n[文件已截断: 共 ${result.totalLines} 行，仅显示前 ${MAX_LINES_PER_FILE} 行，使用 read 工具获取完整内容]\n\n`
           : "\n\n";
 
-        const part = partHeader + result.content + footer;
+        // R1：hint 自带 `\n\n` 前缀，放在 footer 之前 → 内容完整、提示紧跟该文件、段落分隔不破。
+        const part = partHeader + result.content + result.hint + footer;
 
         // 检查是否超过总输出上限
         if (totalChars + part.length > MAX_TOTAL_OUTPUT) {
