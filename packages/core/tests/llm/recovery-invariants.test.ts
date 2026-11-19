@@ -18,6 +18,7 @@
 
 import { describe, test, expect } from "bun:test";
 import {
+  classifyFamily,
   normalizeStreamEvent,
   normalizeThrown,
   type NormalizedLLMError,
@@ -25,6 +26,7 @@ import {
 import {
   decideRecovery,
   I1_EXCEPTIONS,
+  MAX_OVERLOADED_CONSECUTIVE,
   type AttemptHistory,
   type CallBudget,
 } from "@sid-code/core/llm/recovery-policy.ts";
@@ -92,7 +94,7 @@ const OVERFLOW_MESSAGES = [
 const freshHistory = (): AttemptHistory => ({
   attempts: [],
   totalRetries: 0,
-  consecutive529: 0,
+  consecutiveOverloaded: 0,
   degradeTried: false,
   startedAt: Date.now(),
 });
@@ -347,5 +349,82 @@ describe("A3（I3）：两种到达形态归一成同一对象、走同一命运
       expect({ status, message, ...event }).toEqual({ status, message, ...thrown });
       expect(thrown.calls).toBeGreaterThanOrEqual(2);
     }
+  });
+});
+
+// ═══ D1：overloaded 阈值覆盖 503 与 529 ═══
+
+describe("D1：`consecutiveOverloaded` / `MAX_OVERLOADED_CONSECUTIVE` 覆盖 503 与 529", () => {
+  test("503 与 529 归一化后都是 overloaded（两码共用同一条重试阈值的前提）", () => {
+    for (const status of [503, 529]) {
+      expect(classifyFamily(thrownOf(status, "x"))).toMatchObject({
+        family: "transient",
+        reason: "overloaded",
+        recognized: true,
+      });
+    }
+  });
+
+  test("overloaded 连续第 MAX_OVERLOADED_CONSECUTIVE 次即放弃（evidence.reason=budget）", () => {
+    // 前 N-1 次都是 overloaded，当前这次也是 → consecutiveOverloaded+1 恰好触顶
+    const prior = Array.from({ length: MAX_OVERLOADED_CONSECUTIVE - 1 }, () => {
+      const n = normalizeStreamEvent({ message: "x", statusCode: 529 });
+      return {
+        family: "transient" as const,
+        reason: "overloaded" as const,
+        recognized: true,
+        fingerprint: n.fingerprint,
+        status: 529,
+      };
+    });
+    for (const status of [503, 529]) {
+      const n = normalizeStreamEvent({ message: "x", statusCode: status });
+      const a = decideRecovery(
+        n,
+        {
+          attempts: prior,
+          totalRetries: 1,
+          consecutiveOverloaded: 2,
+          degradeTried: false,
+          startedAt: Date.now(),
+        },
+        budget(),
+      );
+      expect(a.kind).toBe("give_up");
+      if (a.kind === "give_up") {
+        expect(a.evidence.reason).toBe("budget");
+        // 真实状态码没有丢：放弃证据带上每次尝试的 status
+        expect(a.evidence.statuses).toEqual([529, 529, status]);
+      }
+    }
+  });
+
+  test("503 与 500 三连在放弃证据上分得开（不靠拆 ErrorReason）", () => {
+    const history = (status: number): AttemptHistory => ({
+      attempts: Array.from({ length: 2 }, () => {
+        const n = normalizeStreamEvent({ message: "x", statusCode: status });
+        return {
+          family: "transient" as const,
+          reason: classifyFamily(n).reason,
+          recognized: true,
+          fingerprint: n.fingerprint,
+          status,
+        };
+      }),
+      totalRetries: 1,
+      consecutiveOverloaded: 0,
+      degradeTried: false,
+      startedAt: Date.now(),
+    });
+    const giveUpStatuses = (status: number) => {
+      const a = decideRecovery(
+        normalizeStreamEvent({ message: "x", statusCode: status }),
+        history(status),
+        budget({ callerMaxRetries: 1 }),
+      );
+      return a.kind === "give_up" ? a.evidence.statuses : null;
+    };
+    expect(giveUpStatuses(503)).toEqual([503, 503, 503]);
+    expect(giveUpStatuses(500)).toEqual([500, 500, 500]);
   });
 });

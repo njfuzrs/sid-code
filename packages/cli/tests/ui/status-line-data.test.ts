@@ -94,6 +94,21 @@ describe("LY1 — deriveContext", () => {
     expect(deriveContext({ contextPercent: 0, defaultColor: def })).toBeNull();
   });
 
+  test("contextPercent 1 → 显示（四舍五入后非 0 即有值）", () => {
+    const r = deriveContext({ contextPercent: 1, contextTriggerPercent: 82, defaultColor: def });
+    expect(r!.text).toBe("1%/82%");
+  });
+
+  test("contextPercent 1 + estimated → ~ 前缀", () => {
+    const r = deriveContext({
+      contextPercent: 1,
+      contextTriggerPercent: 82,
+      contextEstimated: true,
+      defaultColor: def,
+    });
+    expect(r!.text).toBe("~1%/82%");
+  });
+
   test("带触发点 → 「X%/Y%」双口径", () => {
     const r = deriveContext({ contextPercent: 17, contextTriggerPercent: 82, defaultColor: def });
     expect(r!.text).toBe("17%/82%");

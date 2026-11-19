@@ -766,3 +766,57 @@ describe("P0-5 压缩来源守卫接到 getCompactionLevel", () => {
     expect(snapshot(third)).toBe(snapshot(first));
   });
 });
+
+/**
+ * D-01：锁住「60K 边界」的档位方向——注释此前把 60K~80K 写成「仅 L3 紧急截断生效」，
+ * 与实现相反（该区间走大窗口分支、三层全开）。这里锁的是 getCompactionThresholds 的实际输出，
+ * 以后若真要改成分档策略，会先在这两条用例上红，而不是变成又一处文档漂移。
+ */
+describe("D-01 压缩阈值 60K 边界方向", () => {
+  // 进程环境里若设了 P1-1 override（SID_CODE_AUTOCOMPACT_PCT），compressionRemaining 会被改写，
+  // 断言就从「档位方向」漂成「宿主环境」。两条用例内部存/恢复该变量（bun 同批多文件同进程）。
+  const withCleanEnv = <T>(fn: () => T): T => {
+    const saved = process.env.SID_CODE_AUTOCOMPACT_PCT;
+    delete process.env.SID_CODE_AUTOCOMPACT_PCT;
+    try {
+      return fn();
+    } finally {
+      if (saved === undefined) delete process.env.SID_CODE_AUTOCOMPACT_PCT;
+      else process.env.SID_CODE_AUTOCOMPACT_PCT = saved;
+    }
+  };
+
+  test("D-01 锁：窗口 > 60K 时三层全开；60K~80K 区间 masking 门槛不小于窗口，开场即 soft", () => {
+    withCleanEnv(() => {
+      for (const w of [60_001, 64_000, 70_000, 80_000]) {
+        const m = new Manager({ maxTokens: w, requestOutputBudget: 32_768 });
+        const t = m.getCompactionThresholds();
+        expect(t.smallWindow).toBe(false);
+        expect(t.maskingRemaining).toBe(80_000);
+        expect(t.compressionRemaining).toBe(60_000);
+        expect(t.emergencyRemaining).toBe(40_000);
+        // 剩余最大值 = 窗口本身，仍 ≤ masking 门槛 → soft 恒亮
+        expect(t.maskingRemaining).toBeGreaterThanOrEqual(w);
+        expect(m.getCompactionLevel(0)).toBe("soft");
+      }
+      // 边界另一侧：80,001 窗口剩余上限 = 80,001 > 80K → 空会话不进 soft
+      const above = new Manager({ maxTokens: 80_001, requestOutputBudget: 32_768 });
+      expect(above.getCompactionThresholds().maskingRemaining).toBe(80_000);
+      expect(above.getCompactionLevel(0)).toBe("none");
+    });
+  });
+
+  test("D-01 锁：窗口 ≤ 60K 走 smallWindow，只有 emergency 一档", () => {
+    withCleanEnv(() => {
+      const m = new Manager({ maxTokens: 32_768, requestOutputBudget: 32_768 });
+      const t = m.getCompactionThresholds();
+      expect(t.smallWindow).toBe(true);
+      expect(t.maskingRemaining).toBe(0);
+      expect(t.compressionRemaining).toBe(0);
+      expect(t.emergencyRemaining).toBeCloseTo(3_276.8, 1);
+      expect(t.compactionTriggerUsed).toBe(29_491);
+      // 空会话不到 90%，不触发
+      expect(m.getCompactionLevel(0)).toBe("none");
+    });
+  });
+});

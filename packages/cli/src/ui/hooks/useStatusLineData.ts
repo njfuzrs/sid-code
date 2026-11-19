@@ -156,7 +156,11 @@ export function deriveContextColor(
  * 显示条件从「已发过请求（usage 非零）」解耦为「估算有值（contextPercent > 0）」：
  * 打开 TUI / 刚 /clear 时 usage 全零但常驻开销（system prompt + 工具 schema）已在，
  * 估算值就是用户想看的「初始占用」——原条件把它整个藏掉，是本列在会话开始前不可见的原因。
- * contextPercent 归零（估算本身为 0，如空 system prompt + 零工具的极端配置）时返回 null。
+ * contextPercent 归零时返回 null。注意 `percentOfWindow` 是四舍五入后的整数百分比
+ * （`context/manager.ts` 的 `Math.round((used / maxTokens) * 100)`），所以真实隐藏条件是
+ * `used / maxTokens < 0.5%`——1M 窗口即 5,000 token 以内、32,768 窗口即 164 token 以内。
+ * 含「估算本身为 0」的极端配置，但远不止那一种：1M 窗口 + 中等工具数的新会话
+ * （实测 50 个工具 + 约 600 字 system prompt ≈ 4,439 token）同样会被隐藏。
  *
  * ~ 前缀（改动 4）：未经真实 usage 校准（contextEstimated）时给百分比加 `~`，
  * 区分「纯字符启发式估值」与「已校准实测」——首条消息后 recordActualTokens 校准，
