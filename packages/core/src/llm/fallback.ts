@@ -543,8 +543,8 @@ interface RetryContext {
   degradeTried: boolean;
   /** 是否需要禁用 keep-alive（ECONNRESET 后置位） */
   disableKeepAlive: boolean;
-  /** 连续 529 计数 */
-  consecutive529: number;
+  /** 连续 overloaded（529/503）计数 */
+  consecutiveOverloaded: number;
   /** max_tokens 溢出恢复时的覆盖值 */
   maxTokensOverride?: number;
   /** 不确定-2/3：本次 executeWithFallback 调用内累计的重试次数（连接阶段 + 流式阶段共享）。
@@ -790,6 +790,7 @@ export class ModelFallback {
               remainingMs: cd.remainingMs,
               error: cd.reason,
               probeDecision: probe.reason,
+              querySource: perCall.querySource,
             },
             perCall.agentId,
           );
@@ -805,6 +806,7 @@ export class ModelFallback {
                 remainingMs: cd.remainingMs,
                 error: cd.reason,
                 probeDecision: probe.reason,
+                querySource: perCall.querySource,
               },
               perCall.agentId,
             );
@@ -829,6 +831,7 @@ export class ModelFallback {
                 delayMs: waitMs,
                 remainingMs: cd.remainingMs,
                 error: cd.reason,
+                querySource: perCall.querySource,
               },
               perCall.agentId,
             );
@@ -1028,7 +1031,7 @@ export class ModelFallback {
       startedAt: Date.now(),
       degradeTried: false,
       disableKeepAlive: this.config.disableKeepAlive ?? false,
-      consecutive529: 0,
+      consecutiveOverloaded: 0,
       totalRetriesThisCall: perCallOptions?.priorRetries ?? 0,
       // B1-a：降级控制态从实例字段搬入 per-call 上下文（并发安全，见字段注释）。
       hasFallenBack: false,
@@ -1429,7 +1432,7 @@ export class ModelFallback {
               {
                 attempts: ctx.attempts,
                 totalRetries: ctx.totalRetriesThisCall,
-                consecutive529: ctx.consecutive529,
+                consecutiveOverloaded: ctx.consecutiveOverloaded,
                 degradeTried: ctx.degradeTried,
                 startedAt: ctx.startedAt,
               },
@@ -1495,7 +1498,8 @@ export class ModelFallback {
             fingerprint: normalized.fingerprint,
             status: normalized.status,
           });
-          ctx.consecutive529 = verdict.reason === "overloaded" ? ctx.consecutive529 + 1 : 0;
+          ctx.consecutiveOverloaded =
+            verdict.reason === "overloaded" ? ctx.consecutiveOverloaded + 1 : 0;
 
           if (action.kind === "give_up") {
             this.recordGiveUp(
@@ -1611,6 +1615,7 @@ export class ModelFallback {
                 delayMs: sharedCooldownMs,
                 remainingMs: cooldownRemaining,
                 error: `retry aligned to shared cooldown (slot ${cooldownSlot})`,
+                querySource: perCall.querySource,
               },
               perCall.agentId,
             );
@@ -1653,6 +1658,7 @@ export class ModelFallback {
               // watchdog 在退避睡眠期间杀掉生成器也不丢）。
               discardedChars: produced.chars,
               discardedThinkingChars: produced.thinkingChars,
+              querySource: perCall.querySource,
             },
             perCall.agentId,
           );
@@ -1954,7 +1960,16 @@ export class ModelFallback {
     if (ctx) ctx.hasFallenBack = true;
     this.lastCallFellBack = true;
     log.warn("FALLBACK", `切换到 fallback 模型: ${targetModel}`);
-    this.listener?.onFallback?.("主模型失败", targetModel, {
+    // D2 归因：优先给结构化证据（`lastGiveUp` 是放弃链路的完整证据链），其次给
+    // 原始错误原文，最后才退回旧通用文案。此前这里硬编码「主模型失败」，实测
+    // 9/9 条 fallback 事件全是同一句，回答不了「这 9 次分别因为什么降级」。
+    const fallbackGiveUp = ctx?.lastGiveUp;
+    const fallbackReason = fallbackGiveUp
+      ? `${fallbackGiveUp.family}/${fallbackGiveUp.reason} ` +
+        `status=[${fallbackGiveUp.statuses.map((s) => s ?? "-").join(",")}] ` +
+        `attempts=${fallbackGiveUp.attempts}`
+      : (ctx?.lastRetryError ?? "主模型失败");
+    this.listener?.onFallback?.(fallbackReason, targetModel, {
       fromModel: params.model,
       viaDecision,
     });
@@ -1965,7 +1980,16 @@ export class ModelFallback {
         type: "fallback",
         model: params.model,
         fallbackModel: targetModel,
-        error: "主模型失败",
+        error: fallbackReason,
+        // ⛔ 取 ctx?.perCall.querySource，不是 params.querySource：
+        //    perCall 里是「perCallOptions?.querySource ?? config.querySource」解析后的值（约 :675），
+        //    用 params 会漏掉「未显式传、回落 config」的默认路径。
+        querySource: ctx?.perCall.querySource,
+        viaDecision,
+        // attempts 的语义是「本次调用总尝试次数」（与 recovery_give_up 同字段同义，
+        // 见 retry-telemetry.ts 里该字段注释），而 totalRetriesThisCall 是**重试次数**
+        //（从 0 起）→ 必须 +1，否则差一。
+        attempts: (ctx?.totalRetriesThisCall ?? 0) + 1,
       },
       ctx?.perCall.agentId,
     );
@@ -2081,6 +2105,7 @@ export class ModelFallback {
         error: ctx.lastRetryError,
         reopenReason: lastReason || undefined,
         provider: provider.name(),
+        querySource: ctx.perCall.querySource,
       },
       ctx.perCall.agentId,
     );

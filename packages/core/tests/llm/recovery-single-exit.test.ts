@@ -89,7 +89,7 @@ describe("D：单一决策点静态门禁", () => {
     expect(idx).toBeGreaterThan(0);
     const branch = methodBodyFrom(fallbackCode, idx);
     expect(branch).not.toMatch(/tryFallback\s*\(/);
-    expect(branch).not.toMatch(/decideRecovery|recordGiveUp|consecutive529|markSuspect/);
+    expect(branch).not.toMatch(/decideRecovery|recordGiveUp|consecutiveOverloaded|markSuspect/);
     expect(branch).toMatch(/throw new NormalizedErrorCarrier\s*\(/);
   });
 

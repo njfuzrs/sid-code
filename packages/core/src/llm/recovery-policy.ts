@@ -58,8 +58,8 @@ export interface AttemptHistory {
   attempts: readonly AttemptRecord[];
   /** 本次调用内已执行的重试次数（`maxRetriesPerCall` 的分子） */
   totalRetries: number;
-  /** 连续 529 次数（不含当前这次） */
-  consecutive529: number;
+  /** 连续 overloaded（529/503）次数（不含当前这次） */
+  consecutiveOverloaded: number;
   /** 本次调用是否已试过非流式降级 */
   degradeTried: boolean;
   /** 本次调用开始的时刻（`RecoveryGiveUp.spanMs`） */
@@ -132,8 +132,8 @@ export const HOST_SLEEP_NETWORK_READY_MS = 2_000;
 
 /** S3：一次重试要「有意义」所需的最小剩余时间（与 fallback.ts 同值同义） */
 export const MIN_USEFUL_ATTEMPT_MS = 5_000;
-/** 连续 529 达到此值即放弃本模型转 fallback（原 MAX_529_CONSECUTIVE，行为不变） */
-export const MAX_529_CONSECUTIVE = 3;
+/** 连续 overloaded（529/503）达到此值即放弃本模型转 fallback（仅改名，阈值与行为不变） */
+export const MAX_OVERLOADED_CONSECUTIVE = 3;
 /** persistent 模式预算耗尽后的长等待 */
 export const PERSISTENT_MAX_DELAY_MS = 300_000;
 
@@ -253,7 +253,16 @@ export function decideRecovery(
     ) {
       return giveUp("same_fingerprint");
     }
-    if (verdict.reason === "overloaded" && history.consecutive529 + 1 >= MAX_529_CONSECUTIVE) {
+    // 503 与 529 共用这条阈值是**有意的**：两者在 error-normalize 里同为 `overloaded`
+    // （503 = 滚动发布 / 实例重启，529 = 容量过载），对调用方来说是同一类「服务端暂时扛不住」，
+    // 分两套预算只会让恢复路径多一条分支。真实状态码并没有丢：上面 giveUp 的 evidence 自动带上
+    // `statuses`，所以「503 三连」与「500 三连」在 recovery_give_up 事件上仍然分得开。
+    // 若要按状态码看放弃分布，应在 digest 侧聚合 `statuses`；⛔ 不要为此拆 ErrorReason。
+    // 另外 503 的恢复时间分布与 529 不同，将来真要给它单独的更长预算，需单独论证 + 单独立项。
+    if (
+      verdict.reason === "overloaded" &&
+      history.consecutiveOverloaded + 1 >= MAX_OVERLOADED_CONSECUTIVE
+    ) {
       return giveUp("budget");
     }
     if (attemptNo >= callerAttempts) {

@@ -14,7 +14,7 @@
  * ── 为什么默认每次调用构造一个 ModelFallback 实例 ──
  *
  * 看似浪费，实则是 B1 的直接收益：漏斗的**控制态已全部搬进 per-call 的
- * `RetryContext`**（`hasFallenBack` / `consecutive529` / `needsAuthRefresh` …），
+ * `RetryContext`**（`hasFallenBack` / `consecutiveOverloaded` / `needsAuthRefresh` …），
  * 实例本身只剩一份不可变配置。所以：
  *   - 构造成本 ≈ 一个对象字面量，没有连接池、没有定时器、没有后台任务；
  *   - 并行子代理天然状态隔离（B4 想解决的问题在这里不存在）；
