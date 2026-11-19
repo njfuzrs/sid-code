@@ -41,7 +41,7 @@ import { clearAllTasks, getTask } from "../../src/task/registry.ts";
 import { dequeuePendingNotifications } from "../../src/task/notification.ts";
 import { TaskStopTool } from "../../src/tool/task-stop.ts";
 import { describeStopNotice } from "../../src/agent/stop-notice.ts";
-import { buildSalvageOutput, type SalvageSnapshot } from "../../src/agent/salvage.ts";
+import { buildSalvageOutput, SalvageCollector } from "../../src/agent/salvage.ts";
 import { runAgentLoop } from "../../src/agent/agentic-loop.ts";
 import { Manager as ContextManager } from "../../src/context/manager.ts";
 import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
@@ -77,19 +77,37 @@ function makeRunningTask(description = "只读探查"): { id: string; outputFile
   return { id: taskState.id, outputFile: taskState.outputFile };
 }
 
-/** 构造一份含确定性清单的残卷（模拟 sub-agent abort 后交给 failAgentTask 的正文） */
+/**
+ * 构造一份含确定性清单的残卷（模拟 sub-agent abort 后交给 failAgentTask 的正文）。
+ *
+ * 走**真实采集链路**：`SalvageCollector.recordTurn` → `snapshot()` → `buildSalvageOutput`。
+ * 上一版直接手搓一个 `SalvageSnapshot` 字面量，等于把「采集器到底填不填 read-files /
+ * recent-calls」这一半换成常量 —— 而缺口 2 的报障形态正是「收集了却落不了盘」，
+ * 绕过采集器等于测不到收集端。现在 `recordTurn` 里喂的是两个真实工具调用记录，
+ * 清单是采集器自己从 input 里推出来的（`read` 的 offset/limit → `1-120`、`grep` → 主参数）。
+ */
 function makeSalvageText(finalText = "被硬杀前的结论"): string {
-  const snap: SalvageSnapshot = {
-    changedFiles: [],
-    readFiles: [{ path: "packages/core/src/agent/loop.ts", ranges: ["1-120"] }],
-    recentCalls: ["read: packages/core/src/agent/loop.ts", "grep: runAgentLoop"],
-    findings: ["定位到三处空转"],
-    toolEvidence: [],
-    turns: 2,
-    toolUseCount: 2,
+  const collector = new SalvageCollector();
+  collector.recordTurn({
+    turn: 1,
+    textOutput: "",
+    tools: [
+      {
+        name: "read",
+        input: { file_path: "packages/core/src/agent/loop.ts", offset: 1, limit: 120 },
+      },
+    ],
+    tokenCount: 60,
+    toolUseCount: 1,
+  });
+  collector.recordTurn({
+    turn: 2,
+    textOutput: "定位到三处空转",
+    tools: [{ name: "grep", input: { pattern: "runAgentLoop" } }],
     tokenCount: 100,
-  };
-  return buildSalvageOutput(snap, {
+    toolUseCount: 2,
+  });
+  return buildSalvageOutput(collector.snapshot(), {
     reason: "aborted",
     readOnlyAgent: true,
     finalText,
@@ -174,6 +192,53 @@ describe("停止归因进后台完成通知（D1 二次修复）", () => {
     // 这里用源码哨兵锁住生产端：删掉那行赋值立刻红。
     const src = readFileSync(join(import.meta.dir, "../../src/agent/sub-agent.ts"), "utf-8");
     expect(src).toContain("stopAction: result.stopAttribution?.stop_action");
+  });
+});
+
+// ─── 缺口 1b：失败出口的停止归因（PR11 / X1 第三次补齐）───────────────────
+
+describe("失败出口也带停止原因", () => {
+  test("failAgentTask 收到 loop_recovery_exhausted → summary 写明是循环耗尽", async () => {
+    const { id } = makeRunningTask("循环耗尽的后台子代理");
+
+    await failAgentTask(
+      id,
+      "<partial-result>断在半路的结论</partial-result>",
+      true,
+      "loop_recovery_exhausted",
+    );
+
+    const notif = dequeuePendingNotifications()[0]!;
+    expect(notif.structured!.status).toBe("failed");
+    const summary = notif.structured!.summary;
+    expect(summary).toContain("执行失败");
+    // 关键：父代理要能区分「子代理做不出来」与「被上限截断」——
+    // 后者接手接着做还有价值，前者重派也是白花。
+    expect(summary).toContain("恢复次数耗尽");
+  });
+
+  test("对照组：不带 stopAction 的旧调用方不多拼附注", async () => {
+    const { id } = makeRunningTask("普通失败");
+
+    await failAgentTask(id, "ECONNRESET", true);
+
+    const summary = dequeuePendingNotifications()[0]!.structured!.summary;
+    expect(summary).toBe('Agent "普通失败" 执行失败: ECONNRESET');
+  });
+
+  test("生产端接线哨兵：失败分支必须把 stop_action 传给 failAgentTask", () => {
+    // 与完成通道那条哨兵对称。上一轮的缺口是「字段定义了、消费写了、生产没赋值」，
+    // 这一轮是「消费侧加了参数、生产侧没传」——同一个失败形态的第二次出现，
+    // 所以这里同样用源码哨兵锁住生产端，删掉传参立刻红。
+    //
+    // 必须锁到 **failAgentTask 这次调用** 的参数序列，不能用 `toContain(字段名)`：
+    // 同一文件里成功分支还有 `stopAction: result.stopAttribution?.stop_action`，
+    // 纯子串断言会被它满足 —— 变异自证实测「删掉失败分支传参」后仍 16 pass，
+    // 也就是一个恒绿的哨兵。正则锚住调用名与四个实参的相对顺序，才真的能红。
+    const src = readFileSync(join(import.meta.dir, "../../src/agent/sub-agent.ts"), "utf-8");
+    expect(src).toMatch(
+      /failAgentTask\(\s*taskId,\s*result\.output,\s*notify,\s*result\.stopAttribution\?\.stop_action\s*[,)]/,
+    );
   });
 });
 
@@ -350,5 +415,97 @@ describe("G1 第 3 条：窗口耗尽出口先腾空间再收尾", () => {
     // 两次请求：撞窗口那次 + 收尾轮；收尾轮不带 tools
     expect(calls.length).toBe(2);
     expect(((calls[1] as any).tools ?? []) as unknown[]).toHaveLength(0);
+  });
+});
+
+// ─── G1 补齐：empty_param_exhausted 出口也要跑收尾轮 ──────────────────────
+
+/**
+ * 一条**空参数** tool_use：不 yield `input_json_delta`，stream-processor 会落成 `input={}`。
+ * 这正是 DeepSeek 退化（identity-only / broken-JSON）的形态。
+ */
+async function* emptyParamStream(id: string): AsyncIterable<StreamEvent> {
+  yield { type: "message_start", message: { usage: { inputTokens: 10, outputTokens: 0 } } } as any;
+  yield {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "tool_use", id, name: "read" },
+  } as any;
+  yield { type: "content_block_stop", index: 0 } as any;
+  yield {
+    type: "message_delta",
+    delta: { stop_reason: "end_turn" },
+    usage: { outputTokens: 5 },
+  } as any;
+}
+
+describe("G1 补齐：empty_param_exhausted 出口也跑收尾轮", () => {
+  test("连续空参数达上限 → 多跑一轮总结，父代理拿到的是结论而不是断句", async () => {
+    // MAX_EMPTY_PARAM_RETRIES = 3：
+    //   第 1~3 次空参数 → 注入重试提示后 continue（不执行工具）
+    //   第 4 次 → 进 exhausted 出口（本 PR 之前这里直接 return，不跑收尾轮）
+    //   第 5 次 → 本 PR 新增的收尾轮
+    const { provider, calls } = makeScriptedProvider([
+      () => emptyParamStream("e1"),
+      () => emptyParamStream("e2"),
+      () => emptyParamStream("e3"),
+      () => emptyParamStream("e4"),
+      () => textStream("总结：已确认三处空转，从 loop.ts:120 继续", "end_turn"),
+    ]);
+
+    const ctxMgr = new ContextManager({ maxTokens: 100_000 });
+    ctxMgr.setSystemPrompt("test");
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "看看 loop" }] });
+
+    const result = await runAgentLoop({
+      provider,
+      model: "mock-model",
+      ctxMgr,
+      tools: new ToolRegistry(),
+      maxTurns: 20,
+      signal: new AbortController().signal,
+      loopDetector: new LoopDetector(),
+      permissionChecker: undefined,
+    } as any);
+
+    expect(result.success).toBe(true);
+    // 归因仍是这条出口（为它多花的那一轮不改变出口性质）
+    expect(result.stopAction).toBe("empty_param_exhausted");
+    // 关键判据：交回的是收尾轮的结论，而不是最后一句空参数退化的残留文本
+    expect(result.lastTextOutput).toContain("总结：已确认三处空转");
+    // 5 次请求 = 4 次空参数 + 1 次收尾轮；收尾轮不带 tools
+    expect(calls.length).toBe(5);
+    expect(((calls[4] as any).tools ?? []) as unknown[]).toHaveLength(0);
+  });
+
+  test("收尾轮自己不产出文本时，仍保持原有成功语义（不误报失败）", async () => {
+    const { provider, calls } = makeScriptedProvider([
+      () => emptyParamStream("e1"),
+      () => emptyParamStream("e2"),
+      () => emptyParamStream("e3"),
+      () => emptyParamStream("e4"),
+      // 收尾轮返回空文本：runFinalizeTurn 返回 false，但调用方保持 success:true
+      () => textStream("", "end_turn"),
+    ]);
+
+    const ctxMgr = new ContextManager({ maxTokens: 100_000 });
+    ctxMgr.setSystemPrompt("test");
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "看看 loop" }] });
+
+    const result = await runAgentLoop({
+      provider,
+      model: "mock-model",
+      ctxMgr,
+      tools: new ToolRegistry(),
+      maxTurns: 20,
+      signal: new AbortController().signal,
+      loopDetector: new LoopDetector(),
+      permissionChecker: undefined,
+    } as any);
+
+    expect(result.success).toBe(true);
+    expect(result.stopAction).toBe("empty_param_exhausted");
+    // 收尾轮确实被请求过（不是靠"没跑也绿"通过）；只是它没产出可用文本
+    expect(calls.length).toBe(5);
   });
 });

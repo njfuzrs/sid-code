@@ -1133,7 +1133,10 @@ export class SubAgent {
         };
         await completeAgentTask(taskId, agentResult, notify);
       } else {
-        await failAgentTask(taskId, result.output, notify);
+        // PR11（X1）补齐：失败出口也把停止归因传下去。
+        // 「循环恢复耗尽」「窗口耗尽后总结失败」这类 success:false 的出口，父代理需要
+        // 分清「子代理做不出来」和「被上限/窗口截断」——后者接手接着做还有价值。
+        await failAgentTask(taskId, result.output, notify, result.stopAttribution?.stop_action);
       }
     } catch (err: any) {
       // 顶层异常兜底
