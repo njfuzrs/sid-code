@@ -84,8 +84,8 @@ Claude Code 的主要能力面这里都有（agentic loop、工具调用、权�
 
 | 项 | 现状 |
 | --- | --- |
-| 代码量 | 65.7 万行 TypeScript（含测试 29.1 万行；已扣掉渲染底座里原样继承自上游 ink 的 7,796 行） |
-| 工程闭环 | 19,237 个单测、Agent 引擎行覆盖率 90.1%；每个 PR 在 CI 上跑全量，全绿才合入 |
+| 代码量 | 79.7 万行 TypeScript（含测试 37.0 万行；已扣掉渲染底座里原样继承自上游 ink 的 7,791 行） |
+| 工程闭环 | 23,353 个单测、Agent 引擎行覆盖率 91.4%；每个 PR 在 CI 上跑全量，全绿才合入 |
 | 能力面 | 41 个内置工具、MCP Client / Server、LSP 代码智能、权限门控、可观测轨迹 |
 | 评测体系 | 独立评测集 [agent-traj-bench](https://github.com/njfuzrs/agent-traj-bench)：从真实会话逆向构造的 39 道 SWE-bench 风格题 |
 
@@ -93,10 +93,10 @@ Claude Code 的主要能力面这里都有（agentic loop、工具调用、权�
   数字口径（2026-09-30 换口径，与官网首页能力条、作者简历三处同源）：
     旧值「20 万行以上 / 600+ 测试文件 / 8000+ 单测 / 32 类 Hook / 30 个 eval case」是静态扫描口径，
     与简历对不上；且 30 个 eval case 已于 2026-09-18 随 evals/ 旧题集一并删除，继续挂着就是不实陈述。
-    现在前两行的数字全部取自 docs-research 仓 scripts/resume-metrics.ts（`--coverage`）的同一次运行（2026-11-04，HEAD=7f51a6f9）：
-    代码行数    657,241 = 665,037（生产 + 测试 + 工程脚本）− 7,796（packages/tui/src 里 git blame 仍归上游 ink 导入提交 8fd9048d 的行）；测试 291,457
-    单测用例    `bun test` 实际执行数 19,237（含动态生成用例，静态 grep 数不到）
-    引擎覆盖率  packages/core/src 行覆盖 90.1%（98,039 / 108,844）；只报引擎层，别换成全仓口径
+    现在前两行的数字全部取自 docs-research 仓 scripts/resume-metrics.ts（`--coverage`）的同一次运行（2026-11-20，HEAD=96e04094）：
+    代码行数    796,831 = 804,622（生产 + 测试 + 工程脚本）− 7,791（packages/tui/src 里 git blame 仍归上游 ink 导入提交 8fd9048d 的行）；测试 370,073
+    单测用例    `bun test` 实际执行数 23,353（含动态生成用例，静态 grep 数不到）
+    引擎覆盖率  packages/core/src 行覆盖 91.4%（113,201 / 123,880）；只报引擎层，别换成全仓口径
     内置工具    sid-code --dump-tools 数组长度（41，与脚本生成的 ref/tools.md 同源同值）
     Hook 事件数不再写进这张表：HookEventName 枚举 37 类里有一部分是预留、尚未接线，
     放在「现状」里会被读成 37 类都能用。完整清单见 website/ref/hooks.md。

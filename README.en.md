@@ -79,7 +79,7 @@ is structurally positioned not to offer**:
 | Capability | What it means |
 | --- | --- |
 | **Fits enterprise plumbing** | Internal gateway billing, MCP integrations, team-wide default config distribution — designed for enterprise networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
-| **Any model, and the whole harness is yours** | Change one config line to swap models (three protocol families — Anthropic / OpenAI / Ollama, where the OpenAI family covers both Chat Completions and Responses — with automatic fallback); write one file to extend it (hooks, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
+| **Any model, and the whole harness is yours** | Change one config line to swap models (three protocol families — Anthropic / OpenAI / Ollama, where the OpenAI family covers both Chat Completions and Responses — with automatic fallback); write one file to extend it (hooks, skills, subagents, MCP); open one PR to change the core (41 built-in tools, context engineering, the main loop — all open source) |
 | **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure, and never enter anyone's training set. That's a compliance prerequisite, and it's also the fuel for improving the agent |
 | **Every cent and every decision is auditable** | Latency, cost, and decisions are all recorded in local trajectories, on by default; evals run before each release to catch regressions. It's also the only measurement source behind the directions we track release over release: faster, cheaper, less rework, safer |
 
@@ -95,8 +95,8 @@ shared upstream ink), 0 matching sentences, no internal names carried over. Meth
 
 | Item | Status |
 | --- | --- |
-| Codebase | 657k lines of TypeScript (including 291k lines of tests; excludes the 7,796 lines of the rendering layer still inherited verbatim from upstream ink) |
-| Engineering loop | 19,237 unit tests, 90.1% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
+| Codebase | 797k lines of TypeScript (including 370k lines of tests; excludes the 7,791 lines of the rendering layer still inherited verbatim from upstream ink) |
+| Engineering loop | 23,353 unit tests, 91.4% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
 | Surface area | 41 built-in tools, MCP client / server, LSP code intelligence, permission gating, observable trajectories |
 | Evaluation | Separate benchmark [agent-traj-bench](https://github.com/njfuzrs/agent-traj-bench): 39 SWE-bench-style tasks reverse-built from real sessions |
 
@@ -107,11 +107,11 @@ shared upstream ink), 0 matching sentences, no internal names carried over. Meth
     cases") came from static scans and didn't match the resume; the 30 eval cases were deleted
     on 2026-09-18 along with the old evals/ suites, so keeping them here would be untrue.
     The first two rows now come from one run of scripts/resume-metrics.ts (`--coverage`)
-    in the docs-research repo (2026-11-04, HEAD=7f51a6f9):
-    lines of code  657,241 = 665,037 (production + tests + tooling) − 7,796 (lines in packages/tui/src
-                   that git blame still attributes to the upstream ink import commit 8fd9048d); tests 291,457.
-    unit tests     19,237 as executed by `bun test` (includes generated cases a static grep misses)
-    coverage       90.1% line coverage of packages/core/src (98,039 / 108,844); engine layer only
+    in the docs-research repo (2026-11-20, HEAD=96e04094):
+    lines of code  796,831 = 804,622 (production + tests + tooling) − 7,791 (lines in packages/tui/src
+                   that git blame still attributes to the upstream ink import commit 8fd9048d); tests 370,073.
+    unit tests     23,353 as executed by `bun test` (includes generated cases a static grep misses)
+    coverage       91.4% line coverage of packages/core/src (113,201 / 123,880); engine layer only
     built-in tools length of the `sid-code --dump-tools` array (41, same source as ref/tools.md)
     Hook event count is no longer in this table: some of the 37 HookEventName members are
     reserved and not wired yet, so "37" here would read as 37 usable events. See website/ref/hooks.md.
