@@ -27,7 +27,7 @@
       "date": "2026-11-20",
       "highlight": "plan 模式能直接跑只读命令，批准计划时当场选执行模式",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
