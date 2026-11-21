@@ -2,7 +2,7 @@
   "scenario": "C2",
   "exitCode": 0,
   "total": {
-    "bytes": 6414,
+    "bytes": 6472,
     "eraseScreen": 1,
     "eraseScrollback": 1,
     "syncBegin": 4,
@@ -21,7 +21,7 @@
       "buffer": "normal",
       "cursor": {
         "x": 0,
-        "y": 8,
+        "y": 9,
         "hidden": true
       },
       "modes": {
@@ -31,7 +31,7 @@
         "wraparound": true
       },
       "metrics": {
-        "bytes": 256,
+        "bytes": 314,
         "eraseScreen": 0,
         "eraseScrollback": 0,
         "syncBegin": 1,
@@ -46,6 +46,7 @@
         "",
         "",
         "⏺ bash bash 参数 2                                                 (执行中…)",
+        "  ctrl+o 展开完整输出",
         "",
         "执行中…"
       ],
@@ -90,6 +91,19 @@
             {
               "text": "(执行中…)",
               "style": "fg=#89b4fa"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "ctrl+o",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "展开完整输出",
+              "style": "fg=#6c7086"
             }
           ]
         }
@@ -149,6 +163,7 @@
         "",
         "",
         "⏺ bash bash 参数 2                                                 (执行中…)",
+        "  ctrl+o 展开完整输出",
         "",
         "⏺ read_file read_file 参数 10",
         "",

@@ -230,3 +230,57 @@ describe("compact 档的边界：错误与单行", () => {
     expect(frame).toContain("未找到匹配的内容");
   });
 });
+
+/**
+ * 「执行中 → 成功」不许有高度变化。
+ *
+ * 这是 2026-11-21 那次「TUI 闪得很厉害」的根因锁：执行中的 shell 卡片原本渲染
+ * 「命令行区 + 4 行实时输出 tail」（最多 7 行），完成瞬间折成 1 行。主屏帧一旦占满视口，
+ * **任何变矮**都会触发整帧重画（`packages/tui/src/frame/main-screen.ts` 的
+ * `p >= viewportRows` 分支：清屏 + 清 scrollback + 重写全部历史），长会话一次几百 KB。
+ * 观感就是「先刷地展开，再刷地收起」。
+ */
+describe("执行中的 shell：与成功后同高（0 高度变化）", () => {
+  beforeEach(() => setCompactHintCount(3));
+
+  /** 执行中的 bash：没有 result、没有 displayMode，只有 tail 快照。 */
+  const runningBash = (progressMessage: string): ToolCallDisplay =>
+    bashTool({ status: "executing", result: undefined, displayMode: undefined, progressMessage });
+
+  test("执行中只有标题行一行，行数与成功后完全相同", () => {
+    const tail = "第 1 行\n第 2 行\n第 3 行\n第 4 行";
+    const running = renderTools([runningBash(tail)]);
+    const done = renderTools([
+      bashTool({ status: "success", result: tail, displayMode: "compact" }),
+    ]);
+    expect(lines(running)).toHaveLength(1);
+    expect(lines(done)).toHaveLength(1);
+    expect(lines(running)).toHaveLength(lines(done).length);
+  });
+
+  test("执行中不渲染多行 tail 正文（4 行实时输出一行都不能上屏）", () => {
+    const frame = renderTools([runningBash("编译中\n打包中\n写入中\n完成 42 个模块")]);
+    expect(frame).not.toContain("编译中");
+    expect(frame).not.toContain("打包中");
+    expect(frame).not.toContain("写入中");
+  });
+
+  test("执行中的命令仍在标题行可见（并进单行，不因折叠被挤掉）", () => {
+    const frame = renderTools([runningBash("x")]);
+    expect(frame).toContain("grep -rn");
+  });
+
+  test("最后一行实时输出留在标题行：不占高度，但「还在动」仍可见", () => {
+    const frame = renderTools([runningBash("编译中\n打包中\n完成 42 个模块")]);
+    expect(lines(frame)).toHaveLength(1);
+    expect(frame).toContain("完成 42 个模块");
+  });
+
+  test("ctrl+o 展开：执行中回到命令行区 + 多行实时输出", () => {
+    // 默认不预演正文，但正文从未丢失——这是 compact 与 summary 的本质区别，执行态同理。
+    const frame = renderTools([runningBash("编译中\n打包中\n完成 42 个模块")], 1);
+    expect(lines(frame).length).toBeGreaterThan(1);
+    expect(frame).toContain("编译中");
+    expect(frame).toContain("完成 42 个模块");
+  });
+});

@@ -126,9 +126,18 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   // （`src/ui/CLAUDE.md` L3.3：折叠时给摘要 + 可展开提示）。
   //
   // 展开态（expandLevel ≥ 1）不提示：此时正文已经在屏幕上，再提示就是噪音。
+  //
+  // 执行中的 shell 也算：「执行中 → 成功」这段卡片现在也走折叠形态
+  // （`ToolMessage` 的 isShellRunningCollapsed，零行正文），提示行必须在执行中就占位。
+  // 否则卡片高度按住了、提示行却在完成那一刻新冒一行——「屏幕上不出现高度变化」包括这一行。
+  // ctrl+o 在执行中同样有效（展开命令行与多行实时输出）。
   const hasCompactCollapsed =
     expandLevel === 0 &&
-    visibleTools.some((t) => t.displayMode === "compact" && t.status === "success" && !t.isError);
+    visibleTools.some(
+      (t) =>
+        (t.displayMode === "compact" && t.status === "success" && !t.isError) ||
+        (t.status === "executing" && isShellTool(t.name)),
+    );
 
   // L4-C 接线套路：在「提示首次出现」时锁定形态并记一次，避免每帧重复计数。
   // 本组件在 `<Static>` 里每组只渲染一次，ref 初始化即那一次的结果。

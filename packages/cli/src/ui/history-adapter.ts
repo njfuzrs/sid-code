@@ -24,8 +24,6 @@ import {
   getFilenameFromInput,
   extractTaskOutputDisplay,
   extractTaskListDisplay,
-  isShellTool,
-  countVisualLines,
 } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
@@ -571,31 +569,6 @@ export function messagesToHistoryItemsWithMap(
 }
 
 /**
- * compact 档「不值得折叠」的行数上限：≤ 这个行数就降级回原样展示。
- *
- * 取 5 的依据：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条这类结果
- * 一眼看完、几乎不占地方，折成「3 个结果」反而把用户要的信息（文件名 / 命中行）藏起来，
- * 还逼他去按 ctrl+o——而 ctrl+o 是全局档位，一按会把整屏所有 compact 卡片一起展开。
- * 折叠只在「真的会淹没消息流」时才有收益，5 行大致是「一眼看完」与「需要滚动」的分界。
- */
-const COMPACT_MAX_INLINE_LINES = 5;
-
-/**
- * shell 类工具的同一阈值 —— **故意比 5 小得多，取 1**。
- *
- * 5 行这条判据默认「不折叠只多占正文那几行」，这对 read / grep / glob 成立（它们的卡片
- * 只有 header + 正文）。bash 不成立：不折叠时除了正文，还要多出一整块命令行区
- * （`$ 命令` + 超 160 字符时的「… N 字符已折叠」提示），实测 3~4 行输出的 bash 卡片
- * 不折叠要占 5~6 行，而 86 行的输出折叠后只占 1 行 —— **输出少的反而比输出多的更占屏**，
- * 观感完全反了。所以 shell 类只在「一句话结论」（`git status` 干净、`grep` 无匹配）时
- * 才不折，2 行起一律折叠。
- *
- * 判据不按「卡片总高度」算是因为数据层拿不到 terminalWidth（命令行区的提示行数取决于
- * 命令长度与终端宽度，都是渲染期才知道的），用正文行数近似是这里唯一可行的口径。
- */
-const COMPACT_MAX_INLINE_LINES_SHELL = 1;
-
-/**
  * 把一个 tool_result 块 + 它对应的 pending tool_use 合并成**完成态**工具卡片。
  *
  * 从 convertUserMessage 内联逻辑提取为导出函数，供两个调用方共用：
@@ -629,44 +602,29 @@ export function buildCompletedToolCall(
   // 错误结果不受管辖：执行器不会给错误 block 打这个标记，此处再守一道，
   // 防御未来有人手工构造 block（错误必须可见，见 tool/types.ts 硬约束 ②）。
   //
-  // compact 的**少量行降级**：正文只有零星几行时，折叠态标题行的「N 行输出」比正文本身
-  // 还长，用户还得按 ctrl+o 才能看到「未找到匹配的内容」这种一句话结论——折叠是负收益。
-  // 故按正文行数降级回原样展示（等价于工具没声明档位）。判据用**视觉行数**
-  // （`countVisualLines`：去掉首尾空行后按换行切分，再把超宽单行按终端列宽折开）：
-  // 只数逻辑行会漏掉「逻辑行 1、实际 wrap 成几十行」这一类，而它恰恰最该折——
-  // 最典型的是 `grep`：它把结果 `JSON.stringify` 成一行紧凑 JSON
-  // （`core/tool/grep.ts` 的 `formatStructuredOutput`），实测命中 23 个文件时 3081 字符 /
-  // 逻辑行 1，`<= 5` 恒成立 → **永不折叠**（PR #808 / #810 的真实漏网）。
-  // `read` 读 minified/单行文件、`bash` 的单行超长输出同型。
+  // compact 不再按「正文行数」降级（#808 / #810 加过 5 行 / shell 1 行两档，2026-11-21 撤掉）：
+  // 那个降级让「≤5 行就原样展示」，看起来省了用户一次 ctrl+o，代价是同一类卡片的形态
+  // 随输出规模在「一两行正文」与「折叠成一行」之间跳。叠加两件事就变成用户可见的闪烁：
+  //   ① shell 执行中要展示命令行区 + 实时输出 tail（`ToolMessage` 的 shellLiveOutputSection），
+  //      完成时那张卡从最多 7 行收缩成 1 行；
+  //   ② 主屏帧占满视口后**任何变矮**都触发整帧重画（`packages/tui/src/frame/main-screen.ts:116`
+  //      的 `p >= viewportRows` 分支：清屏 + 清 scrollback + 重写全部历史），长会话一次几百 KB。
+  // 所以判据改回单一：**声明 compact 就折叠**。用户要规模信息看标题行摘要（`getResultSummary`
+  // 已按工具给「N 行输出 / N 个文件 / N 个结果」），要看正文按 ctrl+o。
   //
-  // 阈值**按工具类型分两档**，不是一个数通吃（PR #808 合入后实测发现的不统一）：
-  //   - 默认 5 行：`glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条——
-  //     这类结果一眼看完且几乎不占地方，折起来反而逼用户去按 ctrl+o，而 ctrl+o 是全局档位，
-  //     一按会把屏幕上所有 compact 卡片一起展开。折叠只在「真的会淹没消息流」时才有收益，
-  //     5 行大致是「一眼看完」与「需要滚动」的分界。
-  //   - shell 类 1 行：bash 不折叠的代价不止正文，还要多出命令行区（`$ 命令` + 截断提示），
-  //     3~4 行的输出不折要占 5~6 行、86 行的输出折起来只占 1 行——输出少的反而更占屏。
-  //     详见 COMPACT_MAX_INLINE_LINES_SHELL 的注释。
-  //
-  // 降级发生在数据层而非渲染层，是为了让 `displayMode` 这一字段的含义保持单一：
-  // 「带 compact 的卡片 = 默认折叠有收益」，渲染层不需要再重复判一次行数。
+  // 唯一的例外是空正文：折叠零行与不折叠等价，留着只会让标题行多一个「0 行」的假指标。
+  // 降级仍发生在数据层而非渲染层，是为了让 `displayMode` 的含义保持单一：
+  // 「带 compact 的卡片 = 声明了默认折叠」，渲染层不再重复判一次行数。
   // `full` 档与错误路径不冲突：full 只表示「正文完整可见、不做行数截断」，而错误结果本来
   // 就更该整段可见（tool/types.ts 硬约束 ②）。若在这里连 full 一起降级成 undefined，
   // `enter_worktree` 的「无法切回主工作区: …」这类多行错误又会被组件层折回 3 行。
-  // 其余档位保持原有语义：错误结果不走 compact/summary/hidden（执行器也不会给错误 block
-  // 打标记，此处再守一道，防御未来有人手工构造 block）。
   const rawDisplayMode = isError
     ? block.resultDisplayMode === "full"
       ? "full"
       : undefined
     : block.resultDisplayMode;
-  const maxInlineLines = isShellTool(toolName)
-    ? COMPACT_MAX_INLINE_LINES_SHELL
-    : COMPACT_MAX_INLINE_LINES;
   const displayMode =
-    rawDisplayMode === "compact" && countVisualLines(block.content) <= maxInlineLines
-      ? undefined
-      : rawDisplayMode;
+    rawDisplayMode === "compact" && block.content.trim() === "" ? undefined : rawDisplayMode;
   const suppressBody = displayMode === "summary" || displayMode === "hidden";
 
   const resultDisplay: ToolResultDisplay = {
