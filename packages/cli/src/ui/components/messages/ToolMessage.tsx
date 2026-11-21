@@ -33,6 +33,7 @@ import { theme } from "../../semantic-colors.ts";
 import { TREE_BRANCH } from "../../constants/figures.ts";
 import { useUIState, useExpandedMaxLines } from "../../contexts/UIStateContext.tsx";
 import { truncateShellCommand, CMD_MAX_CHARS, ELLIPSIS } from "../../constants/collapse.ts";
+import { fitTextToWidth } from "../../utils/path-display.ts";
 import { useTerminalDimensionsOptional } from "../../contexts/TerminalContext.tsx";
 import { selectAgentProgressTier, formatAgentProgressLine } from "../../agent-progress-view.ts";
 import { formatLargeNumber } from "../../utils/format-number.ts";
@@ -49,6 +50,15 @@ const THINK_COLLAPSE_MAX_LINES = 8;
 
 /** 思考正文换行的安全边距（与 ToolResultDisplay 的 WRAP_WIDTH_PADDING 同量级）。 */
 const THINK_WRAP_PADDING = 8;
+
+/**
+ * 执行中折叠态把实时输出最后一行塞进标题行时，最多占的列数。
+ *
+ * 取 40：标题行还要放「状态点 + 工具名 + 命令」三者，命令是用户最需要认出来的东西。
+ * 进度文本不截断的话，`ToolInfo` 会先给进度留宽（它按「进度 > 描述」的顺序扣预算），
+ * 一行测试日志就能把命令整条挤没。截到 40 列后，命令至少还剩半屏。
+ */
+const LIVE_TAIL_MAX_COLS = 40;
 
 /**
  * 把多行命令压成单行（compact 折叠态的标题行用）。
@@ -170,21 +180,43 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   const isCompactCollapsed = displayMode === "compact" && expandLevel === 0 && !isError;
 
   /**
-   * compact 折叠态的 bash：命令并进标题行单行展示，不再单独占一行命令区 + 折叠提示。
+   * 执行中的 shell 折叠态：命令还在跑的时候也不画正文。
    *
-   * 理由：一次成功 bash 默认只画一行，若命令仍独占一行，折叠省下的正文行又被命令抵消。
+   * 为什么执行中就要折：执行中卡片原本是「命令行区 + 实时输出 tail」
+   * （`core/tool/bash.ts` 的 `PROGRESS_TAIL_LINES = 4`）——最多 7 行；一完成立刻收缩成
+   * 折叠态 1 行。而主屏帧一旦占满视口，**任何变矮**都会触发整帧重画
+   * （`packages/tui/src/frame/main-screen.ts:116` 的 `p >= viewportRows` 分支：清屏 +
+   * 清 scrollback + 重写全部 history，长会话一次几百 KB），观感就是「刷地展开，再刷地收起」。
+   *
+   * 折叠后执行中与成功态都是标题行一行，高度不变。实时输出不丢：最后一行塞进标题行尾部
+   * （见 `liveTailLine`），要看完整 tail 按 ctrl+o（`expandLevel >= 1` 时回到原渲染路径）。
+   */
+  const isShellRunningCollapsed =
+    isShell && hasShellCommand && status === "executing" && expandLevel === 0;
+
+  /**
+   * 零行正文的统一判据：声明 compact 的已完成卡片 **或** 执行中的 shell 卡片（见上）。
+   * 下面所有「正文 / 命令行区 / 实时输出 / 结果区」的分支都必须用它，
+   * 各处各判一套就会漏掉一条，卡片高度又会跳。
+   */
+  const isCollapsedBody = isCompactCollapsed || isShellRunningCollapsed;
+
+  /**
+   * 折叠态的 bash：命令并进标题行单行展示，不再单独占一行命令区 + 折叠提示。
+   *
+   * 理由：折叠后整张卡只剩一行，若命令仍独占一行，折叠省下的正文行又被命令抵消。
    * 命令压成单行（换行折空格）后交给 `ToolInfo` 按真实列宽收缩，多出来的部分自然省略。
    */
-  const compactShellDescription =
-    isCompactCollapsed && isShell && shellCommand ? toSingleLineCommand(shellCommand) : undefined;
+  const collapsedShellDescription =
+    isCollapsedBody && isShell && shellCommand ? toSingleLineCommand(shellCommand) : undefined;
 
   /**
    * 命令行独立区域是否渲染。
    *
-   * compact 折叠态下命令已并入标题行（见上），此处必须关掉，否则屏幕上会同时出现
+   * 折叠态下命令已并入标题行（见上），此处必须关掉，否则屏幕上会同时出现
    * 标题行里的命令与下方的命令行——同一段文字连排两遍。
    */
-  const hasShellCommandSection = hasShellCommand && !isCompactCollapsed;
+  const hasShellCommandSection = hasShellCommand && !isCollapsedBody;
 
   // description 是文件路径的工具：收缩时要从**头部**省略目录以保住文件名
   // （`…/todo/x.md`），而不是砍掉尾部只留下每行都一样的 `/Users/…/sid-code/` 前缀。
@@ -214,7 +246,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
    * compact 折叠态同理按「没有正文」处理：默认零行正文是本档的定义，正文仍在
    * `resultDisplay` 里、`expandLevel >= 1` 时照旧渲染（走普通 ToolResultDisplay 路径）。
    */
-  const hasResultBody = !isCompactCollapsed && !!resultDisplay && resultDisplay.trim() !== "";
+  const hasResultBody = !isCollapsedBody && !!resultDisplay && resultDisplay.trim() !== "";
   const shouldExpandContent = hasResultBody || hasProgress || hasThinkThought;
 
   /**
@@ -229,6 +261,27 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   const hasProgressLine =
     status === "executing" && !!progressMessage && !hasShellCommand && !hasProgress;
 
+  /**
+   * 执行中折叠态的唯一实时反馈：tail 快照的**最后一行**，塞进标题行尾部。
+   *
+   * 不新占行是硬要求 —— 多行 tail 会让卡片在执行过程中持续长高（1 → 4 行），
+   * 完成时那几行又整块消失，正是「刷地展开、再刷地收起」的来源。
+   * 塞进单行后，卡片高度在执行中与成功后**都是 1 行**。
+   *
+   * 截到 `LIVE_TAIL_MAX_COLS`：`ToolInfo` 扣宽度预算时进度优先于 description，
+   * 不截断的话一行测试日志就能把命令整条挤没；要看完整 tail 按 ctrl+o。
+   */
+  const liveTailLine =
+    isShellRunningCollapsed && progressMessage
+      ? (() => {
+          const lastLine = progressMessage
+            .split("\n")
+            .filter((line) => line.trim() !== "")
+            .pop();
+          return lastLine ? fitTextToWidth(lastLine, LIVE_TAIL_MAX_COLS) : undefined;
+        })()
+      : undefined;
+
   // Header 行：bash 工具不显示长命令（移到下方独立区域展示），header 保持简洁。
   // shell 工具 executing 时 header 已有 ToolStatusIndicator 的状态点流转，
   // 不再叠加 TrailingIndicator（避免重复动画，下方命令区域的实时颜色已足够）。
@@ -242,20 +295,27 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         // 但 header 不能退回光秃秃的 `⏺ think`——那正是本次要修的问题；改用用途标签
         // 回答"这一步在干什么"，与下方"记了什么"分工。
         //
-        // compact 折叠态的 bash 是例外：命令不再单独占一行，而是并进这里单行展示
-        // （`compactShellDescription`），此时 description 必须让位给命令——工具的
+        // compact / 执行中折叠态的 bash 是例外：命令不再单独占一行，而是并进这里单行展示
+        // （`collapsedShellDescription`），此时 description 必须让位给命令——工具的
         // description 往往是"查看某某文件"，与命令本身信息重复，挤掉命令就白折了。
         description={
           hasShellCommandSection
             ? ""
-            : (compactShellDescription ?? (hasThinkThought ? THINK_HEADER_LABEL : description))
+            : (collapsedShellDescription ?? (hasThinkThought ? THINK_HEADER_LABEL : description))
         }
         status={status}
         emphasis={emphasis}
-        // shell 工具的实时输出是多行 tail 快照，塞进单行 header 会被截断——改在命令行下方
-        // 以独立多行块展示（见 shellLiveOutputSection）。非 shell 的执行中进度同理走下方
-        // 一行（见 progressLineSection）。header 只给有结构化进度的 MCP 工具显示单行文案。
-        progressMessage={hasShellCommand || hasProgressLine ? undefined : progressMessage}
+        // 折叠态的执行中 shell：实时输出只留**最后一行**塞在这里（同一行、不新增高度，
+        // 见 liveTailLine）；它同时也让"这一步还在动"在不长高的前提下可见。
+        // 非折叠的 shell 走命令行下方的多行实时输出区（shellLiveOutputSection），
+        // 非 shell 的执行中进度走下方一行（progressLineSection）。
+        progressMessage={
+          isShellRunningCollapsed
+            ? liveTailLine
+            : hasShellCommand || hasProgressLine
+              ? undefined
+              : progressMessage
+        }
         resultSummary={shouldExpandContent ? undefined : resultSummary}
         elapsedMs={elapsedMs}
         // 把真实可用列宽交给 ToolInfo，让 description 按剩余空间收缩，而不是数据层
@@ -265,7 +325,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
           0,
           terminalWidth - (emphasis === "high" && !hasShellCommand ? 2 : 0),
         )}
-        descriptionIsPath={compactShellDescription ? false : descriptionIsPath}
+        descriptionIsPath={collapsedShellDescription ? false : descriptionIsPath}
       />
       {emphasis === "high" && !hasShellCommand && <TrailingIndicator />}
       <FocusHint name={name} status={status} />
@@ -317,7 +377,8 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   // 快照，多行）展示在命令行下方，让 `bun test` 这类长命令不再"卡在无输出"。
   // 仅 executing 态且有进度文本时出现；命令结束后由真实 resultDisplay 接管（progressMessage
   // 不再注入）。灰色 + 2 空格缩进，与命令行、结果区的视觉节奏一致。
-  const hasShellLiveOutput = hasShellCommand && status === "executing" && !!progressMessage;
+  const hasShellLiveOutput =
+    hasShellCommand && status === "executing" && !!progressMessage && !isCollapsedBody;
   // progressMessage 是多行尾部快照，逐行渲染（每行独立 truncate-end 兜底窄终端）。
   const shellLiveLines = hasShellLiveOutput ? progressMessage!.split("\n") : [];
   const shellLiveOutputSection = hasShellLiveOutput ? (

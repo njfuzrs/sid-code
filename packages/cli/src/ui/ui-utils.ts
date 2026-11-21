@@ -122,42 +122,12 @@ export function isShellTool(name: string): boolean {
  * 正文的**有效行数**（去掉首尾空行后按换行切分）。
  *
  * 工具输出常带尾部换行，用朴素 `split("\n")` 会**多算一行**：`"未找到匹配的内容\n"` 数成 2 行，
- * `""` 数成 1 行。两个消费方都受此影响，故口径收口在这里：
- *   - `getResultSummary` 的「N 行输出」文案（曾把 86 行真实的 `ls` 输出报成 87 行）；
- *   - `history-adapter.ts` 的 compact 少量行降级（多算一行会让该降级的卡片被折叠）。
+ * `""` 数成 1 行。唯一消费方是 `getResultSummary` 的「N 行输出」文案
+ * （曾把 86 行真实的 `ls` 输出报成 87 行）。
  */
 export function countEffectiveLines(text: string): number {
   const trimmed = text.trim();
   return trimmed === "" ? 0 : trimmed.split("\n").length;
-}
-
-/**
- * 估算折行宽度（终端列）。数据层拿不到真实 `terminalWidth`，用 80 列这个通用默认值。
- *
- * 为什么不在渲染层用真实宽度判：`history-adapter.ts` 的降级发生在数据层，是为了让
- * `displayMode` 的含义保持单一（见该处注释），搬回渲染层会让「数据层说折叠 / 渲染层
- * 说不折」两处判据分裂。这里只需要识别「逻辑行很少但视觉上很长」这一型，不需要精确。
- */
-const ESTIMATE_WRAP_COLUMNS = 80;
-
-/**
- * 正文的**视觉行数**估算：把超宽的单行按 80 列折开后再计行数。
- *
- * 为什么需要它：`countEffectiveLines` 按 `\n` 切分，对**单行超长输出**完全失效——
- * 逻辑行数 1、实际在终端里 wrap 成几十行。最典型的是 `grep`：它把结构化结果
- * `JSON.stringify` 成一行紧凑 JSON（`tool/grep.ts` 的 `formatStructuredOutput`），
- * 实测命中 23 个文件时是 3081 字符 / 逻辑行 1，于是 `<= 5 行` 的降级判据永远成立 →
- * grep **永不折叠**。`read` 读 minified/单行文件、`bash` 的单行超长输出同型。
- *
- * 中文/emoji 的宽度由 `stringWidth` 算（L2.3 铁律：算列宽一律用它，不用 `.length`），
- * 所以宽字符不会被低估——同一条 grep JSON 里含中文文件路径时也能正确折行。
- */
-export function countVisualLines(text: string, columns = ESTIMATE_WRAP_COLUMNS): number {
-  const trimmed = text.trim();
-  if (trimmed === "") return 0;
-  return trimmed
-    .split("\n")
-    .reduce((sum, line) => sum + Math.max(1, Math.ceil(stringWidth(line) / columns)), 0);
 }
 
 /**

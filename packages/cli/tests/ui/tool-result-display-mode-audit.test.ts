@@ -577,8 +577,8 @@ describe("函数形态：bash 按退出码分档", () => {
   });
 });
 
-describe("行为回归：compact 档保留正文 / 少量行降级", () => {
-  // 6 行：超过 COMPACT_MAX_INLINE_LINES(5)，是「真该折叠」的最小样本。
+describe("行为回归：compact 档保留正文 / 一律折叠（2026-11-21 撤掉行数降级）", () => {
+  // 6 行样本：只是「多行正文」的普通代表，不再有阈值含义（阈值已撤）。
   const BODY = [
     "src/a.ts:1:1",
     "src/b.ts:2:2",
@@ -607,29 +607,29 @@ describe("行为回归：compact 档保留正文 / 少量行降级", () => {
     expect(card.resultDisplay?.displayMode).toBeUndefined();
   });
 
-  test("单行降级：一句话结论不被折成「1 行输出」", () => {
-    // grep / glob 无匹配时就是一句 "未找到匹配的内容"：折叠后标题行「1 行输出」比正文还长，
-    // 还逼用户按 ctrl+o 才看得到那句结论——折叠是负收益，故降级为原样展示。
+  test("一句话结论也折叠：判据不再看行数（2026-11-21 撤掉降级）", () => {
+    // 曾经的「≤5 行不折」让同一类卡片在「一两行正文」与「折叠成一行」之间跳，
+    // 叠加 shell 执行中→完成的高度收缩会把主屏推进整帧重画（见 history-adapter 的注释）。
+    // 现在只有一个判据：声明 compact 就折叠。规模信息由标题行摘要承担，正文走 ctrl+o。
     for (const body of ["未找到匹配的内容", "未找到匹配的文件\n", "  单行  \n"]) {
       const card = buildCompletedToolCall(resultBlock("c4", body, { mode: "compact" }), "grep");
-      expect(card.resultDisplay?.displayMode, `正文 "${body.trim()}" 不该折叠`).toBeUndefined();
+      expect(card.resultDisplay?.displayMode, `正文 "${body.trim()}" 也该折叠`).toBe("compact");
       expect(card.resultDisplay?.content).toBe(body);
     }
   });
 
-  test("≤5 行降级：一眼看完的少量结果不该被折起来", () => {
-    // `glob` 匹配 3 个文件、`grep` 命中 2 条、`git log --oneline` 5 条——这类结果一眼看完、
-    // 几乎不占地方，折成「5 行输出」反而把用户要的文件名/命中行藏起来，还得按 ctrl+o。
-    // ctrl+o 是全局档位，一按会把整屏所有 compact 卡片一起展开，代价比省下的几行大得多。
-    for (const lineCount of [2, 3, 5]) {
+  test("≤5 行同样折叠：不再有「一眼看完就不折」的例外", () => {
+    // 反向锁：任何行数都折。曾经 2/3/5 行会降级成原样展示（PR #810 的「一眼看完」判据），
+    // 那个判据正是「卡片高度随输出规模跳」的来源，撤销后不该被悄悄加回来。
+    for (const lineCount of [1, 2, 3, 5]) {
       const body = Array.from({ length: lineCount }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
       const card = buildCompletedToolCall(resultBlock("c5", body, { mode: "compact" }), "grep");
-      expect(card.resultDisplay?.displayMode, `${lineCount} 行不该折叠`).toBeUndefined();
+      expect(card.resultDisplay?.displayMode, `${lineCount} 行也该折叠`).toBe("compact");
       expect(card.resultDisplay?.content).toBe(body);
     }
   });
 
-  test("6 行才折叠（越过「一眼看完」的分界）", () => {
+  test("多行正文折叠（折叠不是为了省行数，而是为了让卡片形态稳定）", () => {
     const sixLines = Array.from({ length: 6 }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
     const card = buildCompletedToolCall(resultBlock("c7", sixLines, { mode: "compact" }), "grep");
     expect(card.resultDisplay?.displayMode).toBe("compact");
@@ -637,10 +637,9 @@ describe("行为回归：compact 档保留正文 / 少量行降级", () => {
   });
 
   test("单行超长正文照样折叠：逻辑行 1 ≠ 视觉行 1（真实 grep JSON 形态）", () => {
-    // 这次漏掉的**直接原因**：grep 的 output 是 `JSON.stringify` 出来的**一行紧凑 JSON**
+    // grep 的 output 是 `JSON.stringify` 出来的一行紧凑 JSON
     // （`core/tool/grep.ts` 的 `formatStructuredOutput`）。实测命中 23 个文件时 3081 字符 /
-    // 逻辑行 1 —— 按逻辑行判 `<= 5` 恒成立，于是 grep **永不折叠**，而它在终端里会 wrap 成几十行。
-    // 判据改用视觉行数（countVisualLines）后必须折叠。
+    // 逻辑行 1，在终端里会 wrap 成几十行——它必须折叠，且折叠判据不能依赖行数统计。
     const realGrepShape = JSON.stringify({
       mode: "files_with_matches",
       numFiles: 23,
@@ -657,13 +656,13 @@ describe("行为回归：compact 档保留正文 / 少量行降级", () => {
     expect(card.resultSummary).toBe("23 个文件");
   });
 
-  test("单行短结论仍降级：视觉行口径没有矫枉过正", () => {
+  test("单行短结论也折叠：不再按视觉行数判", () => {
     const shortSingleLine = '{"mode":"files_with_matches","numFiles":0}';
     const card = buildCompletedToolCall(
       resultBlock("c-short", shortSingleLine, { mode: "compact" }),
       "grep",
     );
-    expect(card.resultDisplay?.displayMode).toBeUndefined();
+    expect(card.resultDisplay?.displayMode).toBe("compact");
   });
 
   test("read 单行大文件：视觉行口径同样生效（minified 文件不再是漏网）", () => {
@@ -696,26 +695,25 @@ describe("行为回归：compact 档保留正文 / 少量行降级", () => {
     }
   });
 
-  test("shell 类工具：一句话结论仍不折叠（1 行）", () => {
-    // `git status` 干净、`grep` 无匹配就是一行结论：折成「1 行输出」比正文还长，
-    // 且逼用户按 ctrl+o 才看得到那句话。shell 的阈值是 1 而不是 0，就是为这类结果留的。
+  test("shell 类工具：一句话结论同样折叠（判据不再按正文行数分档）", () => {
+    // 曾经 shell 单独一档阈值（>1 行就折、1 行不折），结果 `git status` 干净时卡片反而
+    // 比 86 行输出时更高：不折叠要多出命令行区。撤掉分档后所有 shell 结果同一形态。
     for (const body of [
       "未找到匹配的内容",
       "nothing to commit, working tree clean\n",
       "  单行  \n",
     ]) {
       const card = buildCompletedToolCall(resultBlock("c9", body, { mode: "compact" }), "bash");
-      expect(card.resultDisplay?.displayMode, `正文 "${body.trim()}" 不该折叠`).toBeUndefined();
+      expect(card.resultDisplay?.displayMode, `正文 "${body.trim()}" 也该折叠`).toBe("compact");
       expect(card.resultDisplay?.content).toBe(body);
     }
   });
 
-  test("非 shell 工具不受 shell 阈值影响（grep 5 行仍降级）", () => {
-    // 反向锁：阈值分流按工具类型判，不能把 5 行宽松档一并收紧——read/grep/glob 的卡片
-    // 没有命令行区，5 行不折叠只多占正文，与 bash 的成本结构完全不同。
+  test("grep 与 bash 同一口径：都折叠（不再有类型分档）", () => {
+    // 反向锁：撤销行数降级之后不该残留「非 shell 更宽松」的分支——两档合并成一档。
     const fiveLines = Array.from({ length: 5 }, (_, i) => `src/x${i}.ts`).join("\n");
     const card = buildCompletedToolCall(resultBlock("c10", fiveLines, { mode: "compact" }), "grep");
-    expect(card.resultDisplay?.displayMode).toBeUndefined();
+    expect(card.resultDisplay?.displayMode).toBe("compact");
     const bashCard = buildCompletedToolCall(
       resultBlock("c11", fiveLines, { mode: "compact" }),
       "bash",
@@ -723,16 +721,15 @@ describe("行为回归：compact 档保留正文 / 少量行降级", () => {
     expect(bashCard.resultDisplay?.displayMode).toBe("compact");
   });
 
-  test("行数口径：尾部换行不该多算一行（否则 5 行被判成 6 行而误折）", () => {
-    // countEffectiveLines 是 `⎿` 文案与降级判据的共同口径。若降级判据退回朴素 split，
-    // 一条 5 行且带尾部换行的 grep 结果会被算成 6 行、越过阈值被折叠。
+  test("尾部换行不影响判定：正文有没有结尾换行都折叠", () => {
+    // 反向锁：判据不再数行数，也就不该再有任何「行数口径」的分支残留。
     const fiveWithTrailingNewline =
       Array.from({ length: 5 }, (_, i) => `src/x${i}.ts`).join("\n") + "\n";
     const card = buildCompletedToolCall(
       resultBlock("c12", fiveWithTrailingNewline, { mode: "compact" }),
       "grep",
     );
-    expect(card.resultDisplay?.displayMode).toBeUndefined();
+    expect(card.resultDisplay?.displayMode).toBe("compact");
   });
 
   test("硬约束②：错误结果即使带 compact 也照常展示、不折叠", () => {
@@ -845,8 +842,8 @@ describe("行为回归：full 档正文完整、不被任何折叠判据吞掉",
     expect(card.resultDisplay?.displayMode).toBe("full");
   });
 
-  test("full 档不被 compact 的「少量行降级」误吞", () => {
-    // 3 行正文 <= COMPACT_MAX_INLINE_LINES(5)。若降级判据把 full 也当成 compact 一并处理，
+  test("full 档不被 compact 的处理误吞", () => {
+    // 唯一会让 compact 降级的口子是空正文；判据里若把 full 也当成 compact 一并处理，
     // displayMode 会变 undefined → 渲染层退回 3 行兜底截断 → 修复等于没做。
     const threeLines = "已创建并进入 Worktree。\n路径: /repo/w\n分支: worktree-x";
     const card = buildCompletedToolCall(
