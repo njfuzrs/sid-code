@@ -177,10 +177,11 @@ const PROGRESS_THROTTLE_MS = 120;
  * 执行中的工具卡片是单行 header 下的一小块活动区，喂全量输出既无必要也会撑爆动态区高度。
  * 完整输出仍在命令结束后作为 tool_result 一次性返回，不受此截断影响。
  *
- * 取 4 行 = 命令结束后折叠态结果区的高度（ToolMessage 传 `maxLines={3}`：超出时 3 行 + 1 行
- * `… N 行已折叠` footer，恰好多 1 行时直接显示 4 行）。执行中与完成后同高，卡片完成那一帧
- * 帧不变矮——主屏帧已溢出视口时任何收缩都会整帧重画全部历史（packages/tui/src/frame/main-screen.ts）。
- * 两边一起改：这里改大会让每条长输出的 bash 完成时都触发一次整帧重画。
+ * **不要**再把「取 4 行」解释成「与完成后的折叠态结果区同高」：2026-11-21 起执行中的
+ * shell 卡片是零行正文（`ToolMessage` 的 isShellRunningCollapsed 只把 tail 最后一行塞进
+ * 标题行，见 liveTailLine），多行 tail 仅在 `expandLevel >= 1`（ctrl+o 展开）时上屏。
+ * 那条「执行中与完成后同高」的约束由渲染层保证，与本常量无关；此处改行数只影响展开态
+ * 能看几行，不会再牵动「命令完成那一帧整帧重画」（packages/tui/src/frame/main-screen.ts）。
  */
 const PROGRESS_TAIL_LINES = 4;
 
