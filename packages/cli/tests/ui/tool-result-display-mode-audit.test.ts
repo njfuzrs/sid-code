@@ -665,7 +665,7 @@ describe("行为回归：compact 档保留正文 / 一律折叠（2026-11-21 撤
     expect(card.resultDisplay?.displayMode).toBe("compact");
   });
 
-  test("read 单行大文件：视觉行口径同样生效（minified 文件不再是漏网）", () => {
+  test("read 单行大文件也折叠：判据不看逻辑行数（minified 文件不再是漏网）", () => {
     const oneLineFile = `{"k":"${"x".repeat(2000)}"}`;
     const card = buildCompletedToolCall(
       resultBlock("c-oneline", oneLineFile, { mode: "compact" }),
@@ -674,7 +674,7 @@ describe("行为回归：compact 档保留正文 / 一律折叠（2026-11-21 撤
     expect(card.resultDisplay?.displayMode).toBe("compact");
   });
 
-  test("bash 单行超长输出：超出 1 个视觉行就折叠", () => {
+  test("bash 单行超长输出也折叠：判据不看宽度", () => {
     const longSingleLine = "x".repeat(300);
     const card = buildCompletedToolCall(
       resultBlock("c-bash-long", longSingleLine, { mode: "compact" }),
@@ -683,10 +683,10 @@ describe("行为回归：compact 档保留正文 / 一律折叠（2026-11-21 撤
     expect(card.resultDisplay?.displayMode).toBe("compact");
   });
 
-  test("shell 类工具用更严的阈值：2 行起就折叠", () => {
-    // PR #808 合入后实测到的不统一：正文 4 / 3 行的 bash 因 ≤5 行降级而不折叠，占 5~6 行；
-    // 正文 86 行的 bash 折成 1 行。输出少的反而比输出多的更占屏 —— 因为 bash 不折叠还要
-    // 多出命令行区（`$ 命令` + 截断提示）。故 shell 类只在正文 ≤1 行时降级。
+  test("shell 类工具多行正文同样折叠：不再有 shell 专属阈值", () => {
+    // 历史：PR #808 曾因「正文 4 / 3 行的 bash 占 5~6 行、86 行的反而折成 1 行」给 shell
+    // 单独加过「正文 ≤1 行才不折」的阈值。2026-11-21 起该阈值随 ≤5 行档一起撤销，
+    // 判据只剩「声明 compact 就折叠」；本条锁的是撤销后 shell 不再有任何专属阈值。
     for (const lineCount of [2, 3, 4, 5]) {
       const body = Array.from({ length: lineCount }, (_, i) => `第 ${i + 1} 行结果`).join("\n");
       const card = buildCompletedToolCall(resultBlock("c8", body, { mode: "compact" }), "bash");
