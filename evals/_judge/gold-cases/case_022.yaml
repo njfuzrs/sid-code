@@ -1,0 +1,91 @@
+id: case_022
+category: 诊断排查
+priority: P1
+created_date: 2026-11-22
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+input:
+  user_query: 我只想跑仓库根 tests/ 下的测试，敲了 bun test tests/，结果它扫了 692 个文件、跑了好几分钟；
+    改成 bun test ./tests/ 就只跑 38 个。为什么多一个 ./ 差别这么大？请给出唯一根因。
+  repo: sid-code
+  repo_commit: 899e7422
+  attachments: []
+expected:
+  outcome: diagnose_bun_test_path_substring_matching
+  must_include_any_of:
+  - 子串
+  - 路径子串
+  - ./tests/
+  - 完整路径
+  must_not_include:
+  - bun 的 bug
+  - 缓存失效
+  - 需要 --filter 才能限制
+  must_call_tools:
+  - read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+  - packages/
+  max_steps: 12
+  reference_answer: '根因只有一个：bun test 的位置参数是**完整路径子串匹配**，不是目录。
+
+    `tests/` 作为一个子串，会命中所有路径里含 `tests/` 的文件——4 个包内 tests/ 目录
+    （packages/*/tests/）全部被扫进来，所以是 692 个；`./tests/` 带上了前导 `./`，
+    只匹配仓库根下的 tests/，所以是 38 个。
+
+    排除依据：这不是 bun 的 bug，也不需要 --filter；CONTRIBUTING.md 的
+    「开发过程中用选择性测试」一节记录了这个实测差异（692 vs 38），并且明确
+    「脚本输出的路径一律带 ./，自己手敲时也要带」——也就是说这是定位参数语义，
+    不是缓存/版本问题。
+
+    '
+rubric:
+  completeness: 是否点明「完整路径子串匹配」这个机制，而不是只说「要加 ./」
+  precision: 是否给出 692 / 38 的对应关系并排除 bun bug / 过滤参数两类解释
+  helpfulness: 是否给出可操作的结论（跑子目录用 ./ 前缀；或直接用 affected-tests 脚本）
+grader:
+- type: assert
+  check: must_include_any_of 至少命中 2 个，且 must_not_include 零命中
+  weight: 1.0
+baseline_scores:
+  sid_code_w0:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+  claude_code:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+  codex:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+source: prompt_review_2026_11_19_d06
+notes: 'D-06 验收数据（2/3）：单根因诊断。用来验证模型不会为了凑第二个根因，
+  把「bun 版本差异」「缓存」这类不成立的可能性写成并列候选。
+
+  事实来源：CONTRIBUTING.md「开发过程中用选择性测试」小节明确记录
+  `bun test tests/` 实测搜 692 个文件（匹配所有路径含 tests/ 的）、
+  `bun test ./tests/` 才是 38 个。已回文档核对（2026-11-22）。
+
+  '
+related_subsystem:
+- build
+- test
+gold_annotation:
+  author_score: 4
+  author_reason: 机制明确且可机械判定；待真模型跑后校准
+  annotated_at: '2026-11-22'

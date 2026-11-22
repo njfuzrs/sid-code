@@ -1,0 +1,93 @@
+id: case_021
+category: 诊断排查
+priority: P1
+created_date: 2026-11-22
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+input:
+  user_query: 我在一次会话里跑 /context 想看「接收确认开场白」的统计，但输出里根本没有这一行。是不是
+    D-07 那个度量只接了 collector、没接到 /context 渲染？请到代码里确认，并说明为什么我看不到这一行。
+  repo: sid-code
+  repo_commit: 899e7422
+  attachments: []
+expected:
+  outcome: diagnose_missing_ack_opener_row
+  must_include_any_of:
+  - totalTurns
+  - context-render.ts
+  - 从未
+  - 守卫
+  must_not_include:
+  - 没有接线
+  - context-report.ts 缺字段
+  - 统计逻辑坏了
+  must_call_tools:
+  - grep
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+  - packages/
+  max_steps: 14
+  reference_answer: '根因只有一个：渲染层的守卫条件没满足，不是接线缺失。
+
+    packages/cli/src/command/commands/context/context.ts 已经把 ctx.traceCollector.getAckOpenerStats()
+    传给 renderContextReport；packages/core/src/trace/collector.ts 的 getAckOpenerStats()
+    返回 { turns, totalTurns }；packages/cli/src/command/commands/context/context-render.ts:471
+    的守卫是 if (opts.ackOpener && opts.ackOpener.totalTurns > 0) 才输出这一行。
+
+    也就是说：该会话从未出现过「已收到/已阅读 + 注入文档名」形态的接收确认开场白，
+    totalTurns 为 0，所以这一行按设计不显示（0 不是「统计坏了」，而是「没发生过」）。
+
+    排除依据：若是没接线，context.ts 里不会有 getAckOpenerStats 调用；若是字段缺失，
+    grep ackOpener 会在 context-render 的 opts 类型里命中不到（实际 :53 有类型声明）。
+
+    '
+rubric:
+  completeness: 是否定位到渲染层守卫（totalTurns > 0）并给出行号
+  precision: 是否明确排除「未接线 / 字段缺失 / 统计逻辑坏」三种竞争解释
+  helpfulness: 是否说明「0 表示没发生过」而不是建议去改统计或放宽守卫
+grader:
+- type: assert
+  check: must_include_any_of 至少命中 2 个，且 must_not_include 零命中
+  weight: 1.0
+baseline_scores:
+  sid_code_w0:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+  claude_code:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+  codex:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+source: prompt_review_2026_11_19_d06
+notes: 'D-06 验收数据（1/3）：单根因诊断。用来验证模型在「候选根因默认 ≥2」与
+  「RL-007 禁止凑数」冲突时，是否会给出唯一根因 + 排除依据，而不是硬凑第二个。
+
+  正确答案的事实来源：context-render.ts:471 守卫、context.ts 的 getAckOpenerStats 传参、
+  collector.ts 的 getAckOpenerStats 返回 {turns,totalTurns}。已回源码核对（2026-11-22）。
+
+  '
+related_subsystem:
+- trace
+- command/context
+- config
+gold_annotation:
+  author_score: 4
+  author_reason: 单根因明确且可用代码锚点机械判定；待真模型跑后按实际表现校准
+  annotated_at: '2026-11-22'

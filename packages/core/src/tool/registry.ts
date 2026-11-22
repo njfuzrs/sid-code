@@ -171,7 +171,9 @@ export class Registry {
    * GAP-13：工具名别名映射表（旧名 → 新名）。
    * 对标 claude-code 工具查找的 alias fallback：工具重命名后，历史会话或模型记忆中的
    * 旧名调用不会直接 404，而是解析到新名。`get()` 精确未命中时回退查此表。
-   * 目前 sid-code 工具名相对稳定，表为空——机制先行，重命名时在此登记映射即可。
+   * 表当前已有登记（见下方 `bg_task_get` → `task_output`）。未登记的名字仍然不解析，
+   * 所以每次重命名都必须在这里补一条，否则历史会话调用旧名会直接失败——
+   * 「机制先行」不是「表可以为空」。
    */
   private aliases = new Map<string, string>([
     // D5（T8，2026-11-15）：`bg_task_get` 并入 `task_output` 后，历史会话与模型记忆里的

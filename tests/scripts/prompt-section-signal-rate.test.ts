@@ -120,6 +120,9 @@ describe("口径正确性：不可度量不得退化成 0", () => {
     const unmeasurable = SIGNALS.filter((s) => s.count(emptyCtx()) === null).map((s) => s.section);
     // 至少要有身份段这种确实定义不出信号的段，否则这条断言是空转
     expect(unmeasurable.length).toBeGreaterThan(0);
+    // D-00 新增的 <precedence-chain> 是静态无条件段，必须显式列为不可度量：
+    // 从报告里消失 = 下一个读报告的人会把它当成「这段没人用」而删掉
+    expect(unmeasurable).toContain("<precedence-chain>");
 
     const text = renderRows(rows).join("\n");
     for (const section of unmeasurable) {
@@ -184,5 +187,21 @@ describe("CLI 参数", () => {
     const r = spawnSync(process.execPath, [SCRIPT_PATH, "--days", "0"], { encoding: "utf8" });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("--days");
+  });
+
+  test("--days 缺省是 30 天（口径写死，不跟着实现漂移）", () => {
+    // 文档的口径是「30 天内行为信号出现次数」。默认值一旦被改成 7 或 90，
+    // 报告里的数字会整体平移而没有任何东西会红 —— 所以默认值本身要有断言。
+    const dir = mkdtempSync(join(tmpdir(), "sid-signal-rate-default-days-"));
+    try {
+      const r = spawnSync(process.execPath, [SCRIPT_PATH, "--json", "--dir", dir], {
+        encoding: "utf8",
+        env: { ...process.env, SID_CONFIG_DIR: dir },
+      });
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout).days).toBe(30);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

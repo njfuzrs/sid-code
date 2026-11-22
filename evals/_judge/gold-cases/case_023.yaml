@@ -1,0 +1,95 @@
+id: case_023
+category: 诊断排查
+priority: P1
+created_date: 2026-11-22
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+input:
+  user_query: 我这个 PR 的 CI 里有个单测红了，报错看着像超时，失败时长大约 5000ms；本地同一条命令连跑三次全绿，
+    而且这个测试根本不 import 我改的模块。请判断根因是什么、我该做什么。
+  repo: sid-code
+  repo_commit: 899e7422
+  attachments: []
+expected:
+  outcome: diagnose_default_5s_test_timeout_flake
+  must_include_any_of:
+  - 5000
+  - 5 秒
+  - 默认超时
+  - bun 默认
+  must_not_include:
+  - 我的改动导致的回归
+  - 内存泄漏
+  - 需要改断言或放宽断言
+  must_call_tools:
+  - read
+  must_not_call_tools: []
+  must_modify_files_in: []
+  must_not_modify_files:
+  - packages/
+  max_steps: 12
+  reference_answer: '根因只有一个：bun 默认的单测超时是 5s，慢 runner 上偶发超时，属 flake，不是你的改动引入的回归。
+
+    判据有三条，缺一不可：
+    1. 失败时长约 5000ms —— 正好压在 bun 默认 5s 单测超时上（不是 30s/60s 那种业务超时）；
+    2. 本地重跑即绿 —— 不确定性，不是确定性错误；
+    3. 该测试不 import 你改的模块 —— 因果链不成立。
+
+    该做的：重跑失败 job（gh run rerun --failed）即可；不要为了让 CI 变绿去改断言或放宽预期
+    （RL-006：不许改测试断言凑绿）。若同一测试反复在慢 runner 上超时，那是另一件事
+    （应该拆小或标注），不是这次 PR 的责任。
+
+    排除依据：如果是代码回归，失败会是确定性断言错误而不是时长型；如果是内存泄漏，
+    失败形态通常是 OOM/进程被杀而不是 5000ms 边界。
+
+    '
+rubric:
+  completeness: 是否同时给出「5s 默认超时」根因与三条判据
+  precision: 是否排除「本次改动回归」「内存泄漏」「改断言」三类错误动作
+  helpfulness: 是否给出可执行动作（重跑失败 job），而不是建议放宽断言
+grader:
+- type: assert
+  check: must_include_any_of 至少命中 2 个，且 must_not_include 零命中
+  weight: 1.0
+baseline_scores:
+  sid_code_w0:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+  claude_code:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+  codex:
+    score: null
+    run_status: pending
+    tested_at: null
+    tested_by: manual
+    transcript_path: null
+    notes: ''
+source: prompt_review_2026_11_19_d06
+notes: 'D-06 验收数据（3/3）：单根因诊断。用来验证模型在「至少给 2 个根因」的压力下，
+  不会把「内存泄漏」「依赖版本」这类不成立的可能性凑成并列候选。
+
+  事实来源：CLAUDE.md「判定这个失败与我无关必须举证」一节明确记录
+  「超时类失败先看数字：失败于约 5000ms 是 bun 默认 5s 单测超时，慢 runner 上的 flake，
+  重跑即绿」，并给出三条举证要求。已回文档核对（2026-11-22）。
+
+  '
+related_subsystem:
+- build
+- test
+- ci
+gold_annotation:
+  author_score: 4
+  author_reason: 单根因且有明确判据；待真模型跑后校准
+  annotated_at: '2026-11-22'
