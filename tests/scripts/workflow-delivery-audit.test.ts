@@ -248,6 +248,26 @@ describe("listWorktrees / renderReport", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("committed-but-dirty：committed 段必须给出 dirty 部分的导出命令", () => {
+    // `git format-patch <base>..HEAD` 只含已提交内容。之前这里只有一句「另有 N 处未提交改动」
+    // 的提示、没有命令，主控 merge 完提交就删 worktree，那 N 处改动就永久丢了。
+    const repo = makeMainRepo();
+    try {
+      const wt = addWorktree(repo, "wf_cd");
+      write(wt, "c.txt", "c\n");
+      sh(wt, "add", "-A");
+      commit(wt, "feat: c");
+      write(wt, "dirty.txt", "未提交\n");
+
+      const md = renderReport([auditWorktree(wt, BASE)], { worktreesDir: worktreesDir(repo) });
+      expect(md).toContain("format-patch --stdout");
+      expect(md).toContain("/tmp/wf_cd.dirty.patch");
+      expect(md).toContain("不在上面的 patch 里");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("脚本端到端：退出码与 --export-dir", () => {
@@ -309,6 +329,30 @@ describe("脚本端到端：退出码与 --export-dir", () => {
       const patch = readFileSync(join(outDir, "wf_u.patch"), "utf8");
       expect(patch).toContain("u.txt");
       expect(patch).toContain("new-file.txt");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("committed-but-dirty → 退 1，--export-dir 也导出未提交那部分", async () => {
+    // 回归：verdict=committed 时曾整条跳过导出。主控看到 ✅ committed + exit 0，
+    // merge 完提交就删 worktree → 未提交改动永久丢失（这正是本脚本要防的事故）。
+    const repo = makeMainRepo();
+    try {
+      const wt = addWorktree(repo, "wf_cd2");
+      write(wt, "c.txt", "c\n");
+      sh(wt, "add", "-A");
+      commit(wt, "feat: c");
+      write(wt, "dirty.txt", "未提交\n");
+
+      const outDir = join(repo, "patches");
+      const r = await run(["--base", BASE, "--repo", repo, "--export-dir", outDir], repo);
+      expect(r.code).toBe(1);
+      const patch = readFileSync(join(outDir, "wf_cd2.patch"), "utf8");
+      expect(patch).toContain("dirty.txt");
+      // patch 只含未提交那部分：已提交的 c.txt 由 merge/cherry-pick 负责，不该重复出现
+      expect(patch).not.toContain("c.txt");
+      expect(r.out).toContain("个提交需另行 merge/cherry-pick");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

@@ -18,15 +18,19 @@
  * - worktree 根 = `<repo>/.sid-code/worktrees`（与 `packages/core/src/worktree/manager.ts` 同一常量）
  * - 对每个 `wf_*` 目录：commits = `git log --oneline <base>..HEAD` 的行数；dirty = `git status --porcelain` 的行数
  * - verdict：commits > 0 → committed；否则 dirty > 0 → uncommitted；都为 0 → empty；任一命令失败 → unknown
- *   （顺序有意义：既提交又有未提交改动时，**未提交那部分更危险**，但 committed 的补救路径能覆盖它——
- *   先 merge/cherry-pick 再把剩余改动打 patch，所以报 committed 并在修复提示里点出「还有 dirty 行数」。）
+ *   （顺序有意义：既提交又有未提交改动时，**未提交那部分更危险**，所以报 committed 的同时
+ *   必须在修复提示里点出「还有 dirty 行数」。但**只提示不够**——这点在 2026-11-22 修掉了：
+ *   当时 `--export-dir` 只导出 verdict=uncommitted 的单元，committed-but-dirty 的单元既不进
+ *   导出列表、提示里也没有导出命令，主控 merge 完那 N 个提交就删 worktree，剩余改动永久丢失。
+ *   现在导出的判据是 **dirty > 0**（与 verdict 解耦），committed-but-dirty 的单元也会被导出。）
  * - 路径与名字都可能是真 git worktree，也可能只是普通目录：普通目录上 git 命令失败 → null → unknown，
  *   不会因为「读不到」而被误判成 empty。
  *
  * ## 只读，除了 --export-dir
  *
  * 默认不写任何东西（连 `.sid-code/worktrees` 都不碰）。`--export-dir` 是显式的救援动作，
- * 会给 uncommitted 的 worktree 执行 `git add -A` 再 `git diff --binary HEAD` 落成 patch：
+ * 给**所有 dirty > 0 的** worktree（uncommitted，以及 committed-but-dirty 那种）执行
+ * `git add -A` 再 `git diff --binary HEAD` 落成 patch：
  * **先 add -A 才能让 untracked 进 patch** —— 2026-11-19 踩过的坑，只 diff 工作区会漏掉新建文件。
  *
  * ## 退出码
@@ -199,11 +203,20 @@ export function renderReport(
   if (committed.length > 0) {
     lines.push("已提交但不在 base 上（确认是否已合入）：");
     for (const a of committed) {
-      const dirtyNote = a.dirty && a.dirty > 0 ? `（另有 ${a.dirty} 处未提交改动，也要导出）` : "";
+      const dirtyNote =
+        a.dirty && a.dirty > 0 ? `（另有 ${a.dirty} 处未提交改动，**先导出再清理**）` : "";
       lines.push(`  · ${a.unit}：${a.commits} 个提交${dirtyNote}`);
       lines.push(`      git -C ${a.path} format-patch --stdout <base>..HEAD | git am`);
       lines.push(`      # 或逐个 cherry-pick：git -C ${a.path} log --oneline <base>..HEAD`);
       for (const l of a.log) lines.push(`        ${l}`);
+      // 只提示「还有 dirty 行数」不够：主控 merge 完提交就删 worktree 时，这部分改动会永久
+      // 丢失，而 format-patch 只含已提交内容。所以这里必须把导出 dirty 的命令也写出来
+      // （手敲等价于 --export-dir 对该单元做的事）。
+      if (a.dirty && a.dirty > 0) {
+        lines.push(`      # 未提交的那 ${a.dirty} 处改动**不在上面的 patch 里**，单独导出：`);
+        lines.push(`      git -C ${a.path} add -A`);
+        lines.push(`      git -C ${a.path} diff --binary HEAD > /tmp/${a.unit}.dirty.patch`);
+      }
     }
   }
   if (unknown.length > 0) {
@@ -229,8 +242,9 @@ export const HELP = `批量交付审计（B2）
 
    --base <sha>        比对基准，默认 origin/main
    --repo <path>       仓库根，默认 git rev-parse --show-toplevel（以 cwd 为准）
-   --export-dir <dir>  给 uncommitted 的 worktree 导出 patch（会执行 git add -A，因为
-                       untracked 不进 git diff，只 diff 工作区会漏掉新建文件）
+   --export-dir <dir>  给所有 dirty>0 的 worktree 导出 patch（含 verdict=committed 但仍有
+                       未提交改动的单元——format-patch 只含已提交内容，这部分不导出就会丢）。
+                       会执行 git add -A，因为 untracked 不进 git diff，只 diff 工作区会漏掉新建文件
 
 退出码：0 = 全部 committed 或没有 wf_*；1 = 存在 uncommitted / unknown；2 = 参数错误。
 `;
@@ -285,18 +299,30 @@ if (import.meta.main) {
     const outDir = resolve(parsed["export-dir"]);
     mkdirSync(outDir, { recursive: true });
     console.log("");
-    for (const a of audits.filter((x) => x.verdict === "uncommitted")) {
+    // 判据是 **dirty > 0**，不是 verdict === "uncommitted"：committed-but-dirty 的单元
+    // 同样有未提交改动，而它们连 `format-patch` 都带不走（那命令只含已提交内容）。
+    // 2026-11-22 之前这里只导 uncommitted，主控 merge 完提交就删 worktree，剩余改动丢失。
+    for (const a of audits.filter((x) => x.dirty !== null && x.dirty > 0)) {
       const file = join(outDir, `${a.unit}.patch`);
       try {
         const bytes = exportPatch(a.path, file);
         console.log(`已对 ${a.unit} 执行 git add -A`);
-        console.log(`  导出 ${file}（${bytes} 字节）`);
+        if (a.commits !== null && a.commits > 0) {
+          // 说清楚 patch 里**没有**那 N 个提交，否则主控会以为导出的就是全部产出。
+          console.log(
+            `  导出 ${file}（${bytes} 字节，仅含 ${a.dirty} 处未提交改动；${a.commits} 个提交需另行 merge/cherry-pick）`,
+          );
+        } else {
+          console.log(`  导出 ${file}（${bytes} 字节）`);
+        }
       } catch (e) {
         console.error(`✗ ${a.unit} 导出失败：${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
 
-  const bad = audits.some((a) => a.verdict === "uncommitted" || a.verdict === "unknown");
+  // 退出码判据同样是「有没有未提交改动」，与 verdict 解耦：
+  // committed-but-dirty 的单元若退 0，脚本化调用（`if ! bun run audit; then`）会整条漏掉它。
+  const bad = audits.some((a) => (a.dirty !== null && a.dirty > 0) || a.verdict === "unknown");
   process.exit(bad ? 1 : 0);
 }
