@@ -17,6 +17,7 @@
  */
 
 import type { Provider } from "./provider.ts";
+import type { QuotaScope } from "./quota-scope.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { safeProviderName, stampUsageProvider } from "./types.ts";
 import { resolveRequestOutputBudget } from "./output-budget.ts";
@@ -79,6 +80,7 @@ import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-teleme
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import {
   calculateRetryDelay as calculateSharedRetryDelay,
+  serverRequestedWaitMs,
   type BackoffHint,
 } from "./retry-backoff.ts";
 import { disableKeepAlive } from "./keepalive.ts";
@@ -750,9 +752,16 @@ export class ModelFallback {
     // 必须把配额还回去（见下方 catch 里的释放点），否则一次 401 就把整个冷却窗口里
     // 唯一的探针机会白吃掉，S2 的出口被锁死一整个窗口。
     // 只对 usedSharedSlot 的放行置位：不占共享配额的那类（单路径成因）无需释放。
+    //
+    // D5（2026-11-22）：这段**刻意不豁免主线程**，与上面 I4 的 `isSharedSignalExemptSource`
+    // 不是同一套判据，不要"顺手统一"。
+    //   I4 豁免主线程，是因为用户下一次主动发消息**必须**真实发出一次请求（否则交互卡死）；
+    //   S2 拦住主线程，则是因为它要等的是一个**已知窗口**（p50 6.6s、上限 60s），不是盲等。
+    //   若让主线程跳过冷却立刻发，它大概率在窗口内再撞一次 429：既浪费一次请求，
+    //   又会把冷却窗口重置/放大，反而让用户等更久。等待优于盲撞。
     let heldCooldownProbe = false;
     if (this.config.respectSharedCooldown !== false) {
-      const cd = this.availability.getCooldownInfo(params.model);
+      const cd = this.availability.getCooldownInfo(params.model, primaryProvider.quotaScope?.());
       if (cd) {
         // ═══════════════════════════════════════════════════════════
         // S5：探针 —— 全都在等的时候，放一路先走
@@ -774,7 +783,10 @@ export class ModelFallback {
         const probe =
           this.config.allowCooldownProbe === false
             ? undefined
-            : this.availability.tryAcquireCooldownProbe(params.model);
+            : this.availability.tryAcquireCooldownProbe(
+                params.model,
+                primaryProvider.quotaScope?.(),
+              );
         if (probe?.granted) {
           heldCooldownProbe = probe.usedSharedSlot;
           log.info(
@@ -1262,7 +1274,7 @@ export class ModelFallback {
           this.availability.markHealthy(params.model);
           // S2：成功产出是"限流窗口已过"的**最强信号**——比任何 Retry-After 估计都可靠。
           // 不清的话，后续并发路径会守着一段已经作废的冷却白等（把 S2 从"省"变成纯"慢"）。
-          this.availability.clearCooldown(params.model);
+          this.availability.clearCooldown(params.model, primaryProvider.quotaScope?.());
           // F2 ⑥：成功同样是「这个账户有钱」的最强信号，比任何 TTL 都可靠。
           // 不清的话，用户充值后同账户的子代理会继续被拦到 TTL 到期。
           this.clearQuotaExhausted(primaryProvider);
@@ -1364,6 +1376,7 @@ export class ModelFallback {
             params.model,
             verdict.reason,
             heldCooldownProbe,
+            primaryProvider.quotaScope?.(),
           );
 
           // 未知措辞台账：只用来观察各网关实际在回什么。⛔ 不许写回分类规则自动生效 ——
@@ -1406,6 +1419,7 @@ export class ModelFallback {
               backoff(ctx.totalRetriesThisCall, verdict, normalized),
               normalized.message,
               "rate_limit",
+              primaryProvider.quotaScope?.(),
             );
           }
 
@@ -1414,7 +1428,10 @@ export class ModelFallback {
           let cooldownSlot = 0;
           let cooldownRemaining = 0;
           if (this.config.respectSharedCooldown !== false) {
-            cooldownRemaining = this.availability.getCooldownRemaining(params.model);
+            cooldownRemaining = this.availability.getCooldownRemaining(
+              params.model,
+              primaryProvider.quotaScope?.(),
+            );
             if (cooldownRemaining > 0) {
               cooldownSlot = cooldownStaggerSlot(perCall.agentId);
               sharedCooldownMs = cooldownRemaining + cooldownSlot * COOLDOWN_STAGGER_MS;
@@ -1648,6 +1665,8 @@ export class ModelFallback {
               model: params.model,
               attempt: attempt + 1,
               delayMs: effectiveDelayMs,
+              // D7：白撞率的分子分母 —— 服务端明确要求的最小等待 vs 我们实际等的。
+              retryAfterMs: serverRequestedWaitMs(normalized.raw, normalized.retryAfterMs),
               error: normalized.message,
               provider: primaryProvider.name(),
               phase: "stream",
@@ -2463,10 +2482,11 @@ export class ModelFallback {
     model: string,
     reason: FamilyReason | undefined,
     held: boolean,
+    scope?: QuotaScope,
   ): boolean {
     if (!held) return false;
     if (shouldPreserveTransientCooldownProbeSlot(reason)) {
-      this.availability.releaseCooldownProbe(model);
+      this.availability.releaseCooldownProbe(model, scope);
       getLogger().info(
         "FALLBACK",
         `S5：探针失败于 ${reason ?? "unclassified"}（与限流窗口无关），发还探针配额 —— ` +
