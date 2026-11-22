@@ -28,6 +28,37 @@ import { computeBackoffMs, DEFAULTS as NETWORK_DEFAULTS } from "../config/networ
  *  不应被截断到更小值，否则会提前重试撞在仍未恢复的服务上。 */
 export const MAX_DELAY_MS = 120_000;
 
+/**
+ * D7（2026-11-22）：取服务端**明确要求**的等待时长（毫秒），没有明确要求返回 undefined。
+ *
+ * 三条来源与 {@link calculateRetryDelay} 同序：
+ *   ① Retry-After header > ② 归一化阶段的 retryAfterMs > ③ rate-limit-reset header。
+ * 顺序必须一致，否则「按 A 判定能不能等」与「按 B 实际睡多久」会自相矛盾。
+ *
+ * 为什么要抽成共享实现：恢复决策（`recovery-policy`：等不起 → give_up）、退避计算
+ * （本文件）、白撞率归因（`fallback` 的 retry 遥测）三处要用同一个口径。
+ * 三份平行实现必然漂移——本文件顶部那条「两份平行实现必然漂移」的教训同样适用。
+ *
+ * @param raw 原始错误（`parseRetryAfterFromHeaders` / `parseRateLimitReset` 的入参）
+ * @param normalizedRetryAfterMs 归一化阶段已解析出的建议等待（`NormalizedLLMError.retryAfterMs`）
+ * @param now 当前时刻（测试注入用；rate-limit-reset 是绝对时刻，需要基准）
+ */
+export function serverRequestedWaitMs(
+  raw: unknown,
+  normalizedRetryAfterMs?: number,
+  now = Date.now(),
+): number | undefined {
+  const fromHeaders = parseRetryAfterFromHeaders(raw);
+  if (fromHeaders && fromHeaders > 0) return fromHeaders;
+  if (normalizedRetryAfterMs && normalizedRetryAfterMs > 0) return normalizedRetryAfterMs;
+  const resetAt = parseRateLimitReset(raw);
+  if (resetAt) {
+    const waitMs = Math.max(0, resetAt - now);
+    if (waitMs > 0) return waitMs;
+  }
+  return undefined;
+}
+
 export interface BackoffOptions {
   /** 本阶段延迟上限（连接/流式两阶段各自更紧的上限） */
   maxDelayMs: number;
@@ -81,7 +112,12 @@ export function calculateRetryDelay(
     // 限流：+20% 正向抖动（尊重服务器最小延迟，不用双向 jitter 以免早于服务器最小延迟）
     const baseDelay = Math.min(baseMs * Math.pow(2, attempt), cappedMaxMs);
     const jitter = baseDelay * 0.2 * Math.random();
-    return Math.round(baseDelay + jitter);
+    // D6（2026-11-22）：jitter **必须**在加完之后再钳一次。原来只在乘指数后钳 `baseDelay`，
+    // 抖动加在钳制之后，指数一旦触顶，每次等待仍会多出 0~20% —— 配置上限 120s 时实测
+    // 可达 144s，「上限」不是硬上限。消费者按 retryBackoffMaxMs 估算时间预算
+    // （`recovery-policy` 的 S3 deadline、`retry_budget_exhausted` 的 wantedDelayMs），
+    // 超出部分会被算成「还有余量」，进而多睡一段本不该睡的退避。
+    return Math.round(Math.min(baseDelay + jitter, cappedMaxMs));
   }
 
   // 其他错误：指数退避 + ±15% 双向 jitter，与 loop 层退避同一实现

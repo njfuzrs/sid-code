@@ -195,7 +195,14 @@ describe("A1（I1）：除 I1-例外外，首次观测不放弃", () => {
 
   test("I1-例外闭集只有这些（新增条目必须同步改本断言）", () => {
     expect([...I1_EXCEPTIONS].map(String).sort()).toEqual(
-      ["background_529", "context_overflow", "deadline", "server_declined", "user_abort"].sort(),
+      [
+        "background_529",
+        "context_overflow",
+        "deadline",
+        "server_declined",
+        "server_wait_too_long",
+        "user_abort",
+      ].sort(),
     );
   });
 });

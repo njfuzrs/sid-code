@@ -311,6 +311,18 @@ export interface ProviderDigestStats {
   timedOut: number;
   retried: number;
   /**
+   * D7（2026-11-22）：服务端明确给了等待要求（`retryAfterMs > 0`）的重试数 —— 白撞率分母。
+   *
+   * 服务端没表态的重试**不进**这个分母：没有「要求的等待」，就无所谓白撞，
+   * 混进来只会稀释比率、让退避基数看起来比实际更合理（分母比分子重要）。
+   * 不落 = 本会话没有这类样本，不要读成 0%。
+   */
+  serverWaitRetries?: number;
+  /** D7：其中 `delayMs < retryAfterMs` 的次数 —— 没等到服务端要求的最小间隔就再打了一发。 */
+  blindRetries?: number;
+  /** D7：`blindRetries / serverWaitRetries`。分母为 0 时不落字段。 */
+  blindRetryRatio?: number;
+  /**
    * 整轮 API 耗时均值（ms）。取自 AfterModelRaw.elapsed_ms（= apiDuration，含握手+生成+重试，
    * **已扣除人工等待** —— F4 起 `api_duration_ms` 不再把等人时段算成模型耗时，
    * 原始墙钟见同事件的 `api_duration_raw_ms`）。
@@ -1012,7 +1024,13 @@ export interface RecoveryDigestStats {
 }
 
 /** I1-例外闭集（与 llm/recovery-policy.ts 的 I1_EXCEPTIONS 同步；deadline 单独报） */
-const I1_EXEMPT_GIVE_UP = new Set(["user_abort", "server_declined", "background_529", "deadline"]);
+const I1_EXEMPT_GIVE_UP = new Set([
+  "user_abort",
+  "server_declined",
+  "server_wait_too_long",
+  "background_529",
+  "deadline",
+]);
 
 export function aggregateRecoveryStats(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
@@ -5747,6 +5765,10 @@ export function aggregateProviderStats(
       failed: number;
       timedOut: number;
       retried: number;
+      /** D7：服务端明确给了等待要求的重试数（白撞率分母） */
+      serverWaitRetries: number;
+      /** D7：其中等待时长小于服务端要求的次数（白撞） */
+      blindRetries: number;
       totalLatencyMs: number;
       ttfts: number[];
       gens: number[];
@@ -5760,6 +5782,8 @@ export function aggregateProviderStats(
         failed: 0,
         timedOut: 0,
         retried: 0,
+        serverWaitRetries: 0,
+        blindRetries: 0,
         totalLatencyMs: 0,
         ttfts: [],
         gens: [],
@@ -5816,6 +5840,14 @@ export function aggregateProviderStats(
       const type = e.data.type as string;
       if (type === "retry") {
         stats.retried++;
+        // D7：白撞率 —— 只有服务端明确给了等待要求的重试才进分母。
+        // `delayMs < retryAfterMs` = 没等到它说的最小间隔就再打了一发。
+        const wanted = e.data.retryAfterMs as number | undefined;
+        if (wanted && wanted > 0) {
+          stats.serverWaitRetries++;
+          const waited = (e.data.delayMs as number) || 0;
+          if (waited < wanted) stats.blindRetries++;
+        }
       } else if (
         type === "stream_idle_timeout" ||
         type === "stream_content_progress_timeout" ||
@@ -5872,6 +5904,13 @@ export function aggregateProviderStats(
       failed: stats.failed,
       timedOut: stats.timedOut,
       retried: stats.retried,
+      // D7：分母为 0 时不落字段 —— 把「没有这类样本」与「白撞率 0%」分开，
+      // 否则读表的人会把"服务端从没给过等待要求"读成"退避基数完全合理"。
+      ...(stats.serverWaitRetries > 0 && {
+        serverWaitRetries: stats.serverWaitRetries,
+        blindRetries: stats.blindRetries,
+        blindRetryRatio: stats.blindRetries / stats.serverWaitRetries,
+      }),
       avgLatencyMs: stats.requests > 0 ? Math.round(stats.totalLatencyMs / stats.requests) : 0,
       ttft_p50: percentile(sortedTtfts, 0.5),
       ttft_p95: ttftP95,
