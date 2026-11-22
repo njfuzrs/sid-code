@@ -21,6 +21,7 @@
 import { isPromptTooLong } from "../api/errors.ts";
 import type { ErrorFamily, FamilyVerdict, NormalizedLLMError } from "./error-normalize.ts";
 import { classifyFamily } from "./error-normalize.ts";
+import { MAX_DELAY_MS, serverRequestedWaitMs } from "./retry-backoff.ts";
 
 /** 放弃原因闭集（进 `RecoveryGiveUp` 遥测；digest 的 one_shot_kill_count 据此排除 I1-例外） */
 export type GiveUpReason =
@@ -29,6 +30,7 @@ export type GiveUpReason =
   | "per_call_cap"
   | "deadline"
   | "server_declined"
+  | "server_wait_too_long"
   | "background_529"
   | "local_fault"
   | "user_abort";
@@ -41,6 +43,7 @@ export const I1_EXCEPTIONS: ReadonlySet<GiveUpReason | "context_overflow"> = new
   "user_abort",
   "context_overflow",
   "server_declined",
+  "server_wait_too_long",
   "background_529",
   "deadline",
 ]);
@@ -233,6 +236,24 @@ export function decideRecovery(
 
   // 后台查询遇 529：现有省配额策略。
   if (verdict.reason === "overloaded" && !budget.retry529) return giveUp("background_529");
+
+  // D8（2026-11-22）：服务端明确要求的等待超过退避上限 → 直接判「等不起」。
+  //
+  // 修复前同一条服务端观测信号有三种处置：
+  //   ① Retry-After header / ② retryAfterMs：钳到 120s 后**继续重试**
+  //      （钳制等于把「服务端让你等 10 分钟」改写成「等 2 分钟就行」）；
+  //   ③ rate-limit-reset：超限直接丢弃，落回 5s 起的指数退避。
+  // 现在统一为：超过上限即 give_up，evidence 带真实 `wantedDelayMs`，让运维能区分
+  // 「我们主动放弃」与「服务端明确拒绝」，而不是把前者混进 budget / same_fingerprint。
+  //
+  // 放在 server_declined / background_529 之后：那两条是更强的服务端表态，优先命中。
+  const serverWaitMs = serverRequestedWaitMs(err.raw, err.retryAfterMs, now);
+  if (serverWaitMs !== undefined && serverWaitMs > MAX_DELAY_MS) {
+    return giveUp("server_wait_too_long", {
+      wantedDelayMs: serverWaitMs,
+      remainingMs: budget.deadlineRemainingMs,
+    });
+  }
 
   // ═══ 第 1 步：空响应首次直降级（流式重试多少次都一样空）═══
   if (verdict.reason === "empty_response" && !history.degradeTried) {

@@ -100,6 +100,15 @@ export interface RetryTelemetryEvent {
   attempt?: number;
   /** 退避延迟（毫秒） */
   delayMs?: number;
+  /**
+   * D7（2026-11-22）：服务端**明确要求**的最小等待（毫秒），没有明确要求时不落。
+   *
+   * 与 `delayMs` 配合读才是「白撞率」的分子分母：`delayMs < retryAfterMs` 说明没等到
+   * 服务端说的最小间隔就再打了一发。只落"有明确要求"的样本——服务端没表态时
+   * 无所谓白撞，混进分母只会稀释比率、让退避基数看起来比实际更合理。
+   * 取值口径与退避计算共用 `retry-backoff.serverRequestedWaitMs`。
+   */
+  retryAfterMs?: number;
   /** 错误描述 */
   error?: string;
   /** Provider 名称 */
