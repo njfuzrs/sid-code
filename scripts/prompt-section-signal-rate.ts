@@ -132,6 +132,12 @@ export const SIGNALS: PromptSectionSignal[] = [
     count: () => null,
   },
   {
+    section: "<precedence-chain>",
+    definition:
+      "不可度量：该段只规定「冲突时信哪一条」的裁决顺序，不驱动任何专属行为——工具调用与读写文件都不是它的信号（L-1 审计已列为静态无条件段）",
+    count: () => null,
+  },
+  {
     section: "<identity> + <environment>",
     definition:
       "不可度量：身份与环境陈述不驱动任何专属行为（每个会话当然都会产生工具调用，但那不是这段规则的信号）",
@@ -150,6 +156,31 @@ function sessionInWindow(dir: string, sinceMs: number): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 解析一行 events.jsonl，把 PreToolUse 事件累加进扫描上下文。
+ *
+ * 为什么抽成独立函数：self-test 的职责是「证明计数逻辑没坏」，它必须与被测的扫描
+ * 路径走**同一段解析代码**。此前这里是两份复制实现，而 self-test 的注释写着
+ * 「与 scanEvents 的解析分支同一段代码」——注释与事实不符，且扫描侧口径一旦变更
+ * （比如新增一个工具分组），自测仍然全绿。2026-11-19 复核把这份复制收成一个函数。
+ */
+export function applyEventLine(ctx: ScanContext, line: string): void {
+  if (!line.trim()) return;
+  let ev: any;
+  try {
+    ev = JSON.parse(line);
+  } catch {
+    return; // 坏行跳过：半写入的尾部行很常见（见 scanEvents 注释）
+  }
+  if (ev?.event !== "PreToolUse") return;
+  const name = ev?.data?.tool_name;
+  if (typeof name !== "string") return;
+  ctx.toolCalls.set(name, (ctx.toolCalls.get(name) ?? 0) + 1);
+  if (name === "bash") ctx.bashCommands.push(bashCommand(ev));
+  else if (name === "read" || name === "read_many") ctx.readPaths.push(filePathOf(ev));
+  else if (name === "write") ctx.writePaths.push(filePathOf(ev));
 }
 
 /**
@@ -183,22 +214,7 @@ export function scanEvents(sessionsDir: string, sinceMs = 0): ScanContext {
     } catch {
       continue;
     }
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      let ev: any;
-      try {
-        ev = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (ev?.event !== "PreToolUse") continue;
-      const name = ev?.data?.tool_name;
-      if (typeof name !== "string") continue;
-      ctx.toolCalls.set(name, (ctx.toolCalls.get(name) ?? 0) + 1);
-      if (name === "bash") ctx.bashCommands.push(bashCommand(ev));
-      else if (name === "read" || name === "read_many") ctx.readPaths.push(filePathOf(ev));
-      else if (name === "write") ctx.writePaths.push(filePathOf(ev));
-    }
+    for (const line of raw.split("\n")) applyEventLine(ctx, line);
   }
   return ctx;
 }
@@ -286,21 +302,9 @@ export function selfTest(): string[] {
     readPaths: [],
     writePaths: [],
   };
-  // 直接喂内存事件：与 scanEvents 的解析分支同一段代码，避免为了 self-test 建临时目录
-  for (const line of lines) {
-    let e: any;
-    try {
-      e = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (e?.event !== "PreToolUse") continue;
-    const name = e.data.tool_name;
-    ctx.toolCalls.set(name, (ctx.toolCalls.get(name) ?? 0) + 1);
-    if (name === "bash") ctx.bashCommands.push(bashCommand(e));
-    else if (name === "read" || name === "read_many") ctx.readPaths.push(filePathOf(e));
-    else if (name === "write") ctx.writePaths.push(filePathOf(e));
-  }
+  // 直接喂内存事件：与 scanEvents 共用 applyEventLine（同一段解析代码），
+  // 避免为了 self-test 建临时目录，也避免「自测只证明复制的副本是对的」。
+  for (const line of lines) applyEventLine(ctx, line);
 
   const rows = computeRows(ctx);
   const get = (s: string) => rows.find((r) => r.section === s);
