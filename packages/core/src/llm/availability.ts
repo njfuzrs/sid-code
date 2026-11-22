@@ -268,29 +268,50 @@ export class ModelAvailabilityService {
   // （少发注定被拒的请求）与"更稳"。判据是我们**测得出来**（见 S2 门槛对比实验）。
 
   /**
+   * D4（2026-11-22）：冷却表 key —— 有可靠账户作用域时按**账户**共享，否则回落裸模型名。
+   *
+   * 为什么不能永远按模型记：限流配额是**账户级**资源。同一个端点 + 同一份凭据下，
+   * 所有模型共用一份配额，按模型记会让「模型 A 撞了 429」在模型 B 上重新撞一遍。
+   * 这与 `quotaExhausted`（F2 ⑥）是同一个理由——那条已经改成账户维度，冷却这条漏了。
+   *
+   * 为什么 scope 缺失时**回落**裸模型名，而不是「不写冷却」或「共享一个全局 key」：
+   * - 不写冷却会让不实现 `quotaScope()` 的 provider 连 S2 都没有，退回放大形态；
+   * - 全局 key 会把两个不同账户的限流窗口混成一个，比不共享更糟。
+   * 回落 = 维持现状语义；`scope:` / `model:` 前缀保证两种形态永不撞车
+   * （同一进程里可能一个 provider 有 scope、另一个没有）。
+   */
+  private cooldownKey(model: string, scope?: QuotaScope): string {
+    return scope ? `scope:${quotaScopeKey(scope)}` : `model:${model}`;
+  }
+
+  /**
    * S2：标记模型正在被限流，写下共享冷却截止时刻。
    *
-   * @param model 被限流的模型
+   * @param model 被限流的模型（scope 缺失时作为 key）
    * @param retryAfterMs 服务端建议的等待时长（`Retry-After` / `rate-limit-reset` 解析结果）。
    *   缺省时用一个保守的短冷却（2s）——**宁可短也不要没有**：我们不知道窗口多长，
    *   但"别在同一毫秒再打一发"这件事本身就有价值。
    * @param reason 归因文本，进日志与遥测。
+   * @param cause 结构化成因（驱动 S5 探针判定）。
+   * @param scope 账户级作用域（`(端点, 凭据指纹)`）；缺失时按模型维度隔离（D4）。
    */
   markRateLimited(
     model: string,
     retryAfterMs?: number,
     reason = "rate_limit",
     cause?: CooldownCause,
+    scope?: QuotaScope,
   ): void {
     // 双向钳制：下限保证冷却是个**能被别人读到**的信号（1ms 冷却等于没有冷却，
     // 见 MIN_COOLDOWN_MS 注释）；上限防止服务端一个超长 Retry-After 让全部并发
     // 路径集体长睡。
     const wait = Math.min(Math.max(retryAfterMs ?? 2_000, MIN_COOLDOWN_MS), MAX_COOLDOWN_WAIT_MS);
     const until = Date.now() + wait;
-    const prev = this.cooldowns.get(model);
+    const key = this.cooldownKey(model, scope);
+    const prev = this.cooldowns.get(key);
     // 取**更晚**的截止时刻：多路先后撞限流时，冷却应该只延长不缩短——
     // 否则后撞的那一路（可能拿到更短的 Retry-After）会把前面更长的冷却抹掉。
-    this.cooldowns.set(model, {
+    this.cooldowns.set(key, {
       until: prev && prev.until > until ? prev.until : until,
       reason,
       hits: (prev?.hits ?? 0) + 1,
@@ -327,11 +348,11 @@ export class ModelAvailabilityService {
    * - 判定 ② 返回 false（单路径成因）→ 放行但**不**占共享配额，
    *   于是各路径各自探。这不是漏洞：那类成因本就不构成跨路径放大。
    */
-  tryAcquireCooldownProbe(model: string): CooldownProbeDecision {
-    const cd = this.cooldowns.get(model);
+  tryAcquireCooldownProbe(model: string, scope?: QuotaScope): CooldownProbeDecision {
+    const cd = this.cooldowns.get(this.cooldownKey(model, scope));
     // 用 getCooldownRemaining 而非直接读 until：它顺带清理过期记录，
     // 避免这里自己再写一份过期判断（两份必然漂移）。
-    if (!cd || this.getCooldownRemaining(model) <= 0) {
+    if (!cd || this.getCooldownRemaining(model, scope) <= 0) {
       return { granted: false, usedSharedSlot: false, reason: "no_cooldown" };
     }
     if (!shouldAllowCooldownProbeForReason(cd.cause)) {
@@ -358,15 +379,15 @@ export class ModelAvailabilityService {
    * 幂等且对已过期冷却无副作用（记录已被清理时是空操作）——探针失败路径可能
    * 与冷却自然到期竞争，这里不该因此抛错。
    */
-  releaseCooldownProbe(model: string): void {
-    const cd = this.cooldowns.get(model);
+  releaseCooldownProbe(model: string, scope?: QuotaScope): void {
+    const cd = this.cooldowns.get(this.cooldownKey(model, scope));
     if (!cd) return;
     cd.probeConsumed = false;
   }
 
   /** S5：读探针配额是否已被消耗（测试与遥测归因用；无冷却记录返回 false）。 */
-  isCooldownProbeConsumed(model: string): boolean {
-    return this.cooldowns.get(model)?.probeConsumed ?? false;
+  isCooldownProbeConsumed(model: string, scope?: QuotaScope): boolean {
+    return this.cooldowns.get(this.cooldownKey(model, scope))?.probeConsumed ?? false;
   }
 
   /**
@@ -375,12 +396,13 @@ export class ModelAvailabilityService {
    * 顺带清理已过期的记录：冷却是短时信号，过期即无意义，留着只会让这张表随
    * 长会话单调增长（模型数量有限，但没必要留垃圾）。
    */
-  getCooldownRemaining(model: string): number {
-    const cd = this.cooldowns.get(model);
+  getCooldownRemaining(model: string, scope?: QuotaScope): number {
+    const key = this.cooldownKey(model, scope);
+    const cd = this.cooldowns.get(key);
     if (!cd) return 0;
     const remaining = cd.until - Date.now();
     if (remaining <= 0) {
-      this.cooldowns.delete(model);
+      this.cooldowns.delete(key);
       return 0;
     }
     return remaining;
@@ -389,17 +411,18 @@ export class ModelAvailabilityService {
   /** S2：读冷却归因（供日志/遥测说明"为什么在等"）。无冷却返回 undefined。 */
   getCooldownInfo(
     model: string,
+    scope?: QuotaScope,
   ): { remainingMs: number; reason: string; hits: number; cause?: CooldownCause } | undefined {
-    const cd = this.cooldowns.get(model);
+    const cd = this.cooldowns.get(this.cooldownKey(model, scope));
     if (!cd) return undefined;
     const remainingMs = cd.until - Date.now();
     if (remainingMs <= 0) return undefined;
     return { remainingMs, reason: cd.reason, hits: cd.hits, cause: cd.cause };
   }
 
-  /** S2：清除某模型的冷却（该模型成功产出内容时调用——限流窗口已过的最强信号）。 */
-  clearCooldown(model: string): void {
-    this.cooldowns.delete(model);
+  /** S2：清除某模型/账户的冷却（成功产出内容时调用——限流窗口已过的最强信号）。 */
+  clearCooldown(model: string, scope?: QuotaScope): void {
+    this.cooldowns.delete(this.cooldownKey(model, scope));
   }
 
   // ═══════════════════════════════════════════════════════════════════
