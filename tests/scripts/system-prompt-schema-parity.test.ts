@@ -43,6 +43,16 @@ import { WriteTool } from "@sid-code/core/tool/write.ts";
 import { EditTool } from "@sid-code/core/tool/edit.ts";
 import { GlobTool } from "@sid-code/core/tool/glob.ts";
 import { GrepTool } from "@sid-code/core/tool/grep.ts";
+// L-2 复核轮补齐：这 7 个工具在此前的手工覆盖集里缺席，而它们同样声明 zodSchema、
+// 同样有 optional 参数（select / message / name / task_id / delay_seconds 等）。
+// 漏掉它们不是「当前没有漂移」，而是「漂移了也看不见」—— 普查的意思是扫到每一块面。
+import { ToolSearchTool } from "@sid-code/core/tool/tool-search.ts";
+import { TeamMessageTool } from "@sid-code/core/tool/team-message.ts";
+import { TeamCreateTool } from "@sid-code/core/tool/team-create.ts";
+import { StructuredTaskGetTool } from "@sid-code/core/tool/structured-task-get.ts";
+import { TaskCreateTool } from "@sid-code/core/tool/structured-task-create.ts";
+import { SendMessageTool } from "@sid-code/core/tool/send-message.ts";
+import { ScheduleWakeupTool } from "@sid-code/core/tool/schedule-wakeup.ts";
 
 /**
  * 取 zod 对象顶层字段里「optional」的参数名集合。
@@ -82,7 +92,19 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** 本门禁覆盖的工具集合。名字写死是有意的：漏掉一个工具就是漏掉一块普查面。 */
+/**
+ * 本门禁覆盖的工具集合。
+ *
+ * 为什么是手工列而不是扫目录自动发现：工具的构造参数各不相同（需要 fake 依赖），
+ * 而本门禁只需要 `zodSchema`，自动发现要么靠反射（Bun 无 import.meta.glob），
+ * 要么靠正则解析 `zodSchema = xxxSchema()` 的间接定义（不可靠）。
+ *
+ * 覆盖边界：**新增工具时必须同时加进这里**，否则它就是一个「漂移了也看不见」的盲区。
+ * 当前覆盖 13 个：6 个核心工具（bash/read/write/edit/glob/grep）+ 7 个复核轮补入的
+ * 延迟工具（tool_search / team_message / team_create / structured_task_get /
+ * structured_task_create / send_message / schedule_wakeup）。后者此前缺席，
+ * 而它们同样声明 zodSchema、同样有 optional 参数。
+ */
 function coveredTools(): Tool<any, any>[] {
   return [
     new BashTool(null as any),
@@ -91,6 +113,14 @@ function coveredTools(): Tool<any, any>[] {
     new EditTool(null as any),
     new GlobTool(),
     new GrepTool(),
+    // 以下 7 个是复核轮补入的（见 import 段注释）
+    new ToolSearchTool(new Registry() as any),
+    new TeamMessageTool(),
+    new TeamCreateTool({} as never, {} as never),
+    new StructuredTaskGetTool(),
+    new TaskCreateTool(),
+    new SendMessageTool(),
+    new ScheduleWakeupTool(),
   ] as unknown as Tool<any, any>[];
 }
 
