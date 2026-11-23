@@ -191,6 +191,41 @@ describe("信用卡号规则不得误伤数字（事故回归）", () => {
     const text = "序号 4428123456780257 结束";
     expect(maskSensitiveData(text)).toBe(text);
   });
+
+  /**
+   * 回归：UUID 被信用卡规则误遮（2026-11-23，PR #959 的 CI flake 暴露）。
+   *
+   * 根因：信用卡正则允许 `[- ]?` 作千位分隔符，而 UUID 的段分隔符同样是 `-`。
+   * 于是「段 1 全数字 + 段 2 全数字 + 段 3 全数字」的 UUID 会凑出 16 位数字，
+   * 再（约 1/10 概率）通过 Luhn，被遮成 `6507********4909-…`。轨迹落盘的
+   * `device_id` 是 UUID —— 用户排查时看到半截 ID，断言 device_id 完整的测试
+   * 也随之偶发变红（百万随机 UUIDv4 实测约 1/9 万次误遮）。
+   */
+  test("UUID 不被误当成卡号（device_id 必须完整落盘）", () => {
+    const uuids = [
+      "65070000-0009-4909-8def-0123456789ab", // 事故形态：段 1-3 全数字且过 Luhn
+      "40147302-8620-4555-9ee9-9c7707fa18f6", // 百万随机样本实测被遮的实例
+      "42036270-4482-4784-ac16-ea7cb1dfc250",
+    ];
+    for (const uuid of uuids) {
+      expect(detectSensitiveData(uuid).some((m) => m.type === "信用卡号")).toBe(false);
+      expect(maskSensitiveData(uuid)).toBe(uuid);
+      // 真实落盘路径：JSON 字符串值里的 device_id 也要原样保留
+      const json = JSON.stringify({ device_id: uuid });
+      expect(maskSensitiveJson(json)).toBe(json);
+    }
+  });
+
+  test("紧邻非十六进制边界的卡号仍被遮（排除 UUID 不能放过真实卡号）", () => {
+    // `=` / 空格 / 中文都不是 UUID 字符，边界扩展会停住，整段不构成 UUID 形态
+    for (const text of [
+      "id=4111-1111-1111-1111",
+      "卡号 4111111111111111",
+      "card: 5500005555555559",
+    ]) {
+      expect(maskSensitiveData(text)).not.toBe(text);
+    }
+  });
 });
 
 describe("maskSensitiveJson（结构化脱敏）", () => {
