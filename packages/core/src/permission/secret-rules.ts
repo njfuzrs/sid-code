@@ -221,6 +221,37 @@ function isolatedNumber(value: string, index: number, text: string): boolean {
   return true;
 }
 
+/** 规范 UUID 形态（8-4-4-4-12 十六进制段，大小写不敏感） */
+const UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** UUID 可能出现的字符：十六进制数字与段分隔符（`-`） */
+function isUuidChar(ch: string): boolean {
+  return (
+    (ch >= "0" && ch <= "9") || (ch >= "a" && ch <= "f") || (ch >= "A" && ch <= "F") || ch === "-"
+  );
+}
+
+/**
+ * 命中区间是否落在一个 UUID 内部。
+ *
+ * 事故背景（2026-11-23）：信用卡号正则允许 `[- ]?` 作千位分隔符，而 UUID 的段分隔符
+ * 同样是 `-`。于是「段 1 全数字 + 段 2 全数字 + 段 3 全数字」的 UUID 恰好凑出 16 位
+ * 数字并（约 1/10 概率）通过 Luhn，被遮成 `6507********4909-…` —— 轨迹里的
+ * `device_id` 是 UUID，用户排查时看到半截 ID；落盘断言 `device_id` 完整的测试
+ * 也就成了偶发红（百万随机 UUIDv4 实测约 1/9 万次误遮）。
+ *
+ * 判定方式：把命中区间向两侧扩到「非 UUID 字符」边界，看整段是否**恰好**是 UUID 形态。
+ * 只对扩出来的整段判形态，不做前缀/后缀猜测：卡号紧邻十六进制字母时扩出的段不是
+ * UUID，仍会正常脱敏（宁可多遮，不可漏遮）。
+ */
+function insideUuid(index: number, length: number, text: string): boolean {
+  let start = index;
+  while (start > 0 && isUuidChar(text[start - 1]!)) start--;
+  let end = index + length;
+  while (end < text.length && isUuidChar(text[end]!)) end++;
+  return UUID_SHAPE_RE.test(text.slice(start, end));
+}
+
 // ============================================================================
 // 规则表
 // ============================================================================
@@ -470,8 +501,9 @@ export const SECRET_RULES: SecretRule[] = [
   },
 
   // ── 信用卡号（简化：16 位数字，可含空格/横线分隔）──
-  // 两道二次校验，缺一不可：
+  // 三道二次校验，缺一不可：
   //   - isolatedNumber：排除小数尾数/长数字的一部分（`\b` 挡不住 `0.4428…` 里的 `.`）
+  //   - insideUuid：排除 UUID 内部命中（段分隔符 `-` 会被 `[- ]?` 当成千位分隔符）
   //   - luhnValid：真实卡号必过校验位；随机 16 位数字仅 1/10 概率误过
   {
     id: "credit-card",
@@ -482,7 +514,9 @@ export const SECRET_RULES: SecretRule[] = [
     keepHead: 4,
     keepTail: 4,
     validate: (value, index, text) =>
-      isolatedNumber(value, index, text) && luhnValid(value.replace(/[- ]/g, "")),
+      isolatedNumber(value, index, text) &&
+      !insideUuid(index, value.length, text) &&
+      luhnValid(value.replace(/[- ]/g, "")),
     category: "credit_card",
   },
 
