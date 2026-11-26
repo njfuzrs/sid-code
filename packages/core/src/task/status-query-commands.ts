@@ -30,6 +30,7 @@ import {
   parseBashCommand,
   extractSimpleCommands,
   extractRedirectTargets,
+  isDiscardRedirectTarget,
 } from "../tool/bash/parser.ts";
 import { extractHeredocBlocks } from "../tool/bash/heredoc.ts";
 import { GH_CHECKS_PENDING_HEADER } from "../tool/bash/command-semantics.ts";
@@ -997,8 +998,10 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
   }
   if (simple.length === 0) return null;
 
-  // 写重定向（`gh pr checks 1 > out.txt`）→ 有副作用，放行
-  const redirects = extractRedirectTargets(ast).filter((t) => t !== "/dev/null");
+  // 写重定向（`gh pr checks 1 > out.txt`）→ 有副作用，放行。
+  // 丢弃型目标走共享判定（`parser.ts` 的 `isDiscardRedirectTarget`，口径 {/dev/null, /dev/zero}）：
+  // 这里原先硬编码只认 `/dev/null`，与只读判定对 `/dev/zero` 的答案不一致（同一形态两把尺子）。
+  const redirects = extractRedirectTargets(ast).filter((t) => !isDiscardRedirectTarget(t));
   if (redirects.length > 0) return null;
 
   // 循环（`for … do gh … done`）：整条交给循环展开，不再走「最后一段」判据

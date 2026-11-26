@@ -140,7 +140,12 @@ export function bashWriteTargets(command: unknown): string[] {
     if (/[$`*?]/.test(p)) return;
     // 不是文件路径的形态：fd 复制（`&2`）、进程替换残留、纯选项
     if (p.startsWith("&") || p.startsWith("-")) return;
-    // 设备/临时目录不是业务文件，报了只是白扫一遍目录链
+    // 设备/临时目录不是业务文件，报了只是白扫一遍目录链。
+    // ⚠️ 这里**刻意不共用** `tool/bash/parser.ts` 的 `isDiscardRedirectTarget`：两者回答的不是
+    // 同一个问题。共享判定问「这个写入算不算写盘」，这里问「这个写入要不要进 JIT 快照」——
+    // `/tmp/` 不入快照是因为「不在项目内」，`/dev/*` 是因为「不是普通文件」，两个不同理由。
+    // 顺带：`^/dev/` 已经覆盖 `/dev/null`，末尾那个 `p === "/dev/null"` 是历史补丁叠加留下的
+    // 冗余判断，保留只为不改变行为（多一层显式意图），不要据此以为 `/dev/zero` 被特判了。
     if (/^\/dev\//.test(p) || /^\/tmp\//.test(p) || p === "/dev/null") return;
     if (!out.includes(p)) out.push(p);
   };

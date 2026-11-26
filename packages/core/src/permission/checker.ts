@@ -582,6 +582,19 @@ function declaredNoPermission(tool: Tool | undefined, input: unknown): boolean {
  * 或新版 `Tool`（`isReadOnly(input)` 有参，测试与直接构造的调用方）。`tool/registry.ts`
  * 内部存的是 LegacyTool，但 bridge 归一后 `readOnly()` 已经调用了原 `isReadOnly`，
  * 所以两条分支不会同时命中同一份语义两次。
+ *
+ * ## D6：本函数**刻意不看注册来源**，安全性由调用方的 AND 条件承担
+ *
+ * 外部来源（MCP / 插件 / 自定义代理）自报的 `readOnlyHint` 不算数——但这条隔离**不在**
+ * 这里做，而是在 `declaredNoPermission()`（来源必须 `builtin`）里。本函数的两个调用点
+ * （Step 13 与 `checkPlanMode` 之后的 deny-write 总闸）都是 `declaredNoPermission(...) &&
+ * toolReportsReadOnly(...)`，第二步因此不可达于非内置工具。
+ *
+ * 为什么不在这里再加一道 `getToolRegistrationSource(tool) !== "builtin"`：它不改变任何
+ * 现有行为（AND 已经吃掉），只会制造两份来源判据——将来有人只改一处就会让两个条件的
+ * 语义分叉，反而比现在更难推理。**注意**：真正的约束是「两个条件必须 AND」，
+ * 把调用点改成只要求 `toolReportsReadOnly` 等于放开所有 MCP 工具的免确认通道。
+ * 这条不变式由 `tests/permission/mcp-readonly-source-contract.test.ts` 锁住。
  */
 function toolReportsReadOnly(tool: Tool | undefined, input: unknown): boolean {
   if (!tool) return false;
@@ -2056,6 +2069,13 @@ export class PermissionChecker implements Checker {
     // deny-write 时 `todo_write` 连一行进度都记不了。
     // 两个条件必须同时成立：只看声明会把 `todo_write` 放进来（它会写 progress 文件，
     // `readOnly()` 为 false）；只看 readOnly 又会把「只读但会起子进程」的工具放进来。
+    //
+    // D6：**这里的 `declaredNoPermission` 承担了「外部来源不享受只读声明」的隔离。**
+    // 它对非内置工具恒返回 false（`getToolRegistrationSource()` 非 builtin），所以
+    // `toolReportsReadOnly()` 里那条不看来源的分支对 MCP / 插件工具永远不可达。
+    // 删掉它（或把下面的 && 改成 ||）等于给所有自称只读的 MCP Server 开一条免确认通道，
+    // `plan` 模式立刻被打穿——那条路径里外部工具会当场执行副作用。
+    // 不变式由 `tests/permission/mcp-readonly-source-contract.test.ts` 锁住，改这里先跑它。
     if (this.config.permissionMode === "deny-write") {
       if (declaredNoPermission(tool, req.input) && toolReportsReadOnly(tool, req.input)) {
         log.info(
@@ -2257,6 +2277,8 @@ export class PermissionChecker implements Checker {
       // 这道总闸的名字就写着「覆盖 step 的放行」，所以两处必须同步改：只改 Step 13
       // 会让阶段一的 ALLOW 在这里被静默改回 DENY（`step: "mode-gate"`），
       // 表现是测试全绿而线上照旧弹确认——本 PR 实现时实测踩到过一次。
+      // D6 同 Step 13：`declaredNoPermission` 是「外部来源不享受只读声明」的隔离，
+      // 删它或改成 OR 即放开 MCP，契约测试同上。
       const exemptInDenyWrite =
         declaredNoPermission(tool, req.input) && toolReportsReadOnly(tool, req.input);
       if (!exemptInDenyWrite) {

@@ -13,10 +13,13 @@
  *    判据是「这条命令按 POSIX / 该程序手册的语义会不会产生持久副作用」，
  *    不是「当前实现返回什么」。否则测试只是把实现抄一遍，改坏也绿。
  * 2. **覆盖完整性由源码解析保证**：手写的 `MATRIX` 必须覆盖 `READ_ONLY_COMMANDS`
- *    的每一条，主表新增命令而不更新本表 → 红。
+ *    的每一条，主表新增命令而不更新本表 → 红。注意 `parseMainWhitelist` 允许条目
+ *    后面带行内注释——D4 起主表给 10 条被 CONDITIONAL_COMMANDS / git 分支覆盖的死条目
+ *    加了「此处仅作文档」的行内标注。
  * 3. **已知缺口用 `test.failing` 钉桩**，断言写的是正确语义。
  *    当前实现不满足 → 标记通过；修好之后该用例会失败，提醒把 `.failing` 去掉。
  *    这样既不让缺口固化成「正确行为」，也不会让测试长期红着被无视。
+ *    （D7 的 5 条缺口已修复并去掉钉桩，见下方 `D7 安全形态` 与 `WRITE_FORMS`。）
  */
 
 import { describe, test, expect } from "bun:test";
@@ -108,21 +111,56 @@ const WRITE_FORMS: Array<[string, string]> = [
   ["awk（非主表，条件命令）", `awk 'BEGIN{system("id")}'`],
   ["curl（非主表，条件命令）", "curl https://example.com"],
   ["wget（非主表，条件命令）", "wget https://example.com"],
+  // D7：主表命令 + 写文件参数，与 sed -i / sort -o 同型。修前都判只读（免确认执行）。
+  ["yq -i 原地写", "yq -i '.a=1' f"],
+  ["yq --inplace 原地写", "yq --inplace '.a=1' f"],
+  ["yq 组合短选项 -i", "yq -ei '.a=1' f"],
+  ["tree -o 写文件", "tree -o out.txt"],
+  ["tree -oFILE 同 token 带值", "tree -oout.txt"],
+  ["tree 组合短选项 -ao FILE", "tree -ao out.txt"],
+  ["tree --output=FILE", "tree --output=out.txt"],
+  ["file -C -m 写 .mgc", "file -C -m x"],
+  ["file 组合短选项 -bC", "file -bC -m x"],
+  ["date -s 改系统时间", "date -s '2020-01-01'"],
+  ["date --set= 改系统时间", "date --set=2020-01-01"],
+  ["date --set 分离形态改系统时间", "date --set 2020-01-01"],
+  ["date BSD 位置参数改系统时间", "date 010100002020"],
+  ["tree --output 分离形态写文件", "tree --output out.txt"],
+  ["hostname 改主机名", "hostname evil"],
+  ["hostname -F 从文件读主机名", "hostname -F /tmp/name"],
+  ["hostname --file 分离形态从文件读主机名", "hostname --file /tmp/name"],
 ];
 
 /**
- * 已知缺口：主表里有写文件能力、但实现判只读的命令。
+ * D7 修完后必须**仍判只读**的形态。
  *
- * 与 `sed -i` / `sort -o` 完全同型（主表命令 + 写文件参数），只是漏了精细化判定。
- * `yq -i` 与 `tree -o` 普通用户即可写任意文件，是其中影响最大的两条。
- * 修法：把它们移进 `CONDITIONAL_COMMANDS` 按参数判，或直接从主表移出。
+ * 这组存在的理由：一刀切 `return false` 也能让上面的写形态全绿，但会把
+ * `tree` / `date` / `file` 这些高频只读命令全部降级成要确认。所以写形态与安全形态
+ * 必须成对断言——只拦写形态、保住安全形态才是这次修复的判据。
  */
-const KNOWN_GAPS: Array<[string, string]> = [
-  ["yq -i 原地写", "yq -i '.a=1' f"],
-  ["tree -o 写文件", "tree -o out.txt"],
-  ["file -C -m 写 .mgc", "file -C -m x"],
-  ["date -s 改系统时间", "date -s '2020-01-01'"],
-  ["hostname 改主机名", "hostname evil"],
+const D7_SAFE_FORMS: string[] = [
+  "yq '.a' f",
+  "yq -e '.a' f",
+  "tree",
+  "tree -a -d",
+  "tree src",
+  "tree src/ sub/",
+  "tree -L 1", // -L 带值但只限制深度，不写盘：判真会误伤高频用法
+  "tree --gitignore", // 读 .gitignore 只用于过滤输出，不写盘、不回灌上下文
+  "file f",
+  "file -m x f", // 只读另一份 magic 文件：不编译、不写盘
+  "file -l",
+  "date",
+  "date -u +%s",
+  "date -R",
+  "date -j +%Y", // -j：只解析不设置（macOS/BSD）
+  "date -Iseconds", // -I 的 timespec 里含字母 s，不能被 -s 判据误伤
+  "date -d yesterday +%F", // GNU -d 带值，值不是要设置的时间
+  "date -j -f %Y-%m-%d 2020-01-01 +%s", // BSD -j + -f：只解析
+  "hostname",
+  "hostname -f",
+  "hostname -I",
+  "hostname --help",
 ];
 
 /** 从源码里解析主表条目，用于断言 `SAFE_FORMS` 的覆盖完整性 */
@@ -241,10 +279,13 @@ describe("D5 矩阵四：边界形态", () => {
   });
 });
 
-describe("D5 已知缺口：主表内可写盘但判只读（修好后这些用例会红，届时去掉 .failing）", () => {
-  for (const [label, c] of KNOWN_GAPS) {
-    test.failing(`${label}：${c}`, () => {
-      expect(isReadOnlyCommand(c)).toBe(false);
+describe("D7 安全形态：修完必须仍判只读（防一刀切 return false）", () => {
+  // 写形态（yq -i / tree -o / file -C / date -s / hostname evil 等）在
+  // WRITE_FORMS（矩阵三）里断言非只读。那 5 条以前是 `test.failing` 钉桩——
+  // 修好后必须去掉 `.failing`，否则「预期失败但通过了」本身就会让用例变红。
+  for (const c of D7_SAFE_FORMS) {
+    test(c, () => {
+      expect(isReadOnlyCommand(c)).toBe(true);
     });
   }
 });

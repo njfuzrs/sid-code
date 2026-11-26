@@ -4,6 +4,7 @@
  */
 
 import { parseBashCommand, extractShellStatements, extractRedirectTargets } from "./parser.ts";
+import { FIND_SIDE_EFFECT_ACTIONS } from "./find-actions.ts";
 import { judgeDdCommand } from "../../permission/dangerous-command.ts";
 import { expandShellCommand } from "../../permission/shell-command-variants.ts";
 // R7：内置等待原语只读判定复用同一份语法解析，避免「功能认 sid-wait、权限不认」两套规则漂移
@@ -17,7 +18,7 @@ const READ_ONLY_COMMANDS = new Set([
   "head",
   "tail",
   "wc",
-  "file",
+  "file", // 被 CONDITIONAL_COMMANDS.file 覆盖（-C/--compile 写 .mgc）；此处仅作文档
   "stat",
   "du",
   "df",
@@ -35,10 +36,10 @@ const READ_ONLY_COMMANDS = new Set([
   "fgrep",
   "egrep",
   // Git 只读
-  "git", // git 子命令单独检查
+  "git", // 被下方 git 子命令分支覆盖（每条出口都是 continue/return）；此处仅作文档
   // 包管理器：子命令由 CONDITIONAL_COMMANDS 细化（list/view 才只读）
-  "npm",
-  "bun",
+  "npm", // 被 CONDITIONAL_COMMANDS.npm 覆盖；此处仅作文档
+  "bun", // 被 CONDITIONAL_COMMANDS.bun 覆盖；此处仅作文档
   // 解释器 / 构建器 **不** 进这张表（P0-3）。
   // 旧表把 python/node/make/gcc/java 当只读 → BashTool.checkPermissions 返回 allow
   // → checker Step 5.5 直接 return，plan / deny-write 全部打穿。
@@ -46,9 +47,9 @@ const READ_ONLY_COMMANDS = new Set([
   // 系统信息
   "echo",
   "printf",
-  "date",
+  "date", // 被 CONDITIONAL_COMMANDS.date 覆盖（-s/--set 与位置参数改系统时间）；此处仅作文档
   "whoami",
-  "hostname",
+  "hostname", // 被 CONDITIONAL_COMMANDS.hostname 覆盖（位置参数改主机名）；此处仅作文档
   "uname",
   "pwd",
   "env",
@@ -59,18 +60,20 @@ const READ_ONLY_COMMANDS = new Set([
   "top",
   // 数据处理（无写入）
   "jq",
-  "yq",
+  "yq", // 被 CONDITIONAL_COMMANDS.yq 覆盖（-i/--inplace 原地写）；此处仅作文档
   // sort / uniq / awk 不在此列：它们能借参数写文件或执行命令，由 CONDITIONAL_COMMANDS 按参数判
   "cut",
   "tr",
-  "sed",
+  "sed", // 被 CONDITIONAL_COMMANDS.sed 覆盖（-i 原地写）；此处仅作文档
   "diff",
   "comm",
   "paste",
   "column",
+  // tee 被 CONDITIONAL_COMMANDS.tee 的 () => false 覆盖——**真实安全性只在那行**；
+  // 主表这条永不生效，此处仅作文档（删掉那行 = 零确认写任意文件，见 CONDITIONAL_COMMANDS 注释）
   "tee",
   // 目录
-  "tree",
+  "tree", // 被 CONDITIONAL_COMMANDS.tree 覆盖（-o/--output 写文件）；此处仅作文档
   "basename",
   "dirname",
   "realpath",
@@ -841,22 +844,13 @@ export function isReadOnlyGh(args: string[]): boolean {
 }
 
 /**
- * find 的副作用动作：删除、执行任意命令、写文件。命中任一即非只读。
- * 只看 token 精确相等——`-name '-delete'` 这种把它当模式值的写法会被误判成非只读，
- * 方向是落到确认，可接受。
+ * find 的副作用动作见 `find-actions.ts`——那是**单一事实源**，三处消费：
+ * 本文件的只读判定、后台记忆代理的第二套白名单（`memory/extract/permissions.ts`）、
+ * 写目标保护（`permission/shell-command-variants.ts` 的 `findWriteTargets`）。
+ * 这三处曾各抄一份字面量完全相同的副本，改一处漏一处就会一边拦一边放，
+ * 所以数据合并到零依赖的独立文件里（本文件被 `shell-command-variants.ts` 反向
+ * import，放在这里会成环）。
  */
-const FIND_SIDE_EFFECT_ACTIONS = new Set([
-  "-delete",
-  "-exec",
-  "-execdir",
-  "-ok",
-  "-okdir",
-  "-fprint",
-  "-fprint0",
-  "-fprintf",
-  "-fls",
-]);
-
 export function isReadOnlyFind(args: string[]): boolean {
   return !args.some((a) => FIND_SIDE_EFFECT_ACTIONS.has(a));
 }
@@ -908,7 +902,186 @@ export function isReadOnlyAwk(args: string[]): boolean {
   return !scripts.some((s) => AWK_SIDE_EFFECT_PATTERN.test(s));
 }
 
-/** 需要特殊处理的命令（看起来只读但可能有副作用） */
+// ──────────────────────────────────────────────────────────────────────────
+// D7：主表里这几条命令「带写文件参数仍是只读」。它们与 sed -i / sort -o 完全同型
+// （主表命令 + 写文件参数），sed / sort 早已进 CONDITIONAL_COMMANDS 按参数判，
+// 这 5 条是漏网。主表条目保留不删，行为由这里按参数判。
+//
+// 判据一律「只拦写形态、保住安全形态」：一刀切 return false 会让 D5 矩阵的
+// 安全形态用例大面积变红，且等于把 `tree` / `date` 这类高频只读命令全部降级成要确认。
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * 判断短选项段里是否出现某个短选项字母。
+ *
+ * 逗号是 POSIX 短选项的合法分隔符（`file -bC` == `file -b -C`），带值的短选项还可以
+ * 写成同 token 形态（`tree -oout.txt`、`tree -ao out.txt`）。只按整 token 精确相等判，
+ * 这些组合写法会整个绕过写形态判据。只看 `-` 开头的短选项段（`--` 长选项由调用方自己判）。
+ */
+function hasShortOpt(args: string[], letter: string): boolean {
+  return args.some((a) => {
+    if (!a.startsWith("-") || a.startsWith("--") || a === "-") return false;
+    return a.slice(1).includes(letter);
+  });
+}
+
+/**
+ * `--opt` / `--opt=值` 这一种长选项形态。
+ *
+ * 刻意只认精确相等与 `=` 形态：`--output-file` 是另一个选项，不该被 `--output` 匹配到。
+ * 不带 `=` 的长选项取「下一个 token 作为值」，拼错的选项因此只会落到确认（安全方向）。
+ */
+function hasLongOpt(args: string[], long: string): boolean {
+  return args.some((a) => a === long || a.startsWith(`${long}=`));
+}
+
+/**
+ * 带值短选项是否出现：`-o out.txt` / `-oout.txt` / `-ao out.txt`。
+ *
+ * `letter` 后面还有字符（不是逗号）→ 同 token 带值；否则看下一个 token 是否是值。
+ * 下一个 token 以 `-` 开头时不是值（那是另一个选项）。同 token 带值时即使那串其实是
+ * 逗号分隔的后续选项（`-ao,-b`），判非只读也只是多一次确认——方向是落确认。
+ */
+function hasShortOptWithValue(args: string[], letter: string): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (!a.startsWith("-") || a.startsWith("--") || a === "-") continue;
+    const body = a.slice(1);
+    const idx = body.indexOf(letter);
+    if (idx === -1) continue;
+    const next = body[idx + 1];
+    if (next !== undefined && next !== ",") return true;
+    const following = args[i + 1];
+    return following !== undefined && (!following.startsWith("-") || following === "-");
+  }
+  return false;
+}
+
+/**
+ * tree：`-o` / `-oFILE` / `-ao FILE` / `--output FILE` / `--output=FILE` 写输出文件。
+ *
+ * **只拦写输出这一种形态**，其余选项放行。判据故意收窄：`tree -L 2` / `tree -a -d` /
+ * `tree --gitignore` 是高频只读用法，按「能读文件内容就不算只读」去收紧会让每条
+ * `tree -L 1` 都白弹一次确认——那是拿假想的安全伤更快，且用户立刻能感知。
+ * `--gitignore` 读 `.gitignore` 只用于过滤输出，不写盘、也不把内容回灌上下文，
+ * 与 curl「请求发往任意主机 + 响应体进模型上下文」不是同一类风险。
+ */
+function isReadOnlyTree(args: string[]): boolean {
+  return !hasShortOptWithValue(args, "o") && !hasLongOpt(args, "--output");
+}
+
+/**
+ * yq：`-i` / `-iN` / `--inplace` / `--inplace=...` 原地写文件（与 sed -i 同义）。
+ *
+ * `--inplace=false` 实际不写盘，但同一条命令读起来就是「原地写」，判非只读只是
+ * 多一次确认，可接受——认不准就落确认。
+ */
+function isReadOnlyYq(args: string[]): boolean {
+  return !hasShortOpt(args, "i") && !hasLongOpt(args, "--inplace");
+}
+
+/**
+ * file：`-C` / `--compile` 把 `-m` 指定的 magic 文件编译成 `<name>.mgc` 落盘。
+ *
+ * ⚠️ 单独的 `-m x` / `--magic-file x` **不是**写形态（只是读另一份 magic 文件），
+ * 不能误伤——D7 的缺陷形态是「-C 和 -m 同时出现」，只拦 -C 就够。
+ */
+function isReadOnlyFile(args: string[]): boolean {
+  return !hasShortOpt(args, "C") && !hasLongOpt(args, "--compile");
+}
+
+/**
+ * date 里「带值、但不写系统时钟」的短选项：
+ * GNU `-d` / `-f` / `-r`，BSD `-f` / `-r` / `-v`。
+ *
+ * 它们的值是日期串 / 文件名 / 偏移，**不是要设置的时间**。不跳过这些值的话
+ * `date -d yesterday +%F` 会被当成「位置参数 = 设置时钟」而误判——那是高频只读用法。
+ */
+const DATE_VALUE_OPTS: ReadonlySet<string> = new Set(["d", "f", "r", "v"]);
+
+/**
+ * `args[i]` 这个短选项是否把**下一个 token** 当值吃掉。
+ *
+ * 找到短选项段里第一个带值选项字母：它后面还有字符就是同 token 带值（`-dnow`），
+ * 没有（或只剩逗号分隔符）则值在下一个 token（`-d now`）。
+ */
+function dateOptTakesNext(args: string[], i: number): boolean {
+  const a = args[i] ?? "";
+  if (!a.startsWith("-") || a.startsWith("--") || a === "-") return false;
+  const body = a.slice(1);
+  for (let k = 0; k < body.length; k++) {
+    if (!DATE_VALUE_OPTS.has(body[k]!)) continue;
+    const rest = body.slice(k + 1);
+    return rest === "" || rest.startsWith(",");
+  }
+  return false;
+}
+
+/**
+ * date：`-s` / `--set` / `--set=...` 改系统时钟；macOS/BSD 还有**位置参数**形态
+ * （`date 010100002020`，同一位置也接受 `[+-]` 时区调整）。
+ *
+ * 必须保住的只读形态：无参数、`+FORMAT`、`-u` / `-R` / `-I` / `-r` / `-d` / `-j` / `-v`。
+ * `-d` / `-f` / `-r` / `-v` 带值（见 DATE_VALUE_OPTS），值本身不是要设置的时间。
+ * BSD `-j`（do not set the date）让位置参数只被解析、不写时钟，直接放行。
+ *
+ * ⚠️ 不能用 `hasShortOpt(args, "s")` 判写形态：`-Iseconds` / `-Is` 里的 `seconds`
+ * 也会命中字母 s，那会把 ISO 输出格式误判成改时钟。
+ */
+function isReadOnlyDate(args: string[]): boolean {
+  if (hasLongOpt(args, "--set")) return false;
+  // BSD -j：只解析不设置
+  if (args.some((a) => a !== "--" && a.startsWith("-j") && !a.startsWith("--"))) return true;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === "--") continue;
+    if (a.startsWith("+")) continue; // `+FORMAT` 只是输出格式，不是要设置的时间
+    if (!a.startsWith("-")) return false; // 位置参数 = 要设置的时间（BSD 形态）
+    if (a.startsWith("--")) continue; // --utc / --reference / --iso-8601 等都不写时钟
+    if (a === "-") return false;
+    const body = a.slice(1);
+    for (let k = 0; k < body.length; k++) {
+      const ch = body[k]!;
+      if (ch === "s") return false; // -s 改系统时钟
+      if (ch === "I") break; // -Iseconds：剩余部分是 timespec，不是选项字母
+    }
+    if (dateOptTakesNext(args, i)) i++;
+  }
+  return true;
+}
+
+/**
+ * hostname：**非选项位置参数**（`hostname evil`）改主机名，`-F` / `--file` 从文件读新主机名。
+ * `-s` / `-f` / `-d` / `-i` / `-I` / `--help` / `--version` 与无参数都是纯查询。
+ *
+ * `--` 之后的位置参数同样是要设置的主机名（`hostname -- evil`）。
+ */
+function isReadOnlyHostname(args: string[]): boolean {
+  for (const a of args) {
+    if (a === "--") continue;
+    if (a.startsWith("-") && a !== "-") continue;
+    return false; // 任何非选项 token（含 `-`）都是主机名
+  }
+  return !hasShortOpt(args, "F") && !hasLongOpt(args, "--file");
+}
+
+/**
+ * 需要特殊处理的命令（看起来只读但可能有副作用）。
+ *
+ * ⚠️ **命中本表 = 主表 `READ_ONLY_COMMANDS` 的同名条目永不生效。**
+ * 调用点（isReadOnlyImpl 的「条件命令特殊处理」分支）的每条出口都是
+ * `return false` 或 `continue`，`continue` 直接跳到下一条简单命令，走不到末尾那句
+ * `if (!READ_ONLY_COMMANDS.has(cmd)) return false`。下方的 git 子命令分支同理
+ * （`cmd === "git"` 每一条出口都是 `continue` 或 `return false`）。
+ *
+ * 所以：**改 sed / tee / npm / bun / git / yq / tree / file / date / hostname 的行为，
+ * 改这里或 git 分支**；主表里的同名条目只是文档（见主表内的行内标注）。
+ *
+ * ⚠️ `tee` 的真实安全性 **100% 依赖下面那行 `tee: () => false`**。主表里也有 `"tee"`，
+ * 看起来重复——但主表那条永远读不到。一次「清理重复」把 `() => false` 删掉，
+ * tee 会走主表 → 判只读 → **零确认写任意文件**。这是本文件里唯一一处
+ * 「删一行等于开一个洞」的地方。
+ */
 const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
   // sed 只有不带 -i 时才是只读
   sed: (args) => !args.some((a) => a === "-i" || a.startsWith("-i") || a === "--in-place"),
@@ -964,6 +1137,13 @@ const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
     return ["--version", "pm", "x"].includes(sub);
   },
   gh: isReadOnlyGh,
+  // D7：主表里带写文件参数仍判只读的 5 条。它们与 sed -i / sort -o 同型，按参数判。
+  // 主表条目保留（不删），行为由这里决定。
+  yq: isReadOnlyYq,
+  tree: isReadOnlyTree,
+  file: isReadOnlyFile,
+  date: isReadOnlyDate,
+  hostname: isReadOnlyHostname,
 };
 
 /**
