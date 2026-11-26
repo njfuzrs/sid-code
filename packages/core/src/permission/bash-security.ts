@@ -130,6 +130,12 @@ export function extractQuotedContent(command: string): QuoteExtraction {
  * SECURITY: 三个模式都必须带尾边界 (?=\s|$)。否则 `> /dev/nullo` 会把 `/dev/null`
  *   当前缀匹配，剥离后剩 `o`，导致 `echo hi > /dev/nullo` 变成 `echo hi o`，
  *   重定向校验看不到 `>` 就放行了。
+ *
+ * ⚠️ **刻意不共用** `tool/bash/parser.ts` 的 `isDiscardRedirectTarget`（它认
+ *   `{/dev/null, /dev/zero}`）。这里是注入检测的**前置剥离**：剥掉安全重定向只是为了
+ *   别让它们的 `>` / `{` 干扰后面的括号计数，剥多剥少不影响判据。剥 `/dev/zero` 与不剥
+ *   对计数结果完全一样，所以这里只认 `/dev/null` 是够用的，不是漏了一种形态。
+ *   那族判定的口径见 `isDiscardRedirectTarget` 的注释。
  */
 function stripSafeRedirections(content: string): string {
   return content

@@ -322,20 +322,47 @@ export function extractRedirectTargets(node: BashASTNode): string[] {
  * 这类**极常见的纯读命令**会第一次被判成"有写入重定向"→ 非只读 → 白弹确认。
  * 那是拿"更安全"伤"更快"的净退步（北极星自检第 3 问），且量大到用户立刻能感知。
  *
- * 这不是本次新造的特例，仓里已有两处同型认知：
- * - `permission/bash-security.ts:123 stripSafeRedirections` 把 `>/dev/null` 归为安全重定向
- * - `tool/jit-affected-paths.ts:144` 对 `/dev/` 前缀直接 return
+ * ## 这是「丢弃型目标」这一族判定的**单一事实源**
  *
- * ⚠️ **必须整段精确相等，不能用 startsWith**。这条是 `bash-security.ts:119` 记下的
- * 踩坑：`/dev/nullo` 会前缀命中 `/dev/null`，于是一个真实文件被当成丢弃目标放行。
+ * 凡是在回答「这个重定向算不算写盘」的地方都走这里，语义已裁决统一到
+ * `{/dev/null, /dev/zero}`（2026-11-26，见缺陷文档 D2「口径已裁决」）：
+ * - `permission/allow-composition.ts` 的 `isPipelineFilterStage`（allow 规则能否套到复合命令）
+ * - `task/status-query-commands.ts` 的 `matchStatusQuery`（这条命令是不是纯查询）
+ *
+ * `/dev/zero` 认作丢弃目标：它和 `/dev/null` 一样是设备节点、写进去即丢弃。
+ * 收紧到只认 `/dev/null` 等于在代码里固化一个错误事实，下一个人会再问一遍「为什么不算」
+ * 然后加回来 —— 来回震荡；而放宽的实际面接近零（要触发得写出 `cat f | tail -5 > /dev/zero`）。
+ *
+ * 仓里还有两处**同型但用途不同**的判定，**刻意不共用**（它们问的不是
+ * 「这个文件是不是丢弃型目标」，传单个 file 过去也回答不了各自的问题）：
+ * - `permission/bash-security.ts` 的 `stripSafeRedirections`：注入检测的前置剥离，
+ *   剥不剥 `/dev/zero` 不影响括号计数，只认 `/dev/null` 就够。
+ * - `tool/jit-affected-paths.ts` 的 `bashWriteTargets`：问「哪些写入不进快照」，
+ *   `/tmp/` 与 `/dev/*` 是两个不同理由，按前缀判而不是按丢弃型目标判。
+ *
+ * ⚠️ **必须整段精确相等，不能用 startsWith**。这条是 `permission/bash-security.ts`
+ * 的 `stripSafeRedirections` 记下的踩坑：`/dev/nullo` 会前缀命中 `/dev/null`，
+ * 于是一个真实文件被当成丢弃目标放行。
+ *
+ * 改这个集合 = 改族 A 三处的共同契约，务必跑 `tests/permission/discard-redirect-target.test.ts`
+ * 并做变异自证（改成只认 `/dev/null`，`/dev/zero` 用例必须转红）。
  */
 const DISCARD_TARGETS: ReadonlySet<string> = new Set(["/dev/null", "/dev/zero"]);
+
+/**
+ * `file` 是不是丢弃型重定向目标（写进去即丢弃，不算写盘）。
+ *
+ * 判据是**整段精确相等**，不是前缀匹配 —— 见上面 `DISCARD_TARGETS` 注释里 `/dev/nullo` 的踩坑。
+ */
+export function isDiscardRedirectTarget(file: string): boolean {
+  return DISCARD_TARGETS.has(file);
+}
 
 function collectRedirects(node: BashASTNode, targets: string[]): void {
   switch (node.type) {
     case "redirect":
       // 只收写入类；读类（`<` / `<<<` / `n<`）不算写盘目标，见 WRITE_REDIRECT_MODES 注释。
-      if (WRITE_REDIRECT_MODES.has(node.mode) && !DISCARD_TARGETS.has(node.file)) {
+      if (WRITE_REDIRECT_MODES.has(node.mode) && !isDiscardRedirectTarget(node.file)) {
         targets.push(node.file);
       }
       collectRedirects(node.target, targets);

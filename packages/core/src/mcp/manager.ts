@@ -149,8 +149,26 @@ class MCPToolAdapter implements Tool {
     return this.def.annotations?.readOnlyHint ?? false;
   }
 
+  /**
+   * D6：并发安全 = 只读 **且** 非破坏性 **且** 幂等，三个 hint 同时成立才进并行批次。
+   *
+   * 此前直接透传 `readOnlyHint`——即无条件采信外部 Server 的单一声明，是本仓
+   * 唯一一处「外部声明不设门槛」的调度路径。后果边界：MCP 工具不直接改本地文件，
+   * 但多个「自称只读」的调用并发打到同一个外部系统会破坏 Server 自己的顺序假设
+   * （例：两个 `browser_navigate` 并发，后到的覆盖前者状态）。收紧的代价只是
+   * 未声明幂等的工具落回串行，不影响正确性。
+   *
+   * - `!isDestructive()`：协议允许 Server 同时声明只读与破坏性（自相矛盾），矛盾时取保守。
+   *   同时这也让「并发安全」蕴含「非破坏性」，fail-closed 权限分级（run-tool-use.ts）
+   *   那把「isConcurrencySafe → 无检查器时放行」的口子不可能漏进 destructive 工具。
+   * - `isIdempotent()`：协议已提供幂等信号，并发安全在语义上本就要求幂等，不用等于白放弃一层判断。
+   *
+   * 复用现成方法而不是重复读 `annotations`：hint 的解释口径（`=== true` / 缺省值）
+   * 只留在 `readOnly()` / `isDestructive()` / `isIdempotent()` 三处。
+   * 刻意不做「MCP 一律 false」：多个独立查询的并发是真实收益，用幂等 hint 做门槛已足够保守。
+   */
   isConcurrencySafe(): boolean {
-    return this.def.annotations?.readOnlyHint ?? false;
+    return this.readOnly() && !this.isDestructive() && this.isIdempotent();
   }
 
   /**

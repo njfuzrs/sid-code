@@ -19,7 +19,12 @@
  */
 
 import * as path from "node:path";
-import { parseBashCommand, splitShellWords, type BashASTNode } from "../tool/bash/parser.ts";
+import {
+  parseBashCommand,
+  splitShellWords,
+  isDiscardRedirectTarget,
+  type BashASTNode,
+} from "../tool/bash/parser.ts";
 
 /** 选项解析规格：短选项按字符、长选项按名字，分「布尔」与「带值」两类，表外一律拒绝 */
 interface FilterSpec {
@@ -163,8 +168,6 @@ const FILTER_SPECS: Readonly<Record<string, FilterSpec>> = {
 
 /** fd 复制（`2>&1`、`>&2`）：只在 fd 之间搬运，不落盘。解析器把它们留在 args 里 */
 const FD_DUP_RE = /^\d*>&\d+$/;
-/** 丢弃型重定向目标，与 parser.ts 的 DISCARD_TARGETS 同口径（必须整段相等） */
-const DISCARD_TARGETS = new Set(["/dev/null"]);
 
 /**
  * 原文里会让「一个 token」变成「别的东西」的展开：glob、花括号、波浪号、变量（未加引号时
@@ -259,7 +262,10 @@ export function isPipelineFilterStage(stage: string): boolean {
   // 重定向只认丢弃型写（`2>/dev/null`）；读重定向 `< f` 等于读任意文件，同样拒绝
   while (node.type === "redirect") {
     if (node.mode !== ">" && node.mode !== "n>") return false;
-    if (!DISCARD_TARGETS.has(node.file)) return false;
+    // 丢弃型目标走共享判定（`parser.ts` 的 `isDiscardRedirectTarget`），口径 {/dev/null, /dev/zero}。
+    // 这里原先自带一份只认 `/dev/null` 的 Set，注释却写「与 parser.ts 的 DISCARD_TARGETS 同口径」——
+    // 那是一句假事实：同一条 `echo hi > /dev/zero` 在只读判定里算只读、在这里却被判非纯过滤器。
+    if (!isDiscardRedirectTarget(node.file)) return false;
     node = node.target;
   }
   if (node.type !== "simple") return false;

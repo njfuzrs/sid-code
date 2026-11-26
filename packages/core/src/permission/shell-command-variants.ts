@@ -33,6 +33,7 @@
 
 import * as path from "node:path";
 import type { HeredocBlock } from "../tool/bash/heredoc.ts";
+import { FIND_SIDE_EFFECT_ACTIONS } from "../tool/bash/find-actions.ts";
 import {
   extractHeredocBlocks,
   isPosixShellProgram,
@@ -1556,19 +1557,6 @@ function scriptProgramTargets(args: string[]): string[] {
   return out;
 }
 
-/** find 的副作用动作：会真的删 / 写文件，或执行任意命令 */
-const FIND_SIDE_EFFECT_ACTIONS = new Set([
-  "-delete",
-  "-exec",
-  "-execdir",
-  "-ok",
-  "-okdir",
-  "-fprint",
-  "-fprint0",
-  "-fprintf",
-  "-fls",
-]);
-
 /**
  * `find` 的起点目录（L2）。
  *
@@ -1576,6 +1564,9 @@ const FIND_SIDE_EFFECT_ACTIONS = new Set([
  * 命中保护目录即够拦；`find . -name '*.ts' -delete` 的起点 `.` 不命中，就不新增确认——
  * safetyCheck 的语义是保护特定路径，不是「所有删除都确认」。
  * `-exec rm {} \;` 的参数 `{}` 静态不可知，起点目录已覆盖「在受保护目录内执行任意命令」。
+ *
+ * 副作用动作表来自 `tool/bash/find-actions.ts`（单一事实源）：它此前在本文件、
+ * 只读判定、后台记忆白名单里各有一份字面量相同的副本。
  */
 function findWriteTargets(args: string[]): string[] {
   if (!args.some((a) => FIND_SIDE_EFFECT_ACTIONS.has(a))) return [];

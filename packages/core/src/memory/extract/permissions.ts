@@ -35,6 +35,10 @@ import {
 // 只读 git 的判定只保留一份实现（主会话这份）。在这里另写一张 git 子命令表
 // 就是第二套规则，两套必然漂移 —— 见 `isReadonlyBash` 的第 5 条口径。
 import { isReadOnlyCommand } from "../../tool/bash/read-only-validation.ts";
+// FIND_SIDE_EFFECT_ACTIONS 的单一事实源在零依赖的 find-actions.ts：它此前在仓里被抄了
+// 三遍（本文件、只读判定、写目标保护），只改其中一处就会一边拦一边放。
+// 合并的是纯数据，不改变本文件的任何行为。
+import { FIND_SIDE_EFFECT_ACTIONS } from "../../tool/bash/find-actions.ts";
 // P1-12 指标 ③：越权拒绝计数（防线触发次数，恒 0 亦是信号）。
 import { logMemoryGuard } from "../../analytics/events.ts";
 
@@ -51,8 +55,26 @@ const READONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many"]);
  */
 const WRITE_TOOLS = new Set(["write", "edit"]);
 
-/** Bash 只读命令前缀白名单 */
-const READONLY_BASH_PREFIXES = ["ls", "find", "cat", "stat", "wc", "head", "tail", "grep", "echo"];
+/**
+ * Bash 只读命令前缀白名单。
+ *
+ * 这是**第二套**判定，刻意比主表 `READ_ONLY_COMMANDS` 窄（后台提取代理是无人监督的
+ * fork，能力面只收不放，见下方 `isReadonlyBash` 的注释）——但每一列都必须是主表里真有、
+ * 或由主表 `CONDITIONAL_COMMANDS` / git 分支接管判定的命令，不允许自己造规则。
+ * 子集关系由 `packages/core/tests/memory/readonly-prefix-subset-reconcile.test.ts` 守住：
+ * 往这里加一个主表没有的命令 → 那条对账测试红。
+ */
+export const READONLY_BASH_PREFIXES = [
+  "ls",
+  "find",
+  "cat",
+  "stat",
+  "wc",
+  "head",
+  "tail",
+  "grep",
+  "echo",
+];
 
 /**
  * 从 `save_memory` 的输入里取 `scope`（P1-9）。
@@ -127,22 +149,6 @@ function extractTargetPath(input: unknown): string | undefined {
 }
 
 /**
- * `find` 里能执行命令或写盘的谓词。`find` 本身在白名单里，但 `-exec sh -c ...`
- * 不会在 AST 里另起一个简单命令节点（参数原样挂在 find 下面），所以必须按参数拦。
- */
-const FIND_UNSAFE_ARGS = new Set([
-  "-exec",
-  "-execdir",
-  "-ok",
-  "-okdir",
-  "-delete",
-  "-fprint",
-  "-fprint0",
-  "-fprintf",
-  "-fls",
-]);
-
-/**
  * 命令替换 / 进程替换。parser 不展开它们（`$(curl x)` 会被切成参数 `"$(curl"`），
  * 于是 AST 逐命令校验看不见里面的命令 —— 只能整串拒绝。后台代理是只读探查，
  * 这几种形态没有正当用途。
@@ -176,7 +182,9 @@ export function isReadonlyBash(input: unknown): boolean {
   if (simple.length === 0) return false;
   for (const { command, args } of simple) {
     if (READONLY_BASH_PREFIXES.includes(command)) {
-      if (command === "find" && args.some((a) => FIND_UNSAFE_ARGS.has(a))) return false;
+      // `find` 本身在白名单里，但 `-exec sh -c ...` 不会在 AST 里另起一个简单命令节点
+      // （参数原样挂在 find 下面），所以必须按参数拦。谓词表与主表同一份。
+      if (command === "find" && args.some((a) => FIND_SIDE_EFFECT_ACTIONS.has(a))) return false;
       continue;
     }
     // 只读 git：P1-2 的核实轮要向用户承诺「可以跑 git 命令」（`extract/prompts.ts` 的
